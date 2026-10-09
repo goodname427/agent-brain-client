@@ -14,8 +14,8 @@
     "adapters/codex/client_release.py": "c43c4344c75928d53fd0b5d50b7a8f23da309c121073f1df0b7b2a2733d46f7a",
     "adapters/codex/client_startup.py": "5fc9aca1654a6953e73b7441f7fbbecb7c24f9c1b80a5afc99584082982a5588",
     "adapters/codex/codex_connect.py": "89771eb8d26f3e6911d981f927092a80dbc8bb59db5acadad34ed1265ab4dbd8",
-    "adapters/codex/remote_http.py": "8a1a18987f8205e4078cf0d8781700e72a981d87542aaacd04a85f4ece276cd6",
-    "adapters/codex/remote_mcp.py": "aec4183f83cb8ca92488ffeb66bbabf737fc3674469bab97aadff468c80102de",
+    "adapters/codex/remote_http.py": "754f0e9ad9100b2193ca505a2b4c4e1fab648baea302f8c425e1147d71ec79b6",
+    "adapters/codex/remote_mcp.py": "f4ffdc1803154eab6b26301dfc4c2b93d730521527c22c9faa6b78f187f8797f",
     "connect.py": "cb70622c0e70991b3abe2485fe8dc10ba48b7689702fb3ba60564e8b9e61d710",
     "scripts/brain_lock.py": "5190376a28279ef80601e96fc6f674720094930a44def439d6c67da2ba0e24a4",
     "scripts/brain_release.py": "4b522fb90fd818f73a21c78cfcc052e585a7e175647b2278ff0b813c70fb4e22"
@@ -24,5 +24,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.1.4"
+  "version": "0.1.5"
 }

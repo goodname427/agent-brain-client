@@ -27,7 +27,7 @@ class RemoteClient:
         self.endpoint, self.token_file = endpoint.rstrip('/'), Path(token_file)
         self.opener = build_opener(NoRedirect())
 
-    def request(self, request):
+    def request(self, request, *, timeout=90):
         rid = request.get('request_id') if isinstance(request, dict) else None
         if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,128}', rid):
             raise ValueError('Supply a stable request_id; retry a write with the same ID and parameters.')
@@ -46,7 +46,7 @@ class RemoteClient:
         req.add_header('X-Agent-Brain-State-Schema', '1')
         if self.data_mode=='personal':req.add_header('X-Agent-Brain-Data-Mode','personal')
         try:
-            with self.opener.open(req, timeout=90) as response:
+            with self.opener.open(req, timeout=timeout) as response:
                 value = response.read(262145)
             if len(value) > 262144:
                 raise ValueError('Response exceeds 256 KB')
