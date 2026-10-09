@@ -2,6 +2,8 @@
 
 Agent 先确认实际设备、Python 和 Harness，不按模型名冒用工具名称。当前只允许验证过的 Codex；其他 Harness 给出适配缺口，不执行试探安装。
 
+旧设备或本地 Brain 已安装时，同时读取 [旧版迁移与可恢复清理](ADAPTERS.md#旧版迁移与可恢复清理)，先保存依赖及保留清单。
+
 运行 `python3 connect.py --agent codex` 做预检。它查客户端登记、已知 `.config/agent-brain-client/service-profile.json` 和已有 Brain 绑定，判断首次授权、复用、迁移或修复；不读取原生历史，不复制凭据，不执行数据 Git。Mac 默认选择受限 SSH MCP，token 留服务器；没有已批准 profile 时说明服务授权这个具体节点，不要求把 token/私钥发到聊天，也不默默生成新身份。
 
 保留早期已授权 HTTP 客户端的 endpoint/token-file 参数与 `.config/agent-brain-client/device.json` 复用；这一兼容入口不把凭据交接加入当前 Mac SSH 方案。直接 HTTP 传输输入输出 JSON 行，只在服务只读检查成功后登记元数据，原有客户端和未知登记不覆盖。
@@ -13,3 +15,5 @@ Mac SSH 入口使用 `python3 connect.py --agent codex --service-profile <已批
 初始化后 Agent 报告配置及协议检查结果，无需新模型或 GUI 验收。`client_startup.py --policy-file <固定受审policy> --policy-sha256 <固定摘要> --check-only` 可独立检查客户端更新；正式源未批准时保留 not-configured。固定 MCP 启动入口调用同一 ReleaseEngine，不另装调度器。新权限、协议、迁移或本地漂移先保留并报告具体操作。
 
 已有本地 Brain 绑定而没有可信新登记时，保持 migration-review-required。首个受审 Mac 方案注册固定 SSH stdio 命令，服务器服务账户读取本机 token；获批固定 bootstrap 可改为 client_startup.py，传递固定策略摘要。Agent 独立准备入口、安全基线和备份，获批准后负责配置及自检。未批准身份、服务器代码或发布源时，给出具体缺口，不能将 HTTP API 直接当 Streamable HTTP MCP 地址。真实记忆与项目迁移不由这个合成入口授权。
+
+迁移成功后按上述清理指引核对新入口独立依赖与唯一数据，再将确定被替代的对象移到系统废纸篓或已核验的可恢复位置。未迁移 Rules/Skills、私有数据、凭据、当前开发工作区及新客户端引用的文件均保留；旧 hooks 已停用时不扩大安全设置修改范围。

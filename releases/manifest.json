@@ -7,10 +7,10 @@
   "core_api": 1,
   "files": {
     ".gitignore": "b8c1ce8950217282e3e86c19ae8cdd63b8a235a4d9ee209908d32e69b02e500e",
-    "ADAPTERS.md": "3dd78141aac4a4f24af7291c8cf4a2bd22912e89248c62c022ffd868cc45dd24",
-    "BOOTSTRAP.md": "bd98870b44eecbdfbbf6e17db1a1b04a321343710fd0f3c3d0f2eb1b641ce0c7",
+    "ADAPTERS.md": "6e7c5934319eaa748f452761f68fac8bf116c5b357e3d6b3700b5c2721564ac3",
+    "BOOTSTRAP.md": "f77e2131dff9cdea494d9c1ecda56f3f9260e964883e5f977c8f6bc283eb671b",
     "PROTOCOL.md": "392d64a82e21b05e3439e9269471b1ea634f307dd268d58bcdc73927c4cbb5f4",
-    "README.md": "51d1c8b9d5dcdd416d2a2c9188238046e4685034c810e4fc5fe8cae170c03eaa",
+    "README.md": "623baae50b453b4ec97c732e8e8d86605078acc3c3194090a15747c8002d0097",
     "adapters/codex/client_release.py": "c43c4344c75928d53fd0b5d50b7a8f23da309c121073f1df0b7b2a2733d46f7a",
     "adapters/codex/client_startup.py": "5fc9aca1654a6953e73b7441f7fbbecb7c24f9c1b80a5afc99584082982a5588",
     "adapters/codex/codex_connect.py": "89771eb8d26f3e6911d981f927092a80dbc8bb59db5acadad34ed1265ab4dbd8",
@@ -24,5 +24,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.1.2"
+  "version": "0.1.3"
 }
