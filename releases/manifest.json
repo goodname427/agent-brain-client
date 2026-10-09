@@ -12,7 +12,7 @@
     "PROTOCOL.md": "392d64a82e21b05e3439e9269471b1ea634f307dd268d58bcdc73927c4cbb5f4",
     "README.md": "51d1c8b9d5dcdd416d2a2c9188238046e4685034c810e4fc5fe8cae170c03eaa",
     "adapters/codex/client_release.py": "c43c4344c75928d53fd0b5d50b7a8f23da309c121073f1df0b7b2a2733d46f7a",
-    "adapters/codex/client_startup.py": "e07fbf76627c0f7d1f38e9b79d42537356140e37b4dc722f4a08d9779aba5b8c",
+    "adapters/codex/client_startup.py": "5fc9aca1654a6953e73b7441f7fbbecb7c24f9c1b80a5afc99584082982a5588",
     "adapters/codex/codex_connect.py": "89771eb8d26f3e6911d981f927092a80dbc8bb59db5acadad34ed1265ab4dbd8",
     "adapters/codex/remote_http.py": "8a1a18987f8205e4078cf0d8781700e72a981d87542aaacd04a85f4ece276cd6",
     "adapters/codex/remote_mcp.py": "96d98677bfb994ef83793ea28b18f3d9587b9cfe2f0d3f5de891a8b08c4424fa",
@@ -24,5 +24,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.1.1"
+  "version": "0.1.2"
 }

@@ -41,7 +41,8 @@ def main():
         result={'status':'startup-review-required','served':False,'next_action':'Inspect the approved fixed bootstrap, policy digest and isolated client paths; preserve existing packages.'}
     if args.check_only:print(json.dumps(result))
     elif not result.get('served'):print(json.dumps(result),file=sys.stderr)
-    return result.get('exit_code',0 if args.check_only and result['status'] in ('current','updated','offline') else 2)
+    checked=args.check_only and result['status'] in ('current','updated','offline') and bool(result.get('active'))
+    return result.get('exit_code',0 if checked else 2)
 
 
 if __name__=='__main__':sys.exit(main())
