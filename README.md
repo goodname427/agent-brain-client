@@ -1,16 +1,16 @@
-# Agent Brain 客户端候选
+# Agent Brain 客户端
 
-把本仓库链接交给实际 Agent，先读 BOOTSTRAP.md。客户端只管理获授权的接入、薄适配器和受信客户端更新；Core、后台部署、数据历史均在私有后台。此目录是尚未公开发布的精确导出候选，不包含私库历史、记忆、宿主配置、地址、凭据或日志。
+把本仓库链接交给实际 Agent，先读 BOOTSTRAP.md。客户端只管理获授权的接入、薄适配器和受信客户端更新；Core、后台部署、数据历史均在私有后台。公开客户端使用精确文件白名单，不包含私库历史、记忆、宿主配置、地址、凭据或日志。旧版迁移及可恢复清理见 [ADAPTERS.md](ADAPTERS.md#旧版迁移与可恢复清理)。
 
-当前提供 Codex 工具进程的 JSON 行 HTTP 传输、stdio MCP 桥接和一个 Mac Codex 初始化检查点，使用 Python 标准库。remote_mcp.py 只转发五个服务方法，不导入 Core/Git。写工具要求显式稳定 request_id 和 expected_revision；重试保持参数，不掩盖未确认持久状态。connect.py 可复用已验证的 SSH MCP 登记；首次 native 注册需现有受限身份、严格主机校验和精确计划摘要，旧入口迁移仍需单独受审。只做配置及协议检查，不另开模型或要求 GUI 验收。此导出未发布，也不代表真实服务器已更新到候选代码。
+当前提供 Codex 工具进程的 JSON 行 HTTP 传输、stdio MCP 桥接和一个 Mac Codex 初始化检查点，使用 Python 标准库。remote_mcp.py 只转发五个服务方法，不导入 Core/Git。写工具要求显式稳定 request_id 和 expected_revision；重试保持参数，不掩盖未确认持久状态。connect.py 可复用已验证的 SSH MCP 登记；首次 native 注册需现有受限身份、严格主机校验和精确计划摘要，旧入口迁移仍需单独受审。只做配置及协议检查，不另开模型或要求 GUI 验收。公开版本可用不等于某台设备或服务器已完成安装；以该设备配置、固定入口和协议检查回执为准。
 
 首个 Mac Codex 接入可采用受审的 SSH stdio 命令，在服务器以无登录服务账户运行这个桥接器并读取服务器本机 token；凭据不用复制到客户端，API 仍只监听回环。SSH 身份、远端固定路径和 native MCP 配置是独立批准范围，不能由工具参数变更或由一条仓库链接隐式授予。旧固定入口、hooks、Skill 和权限基线需要在切换前精确计划及备份，不同时运行两套个人写入口。
 
 客户端更新复用 scripts/brain_release.py 的 GitReleaseSource/ReleaseEngine。固定 client_startup.py 在已批准的 MCP 进程启动时检查受信 origin/ref/anchor、manifest 和逐文件 hash，再激活兼容不可变客户端包；健康失败或进程中断恢复旧指针，离线继续旧的已验证包。原生配置、固定 bootstrap、授权源、凭据及数据不由包更新改写。能力、协议、依赖、文件集合或迁移变化需审阅；远端 client_updates 仅为发现信息，不能授予新信任。没有新后台任务。
 
-正式发布仓库、固定 bootstrap 的安装与 pinned policy 尚需一次性具体批准。受信政策 JSON 的 SHA256 由受限 SSH 固定命令携带；策略中代码 checkout/cache 与私有数据 checkout 分开。候选链路已用本地合成发布源验证，公开仓库不存在时仍可测试，不公开私人历史。
+固定 bootstrap、设备身份和受信发布政策由具体部署授权确定，仓库链接不授予这些权限。受信政策 JSON 的 SHA256 由受限 SSH 固定命令携带；策略中代码 checkout/cache 与私有数据 checkout 分开。更新链路已用合成发布源验证，并在 Mac Codex 固定 SSH 入口验证过受信版本检查、兼容更新及保留旧包；其他平台仍需实际验证。
 
-个人模式是明确批准后的独立选项：personal-memory-explicit capability、固定服务personal policy及Mac personal-explicit profile必须一致，不能由synthetic更新自动扩大。固定导入清单和可恢复导入工具留在私有后台；客户端仅传请求。个人模式只处理明确授权的个人共享记忆，不自动采集会话，不包括LocalOnly、项目或原生历史。默认发布包与真实接入仍为synthetic。
+个人模式是明确批准后的独立选项：personal-memory-explicit capability、固定服务personal policy及Mac personal-explicit profile必须一致，不能由synthetic更新自动扩大。固定导入清单和可恢复导入工具留在私有后台；客户端仅传请求。个人模式只处理明确授权的个人共享记忆，不自动采集会话，不包括LocalOnly、项目或原生历史。默认主分支发布包为 synthetic；个人发布分支要求独立个人授权。获明确授权的 daily-personal 服务模式可主动维护非敏感个人偏好、普通事实及协作习惯，先读匹配主题，使用 revision 合并更新；服务器仅允许 remember，拒绝删除，不采集会话或历史。MCP 必须确认服务器返回的模式，不能由客户端版本自行扩大授权。
 
 ## 鉴权边界与最小后续设计
 
