@@ -32,6 +32,16 @@ DESCRIPTIONS = {
 }
 
 
+DAILY_INSTRUCTIONS = ('Daily maintenance of non-sensitive personal shared memory is authorized. '
+    'Read at most three relevant topics when useful for the current task. Before saving stable personal preferences, collaboration habits or personal facts, '
+    'recall and read the matching topic, merge corrections into that topic, preserve unrelated valid facts, and use its revision for a CAS update. '
+    'Create a focused topic only when none matches; do not append conversation logs or duplicate each event as a new topic. '
+    'Use stable request_id and unchanged parameters for retries; only durable=true confirms persistence. '
+    'Deletion is disabled. Do not collect raw conversations, native history/databases, project content, sensitive/private/local-only material or credentials. '
+    'Do not read or copy custom approval rules. Use this server rather than old local Core/direct Git writers. '
+    'Native memory remains available under its existing authorization.')
+
+
 class ProtocolError(Exception):
     def __init__(self, code, message):
         self.code, self.message = code, message
@@ -42,7 +52,7 @@ def keys(value, allowed, required=()):
         raise ProtocolError(-32602, 'Invalid parameters; preserve existing data.')
 
 
-def tool(name,data_mode='synthetic'):
+def tool(name,data_mode='synthetic',daily=False):
     properties = {field: {'type': 'string'} for field in (*FIELDS[name], 'request_id')}
     properties['request_id']['pattern'] = '^[A-Za-z0-9_-]{16,128}$'
     if name == 'recall':
@@ -50,6 +60,8 @@ def tool(name,data_mode='synthetic'):
     if name == 'remember':
         properties['type']['enum'] = ['user', 'feedback', 'reference']
     description=DESCRIPTIONS[name] if data_mode=='synthetic' else DESCRIPTIONS[name].replace('synthetic','explicitly authorized personal')
+    if daily and name=='forget':description='Deletion is disabled for daily personal memory maintenance.'
+    if daily and name=='remember':description='Maintain a matching non-sensitive personal shared topic with its read revision; do not create a conversation log or duplicate event topics. Keep request_id on retries; only durable=true confirms persistence.'
     return {'name': name, 'description': description,
             'inputSchema': {'type': 'object', 'properties': properties,
                             'required': list(REQUIRED[name]), 'additionalProperties': False},
@@ -60,7 +72,7 @@ def tool(name,data_mode='synthetic'):
 class Server:
     def __init__(self, client, client_version='0.1.0', client_platform=None, data_mode='synthetic'):
         if data_mode not in ('synthetic','personal'):raise ValueError('Unsupported data mode')
-        self.data_mode=data_mode
+        self.data_mode=data_mode;self.daily=False
         if not re.fullmatch(r'\d+\.\d+\.\d+',client_version):raise ValueError('Invalid client version')
         self.client, self.state, self.client_version = client, 'new', client_version
         self.client_platform=client_platform or sys.platform+'-'+platform.machine().lower()
@@ -124,11 +136,19 @@ class Server:
             keys(params['clientInfo'], ('name', 'version', 'title', 'description', 'icons', 'websiteUrl'), ('name', 'version'))
             if not all(isinstance(params['clientInfo'][field], str) for field in ('name', 'version')):
                 raise ProtocolError(-32602, 'Invalid client metadata.')
+            if self.data_mode=='personal' and self.client is not None:
+                try:
+                    result=self.client.request({'request_id':uuid.uuid4().hex,'method':'client_updates',
+                        'params':{'adapter':'codex','platform':self.client_platform,'installed_version':self.client_version}})
+                    policy=result.get('result',{}).get('memory_policy',{}) if 'error' not in result else {}
+                    self.daily=policy=={'write_mode':'daily-personal','scope':'personal-shared','allowed_write_methods':['remember'],
+                                       'proactive_maintenance':True,'raw_history_collection':False}
+                except Exception:self.daily=False
             self.state = 'negotiated'
             return {'protocolVersion': params['protocolVersion'] if params['protocolVersion'] in VERSIONS else VERSIONS[0],
                     'serverInfo': {'name': 'agent-brain-remote-codex', 'version': self.client_version},
                     'capabilities': {'tools': {}},
-                    'instructions': ('Synthetic personal data only. ' if self.data_mode=='synthetic' else 'Explicitly authorized personal shared memory only. No automatic collection, native history, private/local-only or project data. ')+'Use these tools instead of local Core commands. '
+                    'instructions': DAILY_INSTRUCTIONS if self.daily else ('Synthetic personal data only. ' if self.data_mode=='synthetic' else 'Explicitly authorized personal shared memory only. No automatic collection, native history, private/local-only or project data. ')+'Use these tools instead of local Core commands. '
                                     'Read relevant topics before CAS changes; retain write request_id and parameters on retries. '
                                     'Only durable=true confirms GitHub persistence. Report missing credentials, tunnel or release channel; '
                                     'do not read private memory, native databases or credentials, or migrate real memories.'}
@@ -138,7 +158,7 @@ class Server:
             keys(params, ('cursor',))
             if params.get('cursor') not in (None, ''):
                 raise ProtocolError(-32602, 'Unknown cursor.')
-            return {'tools': [tool(name,self.data_mode) for name in FIELDS]}
+            return {'tools': [tool(name,self.data_mode,self.daily) for name in FIELDS]}
         if name == 'tools/call':
             keys(params, ('name', 'arguments'), ('name',))
             if not isinstance(params['name'], str):
