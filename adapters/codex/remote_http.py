@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import threading
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -27,7 +28,24 @@ class RemoteClient:
         self.endpoint, self.token_file = endpoint.rstrip('/'), Path(token_file)
         self.opener = build_opener(NoRedirect())
 
-    def request(self, request, *, timeout=90):
+    def request(self, request, *, timeout=90, deadline=None):
+        if deadline is None:return self._request(request,timeout=timeout)
+        if not isinstance(request,dict) or request.get('method')!='client_updates':
+            raise ValueError('A bounded probe may only discover the read-only policy.')
+        # One short-lived daemon worker in this MCP process, never a service/job.
+        # A slow HTTP read must not delay initialize; late results cannot change
+        # instructions, and no late writes are possible on this read-only path.
+        done=threading.Event();result=[]
+        def probe():
+            try:result.append(self._request(request,timeout=timeout))
+            except Exception:result.append(None)
+            finally:done.set()
+        threading.Thread(target=probe,daemon=True).start()
+        if done.wait(deadline) and result and result[0] is not None:return result[0]
+        return {'request_id':request.get('request_id'),'error':{'code':'transport_unconfirmed','retryable':True},
+                'persistence':{'durable':False}}
+
+    def _request(self, request, *, timeout=90):
         rid = request.get('request_id') if isinstance(request, dict) else None
         if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,128}', rid):
             raise ValueError('Supply a stable request_id; retry a write with the same ID and parameters.')

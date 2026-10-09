@@ -139,7 +139,7 @@ class Server:
             if self.data_mode=='personal' and self.client is not None:
                 try:
                     result=self.client.request({'request_id':uuid.uuid4().hex,'method':'client_updates',
-                        'params':{'adapter':'codex','platform':self.client_platform,'installed_version':self.client_version}},timeout=8)
+                        'params':{'adapter':'codex','platform':self.client_platform,'installed_version':self.client_version}},timeout=8,deadline=8)
                     policy=result.get('result',{}).get('memory_policy',{}) if 'error' not in result else {}
                     self.daily=policy=={'write_mode':'daily-personal','scope':'personal-shared','allowed_write_methods':['remember'],
                                        'proactive_maintenance':True,'raw_history_collection':False}
