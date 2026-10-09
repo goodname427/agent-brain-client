@@ -1,7 +1,7 @@
 {
   "capabilities": [
     "codex-stdio-mcp",
-    "synthetic-only"
+    "personal-memory-explicit"
   ],
   "channel": "stable",
   "core_api": 1,
