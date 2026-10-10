@@ -23,6 +23,14 @@ CLIENT_FILES = ('README.md', 'BOOTSTRAP.md', 'PROTOCOL.md', 'ADAPTERS.md', '.git
                 'adapters/codex/client_startup.py', 'scripts/brain_release.py', 'scripts/brain_lock.py')
 CAPABILITIES = ['codex-stdio-mcp', 'synthetic-only']
 PERSONAL_CAPABILITIES=['codex-stdio-mcp','personal-memory-explicit']
+CONTENT_CLIENT_FILES=CLIENT_FILES+('adapters/codex/client_pairing.py','native/DeviceComponent.swift',
+    'adapters/codex/content_cache.py','adapters/codex/content_mcp.py','adapters/codex/content_contract.py','adapters/codex/content_install.py')
+CONTENT_CAPABILITIES=['codex-stdio-mcp','personal-content-explicit','signed-device-proxy']
+SSH_CONTENT_CLIENT_FILES=tuple(n for n in CONTENT_CLIENT_FILES if n!='native/DeviceComponent.swift')+('adapters/codex/ssh_content.py',)
+SSH_CONTENT_CAPABILITIES=['codex-stdio-mcp','personal-content-explicit','ssh-server-credential-proxy']
+SSH_CONTENT_RUNTIME={'ssh_profile','ssh_profile_sha256','content_policy','content_policy_sha256','device_home','codex_home','content_cache'}
+LEGACY_PRESERVATION={'legacy_binding_sha256','legacy_hooks_sha256'}
+CONTENT_RUNTIME={'device_plan','device_plan_sha256','signing_policy','signing_policy_sha256','content_policy','content_policy_sha256','component_source_sha256','device_home','codex_home','content_cache'}
 
 
 def policy_file(path, expected_sha):
@@ -32,16 +40,25 @@ def policy_file(path, expected_sha):
     raw = path.read_bytes()
     if len(raw)>65536 or digest(raw)!=expected_sha:
         raise UpdateBlocked('Release policy changed; review required')
-    policy = json.loads(raw)
+    def unique(items):
+        value={}
+        for key,item in items:
+            if key in value:raise UpdateBlocked('Duplicate release policy field')
+            value[key]=item
+        return value
+    policy = json.loads(raw,object_pairs_hook=unique)
     keys = {'schema', 'adapter', 'platform', 'origin', 'ref', 'anchor_commit', 'channel',
             'core_api', 'state_schema', 'capabilities', 'file_prefixes', 'repository', 'cache', 'runtime'}
     if not isinstance(policy,dict) or set(policy)!=keys or policy['schema']!=1:
         raise UpdateBlocked('Unknown client release policy')
     if policy['adapter']!='codex' or policy['platform'] not in ('darwin-arm64', 'darwin-x86_64'):
         raise UpdateBlocked('Only the approved Mac Codex checkpoint is wired')
-    if policy['core_api']!=1 or policy['state_schema']!=1 or policy['capabilities'] not in (CAPABILITIES,PERSONAL_CAPABILITIES):
+    if policy['core_api']!=1 or policy['state_schema']!=1 or policy['capabilities'] not in (CAPABILITIES,PERSONAL_CAPABILITIES,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES):
         raise UpdateBlocked('Client permission/protocol change requires review')
-    if policy['channel']!='stable' or policy['file_prefixes']!=list(CLIENT_FILES):
+    content=policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES)
+    ssh=policy['capabilities']==SSH_CONTENT_CAPABILITIES
+    if content and path.stat().st_mode&0o077:raise UpdateBlocked('Private content release policy required')
+    if policy['channel']!='stable' or policy['file_prefixes']!=list(SSH_CONTENT_CLIENT_FILES if ssh else CONTENT_CLIENT_FILES if content else CLIENT_FILES):
         raise UpdateBlocked('Client release file scope changed')
     origin=policy['origin'];parsed=urlsplit(origin)
     if parsed.scheme:
@@ -58,6 +75,17 @@ def policy_file(path, expected_sha):
     if repo==cache or repo in cache.parents or cache in repo.parents:
         raise UpdateBlocked('Separate client source and package cache required')
     runtime=policy['runtime']
+    if content:
+        scopes=(SSH_CONTENT_RUNTIME,SSH_CONTENT_RUNTIME|LEGACY_PRESERVATION) if ssh else (CONTENT_RUNTIME,)
+        if not isinstance(runtime,dict) or set(runtime) not in scopes:raise UpdateBlocked('Fixed content runtime required')
+        for name,value in runtime.items():
+            if name.endswith('_sha256'):
+                if not isinstance(value,str) or not re.fullmatch(r'[a-f0-9]{64}',value):raise UpdateBlocked('Pinned runtime digest required')
+            elif not isinstance(value,str) or not Path(value).is_absolute() or Path(value).is_symlink():raise UpdateBlocked('Fixed runtime paths required')
+        homes=[Path(runtime[k]).resolve() for k in ('device_home','codex_home','content_cache')]
+        if homes[2] in homes[:2] or any(homes[2] in p.parents for p in homes[:2]):raise UpdateBlocked('Separate native/content cache required')
+        if any(p==repo or repo in p.parents or p==cache or cache in p.parents for p in homes):raise UpdateBlocked('Native paths must be outside client code paths')
+        return policy
     if not isinstance(runtime,dict) or set(runtime)!={'endpoint','token_file'}:
         raise UpdateBlocked('Fixed server runtime destination required')
     # The token remains server-local; validation does not read its contents.
@@ -69,10 +97,17 @@ def policy_file(path, expected_sha):
 
 
 class ClientPackage:
+    def __init__(self,policy=None):
+        self.content=bool(policy and policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES))
+        self.ssh=bool(policy and policy['capabilities']==SSH_CONTENT_CAPABILITIES)
+        self.files=SSH_CONTENT_CLIENT_FILES if self.ssh else CONTENT_CLIENT_FILES if self.content else CLIENT_FILES
+        self.component_source_sha=policy['runtime']['component_source_sha256'] if self.content and not self.ssh else None
+
     def preflight(self, package, manifest):
-        if set(manifest['files'])!=set(CLIENT_FILES) or manifest['migrations']:
+        if set(manifest['files'])!=set(self.files) or manifest['migrations']:
             raise UpdateBlocked('Client file membership/migration change requires review')
-        for name in CLIENT_FILES:
+        if self.content and not self.ssh and manifest['files'].get('native/DeviceComponent.swift')!=self.component_source_sha:raise UpdateBlocked('Native component source changed; signed component/plan review required')
+        for name in self.files:
             path=package/name
             if path.is_symlink() or not path.is_file():raise UpdateBlocked('Incomplete client package')
             if name.endswith('.py'):
@@ -83,9 +118,11 @@ class ClientPackage:
     def refresh(self, package, manifest):pass
     def restore(self, snapshot):pass
     def health(self, package, manifest):
-        result=subprocess.run([sys.executable,'-I','-B',str(package/'connect.py'),'--self-check'],
+        entry='adapters/codex/content_mcp.py' if self.content else 'connect.py'
+        result=subprocess.run([sys.executable,'-I','-B',str(package/entry),'--self-check'],
                               capture_output=True,stdin=subprocess.DEVNULL,timeout=15)
-        try:healthy=json.loads(result.stdout)=={'client_self_check':'passed','core_imported':False,'native_changed':False}
+        expected={'content_mcp_self_check':'passed','core_imported':False,'native_changed':False,'keychain_accessed':False,'network_used':False} if self.content else {'client_self_check':'passed','core_imported':False,'native_changed':False}
+        try:healthy=json.loads(result.stdout)==expected
         except (ValueError,UnicodeError):healthy=False
         if result.returncode or not healthy:raise UpdateBlocked('Client health check failed; previous package restored')
 
@@ -96,7 +133,14 @@ class ClientReleases:
         repo=Path(self.policy['repository'])
         if not (repo/'.git').is_dir():raise UpdateBlocked('Approved client-only release checkout required; no silent clone')
         # Bound remote discovery inside the existing 30s MCP startup budget.
-        self.engine=ReleaseEngine(self.policy['cache'],self.policy,GitReleaseSource(repo,self.policy,timeout=5),ClientPackage(),{})
+        self.engine=ReleaseEngine(self.policy['cache'],self.policy,GitReleaseSource(repo,self.policy,timeout=5),ClientPackage(self.policy),{})
+
+    def verified_active(self):
+        active=self.engine.active()
+        if active and self.policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES):
+            receipt=json.loads((Path(active['package'])/'verified.json').read_text())
+            self.engine.adapter.preflight(Path(active['package']),receipt['manifest'])
+        return active
 
     def discover(self, adapter, platform, installed_version):
         version(installed_version)
@@ -106,7 +150,7 @@ class ClientReleases:
             with locked(self.engine.local/'update.lock'),locked(self.engine.local.parent/'python-write.lock'):
                 commit,manifest,read=self.engine.source.latest()
                 self.engine.validate(manifest,{'version':installed_version})
-                if set(manifest['files'])!=set(CLIENT_FILES) or manifest['migrations']:
+                if set(manifest['files'])!=set(self.engine.adapter.files) or manifest['migrations']:
                     raise UpdateBlocked('Client release scope changed')
                 package=self.engine.prepare(commit,manifest,read)
                 self.engine.adapter.preflight(package,manifest)
@@ -121,11 +165,12 @@ class ClientReleases:
     def update(self):
         try:
             result=self.engine.check()
+            result['active']=self.verified_active()
             result['next_action']='Use the verified active client; native permissions and data are unchanged.'
             return result
         except (UpdateBlocked,OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired):
             # Never echo upstream paths, credentials, raw stderr or exception values.
-            try:active=self.engine.active()
+            try:active=self.verified_active()
             except (UpdateBlocked,OSError,ValueError,KeyError,TypeError):active=None
             return {'status':'release-review-required','active':active,
                     'next_action':'Inspect the pinned release policy/package or failed health check; prior activation is retained or restored.'}

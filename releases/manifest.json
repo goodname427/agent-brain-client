@@ -1,22 +1,29 @@
 {
   "capabilities": [
     "codex-stdio-mcp",
-    "personal-memory-explicit"
+    "personal-content-explicit",
+    "ssh-server-credential-proxy"
   ],
   "channel": "stable",
   "core_api": 1,
   "files": {
     ".gitignore": "b8c1ce8950217282e3e86c19ae8cdd63b8a235a4d9ee209908d32e69b02e500e",
-    "ADAPTERS.md": "6e7c5934319eaa748f452761f68fac8bf116c5b357e3d6b3700b5c2721564ac3",
-    "BOOTSTRAP.md": "f77e2131dff9cdea494d9c1ecda56f3f9260e964883e5f977c8f6bc283eb671b",
-    "PROTOCOL.md": "392d64a82e21b05e3439e9269471b1ea634f307dd268d58bcdc73927c4cbb5f4",
+    "ADAPTERS.md": "08688ff5201f20609c20c4b5cc13eb895212d3e6a08c028f96823f92ed5771b7",
+    "BOOTSTRAP.md": "45a6c0e409cb1a4e25eca453b87b16a86c81827ed923b18623108a7f0f73ab19",
+    "PROTOCOL.md": "db3d03c770869051dd06d4f71a4014c0eeeb031658b2299018290f81843ff3b5",
     "README.md": "623baae50b453b4ec97c732e8e8d86605078acc3c3194090a15747c8002d0097",
-    "adapters/codex/client_release.py": "c43c4344c75928d53fd0b5d50b7a8f23da309c121073f1df0b7b2a2733d46f7a",
-    "adapters/codex/client_startup.py": "5fc9aca1654a6953e73b7441f7fbbecb7c24f9c1b80a5afc99584082982a5588",
+    "adapters/codex/client_pairing.py": "2f4b637d8148f86ca61bcd644f051d33591d49b10721b01553c8457951d71dd6",
+    "adapters/codex/client_release.py": "05b36eda578d523ccf2cfe869e8da6453d17896e0c9a2b7c908a4dfa19589dd9",
+    "adapters/codex/client_startup.py": "4f5a9f0121df23cc4250a0facb82eb6506ee43bf7be380ff2714da74cc786ea2",
     "adapters/codex/codex_connect.py": "89771eb8d26f3e6911d981f927092a80dbc8bb59db5acadad34ed1265ab4dbd8",
-    "adapters/codex/remote_http.py": "3f36777389816e0253cfe4e6f45cc9fd3e143b020904cdc52b028035e3b41e79",
+    "adapters/codex/content_cache.py": "2fb1cd3a63566fbd179f572889501e6c9231394157cb8f791e2daa6c6cdac838",
+    "adapters/codex/content_contract.py": "46303721eb4f275887203b82e6ec36bc7148e14d77e5ae602e1a085fac1c5f2e",
+    "adapters/codex/content_install.py": "9ee58e420048866fa626b1be66d50b618a509a9f7bb5ea9633b25e23240704cc",
+    "adapters/codex/content_mcp.py": "8839107716453c0b9b122c54b7c27b95f02e0d3607292dabac9354e2bf368da0",
+    "adapters/codex/remote_http.py": "8b6a889a2f673cb5155ab36d708a017bee43fbb6b14a8819dada23359f498804",
     "adapters/codex/remote_mcp.py": "702ce3fff0db9147d38dd73963f0b6093075cb9fd1cde6d2211faa809666b76e",
-    "connect.py": "cb70622c0e70991b3abe2485fe8dc10ba48b7689702fb3ba60564e8b9e61d710",
+    "adapters/codex/ssh_content.py": "5af85eb1ab19ec37346abdd4a97daa2988b17d31763fbbc5c64b740e8dbaadff",
+    "connect.py": "eba57cc31800db294c2a3b5d1b0c133c910f8d7c8566d0565557bced6f5504d2",
     "scripts/brain_lock.py": "5190376a28279ef80601e96fc6f674720094930a44def439d6c67da2ba0e24a4",
     "scripts/brain_release.py": "4b522fb90fd818f73a21c78cfcc052e585a7e175647b2278ff0b813c70fb4e22"
   },
@@ -24,5 +31,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.1.6"
+  "version": "0.2.0"
 }

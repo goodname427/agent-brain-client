@@ -49,9 +49,7 @@ class RemoteClient:
         rid = request.get('request_id') if isinstance(request, dict) else None
         if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,128}', rid):
             raise ValueError('Supply a stable request_id; retry a write with the same ID and parameters.')
-        if self.token_file.stat().st_mode & 0o077:
-            raise ValueError('Token file must have mode 0600.')
-        token = self.token_file.read_text(encoding='utf-8').strip()
+        token = self._token()
         if not re.fullmatch(r'[A-Za-z0-9_-]{32,256}', token):
             raise ValueError('Invalid token file')
         data = json.dumps(request, ensure_ascii=False).encode()
@@ -71,7 +69,7 @@ class RemoteClient:
             result = json.loads(value)
             if not isinstance(result, dict) or result.get('request_id') != rid:
                 raise ValueError('Unexpected response ID')
-            if request.get('method') in ('remember', 'forget') and 'error' not in result and result.get('persistence', {}).get('durable') is not True:
+            if request.get('method') in ('remember','forget','content_put','content_remove') and 'error' not in result and result.get('persistence', {}).get('durable') is not True:
                 raise ValueError('Write persistence was not confirmed')
             return result
         except HTTPError as error:
@@ -88,6 +86,11 @@ class RemoteClient:
             pass
         return {'request_id': rid, 'error': {'code': 'transport_unconfirmed', 'retryable': True},
                 'persistence': {'durable': False}}
+
+    def _token(self):
+        if self.token_file.stat().st_mode & 0o077:
+            raise ValueError('Token file must have mode 0600.')
+        return self.token_file.read_text(encoding='utf-8').strip()
 
 
 def main():
