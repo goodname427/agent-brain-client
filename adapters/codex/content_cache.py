@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import time
 import uuid
 BASE=Path(__file__).resolve().parent
 ROOT=BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
@@ -53,12 +54,17 @@ class ContentAdapter:
         if not native.is_absolute() or native.is_symlink():raise CacheBlocked()
         self.native_home=native.resolve();self.binding={'device_home':str(self.home),'codex_home':str(self.native_home)}
         self.policy=policy;self.policy_sha=sha(contract.encode({'policy':policy,'binding':self.binding}));self.health=health or (lambda:None)
+        # Bind pending writes to a service/principal, independently of source/data Git.
+        self.queue_sha=sha(contract.encode({'policy_sha':self.policy_sha,'service':getattr(client,'queue_identity',getattr(client,'grant',None))}))
         validate_policy(policy,getattr(client,'grant',None))
         if self.home==self.cache or self.cache in self.home.parents:raise CacheBlocked()
         if any(self.cache==self.home/name or self.home/name in self.cache.parents for name in ('.codex','.agents','.config/agent-brain-client/content')):raise CacheBlocked()
         self._safe(self.home,self.home);self._safe(self.cache,self.cache)
         self.cache.mkdir(parents=True,exist_ok=True,mode=0o700)
         if self.cache.stat().st_mode&0o077:raise CacheBlocked()
+        fd=os.open(self.cache.parent,os.O_RDONLY)
+        try:os.fsync(fd)
+        finally:os.close(fd)
 
     def _safe(self,path,base):
         if path!=base and base not in path.parents:raise CacheBlocked()
@@ -96,7 +102,200 @@ class ContentAdapter:
         return json.loads(path.read_text())
 
     def _save(self,name,value):
-        path=self.cache/name;self._safe(path,self.cache);atomic(path,contract.encode(value),0o600)
+        raw=contract.encode(value)
+        if len(raw)>1048576:raise CacheBlocked()
+        path=self.cache/name;self._safe(path,self.cache);atomic(path,raw,0o600)
+        for directory in [path.parent,*path.parent.parents]:
+            fd=os.open(directory,os.O_RDONLY)
+            try:os.fsync(fd)
+            finally:os.close(fd)
+            if directory==self.cache:break
+
+    def _check_write(self,request):
+        if not isinstance(request,dict) or set(request)!={'request_id','method','params'}:raise CacheBlocked()
+        rid=request['request_id'];method=request['method'];params=request['params']
+        if not isinstance(rid,str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,128}',rid) or method not in contract.WRITES or method not in self.methods():raise CacheBlocked()
+        contract.validate(method,params)
+        if params['kind'] not in self.policy['kinds'] or not self._allows(params['kind'],params['id']):raise CacheBlocked()
+
+    def _queued(self):
+        directory=self.cache/'outbox';self._safe(directory,self.cache)
+        if directory.exists() and (not directory.is_dir() or directory.stat().st_mode&0o077):raise CacheBlocked()
+        paths=list(directory.iterdir()) if directory.exists() else []
+        if len(paths)>2048:raise CacheBlocked()
+        rows=[]
+        for path in paths:
+            self._safe(path,self.cache)
+            # Preserve temporary evidence left by killed atomic saves; replay only
+            # renamed request files so a lost confirmation remains recoverable.
+            if re.fullmatch(r'\.client-native-[A-Za-z0-9_-]+',path.name):
+                if not path.is_file() or path.stat().st_mode&0o077 or path.stat().st_size>1048576:raise CacheBlocked()
+                continue
+            if not re.fullmatch(r'[A-Za-z0-9_-]{16,128}\.json',path.name):raise CacheBlocked()
+            row=self._load('outbox/'+path.name)
+            if not isinstance(row,dict) or set(row)!={'schema','policy_sha','created','request','request_sha','state','response','remote','reconciles','resolution_request_id'} or row['schema']!=1 or row['policy_sha']!=self.queue_sha or type(row['created'])!=int or row['state'] not in ('pending','confirmed','conflict','blocked','reconciled'):raise CacheBlocked()
+            self._check_write(row['request'])
+            if row['request']['request_id']+'.json'!=path.name or sha(contract.encode(row['request']))!=row['request_sha']:raise CacheBlocked()
+            rows.append(row)
+        if len(rows)>1024:raise CacheBlocked()
+        return sorted(rows,key=lambda row:(row['created'],row['request']['request_id']))
+
+    def _enqueue(self,request,reconciles=None):
+        self._check_write(request)
+        if reconciles is None:reconciles={'request_ids':[],'source_keys':[]}
+        if not isinstance(reconciles,dict) or set(reconciles)!={'request_ids','source_keys'}:raise CacheBlocked()
+        for field,pattern in [('request_ids',r'[A-Za-z0-9_-]{16,128}'),('source_keys',r'[a-f0-9]{64}')]:
+            values=reconciles[field]
+            if not isinstance(values,list) or len(values)>256 or any(not isinstance(v,str) or not re.fullmatch(pattern,v) for v in values) or len(set(values))!=len(values):raise CacheBlocked()
+        request=json.loads(contract.encode(request));digest=sha(contract.encode(request))
+        name='outbox/'+request['request_id']+'.json';old=self._load(name)
+        if old is not None:
+            if old['request_sha']!=digest or old['request']!=request or old['reconciles']!=reconciles:raise CacheBlocked()
+            self._queued();return old
+        rows=self._queued()
+        if len(rows)>=1024:raise CacheBlocked()
+        target=(request['params']['kind'],request['params']['id'])
+        for rid in reconciles['request_ids']:
+            previous=next((r for r in rows if r['request']['request_id']==rid),None)
+            if previous is None or previous['state']!='conflict' or (previous['request']['params']['kind'],previous['request']['params']['id'])!=target:raise CacheBlocked()
+        for key in reconciles['source_keys']:
+            item=self._imports()['items'].get(key)
+            if item is None or item['status']!='conflict' or (item['source']['kind'],item['source']['id'])!=target:raise CacheBlocked()
+        row={'schema':1,'policy_sha':self.queue_sha,'created':time.time_ns(),'request':request,'request_sha':digest,'state':'pending','response':None,'remote':None,'reconciles':reconciles,'resolution_request_id':None}
+        self._save(name,row);return row
+
+    def _finish_reconciliation(self,row):
+        if row['state']!='confirmed':return
+        for rid in row['reconciles']['request_ids']:
+            previous=self._load('outbox/'+rid+'.json')
+            if previous['state']=='conflict':
+                previous.update(state='reconciled',resolution_request_id=row['request']['request_id']);self._save('outbox/'+rid+'.json',previous)
+        if row['reconciles']['source_keys']:
+            state=self._imports()
+            for key in row['reconciles']['source_keys']:
+                item=state['items'][key]
+                if item['status']=='conflict':item.update(status='reconciled',request_id=row['request']['request_id'])
+            self._save('imports.json',state)
+
+    def _drain(self):
+        blocked={}
+        for row in self._queued():
+            request=row['request'];params=request['params'];target=(params['kind'],params['id'])
+            if row['state'] in ('conflict','blocked'):
+                if row['state']=='conflict' and row['remote'] is None:
+                    try:
+                        row['remote']=self._read_target(*target);self._save('outbox/'+request['request_id']+'.json',row)
+                    except Exception:pass
+                blocked.setdefault(target,set()).add(request['request_id']);continue
+            if row['state']=='confirmed':self._finish_reconciliation(row);continue
+            if row['state']!='pending' or blocked.get(target,set())-set(row['reconciles']['request_ids']):continue
+            try:response=self.client.request(json.loads(contract.encode(request)))
+            except Exception:break
+            if not isinstance(response,dict) or response.get('request_id')!=request['request_id']:break
+            if 'error' not in response:
+                value=response.get('result');receipt=response.get('persistence')
+                if not isinstance(receipt,dict) or receipt.get('durable') is not True or receipt.get('state')!='remote-confirmed' or not isinstance(receipt.get('commit'),str) or not re.fullmatch(r'[a-f0-9]{40}',receipt['commit']):break
+                try:self._validate_target(value,*target)
+                except Exception:break
+                if not self._import_same(params['kind'],params.get('record'),value['record'],preserve_enabled=False):break
+                row.update(state='confirmed',response=response)
+            else:
+                error=response['error']
+                if not isinstance(error,dict):break
+                if error.get('code')=='revision_conflict':
+                    row.update(state='conflict',response=response)
+                    try:row['remote']=self._read_target(*target)
+                    except Exception:pass
+                elif error.get('retryable') is False and error.get('code') not in ('server_proxy_unconfirmed','ssh_proxy_unconfirmed','persistence_pending','pending_write_must_retry'):
+                    row.update(state='blocked',response=response)
+                else:break
+                blocked.setdefault(target,set()).add(request['request_id'])
+            self._save('outbox/'+request['request_id']+'.json',row);self._finish_reconciliation(row)
+
+    def queue_status(self):
+        rows=self._queued()
+        return {state:sum(row['state']==state for row in rows) for state in ('pending','confirmed','conflict','blocked','reconciled')}
+
+    def _queue_result(self,row):
+        result=row['response'] if row['state']!='pending' else {'request_id':row['request']['request_id'],'error':{'code':'content_upload_queued','retryable':True},'persistence':{'durable':False}}
+        return dict(result,local_queue={'state':row['state'],'saved':True,'request_sha256':row['request_sha']})
+
+    def stage_import(self,plan):
+        """Explicit reviewed normalized sources only; no native/file discovery."""
+        if not isinstance(plan,dict) or set(plan)!={'schema','binding','sources','coverage'} or plan['schema']!=1 or plan['binding']!=self.binding or not isinstance(plan['sources'],list) or len(plan['sources'])>256:raise CacheBlocked()
+        coverage=plan['coverage']
+        if not isinstance(coverage,list) or len(coverage)>256:raise CacheBlocked()
+        for item in coverage:
+            if not isinstance(item,dict) or set(item)!={'source_id','status','reason'} or item['status'] not in ('read','excluded','unavailable','not-checked') or not all(isinstance(item[k],str) and 0<len(item[k])<=1024 for k in item):raise CacheBlocked()
+        seen=set()
+        for item in plan['sources']:
+            self._check_source(item)
+            if item['source_id'] in seen:raise CacheBlocked()
+            seen.add(item['source_id'])
+        with locked(self.cache/'content.lock'):
+            state=self._imports()
+            for item in plan['sources']:
+                key=sha(contract.encode([item['source_id'],item['source_fingerprint']]))
+                if key in state['items']:
+                    if state['items'][key]['source']!=item:raise CacheBlocked()
+                    continue
+                state['items'][key]={'source':item,'status':'inventoried','request_id':None,'remote':None}
+            if len(state['items'])>1024:raise CacheBlocked()
+            state['coverage']=coverage;self._save('imports.json',json.loads(contract.encode(state)))
+        return {'status':'content-sources-inventoried','sources':len(plan['sources']),'data_transferred':False,'native_changed':False}
+
+    def _check_source(self,item):
+        if not isinstance(item,dict) or set(item)!={'source_id','source_fingerprint','kind','id','record'} or not isinstance(item['source_id'],str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}',item['source_id']) or not isinstance(item['source_fingerprint'],str) or not re.fullmatch(r'[a-f0-9]{64}',item['source_fingerprint']):raise CacheBlocked()
+        contract.validate('content_put',{'kind':item['kind'],'id':item['id'],'record':item['record'],'expected_revision':'missing'})
+        if item['kind'] not in self.policy['kinds'] or not self._allows(item['kind'],item['id']) or item['kind'] in ('rule','skill') and item['record']['enabled']:raise CacheBlocked()
+
+    def _imports(self):
+        state=self._load('imports.json',{'schema':1,'policy_sha':self.queue_sha,'items':{},'coverage':[]})
+        if not isinstance(state,dict) or set(state)!={'schema','policy_sha','items','coverage'} or state['schema']!=1 or state['policy_sha']!=self.queue_sha or not isinstance(state['items'],dict) or len(state['items'])>1024:raise CacheBlocked()
+        for key,item in state['items'].items():
+            if not isinstance(item,dict) or set(item)!={'source','status','request_id','remote'} or item['status'] not in ('inventoried','pending','imported','duplicate','conflict','blocked','reconciled'):raise CacheBlocked()
+            self._check_source(item['source'])
+            if key!=sha(contract.encode([item['source']['source_id'],item['source']['source_fingerprint']])):raise CacheBlocked()
+            if item['request_id'] is not None and not re.fullmatch(r'[A-Za-z0-9_-]{16,128}',item['request_id']):raise CacheBlocked()
+        return state
+
+    @staticmethod
+    def _import_same(kind,left,right,preserve_enabled=True):
+        if kind in ('rule','skill') and preserve_enabled and isinstance(left,dict) and isinstance(right,dict):left=dict(left,enabled=right.get('enabled'))
+        if kind=='memory' and isinstance(left,dict) and isinstance(right,dict):
+            left=dict(left,body=left['body'].replace('\r\n','\n').strip());right=dict(right,body=right['body'].replace('\r\n','\n').strip())
+        return left==right
+
+    def _import_pending(self):
+        state=self._imports()
+        for key,item in state['items'].items():
+            source=item['source'];kind,identity=source['kind'],source['id']
+            if item['status']=='reconciled':continue
+            if item['request_id']:
+                row=self._load('outbox/'+item['request_id']+'.json')
+                if row is None:raise CacheBlocked()
+                item['status']='imported' if row['state']=='confirmed' else row['state'];continue
+            if item['status']!='inventoried':continue
+            try:remote=self._read_target(kind,identity)
+            except Exception:break
+            current=remote['record'];desired=source['record']
+            if self._import_same(kind,desired,current):item.update(status='duplicate',remote=remote);continue
+            if current is None and remote['revision']!='missing':item.update(status='conflict',remote=remote);continue
+            if current is not None:
+                previous=[v['source']['record'] for k,v in state['items'].items() if k!=key and v['source']['source_id']==source['source_id'] and (v['source']['kind'],v['source']['id'])==(kind,identity) and v['status'] in ('imported','duplicate')]
+                if not any(self._import_same(kind,old,current) for old in previous):item.update(status='conflict',remote=remote);continue
+                if kind in ('rule','skill'):desired=dict(desired,enabled=current['enabled'])
+            params={'kind':kind,'id':identity,'record':desired,'expected_revision':remote['revision']}
+            rid='import_'+sha(contract.encode([key,params]));self._enqueue({'request_id':rid,'method':'content_put','params':params})
+            item.update(status='pending',request_id=rid,remote=remote)
+            self._save('imports.json',state)
+        if state['items']:self._save('imports.json',state)
+
+    def import_status(self):
+        state=self._imports();counts={}
+        for item in state['items'].values():counts[item['status']]=counts.get(item['status'],0)+1
+        conflicts=[{'source_key':key,'source_id':item['source']['source_id'],'kind':item['source']['kind'],'id':item['source']['id'],'remote_revision':(item['remote'] or {}).get('revision')} for key,item in state['items'].items() if item['status']=='conflict']
+        return {'counts':counts,'conflicts':conflicts,'coverage':state['coverage'],'account_complete':False}
 
     def _raw(self,name):
         path=self._path(name)
@@ -147,6 +346,16 @@ class ContentAdapter:
         response=self.client.request({'request_id':uuid.uuid4().hex,'method':method,'params':params})
         if 'error' in response or not isinstance(response.get('result'),dict):raise CacheBlocked()
         return response['result']
+
+    def _read_target(self,kind,identity):
+        value=self._request('content_read',{'kind':kind,'id':identity});self._validate_target(value,kind,identity);return value
+
+    @staticmethod
+    def _validate_target(value,kind,identity):
+        if not isinstance(value,dict) or set(value)!={'content_api_version','kind','id','revision','record'} or value['content_api_version']!=1 or (value['kind'],value['id'])!=(kind,identity) or not isinstance(value['revision'],str) or not re.fullmatch(r'[a-f0-9]{64}|missing',value['revision']):raise CacheBlocked()
+        if value['record'] is not None:contract.record(kind,value['record'],identity)
+        # Memory CAS covers canonical Core metadata/forgotten markers, not JSON.
+        if kind!='memory' and value!=contract.envelope(kind,identity,value['record']):raise CacheBlocked()
 
     def _fetch(self):
         kinds=self.policy['kinds'];catalog=self._request('content_catalog',{'kinds':kinds})
@@ -199,7 +408,11 @@ class ContentAdapter:
     def refresh(self):
         try:
             with locked(self.cache/'content.lock'):
-                self._recover();owned=self._owned();snapshot=self._fetch();desired=self._mapping(snapshot,owned)
+                self._recover();self._import_pending();self._drain();self._import_pending()
+                queue=self.queue_status();imports=self.import_status()
+                if queue['pending'] or queue['conflict'] or queue['blocked'] or any(imports['counts'].get(v,0) for v in ('inventoried','pending','conflict','blocked')):
+                    return {'status':'content-local-changes-retained','native_changed':False,'model_loaded':False,'queue':queue,'imports':imports,'next_action':'Reconnect to replay exact saved requests; explicitly reconcile conflicts before mapping.'}
+                owned=self._owned();snapshot=self._fetch();desired=self._mapping(snapshot,owned)
                 self._skill_dirs(desired,owned['files'])
                 if any(self.cache==self._path(name) or self.cache in self._path(name).parents for name in desired):raise CacheBlocked()
                 active=self._load('active.json')
@@ -228,13 +441,16 @@ class ContentAdapter:
             except Exception:uncertain=True
             return {'status':'content-recovery-review-required' if uncertain else 'content-refresh-blocked','native_changed':None if uncertain else False,'model_loaded':False,'next_action':'Preserve local files and prior snapshots. Review transport, contract, content scope, dependencies, owned-file drift or interrupted recovery.'}
 
-    def invoke(self,request):
+    def invoke(self,request,reconciles=None):
         method=request.get('method');params=request.get('params');contract.validate(method,params)
         kinds=params['kinds'] if method=='content_catalog' else [params['kind']]
         if any(kind not in self.policy['kinds'] for kind in kinds) or method!='content_catalog' and not self._allows(params['kind'],params['id']):raise CacheBlocked()
-        self.refresh()  # Startup also invokes refresh; each tool boundary checks cloud changes.
-        result=self.client.request(request)
-        if method in contract.WRITES and 'error' not in result and result.get('persistence',{}).get('durable') is not True:raise CacheBlocked()
+        if method in contract.WRITES:
+            with locked(self.cache/'content.lock'):
+                self._enqueue(request,reconciles)  # Precedes every transport/mapping operation.
+                self._drain();result=self._queue_result(self._load('outbox/'+request['request_id']+'.json'))
+        else:
+            self.refresh();result=self.client.request(request)
         if method=='content_catalog' and 'error' not in result:
             value=result.get('result',{})
             if not isinstance(value.get('artifacts'),list):raise CacheBlocked()
@@ -244,4 +460,5 @@ class ContentAdapter:
                 contract.validate('content_read',{'kind':item['kind'],'id':item['id']})
                 if item['kind'] in kinds and self._allows(item['kind'],item['id']):visible.append(item)
             result=dict(result,result=dict(value,artifacts=visible))
-        return dict(result,local_refresh=self.refresh())
+        refresh=self.refresh() if method not in contract.WRITES or result.get('local_queue',{}).get('state')=='confirmed' else {'status':'content-local-changes-retained','native_changed':False,'model_loaded':False,'queue':self.queue_status()}
+        return dict(result,local_refresh=refresh)

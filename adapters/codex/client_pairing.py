@@ -128,6 +128,7 @@ class ComponentClient:
             values=grant[field]
             if not isinstance(values,list) or not values or any(not isinstance(v,str) for v in values) or len(set(values))!=len(values) or set(values)-allowed:raise ValueError('Reviewed device grant required')
         reviewed_ids(grant['artifact_types'],grant['ids']);self.grant=grant;self.data_mode=profile['data_mode']
+        self.queue_identity={'transport':'signed-https-component','endpoint':profile['endpoint'],'data_mode':self.data_mode,'grant':self.grant}
         self.requirement='anchor apple generic and identifier "'+signing['identifier']+'" and certificate leaf[subject.OU] = "'+signing['team_id']+'"'
 
     def request(self,request):
