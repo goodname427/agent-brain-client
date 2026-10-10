@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import threading
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -27,13 +28,28 @@ class RemoteClient:
         self.endpoint, self.token_file = endpoint.rstrip('/'), Path(token_file)
         self.opener = build_opener(NoRedirect())
 
-    def request(self, request):
+    def request(self, request, *, timeout=90, deadline=None):
+        if deadline is None:return self._request(request,timeout=timeout)
+        if not isinstance(request,dict) or request.get('method')!='client_updates':
+            raise ValueError('A bounded probe may only discover the read-only policy.')
+        # One short-lived daemon worker in this MCP process, never a service/job.
+        # A slow HTTP read must not delay initialize; late results cannot change
+        # instructions, and no late writes are possible on this read-only path.
+        done=threading.Event();result=[]
+        def probe():
+            try:result.append(self._request(request,timeout=timeout))
+            except Exception:result.append(None)
+            finally:done.set()
+        threading.Thread(target=probe,daemon=True).start()
+        if done.wait(deadline) and result and result[0] is not None:return result[0]
+        return {'request_id':request.get('request_id'),'error':{'code':'transport_unconfirmed','retryable':True},
+                'persistence':{'durable':False}}
+
+    def _request(self, request, *, timeout=90):
         rid = request.get('request_id') if isinstance(request, dict) else None
         if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,128}', rid):
             raise ValueError('Supply a stable request_id; retry a write with the same ID and parameters.')
-        if self.token_file.stat().st_mode & 0o077:
-            raise ValueError('Token file must have mode 0600.')
-        token = self.token_file.read_text(encoding='utf-8').strip()
+        token = self._token()
         if not re.fullmatch(r'[A-Za-z0-9_-]{32,256}', token):
             raise ValueError('Invalid token file')
         data = json.dumps(request, ensure_ascii=False).encode()
@@ -46,14 +62,14 @@ class RemoteClient:
         req.add_header('X-Agent-Brain-State-Schema', '1')
         if self.data_mode=='personal':req.add_header('X-Agent-Brain-Data-Mode','personal')
         try:
-            with self.opener.open(req, timeout=90) as response:
+            with self.opener.open(req, timeout=timeout) as response:
                 value = response.read(262145)
             if len(value) > 262144:
                 raise ValueError('Response exceeds 256 KB')
             result = json.loads(value)
             if not isinstance(result, dict) or result.get('request_id') != rid:
                 raise ValueError('Unexpected response ID')
-            if request.get('method') in ('remember', 'forget') and 'error' not in result and result.get('persistence', {}).get('durable') is not True:
+            if request.get('method') in ('remember','forget','content_put','content_remove') and 'error' not in result and result.get('persistence', {}).get('durable') is not True:
                 raise ValueError('Write persistence was not confirmed')
             return result
         except HTTPError as error:
@@ -70,6 +86,11 @@ class RemoteClient:
             pass
         return {'request_id': rid, 'error': {'code': 'transport_unconfirmed', 'retryable': True},
                 'persistence': {'durable': False}}
+
+    def _token(self):
+        if self.token_file.stat().st_mode & 0o077:
+            raise ValueError('Token file must have mode 0600.')
+        return self.token_file.read_text(encoding='utf-8').strip()
 
 
 def main():

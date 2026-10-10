@@ -12,6 +12,25 @@ from remote_http import RemoteClient
 
 
 def connect(home, endpoint=None, token_file=None, apply=False, service_profile=None, plan_sha256=None):
+    home=Path(home)
+    registration=home/'.config/agent-brain-client/codex-mcp.json'
+    if registration.is_file() and not registration.is_symlink() and not registration.stat().st_mode&0o077 and registration.stat().st_size<=65536:
+        metadata=json.loads(registration.read_text())
+        if metadata.get('content_candidate') is True:
+            if endpoint or token_file or service_profile or apply:return {'status':'content-native-install-review-required','native_changed':False,'next_action':'Use the exact content installation plan; preserve existing binding.'}
+            try:
+                from content_install import inspect
+                return inspect(home.resolve())
+            except ImportError:return {'status':'content-installer-not-in-release','native_changed':False,'installed':False}
+    pairing_plan=home/'.config/agent-brain-client/pairing-plan.json'
+    # Preserve established SSH/HTTP registrations and old Brain migration checks.
+    # Discovery only inspects an explicitly staged plan; it never runs the UI.
+    if not service_profile and not endpoint and not token_file and not any((home/name).exists() for name in ('.config/agent-brain-client/codex-mcp.json','.config/agent-brain-client/device.json','.config/agent-brain/device.json')) and (pairing_plan.exists() or pairing_plan.is_symlink()):
+        try:
+            from client_pairing import inspect_plan
+            return inspect_plan(pairing_plan)
+        except ImportError:
+            return {'status':'pairing-component-not-in-release','native_changed':False,'installed':False}
     if service_profile or (Path(home)/'.config/agent-brain-client/codex-mcp.json').exists() or (sys.platform=='darwin' and not endpoint and not token_file and not (Path(home)/'.config/agent-brain-client/device.json').exists()):
         from codex_connect import connect as ssh_connect
         return ssh_connect(home,service_profile,apply,plan_sha256)
@@ -71,12 +90,28 @@ def main():
     parser.add_argument('--endpoint')
     parser.add_argument('--token-file', type=Path)
     parser.add_argument('--apply', action='store_true', help='Register within authorization; first SSH native installation also requires --plan-sha256.')
+    parser.add_argument('--pairing-plan',type=Path,help='Read-only staged secure component/profile plan; never opens a secret input or Keychain.')
+    parser.add_argument('--content-install-plan',type=Path,help='Private exact content native plan; inspect by default, apply only with its approved digest.')
     parser.add_argument('--service-profile',type=Path,help='Approved private SSH profile for the Mac Codex checkpoint.')
     parser.add_argument('--plan-sha256',help='Exact native plan digest; required for first SSH MCP registration.')
     args = parser.parse_args()
     if args.agent!='codex':
         print(json.dumps({'status':'adapter-review-required','native_changed':False,'next_action':'Inspect actual Harness loading/permissions and prepare a grounded adapter; do not impersonate Codex.'}))
         return 2
+    if args.content_install_plan:
+        try:
+            from content_install import inspect_plan,apply as install
+            from content_mcp import pinned
+            result=install(pinned(args.content_install_plan,args.plan_sha256),args.plan_sha256) if args.apply else inspect_plan(args.content_install_plan,args.plan_sha256)
+        except Exception:result={'status':'content-native-install-review-required','native_changed':False,'installed':False}
+        print(json.dumps(result));return 0 if result.get('installed') or result['status']=='content-native-install-ready' else 2
+    if args.pairing_plan:
+        try:
+            from client_pairing import inspect_plan
+            result=inspect_plan(args.pairing_plan)
+        except ImportError:
+            result={'status':'pairing-component-not-in-release','native_changed':False,'installed':False}
+        print(json.dumps(result));return 2
     try:
         result = connect(args.device_home, args.endpoint, args.token_file, args.apply,args.service_profile,args.plan_sha256)
     except FileNotFoundError:
