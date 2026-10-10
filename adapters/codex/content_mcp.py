@@ -18,11 +18,14 @@ class ContentServer(Server):
         try:
             if name not in self.adapter.methods() or not isinstance(arguments,dict):raise ValueError()
             required=contract.FIELDS[name]|({'request_id'} if name in contract.WRITES else set())
-            if set(arguments)-(contract.FIELDS[name]|{'request_id'}) or required-set(arguments):raise ValueError()
-            params=dict(arguments);rid=params.pop('request_id',uuid.uuid4().hex);contract.validate(name,params)
+            allowed=contract.FIELDS[name]|{'request_id'}|({'reconciles'} if name=='content_put' else set())
+            if set(arguments)-allowed or required-set(arguments):raise ValueError()
+            params=dict(arguments);reconciles=params.pop('reconciles',None);rid=params.pop('request_id',uuid.uuid4().hex);contract.validate(name,params)
             if not isinstance(rid,str) or not 16<=len(rid)<=128 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in rid):raise ValueError()
         except (ValueError,TypeError):raise ProtocolError(-32602,'Invalid typed content request. Writes require a stable request_id and read revision.') from None
-        try:result=self.adapter.invoke({'request_id':rid,'method':name,'params':params})
+        try:
+            request={'request_id':rid,'method':name,'params':params}
+            result=self.adapter.invoke(request,reconciles=reconciles) if reconciles is not None else self.adapter.invoke(request)
         except Exception:result={'request_id':rid,'error':{'code':'content_adapter_blocked','retryable':False},'persistence':{'durable':False}}
         return {'isError':'error' in result,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
 
@@ -46,13 +49,14 @@ class ContentServer(Server):
                 if 'record' in fields:properties['record']={'type':'object','description':'Typed v1 record: see PROTOCOL.md. Rules preserve enabled/trigger; Skills preserve files/dependencies. Server validates exact fields.'}
                 required=list(sorted(fields))
                 if name in contract.WRITES:properties['request_id']={'type':'string','pattern':'^[A-Za-z0-9_-]{16,128}$'};required.append('request_id')
+                if name=='content_put':properties['reconciles']={'type':'object','description':'Explicit local conflict references after merging both versions; never sent to Server. Only durable confirmation resolves them.','properties':{'request_ids':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256},'source_keys':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256}},'required':['request_ids','source_keys'],'additionalProperties':False}
                 tools.append({'name':name,'description':'Approved cloud content only. Server is the sole write boundary; retain CAS revision and request_id on write retries. Local cache refresh does not reload existing model context.','inputSchema':{'type':'object','properties':properties,'required':required,'additionalProperties':False},'annotations':{'readOnlyHint':name not in contract.WRITES,'destructiveHint':name=='content_remove','idempotentHint':True}})
             return {'tools':tools}
         result=super().handle(request)
         if isinstance(request,dict) and request.get('method')=='initialize' and isinstance(result,dict):
             self.adapter.refresh()
             result['serverInfo']['name']='agent-brain-content-codex-candidate'
-            result['instructions']='Use only approved cloud Memory/Rule/Skill content through these Server APIs. Read revisions before CAS writes and keep stable request_id on retries; only durable=true confirms GitHub persistence. Native mapping checks cloud changes at startup/tool boundaries. Do not collect native sessions/history, local-only/private material or credentials. File refresh does not replace already loaded context; report scope/dependency/drift blockers. Pairing and publication remain separate authorized operations.'
+            result['instructions']='Use approved cloud Memory/Rule/Skill through these Server APIs. Writes are saved to a private local outbox before transport. Queued means local only; durable=true confirms GitHub persistence. Retain exact request_id, record and CAS base on retries; startup/tool boundaries replay pending writes. Conflicts retain both versions for explicit reconciliation. Reviewed inventory precedes mapping; Rule/Skill import does not enable them. Do not collect native sessions/history, LocalOnly/private material or credentials. Refresh does not replace loaded context. Pairing and publication remain separate authorized operations.'
         return result
 
 def pinned(path,digest):
@@ -104,6 +108,8 @@ def main():
     for name in ('device-plan','device-plan-sha256','signing-policy','signing-policy-sha256','ssh-profile','ssh-profile-sha256'):parser.add_argument('--'+name)
     parser.add_argument('--codex-home',help='Approved actual Codex home; otherwise honor CODEX_HOME and preserve device-level skills.')
     parser.add_argument('--installation-check',action='store_true',help='Fixed read-only protocol/auth check; does not write cache or native files.')
+    parser.add_argument('--import-plan',help='Explicit reviewed private normalized source plan; no native discovery.')
+    parser.add_argument('--import-plan-sha256',help='Exact reviewed source-plan digest, required with --import-plan.')
     parser.add_argument('--component-source-sha256',help='Release policy pin for the separately approved signed component source.')
     parser.add_argument('--client-version',default='0.2.0',help='Verified active version supplied by the pinned startup.')
     args=parser.parse_args()
@@ -117,8 +123,16 @@ def main():
         if args.ssh_profile_sha256:raise ValueError('SSH profile required')
         signing=pinned(args.signing_policy,args.signing_policy_sha256)
         client=ComponentClient(args.device_plan,args.device_plan_sha256,signing)
+    if bool(args.import_plan)!=bool(args.import_plan_sha256) or args.installation_check and args.import_plan:raise ValueError('Separate exact import approval required')
     if args.installation_check:print(json.dumps(installation_check(client,policy,args.client_version)));return
-    server=ContentServer(ContentAdapter(args.device_home,args.cache,policy,client,codex_home=args.codex_home),args.client_version)
+    adapter=ContentAdapter(args.device_home,args.cache,policy,client,codex_home=args.codex_home)
+    if args.import_plan:
+        path=Path(args.import_plan)
+        if path.is_symlink() or not path.is_file() or path.stat().st_mode&0o077 or path.stat().st_size>1048576:raise ValueError('Private bounded import plan required')
+        raw=path.read_bytes()
+        if hashlib.sha256(raw).hexdigest()!=args.import_plan_sha256:raise ValueError('Import plan drift')
+        adapter.stage_import(json.loads(raw,object_pairs_hook=pairs))
+    server=ContentServer(adapter,args.client_version)
     while True:
         raw=sys.stdin.buffer.readline(MAX_MESSAGE+1)
         if not raw:break

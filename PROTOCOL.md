@@ -85,6 +85,71 @@ HTTP boundary and journal/CAS/confirmed-Git rules. The SSH identity and forced
 command association must be explicitly approved; an existing five-tool MCP
 command does not grant this candidate protocol. Only memory supports '*'.
 
+Codex content writes are saved in a private local outbox before any transport.
+The complete typed parameters, original request ID and CAS revision are atomically
+written and the file/directories fsynced. Startup and tool boundaries replay those
+exact requests after reconnect or restart. Completion requires the matching Server
+request ID, durable=true, state=remote-confirmed, a Git commit and matching content.
+Memory follows Core's boundary-whitespace/CRLF normalization and opaque metadata
+revision; Rule/Skill revisions must match the returned JSON record. Queued means
+saved locally, awaiting durable Server/GitHub confirmation. Lost acknowledgements
+never generate a new operation ID or silently change expected_revision.
+
+Queue identity binds the native mapping policy and service/principal/destination,
+independently of the Core code repository or private Data remote. Switching the
+service identity blocks replay until pending operations are reviewed. No API
+credential or Git repository URL is stored in the outbox. Queue/import state is
+bounded to 1024 entries and 1 MiB per file; capacity failures preserve prior state
+for review. Confirmed entries remain available as evidence. Private temporary
+files left by killed atomic saves are retained; only renamed request files replay.
+
+Client 0.2.1 introduces local outbox/import state. Release transactions never
+delete or migrate this content cache, including health rollback or interrupted
+activation recovery. A separately reviewed fixed startup must reject content
+runtimes older than 0.2.1 whenever outbox or imports.json exists, including empty,
+damaged or linked evidence. It reports content-outbox-runtime-incompatible (or
+content-local-state-unverified if existence cannot be checked), serves no MCP,
+and asks to restore a verified compatible client without deleting local state.
+The check also applies to check-only and installation checks. Merely publishing
+a package with this guard does not update an old fixed startup: changing the
+native MCP bootstrap path/installation receipt requires its exact upgrade plan.
+Legacy 0.2.0 retains unknown ledger files but ignores pending operations and can
+still map remote content. It must not be served through its old entry after new
+local state has been created. Compatible startup can resume exact request/CAS
+replay after recovery. Existing release hashes are integrity checks, not an
+independent digital signature or a new permission grant.
+
+CAS conflicts preserve the submitted request and remote record. Unresolved local
+writes or source conflicts block mapping. A new explicit merged content_put may
+include local-only `reconciles` metadata selecting exact conflicts of that artifact:
+`{"request_ids":["original_operation_id"],"source_keys":[]}`. Source keys are
+reported in local import status. This metadata never reaches Server, grants no
+permission and cannot alter the original CAS base. The merged request uses a new
+ID and the read revision. Evidence remains; only its durable confirmation resolves
+the selected conflicts. A disconnected conflict read is retried after reconnect.
+
+First/import-again handling accepts an explicit reviewed private normalized source
+plan selected with --import-plan and --import-plan-sha256. Inventory is persisted
+before upload/mapping; it does not scan any additional sources. Stable source IDs
+and fingerprints deduplicate repeated execution. Equal remote content is not
+uploaded again. Changed sources require a known previous imported base plus Server
+CAS; unrecognized remote changes retain both versions for reconciliation. Canonical
+forgotten memory markers are conflicts, never vacant first-import targets.
+
+Rule/Skill imports start disabled. Subsequent content imports preserve independently
+approved remote enablement. Rule triggers, Skill resources and dependencies remain
+typed data; upload is separate from activation. Native ownership checks preserve
+hand edits. Coverage reports list read/excluded/unavailable/not-checked sources;
+queue zero never proves account-wide memory coverage. Native history/databases,
+projects, LocalOnly, secrets, dependency execution and new background jobs remain
+outside this batch.
+
+Server code, public Client code and private Data history are separate roles. The
+Data origin/branch belongs to Server storage policy, never the Client outbox or
+package. A future split must preserve request/CAS/deletion history and separately
+review deployment references, credentials and rollback. This batch performs no
+repository split or data/history migration.
+
 This alternative does not relax the signed-device-proxy requirement. Each
 transport has an exact independent file/runtime/capability policy; signed
 native changes still require the separately pinned Swift/binary/identity plan.

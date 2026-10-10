@@ -111,6 +111,7 @@ class SSHChannel:
 class SSHContentClient:
     def __init__(self,path,digest,runner=None):
         self.path,self.digest=path,digest;self.value,self.argv=profile(path,digest);self.grant=self.value['grant'];self.data_mode='personal';self.runner=runner or SSHChannel()
+        self.queue_identity={'transport':'ssh-fixed-proxy','destination':{k:self.value['ssh'][k] for k in ('host','user','port')},'grant':self.grant}
 
     def request(self,request):
         rid=request.get('request_id') if isinstance(request,dict) else None
@@ -120,6 +121,8 @@ class SSHContentClient:
             if profile(self.path,self.digest)!=(self.value,self.argv):return blocked('ssh_profile_review_required')
             raw=contract.encode(request)
             if len(raw)>131072:return blocked('invalid_content_request')
+        except (ValueError,KeyError,TypeError,OSError):return blocked('ssh_scope_or_profile_review_required')
+        try:
             run=self.runner(self.argv,input=raw+b'\n',capture_output=True,timeout=120)
             if run.returncode or len(run.stdout)>262144:return blocked('ssh_proxy_unconfirmed',True)
             lines=run.stdout.splitlines()
@@ -132,8 +135,7 @@ class SSHContentClient:
                 if not isinstance(items,list) or any(not isinstance(i,dict) or i.get('kind') not in request['params']['kinds'] or not isinstance(i.get('id'),str) for i in items):return blocked('ssh_proxy_unconfirmed',True)
                 value['result']['artifacts']=[i for i in items if allowed_id(self.grant['ids'],i['kind'],i['id'])]
             return value
-        except (ValueError,KeyError,TypeError,OSError):return blocked('ssh_scope_or_profile_review_required')
-        except subprocess.TimeoutExpired:return blocked('ssh_proxy_unconfirmed',True)
+        except (ValueError,KeyError,TypeError,OSError,subprocess.TimeoutExpired):return blocked('ssh_proxy_unconfirmed',True)
 
     def discover(self,installed_version):
         import uuid
