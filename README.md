@@ -16,4 +16,4 @@ python3 -B tools/build_credential_helper.py --output .local/credential-helper
 
 `native/CredentialStore.swift` 是普通 login Keychain helper；不要求 Apple Team 或 provisioning。源码构建 helper 需要 macOS Swift 工具链；最终普通用户安装应接收已审核的二进制，目前还没有完成二进制交付和真实 Keychain/UI 安装验收。Swift 源码与 helper 字节哈希必须分别固定。`DeviceComponent.swift` 是另一个签名候选，不在当前批准安装范围。
 
-HTTPS 候选支持 prepare→安全存储→confirm，恢复与撤销、来源隔离缓存、CAS outbox。生产 HTTPS 业务切换暂停，保留现有 SSH 客户端通道。用户资料、部署地址、私钥、配对码、原生配置和会话不进入公开仓库。
+HTTPS 候选支持一个审核安装入口：先检查原生计划，再一次安全输入，prepare→安全存储→confirm 后执行原生安装；失败和重试沿用持久配对状态。支持恢复与撤销、来源隔离缓存、CAS outbox。具体交付、恢复及验收边界见 [HTTPS-INSTALL.md](docs/HTTPS-INSTALL.md)。生产 HTTPS 业务切换暂停，保留现有 SSH 客户端通道。用户资料、部署地址、私钥、配对码、原生配置和会话不进入公开仓库。

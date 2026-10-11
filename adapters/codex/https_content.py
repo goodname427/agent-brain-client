@@ -187,11 +187,52 @@ class HTTPSContentClient:
             return {'request_id':request.get('request_id') if isinstance(request,dict) else None,'error':{'code':'device_transport_blocked','retryable':False},'persistence':{'durable':False}}
 
 
+def install_once(plan,approved_digest,*,store=None,transport=None,secure_input=None,installer=None):
+    """One approved native plan: verify before UI, resume pairing, then install.
+
+    This does not create an invitation, read a token from argv or broaden an
+    existing profile. Pairing recovery remains in the same dedicated OS item.
+    """
+    from content_install import context,prepare,apply,private_json,InstallBlocked
+    try:
+        if not isinstance(plan,dict) or hashlib.sha256(canonical(plan)).hexdigest()!=approved_digest:
+            raise InstallBlocked('Exact approved native plan required')
+        policy,_,_,_=context(plan['device_home'],plan['package'],plan['release_policy'],plan['release_policy_sha256'])
+        from client_release import HTTPS_CONTENT_CAPABILITIES
+        if policy['capabilities']!=HTTPS_CONTENT_CAPABILITIES:raise InstallBlocked('HTTPS install scope required')
+        runtime=policy['runtime'];profile=profile_file(runtime['https_profile'],runtime['https_profile_sha256'])
+        install=installer or apply
+        receipt=Path(plan['device_home'])/'.config/agent-brain-client/content-install-receipt.json'
+        if receipt.exists():
+            previous=private_json(receipt)
+            if previous.get('phase') in ('complete','applying') and previous.get('plan_sha256')==approved_digest:
+                # Existing apply verifies/restores an interrupted matching journal
+                # before checking the original preimage; pairing already preceded it.
+                return install(plan,approved_digest)
+        if prepare(plan['device_home'],plan['package'],plan['release_policy'],plan['release_policy_sha256'],plan['replace_existing'])!=plan:
+            raise InstallBlocked('Install preimage changed before credential input')
+        credentials=store if store is not None else native_store(profile,runtime['https_profile_sha256'])
+        enrollment=DeviceEnrollment(profile,runtime['https_profile_sha256'],credentials,transport if transport is not None else PairingHTTPS(profile['endpoint']),secure_input if secure_input is not None else credentials.backend.secure_input)
+        paired=enrollment.run()
+        if paired.get('status')!='device-paired':
+            return {'status':paired.get('status','pairing-resume-required'),'installed':False,'native_changed':False,'credential_record_preserved':True}
+        return install(plan,approved_digest)
+    except Exception:
+        return {'status':'https-install-review-or-resume-required','installed':False,'native_changed':False,'credential_record_preserved':True}
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('inspect','pair','reset-terminal'))
-    parser.add_argument('--https-profile',required=True);parser.add_argument('--https-profile-sha256',required=True)
+    parser.add_argument('action',choices=('inspect','pair','reset-terminal','install'))
+    parser.add_argument('--https-profile');parser.add_argument('--https-profile-sha256')
+    parser.add_argument('--content-install-plan');parser.add_argument('--approved-plan-sha256')
     args=parser.parse_args()
+    if args.action=='install':
+        try:
+            from content_mcp import pinned
+            result=install_once(pinned(args.content_install_plan,args.approved_plan_sha256),args.approved_plan_sha256)
+        except Exception:result={'status':'https-install-review-required','installed':False,'native_changed':False}
+        print(json.dumps(result));return 0 if result.get('installed') else 2
     try:
         profile=profile_file(args.https_profile,args.https_profile_sha256)
         if args.action=='inspect':result={'status':'https-content-profile-reviewed','credential_accessed':False,'installed':False,'native_changed':False,'methods':['content_catalog','content_read','content_put']}

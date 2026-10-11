@@ -14,7 +14,7 @@ from urllib.error import HTTPError
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'));sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/codex'))
 from fake_pairing import PairingAuthority
-from https_content import DeviceEnrollment,HTTPSContentClient,PairingHTTPS,profile_file
+from https_content import DeviceEnrollment,HTTPSContentClient,PairingHTTPS,profile_file,install_once
 from system_credentials import CredentialStore,NativeKeychain,canonical
 from content_cache import ContentAdapter,CacheBlocked
 from remote_http import RemoteClient,NoRedirect
@@ -221,5 +221,51 @@ class HTTPSContent(unittest.TestCase):
         out=self.base/'export';manifest=export(ROOT,out,https_content_candidate=True)
         self.assertEqual(set(manifest['files']),set(HTTPS_CONTENT_CLIENT_FILES));self.assertEqual(len(manifest['files']),21);self.assertFalse(manifest['keychain_accessed']);self.assertFalse((out/'releases').exists());self.assertFalse((out/'native/DeviceComponent.swift').exists());self.assertFalse(any('brain_server' in path for path in manifest['files']))
         with self.assertRaises(ValueError):export(ROOT,self.base/'mixed',ssh_content_candidate=True,https_content_candidate=True)
+
+    def install_fixture(self):
+        import content_install as install
+        native=self.home/'codex';native.mkdir(mode=0o700);config=native/'config.toml';config.write_text('model="synthetic"\n');config.chmod(0o600)
+        package=self.base/'install-package';export(ROOT,package,https_content_candidate=True)
+        content=self.base/'install-content.json';content.write_bytes(canonical({'schema':1,'adapter':'codex','kinds':GRANT['artifact_types'],'ids':GRANT['ids'],'dependencies':{'commands':[],'python_modules':[]}}));content.chmod(0o600)
+        runtime={'https_profile':str(self.profile_path),'https_profile_sha256':self.digest,'credential_source_sha256':self.profile['credential_source_sha256'],'content_policy':str(content),'content_policy_sha256':hashlib.sha256(content.read_bytes()).hexdigest(),'device_home':str(self.home),'codex_home':str(native),'content_cache':str(self.base/'install-cache')}
+        policy={'schema':1,'adapter':'codex','platform':GRANT['platform'],'origin':'https://synthetic.invalid/client.git','ref':'refs/heads/releases/stable','anchor_commit':'a'*40,'channel':'stable','core_api':1,'state_schema':1,'capabilities':HTTPS_CONTENT_CAPABILITIES,'file_prefixes':list(HTTPS_CONTENT_CLIENT_FILES),'repository':str(self.base/'install-repository'),'cache':str(self.base/'install-release-cache'),'runtime':runtime}
+        path=self.base/'install-release-policy.json';path.write_bytes(canonical(policy));path.chmod(0o600)
+        plan=install.prepare(self.home,package,path,hashlib.sha256(path.read_bytes()).hexdigest());return install,plan,install.sha(install.contract.encode(plan)),config
+
+    def test_install_once_digest_and_preimage_rejected_before_any_credential_input(self):
+        install,plan,digest,config=self.install_fixture();before=config.read_bytes()
+        def blocked():raise AssertionError('No secure input before native plan checks')
+        result=install_once(plan,'0'*64,store=object(),secure_input=blocked);self.assertFalse(result['installed']);self.assertEqual(config.read_bytes(),before)
+        config.write_text('independent-model="synthetic"\n');result=install_once(plan,digest,store=object(),secure_input=blocked);self.assertFalse(result['installed']);self.assertEqual(config.read_text(),'independent-model="synthetic"\n');self.assertEqual(self.prompts,0)
+
+    def test_install_once_lost_reply_native_rollback_resume_and_complete_no_reprompt(self):
+        install,plan,digest,config=self.install_fixture();before=config.read_bytes();checks=[]
+        def check(value):
+            checks.append(value)
+            if len(checks)==2:raise ValueError('Synthetic failed native postcheck')
+        installer=lambda p,d:install.apply(p,d,check)
+        kwargs={'store':self.store,'transport':self.transport,'secure_input':self.input,'installer':installer}
+        self.transport.lost_prepare=True;result=install_once(plan,digest,**kwargs);self.assertEqual(result['status'],'pairing-resume-required');self.assertEqual(config.read_bytes(),before)
+        result=install_once(plan,digest,**kwargs);self.assertEqual(result['status'],'content-install-rolled-back');self.assertEqual(self.backend.record['phase'],'active');self.assertEqual(config.read_bytes(),before)
+        result=install_once(plan,digest,**kwargs);self.assertTrue(result['installed']);self.assertEqual(self.prompts,1);self.assertNotIn(self.backend.record['credential'],json.dumps(result))
+        with patch.object(install,'inspect',return_value={'status':'content-native-client-installed','installed':True,'native_changed':False}):
+            result=install_once(plan,digest,**kwargs);self.assertTrue(result['installed']);self.assertFalse(result['native_changed']);self.assertEqual(self.prompts,1)
+
+    def test_install_once_interrupted_native_transaction_recovers_without_reprompt(self):
+        install,plan,digest,config=self.install_fixture()
+        kwargs={'store':self.store,'transport':self.transport,'secure_input':self.input,
+                'installer':lambda p,d:install.apply(p,d,lambda value:None)}
+        self.assertTrue(install_once(plan,digest,**kwargs)['installed'])
+        after=config.read_bytes();credential=copy.deepcopy(self.backend.record)
+        receipt=self.home/'.config/agent-brain-client/content-install-receipt.json'
+        journal=install.private_json(receipt);journal['phase']='applying';install.save(receipt,journal)
+        result=install_once(plan,digest,**kwargs)
+        self.assertTrue(result['installed'],result);self.assertEqual(config.read_bytes(),after)
+        self.assertEqual(install.private_json(receipt)['phase'],'complete')
+        self.assertEqual(self.backend.record,credential);self.assertEqual(self.prompts,1)
+
+    def test_install_once_cancel_leaves_native_config_credential_and_network_untouched(self):
+        install,plan,digest,config=self.install_fixture();before=config.read_bytes();result=install_once(plan,digest,store=self.store,transport=self.transport,secure_input=lambda:None)
+        self.assertEqual(result['status'],'pairing-cancelled');self.assertEqual(config.read_bytes(),before);self.assertIsNone(self.backend.record);self.assertFalse(self.transport.prepares)
 
 if __name__=='__main__':unittest.main()
