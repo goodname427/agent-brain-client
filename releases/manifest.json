@@ -1,0 +1,37 @@
+{
+  "capabilities": [
+    "codex-stdio-mcp",
+    "personal-content-explicit",
+    "https-system-credential"
+  ],
+  "channel": "stable",
+  "core_api": 1,
+  "files": {
+    ".gitignore": "de55ef044a18ae9327358209cabab993cf76a66924055155bcedad2013a0ac6b",
+    "ADAPTERS.md": "08688ff5201f20609c20c4b5cc13eb895212d3e6a08c028f96823f92ed5771b7",
+    "BOOTSTRAP.md": "9b84e15bc9350e9c2d1c5a1996c41a0231250b1ca350388580065dccb076a20a",
+    "PROTOCOL.md": "1becc2d78915508a693a51eb440b9ca55f59c5a2e3d7720433a3bb662b2b80db",
+    "README.md": "f9c619cf5d3c65fb2d923eda3156c4e4d6e74d58b4479a51aa1b99bad8ae756c",
+    "adapters/codex/client_pairing.py": "b440d11419510b6b3f72d48cd4a035bb9fd048e1781c8c3e6e8ab87fa45e01f8",
+    "adapters/codex/client_release.py": "9d9adf8decb4cd5c2dad6a4b41d4cab6e0b67d7b817f27cbc860ab3a617e3dfe",
+    "adapters/codex/client_startup.py": "922d1f196b7f231437ef6315366aa7c1568a41172854f1f769fb0a49e45cf385",
+    "adapters/codex/codex_connect.py": "89771eb8d26f3e6911d981f927092a80dbc8bb59db5acadad34ed1265ab4dbd8",
+    "adapters/codex/content_cache.py": "4b1dbd66dcae88806a99a3ad4c2a43314725b0fec921493f6f04c002b5c7cda1",
+    "adapters/codex/content_contract.py": "75c54421f53828d3fa81ed8d06532fd757fd98154bfadd449e866d387213d81b",
+    "adapters/codex/content_install.py": "0cb3f145ff1891b02eeaeb639964d3a2ca84a6965cd037977ab9c2cbd86ada87",
+    "adapters/codex/content_mcp.py": "86a91783282895bd27370d593f9c948fce05d628c24df9c44ed2d255639df2f6",
+    "adapters/codex/https_content.py": "64045ebbafb4197d59e6f789f6f34ce2d2397c9b59dd21976d811c0cbf800161",
+    "adapters/codex/remote_http.py": "3470f725fb9269dd4f491a4d8589bedc897f3e6aff7f33515187890f167c404f",
+    "adapters/codex/remote_mcp.py": "702ce3fff0db9147d38dd73963f0b6093075cb9fd1cde6d2211faa809666b76e",
+    "adapters/codex/system_credentials.py": "455049c7aaa7b28ee4bacdd280f78346feeb89a178ba655c472a493b1403b154",
+    "connect.py": "eba57cc31800db294c2a3b5d1b0c133c910f8d7c8566d0565557bced6f5504d2",
+    "native/CredentialStore.swift": "aecf2f86ff6412ed77485dd40e056c2a4a40483a11569de500d172345b65c100",
+    "scripts/brain_lock.py": "160534412f9e8bc6a6fa0af8da1f9d2bc510626e72b236bfe0bb7e8a19b7ae03",
+    "scripts/brain_release.py": "4b522fb90fd818f73a21c78cfcc052e585a7e175647b2278ff0b813c70fb4e22"
+  },
+  "migrations": [],
+  "python_min": "3.11",
+  "schema": 1,
+  "state_schema": 1,
+  "version": "0.2.2"
+}
