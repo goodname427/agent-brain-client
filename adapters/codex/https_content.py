@@ -29,7 +29,8 @@ def grant_check(grant):
     if not isinstance(grant,dict) or set(grant)!=keys or grant['adapter']!='codex' or grant['platform'] not in ('darwin-arm64','darwin-x86_64') or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}',grant.get('actor','')):raise ValueError('Frozen device grant required')
     if grant['scopes']!=['read','put'] or not isinstance(grant['artifact_types'],list) or not grant['artifact_types'] or len(set(grant['artifact_types']))!=len(grant['artifact_types']) or set(grant['artifact_types'])-{'memory','rule','skill'}:raise ValueError('Reviewed read/put grant required')
     reviewed_ids(grant['artifact_types'],grant['ids'])
-    if any(not isinstance(v,list) for v in grant['ids'].values()) or sum(map(len,grant['ids'].values()))!=31:raise ValueError('31 exact approved content IDs required')
+    from content_contract import personal_owner
+    if not personal_owner(grant['ids']) and (any(not isinstance(v,list) for v in grant['ids'].values()) or sum(map(len,grant['ids'].values()))!=31):raise ValueError('Personal owner or legacy 31 exact approved IDs required')
 
 def endpoint_check(endpoint):
     if not isinstance(endpoint,str):raise ValueError('HTTPS origin required')

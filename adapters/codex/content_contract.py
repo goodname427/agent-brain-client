@@ -36,13 +36,36 @@ def validate(method,params):
     if method in WRITES and (not isinstance(params['expected_revision'],str) or not re.fullmatch(r'missing|[a-f0-9]{64}',params['expected_revision'])):raise ValueError('Read revision required')
     if method=='content_put':record(params['kind'],params['record'],params['id'])
 
+OWNER_SCOPE='personal-owner'
+
+def personal_owner(ids):
+    return isinstance(ids,dict) and set(ids)==TYPES and all(value==OWNER_SCOPE for value in ids.values())
+
+def scope_subset(candidate,ceiling):
+    """Typed collection containment; strings never act as ID iterables."""
+    for kind,values in candidate.items():
+        if kind not in ceiling:return False
+        if values==OWNER_SCOPE:
+            if not personal_owner(candidate) or not personal_owner(ceiling):return False
+        elif values=='*':
+            if kind!='memory' or ceiling[kind] not in ('*',OWNER_SCOPE):return False
+        elif not isinstance(values,list) or any(not allows(ceiling,kind,identity) for identity in values):return False
+    return True
+
 def grant_ids(types,ids):
     if not isinstance(ids,dict) or set(ids)!=set(types):raise ValueError('Exact content IDs required')
+    if set(types)-TYPES:raise ValueError('Unsupported content types')
+    if any(value==OWNER_SCOPE for value in ids.values()):
+        if not personal_owner(ids):raise ValueError('Complete personal owner scope required')
+        return
     for kind,values in ids.items():
         if kind=='memory' and values=='*':continue
         if not isinstance(values,list) or len(values)>256 or any(not isinstance(v,str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}',v) for v in values) or len(set(values))!=len(values):raise ValueError('Invalid content IDs')
 
-def allows(ids,kind,identity):return kind=='memory' and ids.get(kind)=='*' or identity in ids.get(kind,[])
+def allows(ids,kind,identity):
+    if kind not in TYPES or not isinstance(identity,str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}',identity):return False
+    values=ids.get(kind,[])
+    return personal_owner(ids) or kind=='memory' and values=='*' or isinstance(values,list) and identity in values
 
 def text(value,limit=65536):
     if not isinstance(value,str) or not value.strip() or len(value.encode())>limit or '\0' in value:raise ValueError('Invalid text')

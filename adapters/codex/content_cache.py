@@ -30,18 +30,15 @@ def validate_policy(policy,grant=None):
     if not isinstance(policy,dict) or set(policy)!={'schema','adapter','kinds','ids','dependencies'} or policy['schema']!=1 or policy['adapter']!='codex':raise CacheBlocked()
     contract.validate('content_catalog',{'kinds':policy['kinds']})
     if not isinstance(policy['ids'],dict) or set(policy['ids'])!=set(policy['kinds']):raise CacheBlocked()
-    for kind,ids in policy['ids'].items():
-        if kind=='memory' and ids=='*':continue
-        if not isinstance(ids,list) or len(set(ids))!=len(ids):raise CacheBlocked()
-        for identity in ids:contract.validate('content_read',{'kind':kind,'id':identity})
+    try:contract.grant_ids(policy['kinds'],policy['ids'])
+    except ValueError:raise CacheBlocked()
     if not isinstance(policy['dependencies'],dict) or set(policy['dependencies'])!={'commands','python_modules'}:raise CacheBlocked()
     contract.strings(policy['dependencies']['commands']);contract.strings(policy['dependencies']['python_modules'])
     if grant and ('read' not in grant['scopes'] or set(policy['kinds'])-set(grant['artifact_types'])):raise CacheBlocked()
     if grant:
         try:contract.grant_ids(grant['artifact_types'],grant.get('ids'))
         except ValueError:raise CacheBlocked()
-        for kind,ids in policy['ids'].items():
-            if ids=='*' and grant['ids'].get(kind)!='*' or ids!='*' and any(not contract.allows(grant['ids'],kind,identity) for identity in ids):raise CacheBlocked()
+        if not contract.scope_subset(policy['ids'],grant['ids']):raise CacheBlocked()
 
 class ContentAdapter:
     def __init__(self,home,cache,policy,client,health=None,codex_home=None):
@@ -79,14 +76,13 @@ class ContentAdapter:
                 contract.validate('content_read',{'kind':matched[1],'id':matched[2]})
                 if not self._allows(matched[1],matched[2]):raise CacheBlocked()
             elif skill:
-                if skill[1] not in self.policy['ids'].get('skill',[]):raise CacheBlocked()
+                if not self._allows('skill',skill[1]):raise CacheBlocked()
                 contract.skill_path(skill[2])
             else:raise CacheBlocked()
         path=self.home/name;self._safe(path,self.home);return path
 
     def _allows(self,kind,identity):
-        ids=self.policy['ids'].get(kind,[])
-        return kind=='memory' and ids=='*' or identity in ids
+        return contract.allows(self.policy['ids'],kind,identity)
 
     def methods(self):
         grant=getattr(self.client,'grant',{'scopes':['read','write'],'artifact_types':self.policy['kinds']})

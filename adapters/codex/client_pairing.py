@@ -6,13 +6,12 @@ transport or credential store is created implicitly; all secrets stay internal.
 import secrets
 
 def reviewed_ids(types,ids):
-    import re
-    if not isinstance(ids,dict) or set(ids)!=set(types):raise ValueError('Reviewed content IDs required')
-    for kind,values in ids.items():
-        if kind=='memory' and values=='*':continue
-        if not isinstance(values,list) or len(values)>256 or any(not isinstance(v,str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}',v) for v in values) or len(set(values))!=len(values):raise ValueError('Reviewed content IDs required')
+    from content_contract import grant_ids
+    grant_ids(types,ids)
 
-def allowed_id(ids,kind,identity):return kind=='memory' and ids.get(kind)=='*' or identity in ids.get(kind,[])
+def allowed_id(ids,kind,identity):
+    from content_contract import allows
+    return allows(ids,kind,identity)
 
 class EnrollmentTerminal(Exception):
     def __init__(self,reason):

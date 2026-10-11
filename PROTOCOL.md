@@ -162,8 +162,8 @@ content cache; legitimate mapped hashes are accepted, external edits are blocked
 
 The opt-in HTTPS system-credential candidate uses the same typed contract and
 durable outbox. Its trusted adapter adds an active device Bearer internally;
-credentials are never tool arguments/results. The profile freezes 31 exact IDs
-and read/put. No plaintext fallback, redirect, ambient proxy, SSH client identity,
+credentials are never tool arguments/results. The profile freezes read/put and either the legacy 31 exact IDs or the explicit
+personal-owner collection described in docs/PERSONAL-OWNER-SCOPE.md. No plaintext fallback, redirect, ambient proxy, SSH client identity,
 Apple Team or access-group is required by this candidate.
 
 Native-only pairing saves preparing(code, nonce, profile digest) before POST
