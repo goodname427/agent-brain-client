@@ -10,11 +10,7 @@ import sys
 import time
 from types import SimpleNamespace
 from client_pairing import reviewed_ids,allowed_id
-try:
-    import content_contract as contract
-except ImportError:
-    sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-    import brain_content as contract
+import content_contract as contract
 
 PREFIX='/usr/bin/sudo -n -u agent-brain /usr/bin/python3 -I -B '
 COMMAND=r'/opt/agent-brain-client/[A-Za-z0-9_-]+/scripts/brain_ssh_proxy\.py --policy-file /var/lib/agent-brain/auth/[A-Za-z0-9_-]+\.json --policy-sha256 [a-f0-9]{64}'

@@ -1,21 +1,19 @@
-# Agent Brain 客户端
+# Agent Brain Client
 
-把本仓库链接交给实际 Agent，先读 BOOTSTRAP.md。客户端只管理获授权的接入、薄适配器和受信客户端更新；Core、后台部署、数据历史均在私有后台。公开客户端使用精确文件白名单，不包含私库历史、记忆、宿主配置、地址、凭据或日志。旧版迁移及可恢复清理见 [ADAPTERS.md](ADAPTERS.md#旧版迁移与可恢复清理)。
+本仓库是公开 Client 的独立源码权威。`main` 保存源码、测试与构建工具；现有受信发布渠道和 0.2.1 保持有效，迁移源码不会自动修改安装或发布指针。运行时只通过已批准的 HTTP/HTTPS 或固定 SSH 协议访问 Server；不导入 Server/Core，不克隆私人 Data。
 
-当前提供 Codex 工具进程的 JSON 行 HTTP 传输、stdio MCP 桥接和一个 Mac Codex 初始化检查点，使用 Python 标准库。remote_mcp.py 只转发五个服务方法，不导入 Core/Git。写工具要求显式稳定 request_id 和 expected_revision；重试保持参数，不掩盖未确认持久状态。connect.py 可复用已验证的 SSH MCP 登记；首次 native 注册需现有受限身份、严格主机校验和精确计划摘要，旧入口迁移仍需单独受审。只做配置及协议检查，不另开模型或要求 GUI 验收。公开版本可用不等于某台设备或服务器已完成安装；以该设备配置、固定入口和协议检查回执为准。
+Python 3.11+ 与 Git 是现有 Python 客户端的运行依赖。源码测试使用 Python 标准库；每个测试仅使用合成资料，HOME/CODEX_HOME 必须隔离。
 
-首个 Mac Codex 接入可采用受审的 SSH stdio 命令，在服务器以无登录服务账户运行这个桥接器并读取服务器本机 token；凭据不用复制到客户端，API 仍只监听回环。SSH 身份、远端固定路径和 native MCP 配置是独立批准范围，不能由工具参数变更或由一条仓库链接隐式授予。旧固定入口、hooks、Skill 和权限基线需要在切换前精确计划及备份，不同时运行两套个人写入口。
+```sh
+PYTHONPATH=scripts:adapters/codex:tools:tests python3 -B -m unittest discover -s tests
+python3 -B tools/build_client.py --scan
+python3 -B tools/build_client.py --output .local/ssh-release --mode personal-content-ssh --version 0.2.1
+python3 -B tools/build_client.py --output .local/https-candidate --mode personal-content-https --version 0.2.2
+python3 -B tools/build_credential_helper.py --output .local/credential-helper
+```
 
-客户端更新复用 scripts/brain_release.py 的 GitReleaseSource/ReleaseEngine。固定 client_startup.py 在已批准的 MCP 进程启动时检查受信 origin/ref/anchor、manifest 和逐文件 hash，再激活兼容不可变客户端包；健康失败或进程中断恢复旧指针，离线继续旧的已验证包。原生配置、固定 bootstrap、授权源、凭据及数据不由包更新改写。能力、协议、依赖、文件集合或迁移变化需审阅；远端 client_updates 仅为发现信息，不能授予新信任。没有新后台任务。
+构建只读取本仓库文件，拒绝外部 Core 源根。输出保留现有 19 文件 SSH / 21 文件 HTTPS 包与 manifest 格式；构建不推送渠道、不安装、不写凭据。`export-manifest.json` 是兼容的安装校验元数据，名称不代表从混合仓导出。
 
-固定 bootstrap、设备身份和受信发布政策由具体部署授权确定，仓库链接不授予这些权限。受信政策 JSON 的 SHA256 由受限 SSH 固定命令携带；策略中代码 checkout/cache 与私有数据 checkout 分开。更新链路已用合成发布源验证，并在 Mac Codex 固定 SSH 入口验证过受信版本检查、兼容更新及保留旧包；其他平台仍需实际验证。
+`native/CredentialStore.swift` 是普通 login Keychain helper；不要求 Apple Team 或 provisioning。源码构建 helper 需要 macOS Swift 工具链；最终普通用户安装应接收已审核的二进制，目前还没有完成二进制交付和真实 Keychain/UI 安装验收。Swift 源码与 helper 字节哈希必须分别固定。`DeviceComponent.swift` 是另一个签名候选，不在当前批准安装范围。
 
-个人模式是明确批准后的独立选项：personal-memory-explicit capability、固定服务personal policy及Mac personal-explicit profile必须一致，不能由synthetic更新自动扩大。固定导入清单和可恢复导入工具留在私有后台；客户端仅传请求。个人模式只处理明确授权的个人共享记忆，不自动采集会话，不包括LocalOnly、项目或原生历史。默认主分支发布包为 synthetic；个人发布分支要求独立个人授权。获明确授权的 daily-personal 服务模式可主动维护非敏感个人偏好、普通事实及协作习惯，先读匹配主题，使用 revision 合并更新；服务器仅允许 remember，拒绝删除，不采集会话或历史。MCP 必须确认服务器返回的模式，不能由客户端版本自行扩大授权。
-
-## 鉴权边界与最小后续设计
-
-现有SSH方案：服务token留服务器，由服务账户下的MCP进程读取；Mac只保存专用SSH私钥，服务器公钥条目限制为固定MCP命令。模型工具参数和结果不带密钥。0600私钥文件对同用户可读的Agent并非强隔离，不能声称Agent没有读取能力。
-
-目标安装体验：Agent完成非秘密安装与校验；用户在安全输入界面输入一次短期、单次配对码；设备组件换取设备独立可撤销凭据并保存到系统凭据存储。调用由设备组件取凭据和认证，模型只看到限定服务操作；配对码、凭据不进入聊天、工具参数、argv或日志，服务端核验设备及授权范围。
-
-最小后续接口是受控的配对兑换与设备撤销，以及一个Mac凭据调用组件。系统凭据存储本身不保证对同用户Agent隔离；强隔离需要限制到获授权组件的凭据访问及调用边界。当前尚未实现配对/凭据组件，不新造身份或增加权限；安全输入和具体设备身份授权另行批准，不把现有SSH安装称为完成此目标。
+HTTPS 候选支持 prepare→安全存储→confirm，恢复与撤销、来源隔离缓存、CAS outbox。生产 HTTPS 业务切换暂停，保留现有 SSH 客户端通道。用户资料、部署地址、私钥、配对码、原生配置和会话不进入公开仓库。

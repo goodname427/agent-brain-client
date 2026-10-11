@@ -1,5 +1,4 @@
 .local/
-.config/
 __pycache__/
-*.py[cod]
-*.token
+*.pyc
+.DS_Store

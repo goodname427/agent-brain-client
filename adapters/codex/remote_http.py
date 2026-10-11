@@ -8,7 +8,7 @@ import sys
 import threading
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -17,7 +17,7 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class RemoteClient:
-    def __init__(self, endpoint, token_file, data_mode='synthetic'):
+    def __init__(self, endpoint, token_file=None, data_mode='synthetic', *, credential_provider=None):
         if data_mode not in ('synthetic','personal'):raise ValueError('Unsupported data mode')
         self.data_mode=data_mode
         url = urlsplit(endpoint)
@@ -25,8 +25,11 @@ class RemoteClient:
                 or url.query or url.fragment or url.path not in ('', '/')
                 or url.scheme == 'http' and url.hostname not in ('127.0.0.1', 'localhost', '::1')):
             raise ValueError('Use HTTPS, or loopback HTTP through an approved SSH tunnel.')
-        self.endpoint, self.token_file = endpoint.rstrip('/'), Path(token_file)
-        self.opener = build_opener(NoRedirect())
+        if (token_file is None)==(credential_provider is None):raise ValueError('One internal credential source required')
+        if credential_provider is not None and url.scheme!='https':raise ValueError('Device credentials require HTTPS')
+        self.endpoint, self.token_file = endpoint.rstrip('/'), Path(token_file) if token_file is not None else None
+        self.credential_provider=credential_provider
+        self.opener = build_opener(ProxyHandler({}),NoRedirect())
 
     def request(self, request, *, timeout=90, deadline=None):
         if deadline is None:return self._request(request,timeout=timeout)
@@ -51,7 +54,7 @@ class RemoteClient:
             raise ValueError('Supply a stable request_id; retry a write with the same ID and parameters.')
         token = self._token()
         if not re.fullmatch(r'[A-Za-z0-9_-]{32,256}', token):
-            raise ValueError('Invalid token file')
+            raise ValueError('Invalid credential source')
         data = json.dumps(request, ensure_ascii=False).encode()
         if len(data) > 131072:
             raise ValueError('Request exceeds 128 KB')
@@ -77,9 +80,9 @@ class RemoteClient:
             try:
                 result = json.loads(error.read(262144))
                 if isinstance(result, dict) and result.get('request_id') in (None, rid) and isinstance(result.get('error'), dict):
-                    result['request_id'] = rid
-                    result['persistence'] = {'durable': False}
-                    return result
+                    error=result['error'];code=error.get('code')
+                    if isinstance(code,str) and re.fullmatch(r'[a-z][a-z0-9_]{0,63}',code) and type(error.get('retryable'))==bool:
+                        return {'request_id':rid,'error':{'code':code,'retryable':error['retryable']},'persistence':{'durable':False}}
             except (ValueError, OSError):
                 pass
         except (URLError, OSError, ValueError):
@@ -88,6 +91,7 @@ class RemoteClient:
                 'persistence': {'durable': False}}
 
     def _token(self):
+        if self.credential_provider is not None:return self.credential_provider()
         if self.token_file.stat().st_mode & 0o077:
             raise ValueError('Token file must have mode 0600.')
         return self.token_file.read_text(encoding='utf-8').strip()

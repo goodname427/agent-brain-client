@@ -159,3 +159,24 @@ its AGENTS.md block as a third native path. The old complete receipt must prove
 the exact preimage; otherwise preserve the file. Install rollback restores all
 planned paths. Later cloud mapping is independently owned by the bound private
 content cache; legitimate mapped hashes are accepted, external edits are blocked.
+
+The opt-in HTTPS system-credential candidate uses the same typed contract and
+durable outbox. Its trusted adapter adds an active device Bearer internally;
+credentials are never tool arguments/results. The profile freezes 31 exact IDs
+and read/put. No plaintext fallback, redirect, ambient proxy, SSH client identity,
+Apple Team or access-group is required by this candidate.
+
+Native-only pairing saves preparing(code, nonce, profile digest) before POST
+/v1/pairing/prepare, then pending(credential, nonce, device ID, exact grant) before
+POST /v1/pairing/confirm. Active confirm remains replayable after invite expiry.
+Failed saves prevent the next network step; cancellation creates no item. Unknown
+or changed records are preserved. Terminal reset rechecks Server and requires a
+native confirmation UI plus exact observed-record CAS.
+
+The separately enabled Server gate accepts only three internal POST paths:
+/v1/device/requests, /v1/device/pairing/prepare, /v1/device/pairing/confirm. It rejects
+static service/admin tokens and legacy methods, enforces the grant before pending
+or activation, and applies bounded global/pairing/per-device budgets. Responses
+are no-store; fixed errors omit raw secrets. Original private routes remain.
+Public routing, issuer/key/ledger configuration and real credential installation
+require separate precise deployment approval; exporting source enables no route.

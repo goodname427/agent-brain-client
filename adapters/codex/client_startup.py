@@ -5,12 +5,14 @@ the policy digest through the forced SSH command. No daemon or native rewriting.
 """
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from client_release import ClientReleases,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,LEGACY_PRESERVATION,version
+from client_release import ClientReleases,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES,LEGACY_PRESERVATION,version
+from brain_lock import locked
 
 OUTBOX_MIN_VERSION='0.2.1'
 
@@ -21,7 +23,7 @@ def content_runtime_blocker(active,policy):
     Check existence only: retain even empty, damaged or linked state as evidence.
     This guard belongs to the reviewed fixed bootstrap, outside rollback packages.
     """
-    if policy['capabilities'] not in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES) or version(active['version'])>=version(OUTBOX_MIN_VERSION):return None
+    if policy['capabilities'] not in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES) or version(active['version'])>=version(OUTBOX_MIN_VERSION):return None
     cache=Path(policy['runtime']['content_cache']);found=False
     try:
         for name in ('outbox','imports.json'):
@@ -39,6 +41,41 @@ def content_runtime_blocker(active,policy):
     return None
 
 
+def serve_content(command,active,policy,status):
+    """Keep the fixed guard valid until the actual mapping worker exits.
+
+    Legacy workers take an exclusive lease; compatible workers share a lease.
+    The child inherits the descriptor, so a killed bootstrap cannot release its
+    live worker's protection. Persistent lock files are never removed/reset.
+    """
+    if os.name!='posix':
+        return {'status':'content-runtime-lifecycle-review-required','served':False,
+                'next_action':'This fixed content lifecycle requires reviewed inherited POSIX locks; preserve the current client.'}
+    cache=Path(policy['runtime']['content_cache'])
+    try:
+        if cache.is_symlink():raise ValueError('Linked content cache')
+        cache.mkdir(parents=True,exist_ok=True,mode=0o700)
+        if cache.stat().st_uid!=os.getuid() or cache.stat().st_mode&0o077:raise ValueError('Private content cache required')
+        path=cache/'.content-runtime.lock'
+        try:
+            fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600);os.close(fd)
+        except FileExistsError:pass
+        st=path.lstat()
+        if path.is_symlink() or not path.is_file() or st.st_uid!=os.getuid() or st.st_mode&0o077 or st.st_nlink!=1:raise ValueError('Content lease changed')
+        modern=version(active['version'])>=version(OUTBOX_MIN_VERSION)
+        with locked(path,timeout=0,shared=modern) as lease:
+            blocked=content_runtime_blocker(active,policy)
+            if blocked:return blocked
+            return {'status':status,'served':True,
+                    'exit_code':subprocess.run(command,pass_fds=(lease.fileno(),)).returncode}
+    except RuntimeError:
+        return {'status':'content-runtime-in-use','served':False,'native_changed':False,
+                'next_action':'An incompatible content worker still owns this cache. Preserve it and retry after that worker exits; no worker or local ledger is stopped, removed or reset.'}
+    except (OSError,ValueError):
+        return {'status':'content-runtime-lifecycle-review-required','served':False,'native_changed':False,
+                'next_action':'Preserve the content cache and its persistent lease; inspect ownership or access before serving.'}
+
+
 def startup(policy_path, policy_sha256, check_only=False, installation_check=False):
     releases=ClientReleases(policy_path,policy_sha256)
     result=releases.update()
@@ -51,7 +88,7 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
     blocked=content_runtime_blocker(active,releases.policy)
     if blocked:return dict(result,**blocked)
     if check_only:return result
-    if releases.policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES):
+    if releases.policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES):
         if not installation_check:
             from content_install import inspect
             if not inspect(runtime['device_home']).get('installed'):return {'status':'content-native-install-pending','served':False,'next_action':'Complete or recover the exact native installation transaction before mapping cloud content.'}
@@ -59,7 +96,8 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
         for name,value in runtime.items():
             if name not in LEGACY_PRESERVATION:command.extend(['--'+name.replace('_','-').replace('content-cache','cache'),value])
         if installation_check:command.append('--installation-check')
-        return {'status':result['status'],'served':True,'exit_code':subprocess.run(command).returncode}
+        if installation_check:return {'status':result['status'],'served':True,'exit_code':subprocess.run(command).returncode}
+        return serve_content(command,active,releases.policy,result['status'])
     if installation_check:return {'status':'content-runtime-review-required','served':False}
     command=[sys.executable,'-I','-B',str(Path(active['package'])/'adapters/codex/remote_mcp.py'),
              '--endpoint',runtime['endpoint'],'--token-file',runtime['token_file'],'--client-version',active['version'],

@@ -5,7 +5,12 @@ from pathlib import Path
 import time
 
 @contextmanager
-def locked(path, timeout=20):
+def locked(path, timeout=20, shared=False):
+    """Yield the owned handle; POSIX shared leases may be inherited deliberately.
+
+    Existing callers retain exclusive locking by default. Windows locks remain
+    exclusive; inherited content-worker leases are a separate POSIX-only path.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open('a+b')
@@ -24,14 +29,14 @@ def locked(path, timeout=20):
                     msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
                 else:
                     import fcntl
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(handle.fileno(), (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
                 acquired = True
                 break
             except OSError:
                 if time.monotonic() >= deadline:
                     raise RuntimeError('Another operation is running; retry shortly.')
                 time.sleep(.1)
-        yield
+        yield handle
     finally:
         if acquired:
             handle.seek(0)

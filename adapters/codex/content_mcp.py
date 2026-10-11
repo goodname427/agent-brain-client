@@ -105,7 +105,7 @@ def main():
     if sys.argv[1:]==['--self-check']:print(json.dumps(self_check()));return
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ('content-policy','content-policy-sha256','device-home','cache'):parser.add_argument('--'+name,required=True)
-    for name in ('device-plan','device-plan-sha256','signing-policy','signing-policy-sha256','ssh-profile','ssh-profile-sha256'):parser.add_argument('--'+name)
+    for name in ('device-plan','device-plan-sha256','signing-policy','signing-policy-sha256','ssh-profile','ssh-profile-sha256','https-profile','https-profile-sha256','credential-source-sha256'):parser.add_argument('--'+name)
     parser.add_argument('--codex-home',help='Approved actual Codex home; otherwise honor CODEX_HOME and preserve device-level skills.')
     parser.add_argument('--installation-check',action='store_true',help='Fixed read-only protocol/auth check; does not write cache or native files.')
     parser.add_argument('--import-plan',help='Explicit reviewed private normalized source plan; no native discovery.')
@@ -115,7 +115,17 @@ def main():
     args=parser.parse_args()
     if args.component_source_sha256 and hashlib.sha256((CLIENT_ROOT/'native/DeviceComponent.swift').read_bytes()).hexdigest()!=args.component_source_sha256:raise ValueError('Native source review required')
     policy=pinned(args.content_policy,args.content_policy_sha256)
-    if args.ssh_profile:
+    if args.https_profile:
+        if any((args.device_plan,args.device_plan_sha256,args.signing_policy,args.signing_policy_sha256,args.component_source_sha256,args.ssh_profile,args.ssh_profile_sha256)):raise ValueError('Distinct transport policies required')
+        from https_content import HTTPSContentClient
+        client=HTTPSContentClient(args.https_profile,args.https_profile_sha256,credential_access=False)
+        source=CLIENT_ROOT/'native/CredentialStore.swift'
+        if not args.credential_source_sha256 or hashlib.sha256(source.read_bytes()).hexdigest()!=args.credential_source_sha256 or client.profile['credential_source_sha256']!=args.credential_source_sha256:raise ValueError('Credential helper source review required')
+        if Path(client.profile['state_directory'])!=Path(args.device_home)/'.config/agent-brain-client/https':raise ValueError('Credential device binding changed')
+        if Path(args.device_home) not in Path(client.profile['credential_helper']).parents:raise ValueError('Device-local helper required')
+        client.activate_identity()
+    elif args.https_profile_sha256 or args.credential_source_sha256:raise ValueError('HTTPS profile required')
+    elif args.ssh_profile:
         if any((args.device_plan,args.device_plan_sha256,args.signing_policy,args.signing_policy_sha256,args.component_source_sha256)):raise ValueError('Distinct transport policies required')
         from ssh_content import SSHContentClient
         client=SSHContentClient(args.ssh_profile,args.ssh_profile_sha256)

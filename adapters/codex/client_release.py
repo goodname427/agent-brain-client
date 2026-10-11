@@ -28,6 +28,9 @@ CONTENT_CLIENT_FILES=CLIENT_FILES+('adapters/codex/client_pairing.py','native/De
 CONTENT_CAPABILITIES=['codex-stdio-mcp','personal-content-explicit','signed-device-proxy']
 SSH_CONTENT_CLIENT_FILES=tuple(n for n in CONTENT_CLIENT_FILES if n!='native/DeviceComponent.swift')+('adapters/codex/ssh_content.py',)
 SSH_CONTENT_CAPABILITIES=['codex-stdio-mcp','personal-content-explicit','ssh-server-credential-proxy']
+HTTPS_CONTENT_CLIENT_FILES=tuple(n for n in CONTENT_CLIENT_FILES if n!='native/DeviceComponent.swift')+('adapters/codex/https_content.py','adapters/codex/system_credentials.py','native/CredentialStore.swift')
+HTTPS_CONTENT_CAPABILITIES=['codex-stdio-mcp','personal-content-explicit','https-system-credential']
+HTTPS_CONTENT_RUNTIME={'https_profile','https_profile_sha256','credential_source_sha256','content_policy','content_policy_sha256','device_home','codex_home','content_cache'}
 SSH_CONTENT_RUNTIME={'ssh_profile','ssh_profile_sha256','content_policy','content_policy_sha256','device_home','codex_home','content_cache'}
 LEGACY_PRESERVATION={'legacy_binding_sha256','legacy_hooks_sha256'}
 CONTENT_RUNTIME={'device_plan','device_plan_sha256','signing_policy','signing_policy_sha256','content_policy','content_policy_sha256','component_source_sha256','device_home','codex_home','content_cache'}
@@ -53,12 +56,13 @@ def policy_file(path, expected_sha):
         raise UpdateBlocked('Unknown client release policy')
     if policy['adapter']!='codex' or policy['platform'] not in ('darwin-arm64', 'darwin-x86_64'):
         raise UpdateBlocked('Only the approved Mac Codex checkpoint is wired')
-    if policy['core_api']!=1 or policy['state_schema']!=1 or policy['capabilities'] not in (CAPABILITIES,PERSONAL_CAPABILITIES,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES):
+    if policy['core_api']!=1 or policy['state_schema']!=1 or policy['capabilities'] not in (CAPABILITIES,PERSONAL_CAPABILITIES,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES):
         raise UpdateBlocked('Client permission/protocol change requires review')
-    content=policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES)
+    content=policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES)
     ssh=policy['capabilities']==SSH_CONTENT_CAPABILITIES
+    https=policy['capabilities']==HTTPS_CONTENT_CAPABILITIES
     if content and path.stat().st_mode&0o077:raise UpdateBlocked('Private content release policy required')
-    if policy['channel']!='stable' or policy['file_prefixes']!=list(SSH_CONTENT_CLIENT_FILES if ssh else CONTENT_CLIENT_FILES if content else CLIENT_FILES):
+    if policy['channel']!='stable' or policy['file_prefixes']!=list(HTTPS_CONTENT_CLIENT_FILES if https else SSH_CONTENT_CLIENT_FILES if ssh else CONTENT_CLIENT_FILES if content else CLIENT_FILES):
         raise UpdateBlocked('Client release file scope changed')
     origin=policy['origin'];parsed=urlsplit(origin)
     if parsed.scheme:
@@ -76,7 +80,7 @@ def policy_file(path, expected_sha):
         raise UpdateBlocked('Separate client source and package cache required')
     runtime=policy['runtime']
     if content:
-        scopes=(SSH_CONTENT_RUNTIME,SSH_CONTENT_RUNTIME|LEGACY_PRESERVATION) if ssh else (CONTENT_RUNTIME,)
+        scopes=(HTTPS_CONTENT_RUNTIME,HTTPS_CONTENT_RUNTIME|LEGACY_PRESERVATION) if https else (SSH_CONTENT_RUNTIME,SSH_CONTENT_RUNTIME|LEGACY_PRESERVATION) if ssh else (CONTENT_RUNTIME,)
         if not isinstance(runtime,dict) or set(runtime) not in scopes:raise UpdateBlocked('Fixed content runtime required')
         for name,value in runtime.items():
             if name.endswith('_sha256'):
@@ -98,15 +102,19 @@ def policy_file(path, expected_sha):
 
 class ClientPackage:
     def __init__(self,policy=None):
-        self.content=bool(policy and policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES))
+        self.content=bool(policy and policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES))
         self.ssh=bool(policy and policy['capabilities']==SSH_CONTENT_CAPABILITIES)
-        self.files=SSH_CONTENT_CLIENT_FILES if self.ssh else CONTENT_CLIENT_FILES if self.content else CLIENT_FILES
-        self.component_source_sha=policy['runtime']['component_source_sha256'] if self.content and not self.ssh else None
+        self.https=bool(policy and policy['capabilities']==HTTPS_CONTENT_CAPABILITIES)
+        self.files=HTTPS_CONTENT_CLIENT_FILES if self.https else SSH_CONTENT_CLIENT_FILES if self.ssh else CONTENT_CLIENT_FILES if self.content else CLIENT_FILES
+        self.component_source_sha=policy['runtime']['component_source_sha256'] if self.content and not self.ssh and not self.https else None
+
+        self.credential_source_sha=policy['runtime']['credential_source_sha256'] if self.https else None
 
     def preflight(self, package, manifest):
         if set(manifest['files'])!=set(self.files) or manifest['migrations']:
             raise UpdateBlocked('Client file membership/migration change requires review')
-        if self.content and not self.ssh and manifest['files'].get('native/DeviceComponent.swift')!=self.component_source_sha:raise UpdateBlocked('Native component source changed; signed component/plan review required')
+        if self.https and manifest['files'].get('native/CredentialStore.swift')!=self.credential_source_sha:raise UpdateBlocked('Credential helper source changed; helper/profile review required')
+        if self.content and not self.ssh and not self.https and manifest['files'].get('native/DeviceComponent.swift')!=self.component_source_sha:raise UpdateBlocked('Native component source changed; signed component/plan review required')
         for name in self.files:
             path=package/name
             if path.is_symlink() or not path.is_file():raise UpdateBlocked('Incomplete client package')
@@ -137,7 +145,7 @@ class ClientReleases:
 
     def verified_active(self):
         active=self.engine.active()
-        if active and self.policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES):
+        if active and self.policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES):
             receipt=json.loads((Path(active['package'])/'verified.json').read_text())
             self.engine.adapter.preflight(Path(active['package']),receipt['manifest'])
         return active

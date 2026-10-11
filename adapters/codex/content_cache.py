@@ -16,10 +16,7 @@ import uuid
 BASE=Path(__file__).resolve().parent
 ROOT=BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
-try:
-    import content_contract as contract
-except ImportError:
-    import brain_content as contract  # Same neutral schema in the development tree.
+import content_contract as contract
 from codex_connect import atomic
 from brain_lock import locked
 

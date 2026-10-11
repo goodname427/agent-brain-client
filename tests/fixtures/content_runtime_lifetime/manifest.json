@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "purpose": "Frozen pre-fix implementations for lifecycle regression; no runtime Git dependency.",
+  "files": [
+    {
+      "source_commit": "2d9aa9ff41f907843cc10dff2fc175e863b5aee7",
+      "source_path": "adapters/client_startup.py",
+      "fixture": "baseline_startup.py.fixture",
+      "sha256": "61dccd0ea50205950166a04dc48588bf81aa25e91b09799d3bcb16fa78a45f30"
+    },
+    {
+      "source_commit": "4d7b38a6a263694ed50ad23dd6c04c4884f9d8cd",
+      "source_path": "adapters/content_cache.py",
+      "fixture": "legacy_cache.py.fixture",
+      "sha256": "2fb1cd3a63566fbd179f572889501e6c9231394157cb8f791e2daa6c6cdac838"
+    }
+  ]
+}

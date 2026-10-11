@@ -13,7 +13,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from client_release import policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases
+from client_release import policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,HTTPS_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases
 from content_mcp import pinned,pairs
 from content_cache import validate_policy,sha,contract
 from client_pairing import ComponentClient
@@ -47,7 +47,7 @@ def package_check(package,policy):
         receipt=json.loads(raw(package/'verified.json'));manifest=receipt['manifest']
         ReleaseEngine(policy['cache'],policy,None,ClientPackage(policy),{}).validate(manifest,None)
     else:manifest=json.loads(raw(package/'export-manifest.json'))
-    if set(manifest['files'])!=set(SSH_CONTENT_CLIENT_FILES if policy['capabilities']==SSH_CONTENT_CAPABILITIES else CONTENT_CLIENT_FILES):raise InstallBlocked('Candidate package membership changed')
+    if set(manifest['files'])!=set(HTTPS_CONTENT_CLIENT_FILES if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES else SSH_CONTENT_CLIENT_FILES if policy['capabilities']==SSH_CONTENT_CAPABILITIES else CONTENT_CLIENT_FILES):raise InstallBlocked('Candidate package membership changed')
     for name,digest in manifest['files'].items():
         if sha(raw(package/name))!=digest:raise InstallBlocked('Candidate package changed')
     ClientPackage(policy).preflight(package,{'files':manifest['files'],'migrations':[]})
@@ -56,7 +56,7 @@ def package_check(package,policy):
 def context(home,package,policy_path,policy_sha):
     if sys.platform!='darwin':raise InstallBlocked('Actual Mac Codex required')
     home=safe(home);policy_path=safe(policy_path);policy=policy_file(policy_path,policy_sha)
-    if policy['capabilities'] not in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES) or policy['platform']!='darwin-'+platform.machine().lower():raise InstallBlocked('Content release scope/platform required')
+    if policy['capabilities'] not in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES) or policy['platform']!='darwin-'+platform.machine().lower():raise InstallBlocked('Content release scope/platform required')
     runtime=policy['runtime']
     if runtime['device_home']!=str(home):raise InstallBlocked('Device binding changed')
     native=safe(runtime['codex_home']);cache=safe(runtime['content_cache'])
@@ -69,7 +69,13 @@ def context(home,package,policy_path,policy_sha):
         if digest_or_none(raw(legacy))!=runtime.get('legacy_binding_sha256') or digest_or_none(raw(native/'hooks.json'))!=runtime.get('legacy_hooks_sha256'):raise InstallBlocked('Legacy registration/paused hooks need exact preservation review')
     elif 'legacy_binding_sha256' in runtime:raise InstallBlocked('Reviewed preserved legacy binding changed')
     content=pinned(runtime['content_policy'],runtime['content_policy_sha256'])
-    if policy['capabilities']==SSH_CONTENT_CAPABILITIES:
+    if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES:
+        from https_content import HTTPSContentClient
+        client=HTTPSContentClient(runtime['https_profile'],runtime['https_profile_sha256'],credential_access=False)
+        if client.profile['credential_source_sha256']!=runtime['credential_source_sha256'] or Path(client.profile['state_directory'])!=home/'.config/agent-brain-client/https':raise InstallBlocked('HTTPS credential runtime binding changed')
+        helper=Path(client.profile['credential_helper'])
+        if home not in helper.parents:raise InstallBlocked('Reviewed device-local credential helper required')
+    elif policy['capabilities']==SSH_CONTENT_CAPABILITIES:
         from ssh_content import SSHContentClient
         client=SSHContentClient(runtime['ssh_profile'],runtime['ssh_profile_sha256'])
     else:
