@@ -22,6 +22,7 @@ from brain_lock import locked
 
 BEGIN='<!-- agent-brain-content:begin -->';END='<!-- agent-brain-content:end -->'
 BLOCK=re.compile(re.escape(BEGIN)+r'.*?'+re.escape(END)+r'(?:\r?\n)?',re.S)
+OFFLINE_TRANSPORT_ERRORS=frozenset(('transport_unconfirmed','ssh_proxy_unconfirmed','server_proxy_unconfirmed'))
 
 class CacheBlocked(Exception):pass
 def sha(raw):return hashlib.sha256(raw).hexdigest()
@@ -47,7 +48,7 @@ class ContentAdapter:
         native=Path(codex_home or os.environ.get('CODEX_HOME',str(self.home/'.codex'))).expanduser()
         if not native.is_absolute() or native.is_symlink():raise CacheBlocked()
         self.native_home=native.resolve();self.binding={'device_home':str(self.home),'codex_home':str(self.native_home)}
-        self.policy=policy;self.policy_sha=sha(contract.encode({'policy':policy,'binding':self.binding}));self.health=health or (lambda:None)
+        self.policy=policy;self.policy_sha=sha(contract.encode({'policy':policy,'binding':self.binding}));self.health=health or (lambda:None);self.offline_denied=False
         # Bind pending writes to a service/principal, independently of source/data Git.
         self.queue_sha=sha(contract.encode({'policy_sha':self.policy_sha,'service':getattr(client,'queue_identity',getattr(client,'grant',None))}))
         validate_policy(policy,getattr(client,'grant',None))
@@ -337,7 +338,11 @@ class ContentAdapter:
 
     def _request(self,method,params):
         response=self.client.request({'request_id':uuid.uuid4().hex,'method':method,'params':params})
-        if 'error' in response or not isinstance(response.get('result'),dict):raise CacheBlocked()
+        if 'error' in response:
+            error=response['error']
+            if not isinstance(error,dict) or error.get('retryable') is not True or error.get('code') not in OFFLINE_TRANSPORT_ERRORS:self._deny_offline_snapshot()
+            raise CacheBlocked()
+        if not isinstance(response.get('result'),dict):raise CacheBlocked()
         return response['result']
 
     def _read_target(self,kind,identity):
@@ -398,6 +403,76 @@ class ContentAdapter:
         if sum(len(raw) for raw in desired.values())>524288:raise CacheBlocked()
         return desired
 
+    def _deny_offline_snapshot(self):
+        # Preserve downloaded content, but do not mask a known service refusal
+        # with a later transport timeout, including after process restart.
+        self.offline_denied=True
+        try:
+            pin=self._load('offline-snapshot.json')
+            if isinstance(pin,dict) and pin.get('policy_sha')==self.policy_sha and pin.get('service_sha')==self.queue_sha and pin.get('read_denied') is not True:
+                self._save('offline-snapshot.json',dict(pin,read_denied=True))
+        except Exception:pass  # The current call still refuses cached results.
+
+    def _pin_offline_snapshot(self,snapshot):
+        # A policy alone does not bind cached records to a service/principal.
+        # Pin only after an authenticated remote fetch and owned-file checks.
+        active={'commit':snapshot['commit'],'snapshot_sha':sha(contract.encode(snapshot))}
+        identity={'schema':1,'policy_sha':self.policy_sha,'service_sha':self.queue_sha,'active':active}
+        previous=self._load('offline-snapshot.json')
+        if isinstance(previous,dict) and {k:v for k,v in previous.items() if k!='verified_at'}==identity and type(previous.get('verified_at')) in (int,float) and 0<previous['verified_at']<float('inf'):
+            self.offline_denied=False;return
+        self._save('offline-snapshot.json',dict(identity,verified_at=time.time()));self.offline_denied=False
+
+    def _offline_read(self,request):
+        """Read a prior verified snapshot, never infer remote absence or success."""
+        def unavailable(code,retryable):
+            return {'request_id':request['request_id'],'error':{'code':code,'retryable':retryable},
+                    'persistence':{'durable':False},'local_cache':{'available':False}}
+        try:
+            if self.offline_denied or request['method'] not in ('content_read','content_catalog') or request['method'] not in self.methods():raise CacheBlocked()
+            with locked(self.cache/'content.lock'):
+                active=self._load('active.json')
+                if active is None:return unavailable('content_offline_cache_miss',True)
+                if not isinstance(active,dict) or set(active)!={'commit','snapshot_sha'} or not re.fullmatch(r'[a-f0-9]{40}',active.get('commit','')) or not re.fullmatch(r'[a-f0-9]{64}',active.get('snapshot_sha','')):raise CacheBlocked()
+                pin=self._load('offline-snapshot.json')
+                identity={'schema':1,'policy_sha':self.policy_sha,'service_sha':self.queue_sha,'active':active}
+                if not isinstance(pin,dict) or set(pin)!=set(identity)|{'verified_at'} or {k:v for k,v in pin.items() if k!='verified_at'}!=identity or type(pin['verified_at']) not in (int,float) or not 0<pin['verified_at']<float('inf'):raise CacheBlocked()
+                journal=self._load('transaction.json')
+                if journal and journal.get('phase') not in ('complete','rolled-back'):raise CacheBlocked()
+                self._owned();queue=self.queue_status()
+                snapshot=self._load('snapshots/'+active['commit']+'.json')
+                if not isinstance(snapshot,dict) or set(snapshot)!={'content_api_version','commit','records'} or snapshot['content_api_version']!=1 or snapshot['commit']!=active['commit'] or sha(contract.encode(snapshot))!=active['snapshot_sha'] or len(contract.encode(snapshot))>524288 or not isinstance(snapshot['records'],list) or len(snapshot['records'])>256:raise CacheBlocked()
+                seen=set()
+                for value in snapshot['records']:
+                    self._validate_target(value,value.get('kind'),value.get('id'))
+                    kind,identity=value['kind'],value['id'];contract.validate('content_read',{'kind':kind,'id':identity})
+                    if kind not in self.policy['kinds'] or not self._allows(kind,identity) or (kind,identity) in seen:raise CacheBlocked()
+                    contract.record(kind,value['record'],identity);seen.add((kind,identity))
+                params=request['params']
+                if request['method']=='content_catalog':
+                    result={'content_api_version':1,'commit':snapshot['commit'],'artifacts':[{'kind':v['kind'],'id':v['id'],'revision':v['revision']} for v in snapshot['records'] if v['kind'] in params['kinds']]}
+                else:
+                    result=next((v for v in snapshot['records'] if (v['kind'],v['id'])==(params['kind'],params['id'])),None)
+                    if result is None:return unavailable('content_offline_cache_miss',True)
+                return {'request_id':request['request_id'],'result':result,'persistence':{'durable':False,'state':'read-only'},
+                        'local_cache':{'available':True,'stale':True,'remote_confirmed':False,'snapshot_commit':snapshot['commit'],'verified_at':pin['verified_at'],'queue':queue}}
+        except Exception:return unavailable('content_offline_cache_unverified',False)
+
+    def _read_with_cache(self,request):
+        try:result=self.client.request(request)
+        except OSError:result={'request_id':request['request_id'],'error':{'code':'transport_unconfirmed','retryable':True},'persistence':{'durable':False}}
+        # Authentication, scope, credential/identity failures and invalid responses
+        # must remain errors even if an old local snapshot exists.
+        error=result.get('error',{}) if isinstance(result,dict) else {}
+        if isinstance(result,dict) and result.get('request_id')==request['request_id'] and isinstance(error,dict) and error.get('retryable') is True and error.get('code') in OFFLINE_TRANSPORT_ERRORS:
+            return self._offline_read(request)
+        if isinstance(result,dict) and 'error' in result:
+            self.offline_denied=True
+            try:
+                with locked(self.cache/'content.lock'):self._deny_offline_snapshot()
+            except Exception:pass
+        return result
+
     def refresh(self):
         try:
             with locked(self.cache/'content.lock'):
@@ -409,7 +484,9 @@ class ContentAdapter:
                 self._skill_dirs(desired,owned['files'])
                 if any(self.cache==self._path(name) or self.cache in self._path(name).parents for name in desired):raise CacheBlocked()
                 active=self._load('active.json')
-                if active=={'commit':snapshot['commit'],'snapshot_sha':sha(contract.encode(snapshot))} and self._load('snapshots/'+snapshot['commit']+'.json')==snapshot:return {'status':'content-current','native_changed':False,'model_loaded':False}
+                if active=={'commit':snapshot['commit'],'snapshot_sha':sha(contract.encode(snapshot))} and self._load('snapshots/'+snapshot['commit']+'.json')==snapshot:
+                    self._pin_offline_snapshot(snapshot)
+                    return {'status':'content-current','native_changed':False,'model_loaded':False}
                 before={};after={}
                 for name in set(owned['files'])|set(desired):
                     raw=self._raw(name)
@@ -426,7 +503,7 @@ class ContentAdapter:
                     self._save('snapshots/'+snapshot['commit']+'.json',snapshot)
                     self._save('owned.json',{'policy_sha':self.policy_sha,'binding':self.binding,'files':{name:sha(raw) for name,raw in desired.items()}})
                     self._save('active.json',{'commit':snapshot['commit'],'snapshot_sha':sha(contract.encode(snapshot))})
-                    self.health();self._owned();self._save('transaction.json',dict(journal,phase='complete'))
+                    self.health();self._owned();self._pin_offline_snapshot(snapshot);self._save('transaction.json',dict(journal,phase='complete'))
                 except Exception:self._restore(journal);raise
                 return {'status':'content-refreshed','native_changed':True,'model_loaded':False,'commit':snapshot['commit']}
         except Exception:
@@ -443,7 +520,7 @@ class ContentAdapter:
                 self._enqueue(request,reconciles)  # Precedes every transport/mapping operation.
                 self._drain();result=self._queue_result(self._load('outbox/'+request['request_id']+'.json'))
         else:
-            self.refresh();result=self.client.request(request)
+            self.refresh();result=self._read_with_cache(request)
         if method=='content_catalog' and 'error' not in result:
             value=result.get('result',{})
             if not isinstance(value.get('artifacts'),list):raise CacheBlocked()
