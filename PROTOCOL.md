@@ -119,6 +119,29 @@ local state has been created. Compatible startup can resume exact request/CAS
 replay after recovery. Existing release hashes are integrity checks, not an
 independent digital signature or a new permission grant.
 
+The local MCP adapter may answer `content_catalog`/`content_read` from a prior
+verified snapshot only after an unconfirmed transport failure. Responses retain
+the request ID and typed record/revision, add `local_cache.stale:true`,
+`remote_confirmed:false`, the snapshot commit, prior verification time and queue
+counts, and retain `persistence.durable:false,state:read-only`. Cached data is not
+current Server state, GitHub backup confirmation or a merge of pending writes.
+Offline catalog describes only the prior snapshot's authorized contents.
+
+Cache reads require matching policy, native binding and service/principal identity,
+verified snapshot/owned-file hashes and a completed mapping transaction. The
+service identity pin is created only after a successful authenticated remote
+refresh. Older unbound caches require one online verification; they are not
+silently adopted offline. Authentication/scope/credential errors remain errors. A known service refusal
+blocks offline use across restarts until authenticated refresh succeeds, without
+deleting downloaded content.
+Missing snapshots or absent cached IDs return `content_offline_cache_miss`, never
+`record:null,revision:missing`; unverified cache returns
+`content_offline_cache_unverified`. Preserve all cache/queue evidence. Cached CAS
+revisions remain original bases: reconnect may produce a conflict, which requires
+explicit reconciliation. Cache availability never grants a new operation or
+reloads already loaded Rule/Skill/model context. No Server endpoint, write/durable
+confirmation, outbox format or background scheduler changes.
+
 CAS conflicts preserve the submitted request and remote record. Unresolved local
 writes or source conflicts block mapping. A new explicit merged content_put may
 include local-only `reconciles` metadata selecting exact conflicts of that artifact:
