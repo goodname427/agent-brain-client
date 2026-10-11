@@ -97,7 +97,7 @@ def render(config,mcp,existing):
         if len(matches)!=1:raise InstallBlocked('Existing MCP table syntax needs review')
         start=matches[0].start();end=matches[0].end();next_header=re.search(r'^\[',text[end:],re.M)
         stop=end+next_header.start() if next_header else len(text);text=text[:start]+text[stop:]
-    snippet='\n[mcp_servers.'+NAME+']\n'+''.join(k+' = '+json.dumps(v,ensure_ascii=False)+'\n' for k,v in mcp.items())
+    snippet='\n[mcp_servers.'+NAME+']\n'+''.join(k+' = '+json.dumps(mcp[k],ensure_ascii=False)+'\n' for k in sorted(mcp))
     desired=(text.rstrip()+'\n'+snippet).encode();expected=copy.deepcopy(before);expected.setdefault('mcp_servers',{})[NAME]=mcp
     if tomllib.loads(desired.decode())!=expected:raise InstallBlocked('Unrelated TOML scope changed')
     return desired
@@ -184,6 +184,7 @@ def apply(plan,approved_digest,check=probe):
         check(plan)  # Read-only protocol/auth preflight before native mutation.
         config=native/'config.toml';registration=state/'codex-mcp.json'
         config_raw=raw(config);desired=render(config_raw,plan['mcp'],config_raw is not None and NAME in tomllib.loads(config_raw.decode()).get('mcp_servers',{}))
+        if sha(desired)!=plan['config_after_sha256']:raise InstallBlocked('Config rendering differs from approved plan')
         metadata={'schema':1,'native_mcp_name':NAME,'content_candidate':True,'data_mode':'personal-explicit','installation_complete':True,'protocol_checked':True,'model_loaded':False,'platform':plan['platform'],
                   'mcp_sha256':sha(json.dumps(plan['mcp'],sort_keys=True).encode()),'release_policy':plan['release_policy'],'release_policy_sha256':plan['release_policy_sha256'],'package':plan['package'],'package_sha256':plan['package_sha256'],'plan_sha256':approved_digest}
         payload={config:desired,registration:contract.encode(metadata)}
@@ -222,11 +223,18 @@ def inspect(home):
         for path,digest in receipt['after'].items():
             current=digest_or_none(raw(path))
             if current==digest:continue
+            if path==str(native/'config.toml'):
+                # The transaction journal owns full byte images for recovery;
+                # runtime ownership covers only our exact MCP table. Codex may
+                # legitimately update model, UI or other unrelated settings.
+                current_mcp=tomllib.loads(raw(path).decode()).get('mcp_servers',{}).get(NAME)
+                if current_mcp!=mcp or meta.get('mcp_sha256')!=sha(json.dumps(current_mcp,sort_keys=True).encode()):raise InstallBlocked('Installed MCP binding drift')
+                continue
             if path!=str(native/'AGENTS.md'):raise InstallBlocked('Installed ownership drift')
             runtime=policy['runtime'];owned=private_json(Path(runtime['content_cache'])/'owned.json');content=pinned(runtime['content_policy'],runtime['content_policy_sha256'])
             binding={'device_home':str(home),'codex_home':str(native)}
             if set(owned)!={'policy_sha','binding','files'} or owned['binding']!=binding or owned['policy_sha']!=sha(contract.encode({'policy':content,'binding':binding})) or owned['files'].get('.codex/AGENTS.md')!=current or BEGIN.encode() in raw(path) or END.encode() in raw(path):raise InstallBlocked('Mapped instruction ownership drift')
-        if receipt.get('phase')!='complete' or receipt.get('plan_sha256')!=meta['plan_sha256'] or package_sha!=meta['package_sha256'] or tomllib.loads(raw(native/'config.toml').decode()).get('mcp_servers',{}).get(NAME)!=mcp:raise InstallBlocked('Installed ownership drift')
+        if receipt.get('phase')!='complete' or receipt.get('plan_sha256')!=meta['plan_sha256'] or package_sha!=meta['package_sha256'] or meta.get('mcp_sha256')!=sha(json.dumps(mcp,sort_keys=True).encode()) or tomllib.loads(raw(native/'config.toml').decode()).get('mcp_servers',{}).get(NAME)!=mcp:raise InstallBlocked('Installed ownership drift')
         active=ClientReleases(meta['release_policy'],meta['release_policy_sha256']).verified_active()
         if active is None:raise InstallBlocked('Verified client version missing')
         return {'status':'content-native-client-installed','installed':True,'native_changed':False,'protocol_checked':True,'model_loaded':False,'installed_version':active['version'],'update_checkpoint':'approved-MCP-startup'}
