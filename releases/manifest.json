@@ -10,8 +10,8 @@
     ".gitignore": "de55ef044a18ae9327358209cabab993cf76a66924055155bcedad2013a0ac6b",
     "ADAPTERS.md": "ed493bf807e2817b43cb3cb6828060b063451dd1b3340dc60d966e3169d23e3e",
     "BOOTSTRAP.md": "613d7653f0e28244c73bf2f9b06e80e08229005380277e7511f35ea727407b9f",
-    "PROTOCOL.md": "0fe4fe6051c9326ce39827d8124f95264b0a9dc824bc0394b2e3c42469db1d5b",
-    "README.md": "14c01ceb94ed9396f20facf03c6d3099a1dd45d28ab54eac12b8a920661c569b",
+    "PROTOCOL.md": "2633e2e2a3e2d7cac05eeb2633d06a56956b6da3dfade0879579a9385836b16b",
+    "README.md": "ec4060c98d3a76faa7f950fa84fb71453a148e21cb2a58034962002e5d1c4eae",
     "adapters/codex/client_pairing.py": "dc547ec3454b2f5f399c4a7437292fefc52408d57a9b71194d8f26fa91252047",
     "adapters/codex/client_release.py": "b1dfa5ee0917f8a062cb6ab416ee37b2844168c47a84d2a7f5e07f3a6f5fc275",
     "adapters/codex/client_startup.py": "ff895391d6835ae64fa7d9ef068b5d66739833eec3d347b7dc16619f498ecc90",
@@ -20,8 +20,8 @@
     "adapters/codex/content_contract.py": "75c54421f53828d3fa81ed8d06532fd757fd98154bfadd449e866d387213d81b",
     "adapters/codex/content_install.py": "5c5285122a81bf434c34217861c68a0706dfa0518fb754d5f5b2b44426a4ab3c",
     "adapters/codex/content_mcp.py": "fe8294c51900cd6918c1cf3ab0d1c70997cf7cd00783291dbb7b05e004b3f1ed",
-    "adapters/codex/https_content.py": "b70077bc8b70844d84f73e1a4ff68507f04a969d14e0afa4da9b07ddabf94032",
-    "adapters/codex/remote_http.py": "3470f725fb9269dd4f491a4d8589bedc897f3e6aff7f33515187890f167c404f",
+    "adapters/codex/https_content.py": "2deebfe104a4193c008ea59902709c678b3d236a50a1b4fd2c3555e6791cc967",
+    "adapters/codex/remote_http.py": "f29c438d13d8b9afbcfcac3f55e4948774ca11e2538eb9e7e95609031789f290",
     "adapters/codex/remote_mcp.py": "702ce3fff0db9147d38dd73963f0b6093075cb9fd1cde6d2211faa809666b76e",
     "adapters/codex/system_credentials.py": "2b42d6e2adf1ec6099fb52666e1ee1b2a6adda743815fccbf11a2ff640d175fb",
     "connect.py": "eba57cc31800db294c2a3b5d1b0c133c910f8d7c8566d0565557bced6f5504d2",
@@ -33,5 +33,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.2.6"
+  "version": "0.2.7"
 }

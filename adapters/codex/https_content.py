@@ -205,7 +205,7 @@ class HTTPSContentClient:
         self.enrollment=DeviceEnrollment(self.profile,digest,self.store,None,None)
         self.device_id=None;self.queue_identity=None
         if credential_access:self.activate_identity()
-        self.transport=RemoteClient(self.profile['endpoint'],data_mode='personal',credential_provider=self._credential)
+        self.transport=RemoteClient(self.profile['endpoint'],data_mode='personal',credential_provider=self._credential,write_receipt='local-durable-v1')
 
     def activate_identity(self):
         saved=self.enrollment.check(self.store.load())
