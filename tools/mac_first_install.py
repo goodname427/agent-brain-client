@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import time
+import secrets
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT
@@ -34,6 +35,7 @@ from https_content import (
     install_once,
     native_store,
     profile_file,
+    profile_metadata,
 )
 from system_credentials import canonical, unique, owned
 from build_client import export
@@ -156,6 +158,26 @@ def prepare_dependencies(home, *, runner=subprocess.run, helper_builder=build_he
     return dict(metadata, credential_helper=str(helper), dependencies=deps)
 
 
+def installation_id(state):
+    path = state / "installation-id.json"
+    value = private_json(path) if path.exists() else {"schema": 1, "id": secrets.token_hex(16)}
+    if set(value) != {"schema", "id"} or value["schema"] != 1 or not re.fullmatch(r"[a-f0-9]{32}", value["id"]):
+        raise ValueError("Installation instance drift")
+    same_private(path, value)
+    return value["id"]
+
+
+def readiness(state, connection, connection_sha, materials_sha, plan_sha):
+    prepared_at = int(time.time())
+    value = {"schema": 2, "installation_id": installation_id(state),
+             "status": "first-install-ready", "endpoint": connection["endpoint"],
+             "grant": connection["grant"], "connection_sha256": connection_sha,
+             "bundle_sha256": materials_sha, "plan_sha256": plan_sha,
+             "prepared_at": prepared_at, "valid_until": prepared_at + 600,
+             "native_changed": False, "credential_accessed": False}
+    save(state / "ready.json", value)
+
+
 def prepare_materials(
     materials,
     home,
@@ -187,23 +209,24 @@ def prepare_materials(
     ) and not (state / "connection.json").exists():
         raise ValueError("Existing installation preserved")
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    same_private(state / "binding.json", binding)
+    binding["installation_id"] = installation_id(state)
+    binding_path = state / "binding.json"
+    if binding_path.exists() and "installation_id" not in private_json(binding_path):
+        legacy = dict(binding)
+        legacy.pop("installation_id")
+        if private_json(binding_path) != legacy:
+            raise ValueError("Prepared binding drift")
+        same_private(state / "prior-binding.json", legacy)
+        save(binding_path, binding)  # Only exact known metadata; preserve preimage.
+    same_private(binding_path, binding)
     same_private(state / "connection.json", connection)
     deps_sha = same_private(state / "dependencies.json", materials["dependencies"])
     helper = Path(materials["credential_helper"])
-    profile = {
-        "schema": 1,
-        "transport": "https-system-credential",
-        "adapter": "codex",
-        "platform": "darwin-arm64",
-        "data_mode": "personal",
-        "endpoint": connection["endpoint"],
-        "grant": connection["grant"],
-        "credential_helper": str(helper),
-        "credential_helper_sha256": materials["helper_sha256"],
-        "credential_source_sha256": materials["source_sha256"],
-        "state_directory": str(home / ".config/agent-brain-client/https"),
-    }
+    profile = profile_metadata(connection["endpoint"], connection["grant"],
+                               {"kind": "mac-login-keychain", "helper": str(helper),
+                                "helper_sha256": materials["helper_sha256"],
+                                "source_sha256": materials["source_sha256"]},
+                               str(home / ".config/agent-brain-client/https"))
     profile_sha = same_private(state / "https-profile.json", profile)
     content = {
         "schema": 1,
@@ -263,21 +286,7 @@ def prepare_materials(
         ):
             return plan, plan_sha, binding
         inspect_plan(plan_path, plan_sha)
-        prepared_at = int(time.time())
-        ready = {
-            "schema": 1,
-            "status": "first-install-ready",
-            "endpoint": connection["endpoint"],
-            "grant": connection["grant"],
-            "connection_sha256": connection_sha,
-            "bundle_sha256": bundle_sha,
-            "plan_sha256": plan_sha,
-            "prepared_at": prepared_at,
-            "valid_until": prepared_at + 600,
-            "native_changed": False,
-            "credential_accessed": False,
-        }
-        save(state / "ready.json", ready)
+        readiness(state, connection, connection_sha, bundle_sha, plan_sha)
         return plan, plan_sha, binding
     repository = safe(state / "repository")
     if not (repository / ".git").exists():
@@ -349,21 +358,7 @@ def prepare_materials(
         os.rename(staging / "package", package)
     plan = prepare(home, package, state / "release-policy.json", policy_sha)
     plan_sha = same_private(plan_path, plan)
-    prepared_at = int(time.time())
-    ready = {
-        "schema": 1,
-        "status": "first-install-ready",
-        "endpoint": connection["endpoint"],
-        "grant": connection["grant"],
-        "connection_sha256": connection_sha,
-        "bundle_sha256": bundle_sha,
-        "plan_sha256": plan_sha,
-        "prepared_at": prepared_at,
-        "valid_until": prepared_at + 600,
-        "native_changed": False,
-        "credential_accessed": False,
-    }
-    save(state / "ready.json", ready)
+    readiness(state, connection, connection_sha, bundle_sha, plan_sha)
     return plan, plan_sha, binding
 
 
@@ -443,7 +438,7 @@ def run(
                 )
                 if selected != "Continue":
                     return {
-                        "status": "first-install-ready"
+                        "status": ("pairing-resume-required" if resuming else "first-install-ready")
                         if selected == "Back"
                         else "first-install-cancelled",
                         "installed": False,

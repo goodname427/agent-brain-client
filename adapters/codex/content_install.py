@@ -18,7 +18,7 @@ from content_mcp import pinned,pairs
 from content_cache import validate_policy,sha,contract
 from client_pairing import ComponentClient
 from codex_connect import atomic,NAME,BEGIN,END,BLOCK
-from brain_lock import locked
+from brain_lock import locked,require_platform,platform_paths,private_mode,PlatformUnsupported,native_platform
 from brain_release import ReleaseEngine
 
 class InstallBlocked(ValueError):pass
@@ -37,8 +37,9 @@ def raw(path,limit=262144):
 def save(path,value):atomic(safe(path),contract.encode(value),0o600)
 def digest_or_none(value):return sha(value) if value is not None else None
 def private_json(path):
+    require_platform('private-metadata')
     path=safe(path)
-    if not path.is_file() or path.stat().st_mode&0o077:raise InstallBlocked('Private metadata required')
+    private_mode(path,blocked=InstallBlocked)
     return json.loads(raw(path,1048576),object_pairs_hook=pairs)
 
 def package_check(package,policy):
@@ -54,9 +55,9 @@ def package_check(package,policy):
     return sha(contract.encode(manifest['files']))
 
 def context(home,package,policy_path,policy_sha):
-    if sys.platform!='darwin':raise InstallBlocked('Actual Mac Codex required')
+    require_platform('native-install')
     home=safe(home);policy_path=safe(policy_path);policy=policy_file(policy_path,policy_sha)
-    if policy['capabilities'] not in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES) or policy['platform']!='darwin-'+platform.machine().lower():raise InstallBlocked('Content release scope/platform required')
+    if policy['capabilities'] not in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES) or policy['platform']!=native_platform():raise InstallBlocked('Content release scope/platform required')
     runtime=policy['runtime']
     if runtime['device_home']!=str(home):raise InstallBlocked('Device binding changed')
     native=safe(runtime['codex_home']);cache=safe(runtime['content_cache'])
@@ -142,10 +143,12 @@ def probe(plan):
     value=json.loads(run.stdout)
     if value.get('status')!='content-native-protocol-checked' or value.get('protocol_checked') is not True or value.get('authentication_checked') is not True or value.get('native_changed') is not False or value.get('tools')!=plan['mcp']['enabled_tools']:raise InstallBlocked('Unexpected installation protocol check')
 
-def plan_scope(plan):
+def validate_install_scope(plan):
     keys={'schema','adapter','platform','device_home','codex_home','package','package_sha256','release_policy','release_policy_sha256','replace_existing','mcp','before','config_after_sha256','legacy_agents'}
     if not isinstance(plan,dict) or set(plan)!=keys or plan['schema']!=1 or plan['adapter']!='codex' or type(plan['replace_existing'])!=bool:raise InstallBlocked('Unsupported install plan')
-    home,native=safe(plan['device_home']),safe(plan['codex_home'])
+    path_type=platform_paths(plan['platform'])
+    home,native=path_type(plan['device_home']),path_type(plan['codex_home'])
+    if any(not p.is_absolute() or '..' in p.parts for p in (home,native)):raise InstallBlocked('Absolute native paths required')
     paths={native/'config.toml',home/'.config/agent-brain-client/codex-mcp.json'}
     if plan['legacy_agents'] is not None:
         old=plan['legacy_agents']
@@ -153,6 +156,12 @@ def plan_scope(plan):
         paths.add(native/'AGENTS.md')
     if set(plan['before'])!={str(p) for p in paths}:raise InstallBlocked('Native plan scope changed')
     return home,native,paths
+
+def plan_scope(plan):
+    require_platform('native-install',plan.get('platform') if isinstance(plan,dict) else None)
+    home,native,paths=validate_install_scope(plan)
+    return safe(str(home)),safe(str(native)),{safe(str(p)) for p in paths}
+
 
 def inspect_plan(path,digest):
     plan=pinned(path,digest);home,_,_=plan_scope(plan)
@@ -174,6 +183,8 @@ def restore(journal,plan):
     journal['phase']='rolled-back'
 
 def apply(plan,approved_digest,check=probe):
+    try:require_platform('native-install',plan.get('platform') if isinstance(plan,dict) else None)
+    except PlatformUnsupported as error:return error.result(installed=False,native_changed=False)
     home,native,paths=plan_scope(plan);state=home/'.config/agent-brain-client';receipt=safe(state/'content-install-receipt.json')
     if approved_digest!=sha(contract.encode(plan)):return {'status':'content-install-plan-review-required','native_changed':False,'installed':False}
     with locked(safe(state/'content-install.lock')):
@@ -219,6 +230,7 @@ def apply(plan,approved_digest,check=probe):
 
 def inspect(home):
     try:
+        require_platform('native-install')
         home=safe(home);state=home/'.config/agent-brain-client';registration=state/'codex-mcp.json'
         meta=private_json(registration)
         if meta.get('content_candidate') is not True:return {'status':'not-content-client','native_changed':False}
@@ -245,6 +257,7 @@ def inspect(home):
         active=ClientReleases(meta['release_policy'],meta['release_policy_sha256']).verified_active()
         if active is None:raise InstallBlocked('Verified client version missing')
         return {'status':'content-native-client-installed','installed':True,'native_changed':False,'protocol_checked':True,'model_loaded':False,'installed_version':active['version'],'update_checkpoint':'approved-MCP-startup'}
+    except PlatformUnsupported as error:return error.result(installed=False,native_changed=False)
     except Exception:return {'status':'content-native-install-review-required','installed':False,'native_changed':False}
 
 def main():
@@ -259,6 +272,7 @@ def main():
         elif args.action=='apply':result=apply(pinned(args.plan_file,args.plan_sha256),args.plan_sha256)
         else:result=inspect(args.device_home)
         print(json.dumps(result));return 0 if result.get('installed') or result['status']=='content-install-plan-prepared' else 2
+    except PlatformUnsupported as error:print(json.dumps(error.result(installed=False,native_changed=False)));return 2
     except Exception:print(json.dumps({'status':'content-native-install-review-required','installed':False,'native_changed':False,'next_action':'Preserve native files, private plan and recovery receipt; review exact source, binding, grant and ownership. No raw errors or credentials returned.'}));return 2
 
 if __name__=='__main__':sys.exit(main())

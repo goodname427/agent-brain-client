@@ -16,12 +16,12 @@ sh tools/install-mac.sh --connection "$CONNECTION_JSON"
 
 Helper 使用普通 login Keychain、专用 service 与固定 executable 访问控制；安全输入是已有 `NSSecureTextField`。必须保持设备本地稳定路径、helper 字节与 Swift 源码摘要；不能随升级重新编译并悄悄更换已绑定 helper。源码构建需要 Swift 工具链，这是当前源码安装路线的真实依赖。没有改 helper 源码、Keychain ACL、TLS 信任锚或设备能力范围。
 
-依赖、自检、受信渠道健康和原生计划全部通过后才生成最多十分钟的 `ready.json`；此时才申请短期邀请。该文件为兼容既有私有发码工具仍使用 `bundle_sha256` 字段，当前值固定的是准备材料元数据，不要求 `.app` bundle。管理员复用独立 Server 仓库的既有 issuer 能力和私有交付，Client 不发码。Continue 才调用 `install_once` 的一次安全输入；所有敏感内容仅在安全输入、专用保护项及私有管道中流转，不经终端 stdin、聊天、剪贴板、argv、环境或日志。
+依赖、自检、受信渠道健康和原生计划全部通过后才生成最多十分钟的 `ready.json`；此时才申请短期邀请。schema 2 回执有稳定的非敏感 installation_id，同一准备目录跨重启/重新准备复用，绑定前像保留；它不是 Server 设备身份。`bundle_sha256` 字段保留原名，当前固定准备材料元数据，不要求 `.app`。私有发码账本按该安装实例关联原回执，不以刷新时间或更换回执当作未知结果已结束；旧无关联账本必须先核对，不能自动删除/等待过期后重发。管理员复用独立 Server 仓库的既有 issuer 能力和私有交付，Client 不发码。Continue 才调用 `install_once` 的一次安全输入；所有敏感内容仅在安全输入、专用保护项及私有管道中流转，不经终端 stdin、聊天、剪贴板、argv、环境或日志。
 
 取消/Back/重复启动不改原生登记。错误或过期邀请码只有在服务端明确 prepare 拒绝、重放同一 code/nonce 确认并经用户确认后，才清除该 preparing 记录并结束尝试。网络失败、丢 ACK、未知回复和重启复用原 code/nonce 或 pending/active 凭据，不清空、不自动发码或新建身份。非敏感尝试标记只控制“恢复既有尝试”的提示与 readiness：已开始的尝试不刷新可发码 ready，配对状态仍由原有系统保护项管理。旧 ready 存为历史，失败重检不会继续提供当前 ready。依赖、helper、连接及原生配置漂移保留并停止；安装中断沿用现有前后像恢复。既有快照、队列及更新回滚保持原机制。
 
 依赖使用明确可执行路径和私有策略，MCP/probe 固定环境并禁止 Git 全局凭据与交互提示。新增 schema 2 记录本地 Python/Git 的路径及 executable 摘要；旧 schema 1 完整依赖树策略仍可校验，旧无依赖策略保持原行为。系统工具或解释器更新造成绑定漂移时需要审核，不覆盖旧计划或凭据。
 
-Windows 从现在按平台边界设计：共享配对恢复/事务/updater 与 store/input 注入接口复用，路径/安全环境契约覆盖 `.exe`、盘符、空格及分隔符。当前 Mac 入口、login Keychain、所有权校验、POSIX worker lease 和 Server 平台许可仍不适用于 Windows；未实现 Windows 凭据后端/可信输入/启动或实机安装。契约测试不会扩大许可或明文回退，见 [跨平台验收](PLATFORM-PAIRING-ACCEPTANCE.md)。
+Windows 从现在按平台边界设计：共享配对恢复/事务/updater 与 store/input 注入接口复用，配置生成/验证复用同一入口，Windows 凭据描述明确 unsupported、不带 Mac helper/源码字段；发布政策和安装作用域按对应纯路径语法验证，TOML 生成保持无关配置。真实权限、凭据、更新、安装恢复、缓存和 worker 操作经现有平台边界分派，Windows 在私有读写/进程/网络更新之前返回明确 platform-unsupported。契约覆盖路径、配置、拒绝越权/降级、原状态保留与无 POSIX 回退；Mac 旧配置格式保留。当前 Mac 入口、login Keychain、所有权校验、POSIX worker lease 和 Server 平台许可仍不适用于 Windows；未实现 Windows 凭据后端/可信输入/启动或实机安装。契约测试不会扩大许可或明文回退，见 [跨平台验收](PLATFORM-PAIRING-ACCEPTANCE.md)。
 
 本轮只开发和隔离验证，没有执行系统工具安装、真实 Keychain 输入/写入、新设备发码、发布资产或生产部署。另一台新 Mac 的工具准备、真实 UI/Keychain/MCP 与重启恢复尚未实测。真实安装、发码、设备身份和发布渠道变更仍需具体对象与权限批准；签名、公证不是本路线的新增批准门槛。

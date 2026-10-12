@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from client_release import ClientReleases,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES,LEGACY_PRESERVATION,DEPENDENCY_RUNTIME,version
-from brain_lock import locked
+from brain_lock import locked,require_platform,private_mode,PlatformUnsupported
 
 OUTBOX_MIN_VERSION='0.2.1'
 
@@ -48,20 +48,19 @@ def serve_content(command,active,policy,status):
     The child inherits the descriptor, so a killed bootstrap cannot release its
     live worker's protection. Persistent lock files are never removed/reset.
     """
-    if os.name!='posix':
-        return {'status':'content-runtime-lifecycle-review-required','served':False,
-                'next_action':'This fixed content lifecycle requires reviewed inherited POSIX locks; preserve the current client.'}
+    try:require_platform('worker-lease',policy.get('platform'))
+    except PlatformUnsupported as error:return error.result(served=False,native_changed=False)
     cache=Path(policy['runtime']['content_cache'])
     try:
         if cache.is_symlink():raise ValueError('Linked content cache')
         cache.mkdir(parents=True,exist_ok=True,mode=0o700)
-        if cache.stat().st_uid!=os.getuid() or cache.stat().st_mode&0o077:raise ValueError('Private content cache required')
+        private_mode(cache,directory=True,owner=True)
         path=cache/'.content-runtime.lock'
         try:
             fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600);os.close(fd)
         except FileExistsError:pass
-        st=path.lstat()
-        if path.is_symlink() or not path.is_file() or st.st_uid!=os.getuid() or st.st_mode&0o077 or st.st_nlink!=1:raise ValueError('Content lease changed')
+        if path.is_symlink():raise ValueError('Content lease changed')
+        private_mode(path,owner=True)
         modern=version(active['version'])>=version(OUTBOX_MIN_VERSION)
         with locked(path,timeout=0,shared=modern) as lease:
             blocked=content_runtime_blocker(active,policy)
@@ -116,6 +115,7 @@ def main():
     parser.add_argument('--installation-check',action='store_true',help='Read-only content protocol/authentication check; no native mapping.')
     args=parser.parse_args()
     try:result=startup(args.policy_file,args.policy_sha256,args.check_only,args.installation_check)
+    except PlatformUnsupported as error:result=error.result(served=False,native_changed=False)
     except Exception:
         result={'status':'startup-review-required','served':False,'next_action':'Inspect the approved fixed bootstrap, policy digest and isolated client paths; preserve existing packages.'}
     if args.check_only:print(json.dumps(result))

@@ -9,6 +9,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 from remote_mcp import Server,ProtocolError,keys,pairs,MAX_MESSAGE
 from content_cache import ContentAdapter,contract,validate_policy,ROOT as CLIENT_ROOT
 from client_pairing import ComponentClient
+from brain_lock import PlatformUnsupported,require_platform,private_mode
 
 class ContentServer(Server):
     def __init__(self,adapter,client_version='0.2.0'):
@@ -60,8 +61,10 @@ class ContentServer(Server):
         return result
 
 def pinned(path,digest):
+    require_platform("private-metadata")
     path=Path(path)
-    if path.is_symlink() or not path.is_file() or path.stat().st_mode&0o077 or path.stat().st_size>65536:raise ValueError()
+    if path.is_symlink() or not path.is_file() or path.stat().st_size>65536:raise ValueError()
+    private_mode(path)
     raw=path.read_bytes()
     if hashlib.sha256(raw).hexdigest()!=digest:raise ValueError()
     return json.loads(raw,object_pairs_hook=pairs)
@@ -138,7 +141,8 @@ def main():
     adapter=ContentAdapter(args.device_home,args.cache,policy,client,codex_home=args.codex_home)
     if args.import_plan:
         path=Path(args.import_plan)
-        if path.is_symlink() or not path.is_file() or path.stat().st_mode&0o077 or path.stat().st_size>1048576:raise ValueError('Private bounded import plan required')
+        if path.is_symlink() or not path.is_file() or path.stat().st_size>1048576:raise ValueError('Private bounded import plan required')
+        private_mode(path)
         raw=path.read_bytes()
         if hashlib.sha256(raw).hexdigest()!=args.import_plan_sha256:raise ValueError('Import plan drift')
         adapter.stage_import(json.loads(raw,object_pairs_hook=pairs))
@@ -161,4 +165,5 @@ def main():
 
 if __name__=='__main__':
     try:main()
+    except PlatformUnsupported as error:print(json.dumps(error.result(served=False,native_changed=False)),file=sys.stderr);sys.exit(2)
     except Exception:print('Content candidate startup blocked; retain current client and reviewed policies. No credential details returned.',file=sys.stderr);sys.exit(1)
