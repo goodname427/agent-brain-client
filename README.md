@@ -26,4 +26,4 @@ python3 -B tools/build_credential_helper.py --output .local/credential-helper
 
 Mac arm64 的唯一用户操作说明见 [安装、使用、卸载与再次安装](docs/FIRST-INSTALL-MAC.md)，连接交付格式见 [无凭据示例](docs/connection.example.json)。同一个脚本提供 install/status/repair/uninstall；卸载移除入口和自有映射，保留身份及可恢复数据，不卸载 Codex。现有设备再次安装复用原身份、helper/profile/队列与信任锚；无需 Apple 分发身份或公证。独立实机验收仍须实际执行，合成验证不代表已通过。普通 Client 不包含管理员发码工具。
 
-弱网兼容源码区分服务器本地已保存（local_durable:true、GitHub 未确认）和原 durable:true 的 GitHub 确认。前者可继续 CAS/映射，但不会冒称备份完成；同 request_id 明确重试可更新回执。公开协议见 PROTOCOL.md。生产0.2.5和发布渠道未切换；Server部署须配套兼容Client。
+弱网兼容源码区分服务器本地已保存（local_durable:true、GitHub 未确认）和原 durable:true 的 GitHub 确认。前者可继续 CAS/映射，但不会冒称备份完成；同 request_id 明确重试可更新回执。公开协议见 PROTOCOL.md。现有HTTPS渠道已发布0.2.6，运行中的旧worker不会热替换。新源码通过明确HTTP写回执能力声明选择本地确认；0.2.5与已冻结0.2.6未声明时仍保持原GitHub确认/可重试错误语义。Server兼容部署不要求所有Client先升级；能力声明源码须后续小版本发布。
