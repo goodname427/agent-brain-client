@@ -175,7 +175,7 @@ class ContentAdapter:
             self._save('imports.json',state)
 
     def _drain(self):
-        blocked={}
+        blocked:dict[tuple[str,str],set[str]]={}
         for row in self._queued():
             request=row['request'];params=request['params'];target=(params['kind'],params['id'])
             if row['state'] in ('conflict','blocked'):
@@ -190,11 +190,7 @@ class ContentAdapter:
             except Exception:break
             if not isinstance(response,dict) or response.get('request_id')!=request['request_id']:break
             if 'error' not in response:
-                value=response.get('result');receipt=response.get('persistence')
-                if not isinstance(receipt,dict) or receipt.get('durable') is not True or receipt.get('state')!='remote-confirmed' or not isinstance(receipt.get('commit'),str) or not re.fullmatch(r'[a-f0-9]{40}',receipt['commit']):break
-                try:self._validate_target(value,*target)
-                except Exception:break
-                if not self._import_same(params['kind'],params.get('record'),value['record'],preserve_enabled=False):break
+                if not self._server_saved(response,request):break
                 row.update(state='confirmed',response=response)
             else:
                 error=response['error']
@@ -213,9 +209,22 @@ class ContentAdapter:
         rows=self._queued()
         return {state:sum(row['state']==state for row in rows) for state in ('pending','confirmed','conflict','blocked','reconciled')}
 
+    def _server_saved(self,response,request):
+        if not isinstance(response,dict) or response.get('request_id')!=request['request_id'] or 'error' in response:return False
+        receipt=response.get('persistence');value=response.get('result');params=request['params']
+        if not isinstance(receipt,dict) or not isinstance(value,dict) or not isinstance(receipt.get('commit'),str) or not re.fullmatch(r'[a-f0-9]{40}',receipt['commit']):return False
+        remote=receipt.get('state')=='remote-confirmed' and receipt.get('durable') is True and receipt.get('github_confirmed',True) is True and receipt.get('local_durable',True) is True
+        local=receipt.get('state')=='local-confirmed' and receipt.get('durable') is False and receipt.get('local_durable') is True and receipt.get('github_confirmed') is False
+        if not (remote or local):return False
+        try:self._validate_target(value,params['kind'],params['id'])
+        except Exception:return False
+        return self._import_same(params['kind'],params.get('record'),value['record'],preserve_enabled=False)
+
     def _queue_result(self,row):
         result=row['response'] if row['state']!='pending' else {'request_id':row['request']['request_id'],'error':{'code':'content_upload_queued','retryable':True},'persistence':{'durable':False}}
-        return dict(result,local_queue={'state':row['state'],'saved':True,'request_sha256':row['request_sha']})
+        receipt=result.get('persistence',{})
+        return dict(result,local_queue={'state':row['state'],'saved':True,'request_sha256':row['request_sha'],
+                                       'server_saved':row['state']=='confirmed','github_confirmed':receipt.get('state')=='remote-confirmed' and receipt.get('durable') is True})
 
     def stage_import(self,plan):
         """Explicit reviewed normalized sources only; no native/file discovery."""
@@ -289,7 +298,7 @@ class ContentAdapter:
         if state['items']:self._save('imports.json',state)
 
     def import_status(self):
-        state=self._imports();counts={}
+        state=self._imports();counts:dict[str,int]={}
         for item in state['items'].values():counts[item['status']]=counts.get(item['status'],0)+1
         conflicts=[{'source_key':key,'source_id':item['source']['source_id'],'kind':item['source']['kind'],'id':item['source']['id'],'remote_revision':(item['remote'] or {}).get('revision')} for key,item in state['items'].items() if item['status']=='conflict']
         return {'counts':counts,'conflicts':conflicts,'coverage':state['coverage'],'account_complete':False}
@@ -453,6 +462,7 @@ class ContentAdapter:
                     if kind not in self.policy['kinds'] or not self._allows(kind,identity) or (kind,identity) in seen:raise CacheBlocked()
                     contract.record(kind,value['record'],identity);seen.add((kind,identity))
                 params=request['params']
+                result:dict|None
                 if request['method']=='content_catalog':
                     result={'content_api_version':1,'commit':snapshot['commit'],'artifacts':[{'kind':v['kind'],'id':v['id'],'revision':v['revision']} for v in snapshot['records'] if v['kind'] in params['kinds']]}
                 else:
@@ -523,7 +533,15 @@ class ContentAdapter:
         if any(kind not in self.policy['kinds'] for kind in kinds) or method!='content_catalog' and not self._allows(params['kind'],params['id']):raise CacheBlocked()
         if method in contract.WRITES:
             with locked(self.cache/'content.lock'):
-                self._enqueue(request,reconciles)  # Precedes every transport/mapping operation.
+                row=self._enqueue(request,reconciles)  # Precedes every transport/mapping operation.
+                # Only an explicit same-ID retry upgrades an old local receipt.
+                # No automatic loop over the backed-up journal or new scheduler.
+                if row['state']=='confirmed' and (row['response'] or {}).get('persistence',{}).get('state')=='local-confirmed':
+                    try:
+                        response=self.client.request(request)
+                        if self._server_saved(response,request):
+                            row['response']=response;self._save('outbox/'+request['request_id']+'.json',row)
+                    except Exception:pass
                 self._drain();result=self._queue_result(self._load('outbox/'+request['request_id']+'.json'))
         else:
             self.refresh();result=self._read_with_cache(request)
