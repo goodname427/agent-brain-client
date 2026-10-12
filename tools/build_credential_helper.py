@@ -15,7 +15,7 @@ def build(output):
     cache=ROOT/'.local/swift-module-cache';cache.mkdir(parents=True,exist_ok=True,mode=0o700)
     output.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
     source=ROOT/'native/CredentialStore.swift'
-    subprocess.run(['/usr/bin/swiftc','-O','-module-cache-path',str(cache),str(source),'-o',str(output)],check=True)
+    subprocess.run(['/usr/bin/swiftc','-O','-target',platform.machine().lower()+'-apple-macos13.0','-module-cache-path',str(cache),str(source),'-o',str(output)],check=True)
     output.chmod(0o700)
     run=subprocess.run([str(output),'--self-check'],capture_output=True,text=True,check=True)
     check=json.loads(run.stdout)

@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from client_release import ClientReleases,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES,LEGACY_PRESERVATION,version
+from client_release import ClientReleases,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES,LEGACY_PRESERVATION,DEPENDENCY_RUNTIME,version
 from brain_lock import locked
 
 OUTBOX_MIN_VERSION='0.2.1'
@@ -94,7 +94,7 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
             if not inspect(runtime['device_home']).get('installed'):return {'status':'content-native-install-pending','served':False,'next_action':'Complete or recover the exact native installation transaction before mapping cloud content.'}
         command=[sys.executable,'-I','-B',str(Path(active['package'])/'adapters/codex/content_mcp.py'),'--client-version',active['version']]
         for name,value in runtime.items():
-            if name not in LEGACY_PRESERVATION:command.extend(['--'+name.replace('_','-').replace('content-cache','cache'),value])
+            if name not in LEGACY_PRESERVATION|DEPENDENCY_RUNTIME:command.extend(['--'+name.replace('_','-').replace('content-cache','cache'),value])
         if installation_check:command.append('--installation-check')
         if installation_check:return {'status':result['status'],'served':True,'exit_code':subprocess.run(command).returncode}
         return serve_content(command,active,releases.policy,result['status'])

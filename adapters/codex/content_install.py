@@ -13,7 +13,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from client_release import policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,HTTPS_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases
+from client_release import policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,HTTPS_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases,dependency_environment
 from content_mcp import pinned,pairs
 from content_cache import validate_policy,sha,contract
 from client_pairing import ComponentClient
@@ -87,6 +87,8 @@ def context(home,package,policy_path,policy_sha):
     package_sha=package_check(package,policy)
     mcp={'command':str(Path(sys.executable).resolve()),'args':['-I','-B',str(safe(package)/'adapters/codex/client_startup.py'),'--policy-file',str(policy_path),'--policy-sha256',policy_sha],
          'startup_timeout_sec':60,'tool_timeout_sec':120,'enabled':True,'enabled_tools':methods,'default_tools_approval_mode':'writes'}
+    environment=dependency_environment(policy)
+    if environment is not None:mcp['env']=environment
     return policy,mcp,package_sha,native
 
 def render(config,mcp,existing):
@@ -97,7 +99,10 @@ def render(config,mcp,existing):
         if len(matches)!=1:raise InstallBlocked('Existing MCP table syntax needs review')
         start=matches[0].start();end=matches[0].end();next_header=re.search(r'^\[',text[end:],re.M)
         stop=end+next_header.start() if next_header else len(text);text=text[:start]+text[stop:]
-    snippet='\n[mcp_servers.'+NAME+']\n'+''.join(k+' = '+json.dumps(mcp[k],ensure_ascii=False)+'\n' for k in sorted(mcp))
+    def literal(value):
+        if isinstance(value,dict):return '{'+', '.join(json.dumps(k)+' = '+literal(value[k]) for k in sorted(value))+'}'
+        return json.dumps(value,ensure_ascii=False)
+    snippet='\n[mcp_servers.'+NAME+']\n'+''.join(k+' = '+literal(mcp[k])+'\n' for k in sorted(mcp))
     desired=(text.rstrip()+'\n'+snippet).encode();expected=copy.deepcopy(before);expected.setdefault('mcp_servers',{})[NAME]=mcp
     if tomllib.loads(desired.decode())!=expected:raise InstallBlocked('Unrelated TOML scope changed')
     return desired
@@ -130,7 +135,9 @@ def prepare(home,package,policy_path,policy_sha,replace_existing=False):
     return plan
 
 def probe(plan):
-    run=subprocess.run([plan['mcp']['command'],*plan['mcp']['args'],'--installation-check'],capture_output=True,stdin=subprocess.DEVNULL,timeout=60)
+    environment=None
+    if 'env' in plan['mcp']:environment=dict(plan['mcp']['env'],HOME=plan['device_home'],LANG='en_US.UTF-8')
+    run=subprocess.run([plan['mcp']['command'],*plan['mcp']['args'],'--installation-check'],capture_output=True,stdin=subprocess.DEVNULL,timeout=60,env=environment)
     if run.returncode or len(run.stdout)>16384:raise InstallBlocked('Protocol/authentication unconfirmed')
     value=json.loads(run.stdout)
     if value.get('status')!='content-native-protocol-checked' or value.get('protocol_checked') is not True or value.get('authentication_checked') is not True or value.get('native_changed') is not False or value.get('tools')!=plan['mcp']['enabled_tools']:raise InstallBlocked('Unexpected installation protocol check')

@@ -69,6 +69,13 @@ class NativeKeychain:
         return value['code']
 
     def confirm_reset(self,reason,device_id):
+        if reason=='pairing_prepare_rejected' and device_id=='preparing':
+            # Non-secret, constant OS dialog: keep the existing compiled helper
+            # and its source pin compatible with installed update policies.
+            if sys.platform!='darwin':raise ValueError('macOS confirmation required')
+            script='display dialog "The server explicitly rejected this invitation. Clear only its saved preparing record? Pending or active device credentials and offline writes are preserved." with title "Agent Brain pairing" buttons {"Cancel", "Clear rejected invitation"} default button "Cancel" cancel button "Cancel"'
+            result=self.runner(['/usr/bin/osascript','-e',script],capture_output=True,timeout=180,env={'PATH':'/usr/bin:/bin','HOME':str(Path.home()),'LANG':'en_US.UTF-8'})
+            return result.returncode==0 and result.stdout.strip()==b'button returned:Clear rejected invitation'
         value=self.call('confirm-reset',reason=reason,device_id=device_id)
         if set(value)!={'confirmed'} or type(value['confirmed'])!=bool:raise ValueError('Reset UI unconfirmed')
         return value['confirmed']

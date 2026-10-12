@@ -80,14 +80,16 @@ class PairingHTTPS:
             if not isinstance(value,dict) or 'error' in value:raise ValueError('Pairing unconfirmed')
             return value
         except HTTPError as error:
-            # Only a matching confirm token+nonce may reveal terminal state.
-            if phase=='confirm' and error.code==403:
+            # Only an explicit protocol denial is terminal; timeouts, redirects,
+            # proxy failures and unknown replies preserve the same recovery.
+            if phase in ('prepare','confirm') and error.code==403:
                 try:
                     raw=error.read(16385)
                     value=json.loads(raw,object_pairs_hook=unique) if len(raw)<=16384 else {}
                     code=value.get('error',{}).get('code')
                 except Exception:code=None
-                if code in ('pairing_expired','device_revoked'):raise EnrollmentTerminal(code) from None
+                if phase=='prepare' and code=='pairing_denied':raise EnrollmentTerminal('pairing_prepare_rejected') from None
+                if phase=='confirm' and code in ('pairing_expired','device_revoked'):raise EnrollmentTerminal(code) from None
             raise ValueError('Pairing unconfirmed') from None
         except EnrollmentTerminal:raise
         except Exception:raise ValueError('Pairing unconfirmed') from None
@@ -119,7 +121,7 @@ class DeviceEnrollment:
                 if saved is None:
                     code=self.secure_input()
                     if code is None:return {'status':'pairing-cancelled','installed':False}
-                    if not valid_secret(code):raise ValueError('Invalid secure input')
+                    if not valid_secret(code):return {'status':'pairing-invalid-input','installed':False}
                     saved={'schema':1,'profile_sha256':self.profile_sha,'phase':'preparing','code':code,'nonce':secrets.token_urlsafe(24)}
                     # Persist before prepare. Lost replies/restarts reuse code+nonce.
                     self.store.save(saved,None)
@@ -145,7 +147,17 @@ class DeviceEnrollment:
                 saved=self.store.load()
                 if saved is None:return {'status':'pairing-not-enrolled','installed':False}
                 self.check(saved)
-                if saved['phase']=='preparing':return {'status':'pairing-reset-blocked','installed':False}
+                if saved['phase']=='preparing':
+                    try:
+                        # Recheck exact code+nonce, never assume a network failure
+                        # means rejection. A successful prepare stays recoverable.
+                        self.transport.prepare(saved['code'],saved['nonce'],self.profile)
+                        return {'status':'pairing-reset-blocked','installed':False}
+                    except EnrollmentTerminal as error:
+                        if error.reason!='pairing_prepare_rejected':raise ValueError('Unexpected prepare terminal')
+                        if not confirm_reset(error.reason,'preparing'):return {'status':'pairing-reset-cancelled','installed':False}
+                        self.store.clear(saved)
+                        return {'status':'pairing-reenrollment-ready','installed':False}
                 try:
                     result=self.transport.confirm(saved['credential'],saved['nonce'])
                     if result!={'device_id':saved['device_id'],'grant':self.profile['grant'],'phase':'active'}:raise ValueError('Unknown confirmation')
@@ -216,7 +228,7 @@ def install_once(plan,approved_digest,*,store=None,transport=None,secure_input=N
         enrollment=DeviceEnrollment(profile,runtime['https_profile_sha256'],credentials,transport if transport is not None else PairingHTTPS(profile['endpoint']),secure_input if secure_input is not None else credentials.backend.secure_input)
         paired=enrollment.run()
         if paired.get('status')!='device-paired':
-            return {'status':paired.get('status','pairing-resume-required'),'installed':False,'native_changed':False,'credential_record_preserved':True}
+            return {'status':paired.get('status','pairing-resume-required'),'installed':False,'native_changed':False,'credential_record_preserved':True,**({'reason':paired['reason']} if 'reason' in paired else {})}
         return install(plan,approved_digest)
     except Exception:
         return {'status':'https-install-review-or-resume-required','installed':False,'native_changed':False,'credential_record_preserved':True}
