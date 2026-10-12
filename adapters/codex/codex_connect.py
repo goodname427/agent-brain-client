@@ -15,6 +15,10 @@ import subprocess
 import tempfile
 import tomllib
 
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[2]/"scripts"))
+from brain_lock import require_platform
+
 NAME='agent_brain_server'
 TOOLS=['topic','recall','remember','forget','client_updates']
 BEGIN='<!-- agent-brain:begin -->';END='<!-- agent-brain:end -->'
@@ -57,6 +61,7 @@ def probe(mcp):
 
 
 def atomic(path,raw,mode):
+    require_platform('private-write')
     path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
     fd,name=tempfile.mkstemp(prefix='.client-native-',dir=path.parent)
     try:

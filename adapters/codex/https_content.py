@@ -20,17 +20,24 @@ ROOT=BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 from remote_http import RemoteClient,NoRedirect
 from client_pairing import EnrollmentTerminal,reviewed_ids,allowed_id
-from system_credentials import NativeKeychain,CredentialStore,canonical,unique,owned
+from system_credentials import NativeKeychain,canonical,unique,owned,credential_fields,profile_credentials,credential_paths,store_for_profile
+from brain_lock import require_platform,platform_paths,PlatformUnsupported
 
 
 def valid_secret(value):return isinstance(value,str) and re.fullmatch(r'[A-Za-z0-9_-]{32,128}',value)
-def grant_check(grant):
+def grant_metadata_check(grant):
     keys={'actor','scopes','artifact_types','ids','adapter','platform'}
-    if not isinstance(grant,dict) or set(grant)!=keys or grant['adapter']!='codex' or grant['platform'] not in ('darwin-arm64','darwin-x86_64') or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}',grant.get('actor','')):raise ValueError('Frozen device grant required')
+    if not isinstance(grant,dict) or set(grant)!=keys or grant['adapter']!='codex'  or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}',grant.get('actor','')):raise ValueError('Frozen device grant required')
     if grant['scopes']!=['read','put'] or not isinstance(grant['artifact_types'],list) or not grant['artifact_types'] or len(set(grant['artifact_types']))!=len(grant['artifact_types']) or set(grant['artifact_types'])-{'memory','rule','skill'}:raise ValueError('Reviewed read/put grant required')
+    platform_paths(grant['platform'])
     reviewed_ids(grant['artifact_types'],grant['ids'])
     from content_contract import personal_owner
     if not personal_owner(grant['ids']) and (any(not isinstance(v,list) for v in grant['ids'].values()) or sum(map(len,grant['ids'].values()))!=31):raise ValueError('Personal owner or legacy 31 exact approved IDs required')
+
+def grant_check(grant):
+    grant_metadata_check(grant)
+    require_platform('credential-store', grant['platform'])
+
 
 def endpoint_check(endpoint):
     if not isinstance(endpoint,str):raise ValueError('HTTPS origin required')
@@ -38,26 +45,47 @@ def endpoint_check(endpoint):
     if value.scheme!='https' or not value.hostname or value.username or value.password or value.query or value.fragment or value.path not in ('','/') or any(c.isspace() for c in endpoint):raise ValueError('Credential-free HTTPS origin required')
     return endpoint.rstrip('/')
 
+def profile_metadata(endpoint, grant, descriptor, state_directory):
+    grant_metadata_check(grant)
+    target = grant['platform']
+    fields=credential_fields(target,descriptor)
+    value = {'transport': 'https-system-credential', 'adapter': 'codex',
+             'platform': target, 'data_mode': 'personal', 'endpoint': endpoint,
+             'grant': grant, 'state_directory': state_directory, **fields}
+    validate_profile_metadata(value)
+    return value
+
+
+def validate_profile_metadata(value):
+    common = {'schema','transport','adapter','platform','data_mode','endpoint','grant','state_directory'}
+    if not isinstance(value,dict) or value.get('transport')!='https-system-credential' or value.get('adapter')!='codex' or value.get('data_mode')!='personal':
+        raise ValueError('HTTPS content profile required')
+    target = value['platform']; paths = platform_paths(target)
+    descriptor=profile_credentials(value)
+    if set(value)!=common|set(credential_fields(target,descriptor)):
+        raise ValueError('Fixed platform profile metadata required')
+    endpoint_check(value['endpoint']);grant_metadata_check(value['grant'])
+    if value['grant']['platform']!=target:raise ValueError('Grant binding changed')
+    state=paths(value['state_directory'])
+    if not state.is_absolute() or '..' in state.parts:raise ValueError('Absolute private state required')
+    return value
+
+
 def profile_file(path,digest):
+    require_platform('credential-store')
     path=owned(path)
     if path.stat().st_size>16384 or not re.fullmatch(r'[a-f0-9]{64}',digest or ''):raise ValueError('Pinned private profile required')
     raw=path.read_bytes()
     if hashlib.sha256(raw).hexdigest()!=digest:raise ValueError('Profile changed')
-    value=json.loads(raw,object_pairs_hook=unique)
-    keys={'schema','transport','adapter','platform','data_mode','endpoint','grant','credential_helper','credential_helper_sha256','credential_source_sha256','state_directory'}
-    if not isinstance(value,dict) or set(value)!=keys or type(value['schema'])!=int or value['schema']!=1 or value['transport']!='https-system-credential' or value['adapter']!='codex' or value['platform']!='darwin-'+platform.machine().lower() or value['data_mode']!='personal':raise ValueError('HTTPS Mac content profile required')
-    endpoint_check(value['endpoint']);grant_check(value['grant'])
-    if value['grant']['platform']!=value['platform']:raise ValueError('Grant binding changed')
-    for key in ('credential_helper','state_directory'):
-        p=Path(value[key])
-        if not p.is_absolute() or any(item.is_symlink() for item in (p,*p.parents)):raise ValueError('Owned credential paths required')
-    for key in ('credential_helper_sha256','credential_source_sha256'):
-        if not re.fullmatch(r'[a-f0-9]{64}',value[key]):raise ValueError('Credential helper pins required')
+    value=validate_profile_metadata(json.loads(raw,object_pairs_hook=unique))
+    require_platform('credential-store',value['platform'])
+    if value['platform']!='darwin-'+platform.machine().lower():raise ValueError('Actual credential platform required')
+    credential_paths(value)
     return value
 
+
 def native_store(profile,profile_sha):
-    backend=NativeKeychain(profile['credential_helper'],profile['credential_helper_sha256'],'agent-brain.https.'+profile_sha)
-    return CredentialStore(backend,profile['state_directory'])
+    return store_for_profile(profile,profile_sha)
 
 
 class PairingHTTPS:
@@ -230,6 +258,8 @@ def install_once(plan,approved_digest,*,store=None,transport=None,secure_input=N
         if paired.get('status')!='device-paired':
             return {'status':paired.get('status','pairing-resume-required'),'installed':False,'native_changed':False,'credential_record_preserved':True,**({'reason':paired['reason']} if 'reason' in paired else {})}
         return install(plan,approved_digest)
+    except PlatformUnsupported as error:
+        return error.result(installed=False,native_changed=False,credential_record_preserved=True)
     except Exception:
         return {'status':'https-install-review-or-resume-required','installed':False,'native_changed':False,'credential_record_preserved':True}
 
@@ -244,6 +274,7 @@ def main():
         try:
             from content_mcp import pinned
             result=install_once(pinned(args.content_install_plan,args.approved_plan_sha256),args.approved_plan_sha256)
+        except PlatformUnsupported as error:result=error.result(installed=False,native_changed=False)
         except Exception:result={'status':'https-install-review-required','installed':False,'native_changed':False}
         print(json.dumps(result));return 0 if result.get('installed') else 2
     try:
@@ -253,6 +284,7 @@ def main():
             store=native_store(profile,args.https_profile_sha256)
             enrollment=DeviceEnrollment(profile,args.https_profile_sha256,store,PairingHTTPS(profile['endpoint']),store.backend.secure_input)
             result=enrollment.run() if args.action=='pair' else enrollment.reset_terminal(store.backend.confirm_reset)
+    except PlatformUnsupported as error:result=error.result(installed=False,native_changed=False)
     except Exception:result={'status':'https-device-review-required','installed':False,'native_changed':False}
     print(json.dumps(result));return 0 if result['status'] in ('device-paired','https-content-profile-reviewed') else 2
 

@@ -47,13 +47,19 @@ class FirstInstall(unittest.TestCase):
         helper.write_bytes(b"#!/bin/sh\n# SYNTHETIC_UNEXECUTED_HELPER\nexit 0\n")
         helper.chmod(0o700)
         self.materials = {
-            "source_sha256": hashlib.sha256((ROOT / "native/CredentialStore.swift").read_bytes()).hexdigest(),
+            "source_sha256": hashlib.sha256(
+                (ROOT / "native/CredentialStore.swift").read_bytes()
+            ).hexdigest(),
             "helper_sha256": hashlib.sha256(helper.read_bytes()).hexdigest(),
             "credential_helper": str(helper),
-            "dependencies": {"schema": 2, "python": str(python), "git": str(git),
-                             "git_exec_path": str(core),
-                             "python_sha256": hashlib.sha256(python.read_bytes()).hexdigest(),
-                             "git_sha256": hashlib.sha256(git.read_bytes()).hexdigest()},
+            "dependencies": {
+                "schema": 2,
+                "python": str(python),
+                "git": str(git),
+                "git_exec_path": str(core),
+                "python_sha256": hashlib.sha256(python.read_bytes()).hexdigest(),
+                "git_sha256": hashlib.sha256(git.read_bytes()).hexdigest(),
+            },
         }
         self.connection = {
             "schema": 1,
@@ -68,7 +74,9 @@ class FirstInstall(unittest.TestCase):
         connection_path = self.base / "connection.json"
         connection_path.write_bytes(canonical(self.connection))
         self.connection, self.connection_sha = wizard.connection_file(connection_path)
-        (self.home / ".config/agent-brain-client/first-install").mkdir(parents=True, mode=0o700)
+        (self.home / ".config/agent-brain-client/first-install").mkdir(
+            parents=True, mode=0o700
+        )
         self.native = self.home / "codex"
         self.native.mkdir(mode=0o700)
         self.config = self.native / "config.toml"
@@ -131,23 +139,44 @@ class FirstInstall(unittest.TestCase):
     def test_required_tools_and_helper_are_prepared_once_and_drift_is_preserved(self):
         self.fixture()
         builds = []
+
         def helper_builder(path):
             builds.append(path)
             path.write_bytes(b"SYNTHETIC_COMPILED_HELPER")
             path.chmod(0o700)
-            return {"helper_sha256": wizard.sha(path.read_bytes()),
-                    "source_sha256": self.materials["source_sha256"]}
+            return {
+                "helper_sha256": wizard.sha(path.read_bytes()),
+                "source_sha256": self.materials["source_sha256"],
+            }
+
         def runner(argv, **kwargs):
             if "--exec-path" in argv:
-                return subprocess.CompletedProcess(argv, 0, self.materials["dependencies"]["git_exec_path"].encode(), b"")
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    self.materials["dependencies"]["git_exec_path"].encode(),
+                    b"",
+                )
             return self.runner(argv, **kwargs)
-        with patch.object(wizard.shutil, "which", return_value=self.materials["dependencies"]["git"]):
-            prepared = wizard.prepare_dependencies(self.home, runner=runner, helper_builder=helper_builder)
-            self.assertEqual(wizard.prepare_dependencies(self.home, runner=runner, helper_builder=helper_builder), prepared)
+
+        with patch.object(
+            wizard.shutil, "which", return_value=self.materials["dependencies"]["git"]
+        ):
+            prepared = wizard.prepare_dependencies(
+                self.home, runner=runner, helper_builder=helper_builder
+            )
+            self.assertEqual(
+                wizard.prepare_dependencies(
+                    self.home, runner=runner, helper_builder=helper_builder
+                ),
+                prepared,
+            )
             self.assertEqual(len(builds), 1)
             builds[0].write_bytes(b"SYNTHETIC_DRIFT")
             with self.assertRaises(ValueError):
-                wizard.prepare_dependencies(self.home, runner=runner, helper_builder=helper_builder)
+                wizard.prepare_dependencies(
+                    self.home, runner=runner, helper_builder=helper_builder
+                )
         self.assertEqual(builds[0].read_bytes(), b"SYNTHETIC_DRIFT")
         self.assertEqual(self.prompts, 0)
 
@@ -219,7 +248,9 @@ class FirstInstall(unittest.TestCase):
         first = self.run_wizard()
         self.assertEqual(first["status"], "pairing-resume-required")
         saved = copy.deepcopy(self.backend.record)
-        self.assertFalse((self.home / ".config/agent-brain-client/first-install/ready.json").exists())
+        self.assertFalse(
+            (self.home / ".config/agent-brain-client/first-install/ready.json").exists()
+        )
         plan_path = (
             self.home / ".config/agent-brain-client/first-install/install-plan.json"
         )
@@ -229,7 +260,9 @@ class FirstInstall(unittest.TestCase):
         self.assertEqual(self.prompts, 1)
         self.assertEqual(self.transport.prepares, [(saved["code"], saved["nonce"])] * 2)
         self.assertEqual(sum(event[0] == "update" for event in self.events), 1)
-        self.assertFalse((self.home / ".config/agent-brain-client/first-install/ready.json").exists())
+        self.assertFalse(
+            (self.home / ".config/agent-brain-client/first-install/ready.json").exists()
+        )
 
     def test_native_drift_and_dependency_drift_stop_before_secure_input(self):
         self.fixture()
@@ -274,8 +307,10 @@ class FirstInstall(unittest.TestCase):
 
     def test_dependency_failure_never_inputs_invitation(self):
         self.fixture()
+
         def failed(*args, **kwargs):
             raise ValueError("SYNTHETIC_UNAVAILABLE_TOOLS")
+
         self.assertFalse(self.run_wizard(dependency_preparer=failed)["installed"])
         self.assertEqual(self.prompts, 0)
         self.assertFalse(self.transport.prepares)
@@ -286,7 +321,10 @@ class FirstInstall(unittest.TestCase):
         self.run_wizard(confirm=lambda *args: next(decisions))
         state = self.home / ".config/agent-brain-client/first-install"
         previous = (state / "ready.json").read_bytes()
-        def failure(*a, **k): raise ValueError("SYNTHETIC_UNAVAILABLE_DEPENDENCY")
+
+        def failure(*a, **k):
+            raise ValueError("SYNTHETIC_UNAVAILABLE_DEPENDENCY")
+
         self.assertFalse(self.run_wizard(dependency_preparer=failure)["installed"])
         self.assertFalse((state / "ready.json").exists())
         self.assertEqual(next(state.glob("prior-ready-*.json")).read_bytes(), previous)
@@ -300,13 +338,17 @@ class FirstInstall(unittest.TestCase):
         self.assertEqual(result["status"], "first-install-in-progress")
         self.assertEqual(self.prompts, 0)
 
-    def test_interrupted_bootstrap_export_is_preserved_and_retry_uses_complete_package(self):
+    def test_interrupted_bootstrap_export_is_preserved_and_retry_uses_complete_package(
+        self,
+    ):
         self.fixture()
         actual = wizard.export
+
         def interrupted(source, output, **kwargs):
             output.mkdir()
             (output / "partial").write_bytes(b"SYNTHETIC_PARTIAL")
             raise OSError("SYNTHETIC_INTERRUPTION")
+
         with patch.object(wizard, "export", side_effect=interrupted):
             self.assertFalse(self.run_wizard()["installed"])
         state = self.home / ".config/agent-brain-client/first-install"
@@ -357,6 +399,27 @@ class FirstInstall(unittest.TestCase):
         )
         self.assertEqual(clock.call_count, 1)
         self.assertEqual(ready["valid_until"] - ready["prepared_at"], 600)
+
+    def test_ready_receipts_reuse_installation_identity_across_restart_and_bind_drift(
+        self,
+    ):
+        self.fixture()
+        state = self.home / ".config/agent-brain-client/first-install"
+
+        def ready_run():
+            decisions = iter(["Continue", "Back"])
+            return self.run_wizard(confirm=lambda *args: next(decisions))
+
+        self.assertEqual(ready_run()["status"], "first-install-ready")
+        first = content_install.private_json(state / "ready.json")
+        self.assertEqual(first["schema"], 2)
+        self.assertEqual(ready_run()["status"], "first-install-ready")
+        second = content_install.private_json(state / "ready.json")
+        self.assertEqual(first["installation_id"], second["installation_id"])
+        identity = state / "installation-id.json"
+        content_install.save(identity, {"schema": 1, "id": "9" * 32})
+        self.assertFalse(ready_run()["installed"])
+        self.assertEqual(self.prompts, 0)
 
     def test_dependency_environment_is_optional_for_existing_policies(self):
         self.assertIsNone(dependency_environment({"runtime": {}}))

@@ -18,7 +18,7 @@ ROOT=BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 import content_contract as contract
 from codex_connect import atomic
-from brain_lock import locked
+from brain_lock import locked,require_platform,private_mode,sync_directory
 
 BEGIN='<!-- agent-brain-content:begin -->';END='<!-- agent-brain-content:end -->'
 BLOCK=re.compile(re.escape(BEGIN)+r'.*?'+re.escape(END)+r'(?:\r?\n)?',re.S)
@@ -43,6 +43,7 @@ def validate_policy(policy,grant=None):
 
 class ContentAdapter:
     def __init__(self,home,cache,policy,client,health=None,codex_home=None):
+        self.platform=require_platform('cache-storage',(getattr(client,'grant',None) or {}).get('platform'))
         if Path(home).is_symlink() or Path(cache).is_symlink():raise CacheBlocked()
         self.home,self.cache=Path(home).resolve(),Path(cache).resolve();self.client=client
         native=Path(codex_home or os.environ.get('CODEX_HOME',str(self.home/'.codex'))).expanduser()
@@ -56,12 +57,11 @@ class ContentAdapter:
         if any(self.cache==self.home/name or self.home/name in self.cache.parents for name in ('.codex','.agents','.config/agent-brain-client/content')):raise CacheBlocked()
         self._safe(self.home,self.home);self._safe(self.cache,self.cache)
         self.cache.mkdir(parents=True,exist_ok=True,mode=0o700)
-        if self.cache.stat().st_mode&0o077:raise CacheBlocked()
-        fd=os.open(self.cache.parent,os.O_RDONLY)
-        try:os.fsync(fd)
-        finally:os.close(fd)
+        private_mode(self.cache,directory=True,blocked=CacheBlocked)
+        sync_directory(self.cache.parent)
 
     def _safe(self,path,base):
+        require_platform('cache-storage',self.platform)
         if path!=base and base not in path.parents:raise CacheBlocked()
         for item in [path,*path.parents]:
             if item.is_symlink():raise CacheBlocked()
@@ -90,19 +90,20 @@ class ContentAdapter:
         return contract.methods(grant['scopes']) if set(self.policy['kinds'])<=set(grant['artifact_types']) else set()
 
     def _load(self,name,default=None):
+        require_platform('cache-storage',self.platform)
         path=self.cache/name;self._safe(path,self.cache)
         if not path.exists():return default
-        if not path.is_file() or path.stat().st_mode&0o077 or path.stat().st_size>1048576:raise CacheBlocked()
+        if not path.is_file() or path.stat().st_size>1048576:raise CacheBlocked()
+        private_mode(path,blocked=CacheBlocked)
         return json.loads(path.read_text())
 
     def _save(self,name,value):
+        require_platform('cache-storage',self.platform)
         raw=contract.encode(value)
         if len(raw)>1048576:raise CacheBlocked()
         path=self.cache/name;self._safe(path,self.cache);atomic(path,raw,0o600)
         for directory in [path.parent,*path.parent.parents]:
-            fd=os.open(directory,os.O_RDONLY)
-            try:os.fsync(fd)
-            finally:os.close(fd)
+            sync_directory(directory)
             if directory==self.cache:break
 
     def _check_write(self,request):
@@ -113,8 +114,9 @@ class ContentAdapter:
         if params['kind'] not in self.policy['kinds'] or not self._allows(params['kind'],params['id']):raise CacheBlocked()
 
     def _queued(self):
+        require_platform('cache-storage',self.platform)
         directory=self.cache/'outbox';self._safe(directory,self.cache)
-        if directory.exists() and (not directory.is_dir() or directory.stat().st_mode&0o077):raise CacheBlocked()
+        if directory.exists():private_mode(directory,directory=True,blocked=CacheBlocked)
         paths=list(directory.iterdir()) if directory.exists() else []
         if len(paths)>2048:raise CacheBlocked()
         rows=[]
@@ -123,7 +125,8 @@ class ContentAdapter:
             # Preserve temporary evidence left by killed atomic saves; replay only
             # renamed request files so a lost confirmation remains recoverable.
             if re.fullmatch(r'\.client-native-[A-Za-z0-9_-]+',path.name):
-                if not path.is_file() or path.stat().st_mode&0o077 or path.stat().st_size>1048576:raise CacheBlocked()
+                if not path.is_file() or path.stat().st_size>1048576:raise CacheBlocked()
+                private_mode(path,blocked=CacheBlocked)
                 continue
             if not re.fullmatch(r'[A-Za-z0-9_-]{16,128}\.json',path.name):raise CacheBlocked()
             row=self._load('outbox/'+path.name)
@@ -316,6 +319,7 @@ class ContentAdapter:
                 if not entry.is_file() or entry.relative_to(self.home).as_posix() not in owned:raise CacheBlocked()
 
     def _restore(self,journal):
+        require_platform('cache-recovery',self.platform)
         # Preflight all files before any restoration; preserve outside edits.
         if set(journal)!={'phase','before','after','owned','active'} or set(journal['before'])!=set(journal['after']) or journal['owned'].get('policy_sha')!=self.policy_sha or journal['owned'].get('binding')!=self.binding:raise CacheBlocked()
         for name,old in journal['before'].items():
@@ -474,6 +478,7 @@ class ContentAdapter:
         return result
 
     def refresh(self):
+        require_platform('cache-recovery',self.platform)
         try:
             with locked(self.cache/'content.lock'):
                 self._recover();self._import_pending();self._drain();self._import_pending()
@@ -512,6 +517,7 @@ class ContentAdapter:
             return {'status':'content-recovery-review-required' if uncertain else 'content-refresh-blocked','native_changed':None if uncertain else False,'model_loaded':False,'next_action':'Preserve local files and prior snapshots. Review transport, contract, content scope, dependencies, owned-file drift or interrupted recovery.'}
 
     def invoke(self,request,reconciles=None):
+        require_platform('cache-storage',self.platform)
         method=request.get('method');params=request.get('params');contract.validate(method,params)
         kinds=params['kinds'] if method=='content_catalog' else [params['kind']]
         if any(kind not in self.policy['kinds'] for kind in kinds) or method!='content_catalog' and not self._allows(params['kind'],params['id']):raise CacheBlocked()

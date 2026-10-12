@@ -54,4 +54,4 @@ jobs:
           $env:USERPROFILE = "$testRoot/home"
           $env:CODEX_HOME = "$testRoot/codex"
           $env:PYTHONPATH = 'scripts;adapters/codex;tools;tests'
-          python -B -m unittest test_install_contracts.Contracts
+          python -B -m unittest test_install_contracts.Contracts test_install_contracts.PlatformMainContracts
