@@ -1,4 +1,4 @@
-"""Mac arm64 first installation using a reviewed self-contained app payload.
+"""Mac arm64 repository installer using the existing pairing/install transaction.
 
 Connection files carry no credential. Native files change only through the
 existing pinned installation transaction, after explicit server/scope review.
@@ -14,10 +14,9 @@ import re
 import subprocess
 import sys
 import time
-import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "client" if (ROOT / "client").is_dir() else ROOT
+SOURCE = ROOT
 sys.path[:0] = [str(SOURCE / "adapters/codex"), str(SOURCE / "scripts")]
 from brain_lock import locked
 from client_release import (
@@ -25,7 +24,6 @@ from client_release import (
     HTTPS_CONTENT_CAPABILITIES,
     HTTPS_CONTENT_CLIENT_FILES,
     dependency_environment,
-    tree_files,
 )
 from content_install import inspect_plan, prepare, private_json, safe, save
 from https_content import (
@@ -38,6 +36,11 @@ from https_content import (
     profile_file,
 )
 from system_credentials import canonical, unique, owned
+from build_client import export
+from build_credential_helper import build as build_helper
+import shutil
+import ssl
+import tempfile
 
 OFFICIAL_ORIGIN = "https://github.com/goodname427/agent-brain-client.git"
 OFFICIAL_REF = "refs/heads/releases/personal-https-stable"
@@ -78,48 +81,6 @@ def connection_file(path, expected=None):
     return value, sha(raw)
 
 
-def bundle_file(bundle):
-    bundle = safe(bundle)
-    path = bundle / "bundle-manifest.json"
-    if not path.is_file() or path.is_symlink() or path.stat().st_size > 4194304:
-        raise ValueError("Installer inventory required")
-    raw = path.read_bytes()
-    value = json.loads(raw, object_pairs_hook=unique)
-    keys = {
-        "schema",
-        "platform",
-        "files",
-        "credential_helper_sha256",
-        "credential_source_sha256",
-        "publication",
-        "signed",
-        "notarized",
-    }
-    if (
-        set(value) != keys
-        or value["schema"] != 1
-        or value["platform"] != "darwin-arm64"
-    ):
-        raise ValueError("Installer scope changed")
-    actual = tree_files(bundle)
-    actual.pop("bundle-manifest.json", None)
-    if (
-        actual != value["files"]
-        or actual.get("credential-helper", {}).get("sha256")
-        != value["credential_helper_sha256"]
-        or actual.get("client/native/CredentialStore.swift", {}).get("sha256")
-        != value["credential_source_sha256"]
-    ):
-        raise ValueError("Installer integrity changed")
-    if not {
-        "dependencies/python/bin/python3",
-        "dependencies/git/bin/git",
-        "tools/mac_first_install.py",
-    } <= set(actual):
-        raise ValueError("Self-contained installer required")
-    return value, sha(raw)
-
-
 def private_lease(state):
     state = safe(state)
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -134,84 +95,6 @@ def private_lease(state):
     return locked(path, timeout=0)
 
 
-def payload_atomic(path, data, mode, staging):
-    # An interrupted write leaves evidence outside the executable inventory.
-    # Restart can fill the missing target without deleting any saved material.
-    staging = safe(staging)
-    staging.mkdir(parents=True, exist_ok=True, mode=0o700)
-    owned(staging, directory=True)
-    descriptor, name = tempfile.mkstemp(prefix="payload-", dir=staging)
-    try:
-        with os.fdopen(descriptor, "wb") as out:
-            out.write(data)
-            out.flush()
-            os.fsync(out.fileno())
-        os.chmod(name, mode)
-        os.replace(name, path)
-    finally:
-        Path(name).unlink(missing_ok=True)
-
-
-def copy_payload(bundle, home):
-    """Resume only missing identical payload files. Never overwrite drift."""
-    manifest, digest = bundle_file(bundle)
-    home = safe(home)
-    state = safe(home / ".config/agent-brain-client/first-install")
-    registration = home / ".config/agent-brain-client/codex-mcp.json"
-    prior_receipt = home / ".config/agent-brain-client/content-install-receipt.json"
-    if (
-        registration.exists()
-        or registration.is_symlink()
-        or prior_receipt.exists()
-        or prior_receipt.is_symlink()
-    ) and not (state / "connection.json").is_file():
-        raise ValueError("Existing installation requires its own migration plan")
-    state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with private_lease(state):
-        payload = safe(state / "payload")
-        payload.mkdir(mode=0o700, exist_ok=True)
-        for name, row in manifest["files"].items():
-            source, destination = Path(bundle) / name, payload / name
-            # safe() rejects pre-existing symlink ancestors; the target itself
-            # may be a reviewed internal link and is compared without following.
-            safe(destination.parent).mkdir(parents=True, exist_ok=True, mode=0o700)
-            if row.keys() == {"link"}:
-                if destination.is_symlink():
-                    if os.readlink(destination) != row["link"]:
-                        raise ValueError("Payload link drift")
-                elif destination.exists():
-                    raise ValueError("Payload file preserved")
-                else:
-                    destination.symlink_to(row["link"])
-            else:
-                safe(destination)
-                data = source.read_bytes()
-                if sha(data) != row["sha256"]:
-                    raise ValueError("Source changed during copy")
-                if destination.exists():
-                    if sha(destination.read_bytes()) != row["sha256"]:
-                        raise ValueError("Existing payload drift")
-                else:
-                    payload_atomic(
-                        destination,
-                        data,
-                        0o700 if row["executable"] else 0o600,
-                        state / "payload-staging",
-                    )
-        pin = payload / "bundle-manifest.json"
-        if pin.exists() and sha(pin.read_bytes()) != digest:
-            raise ValueError("Installer version drift; preserve current transaction")
-        if not pin.exists():
-            payload_atomic(
-                pin,
-                (Path(bundle) / "bundle-manifest.json").read_bytes(),
-                0o600,
-                state / "payload-staging",
-            )
-        bundle_file(payload)
-        return payload
-
-
 def same_private(path, value):
     path = safe(path)
     if path.exists():
@@ -222,8 +105,59 @@ def same_private(path, value):
     return sha(path.read_bytes())
 
 
+def retire_ready(state):
+    ready = state / "ready.json"
+    if ready.exists():
+        previous = private_json(ready)
+        same_private(state / ("prior-ready-" + sha(ready.read_bytes()) + ".json"), previous)
+        ready.unlink()  # Only issuance metadata; enrollment and history stay intact.
+
+
+def prepare_dependencies(home, *, runner=subprocess.run, helper_builder=build_helper):
+    """Use checked local tools; compile the original helper once at a stable path."""
+    if sys.platform != "darwin" or platform.machine().lower() != "arm64":
+        raise ValueError("Reviewed Mac arm64 backend required")
+    if sys.version_info < (3, 11) or not ssl.create_default_context().get_ca_certs():
+        raise ValueError("Python 3.11+ and normal TLS roots required")
+    python = Path(sys.executable).resolve()
+    git_found = shutil.which("git")
+    if git_found is None:
+        raise ValueError("Git required; rerun the repository bootstrap")
+    git = Path(git_found).resolve()
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "LANG": "en_US.UTF-8",
+           "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+           "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "0"}
+    runner([str(git), "--version"], capture_output=True, timeout=30, env=env, check=True)
+    core = Path(runner([str(git), "--exec-path"], capture_output=True,
+                       timeout=30, env=env, check=True).stdout.decode().strip()).resolve()
+    if not core.is_dir() or not (core / "git-remote-https").is_file():
+        raise ValueError("Git HTTPS transport required")
+    state = safe(Path(home) / ".config/agent-brain-client/first-install")
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    owned(state, directory=True)
+    helper = state / "credential-helper"
+    pin = state / "helper.json"
+    if helper.exists() or pin.exists():
+        metadata = private_json(pin)
+        if not helper.is_file() or helper.is_symlink():
+            raise ValueError("Existing helper preserved; review incomplete preparation")
+        if metadata != {"helper_sha256": sha(helper.read_bytes()),
+                        "source_sha256": sha((SOURCE / "native/CredentialStore.swift").read_bytes())}:
+            raise ValueError("Helper drift; preserve existing credential binding")
+    else:
+        built = helper_builder(helper)
+        metadata = {"helper_sha256": built["helper_sha256"],
+                    "source_sha256": built["source_sha256"]}
+        same_private(pin, metadata)
+    deps = {"schema": 2, "python": str(python), "git": str(git),
+            "git_exec_path": str(core), "python_sha256": sha(python.read_bytes()),
+            "git_sha256": sha(git.read_bytes())}
+    same_private(state / "dependencies.json", deps)
+    return dict(metadata, credential_helper=str(helper), dependencies=deps)
+
+
 def prepare_materials(
-    bundle,
+    materials,
     home,
     native,
     connection,
@@ -233,7 +167,7 @@ def prepare_materials(
     runner=subprocess.run,
 ):
     """Ready means dependencies, helper, release health and native plan checked."""
-    manifest, bundle_sha = bundle_file(bundle)
+    bundle_sha = sha(canonical(materials))
     home, native = safe(home), safe(native)
     state = safe(home / ".config/agent-brain-client/first-install")
     binding = {
@@ -255,10 +189,8 @@ def prepare_materials(
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     same_private(state / "binding.json", binding)
     same_private(state / "connection.json", connection)
-    dependencies = Path(bundle) / "dependencies"
-    deps = {"schema": 1, "root": str(dependencies), "files": tree_files(dependencies)}
-    deps_sha = same_private(state / "dependencies.json", deps)
-    helper = Path(bundle) / "credential-helper"
+    deps_sha = same_private(state / "dependencies.json", materials["dependencies"])
+    helper = Path(materials["credential_helper"])
     profile = {
         "schema": 1,
         "transport": "https-system-credential",
@@ -268,8 +200,8 @@ def prepare_materials(
         "endpoint": connection["endpoint"],
         "grant": connection["grant"],
         "credential_helper": str(helper),
-        "credential_helper_sha256": manifest["credential_helper_sha256"],
-        "credential_source_sha256": manifest["credential_source_sha256"],
+        "credential_helper_sha256": materials["helper_sha256"],
+        "credential_source_sha256": materials["source_sha256"],
         "state_directory": str(home / ".config/agent-brain-client/https"),
     }
     profile_sha = same_private(state / "https-profile.json", profile)
@@ -284,7 +216,7 @@ def prepare_materials(
     runtime = {
         "https_profile": str(state / "https-profile.json"),
         "https_profile_sha256": profile_sha,
-        "credential_source_sha256": manifest["credential_source_sha256"],
+        "credential_source_sha256": materials["source_sha256"],
         "content_policy": str(state / "content-policy.json"),
         "content_policy_sha256": content_sha,
         "device_home": str(home),
@@ -352,7 +284,7 @@ def prepare_materials(
         if repository.exists() and any(repository.iterdir()):
             raise ValueError("Unrecognized release checkout preserved")
         runner(
-            [str(dependencies / "git/bin/git"), "init", "--", str(repository)],
+            [materials["dependencies"]["git"], "init", "--", str(repository)],
             capture_output=True,
             timeout=30,
             env=environment,
@@ -360,7 +292,7 @@ def prepare_materials(
         )
     remote = runner(
         [
-            str(dependencies / "git/bin/git"),
+            materials["dependencies"]["git"],
             "-C",
             str(repository),
             "remote",
@@ -374,7 +306,7 @@ def prepare_materials(
     if remote.returncode:
         runner(
             [
-                str(dependencies / "git/bin/git"),
+                materials["dependencies"]["git"],
                 "-C",
                 str(repository),
                 "remote",
@@ -410,9 +342,12 @@ def prepare_materials(
         raise ValueError(
             "Reviewed compatible release unavailable; invitation not ready"
         )
-    plan = prepare(
-        home, Path(bundle) / "client", state / "release-policy.json", policy_sha
-    )
+    package = state / "bootstrap"
+    if not package.exists():
+        staging = Path(tempfile.mkdtemp(prefix="bootstrap-", dir=state))
+        export(SOURCE, staging / "package", https_content_candidate=True)
+        os.rename(staging / "package", package)
+    plan = prepare(home, package, state / "release-policy.json", policy_sha)
     plan_sha = same_private(plan_path, plan)
     prepared_at = int(time.time())
     ready = {
@@ -432,45 +367,27 @@ def prepare_materials(
     return plan, plan_sha, binding
 
 
-def dialog(message, buttons=("Cancel", "Continue")):
-    # Metadata only. Invitation and credential entry use the native secure helper.
-    script = (
-        "display dialog "
-        + json.dumps(message)
-        + ' with title "Agent Brain Install" buttons {'
-        + ",".join(json.dumps(button) for button in buttons)
-        + "} default button "
-        + json.dumps(buttons[-1])
-        + ' cancel button "Cancel"'
-    )
-    result = subprocess.run(
-        ["/usr/bin/osascript", "-"],
-        input=script.encode(),
-        capture_output=True,
-        timeout=180,
-    )
-    if result.returncode:
+def confirm_target(message, buttons=("Cancel", "Continue")):
+    """Terminal metadata only; secrets always use the existing secure helper."""
+    print(message)
+    print(" / ".join(buttons))
+    try:
+        chosen = input("> ").strip()
+    except (EOFError, KeyboardInterrupt):
         return "Cancel"
-    return next(
-        (
-            button
-            for button in buttons
-            if ("button returned:" + button).encode() in result.stdout
-        ),
-        "Cancel",
-    )
+    return chosen if chosen in buttons else "Cancel"
 
 
 def run(
-    bundle,
     home,
     native,
     connection,
     connection_sha,
     *,
-    confirm=dialog,
+    confirm=confirm_target,
     updater=None,
     runner=subprocess.run,
+    dependency_preparer=prepare_dependencies,
     store=None,
     transport=None,
     secure_input=None,
@@ -487,7 +404,9 @@ def run(
                 + connection["grant"]["actor"]
                 + "\nScope: "
                 + json.dumps(connection["grant"]["ids"], sort_keys=True)
-                + "\nRead and put Memory/Rule/Skill. No session/history collection.\nRelease: "
+                + "\nMethods: read, put. Types: "
+                + json.dumps(connection["grant"]["artifact_types"])
+                + "\nNo session/history collection.\nRelease: "
                 + connection["release"]["origin"]
                 + "\nAnchor: "
                 + connection["release"]["anchor_commit"]
@@ -498,8 +417,10 @@ def run(
                     "installed": False,
                     "native_changed": False,
                 }
+            retire_ready(state)
+            materials = dependency_preparer(Path(home), runner=runner)
             plan, plan_sha, _ = prepare_materials(
-                bundle,
+                materials,
                 Path(home),
                 Path(native),
                 connection,
@@ -507,19 +428,17 @@ def run(
                 updater=updater,
                 runner=runner,
             )
-            profile = profile_file(
-                state / "https-profile.json",
-                private_json(state / "release-policy.json")["runtime"][
-                    "https_profile_sha256"
-                ],
-            )
+            attempt = state / "pairing-attempt.json"
+            resuming = attempt.exists()
+            if resuming:
+                retire_ready(state)
             if not (
                 Path(home) / ".config/agent-brain-client/content-install-receipt.json"
             ).exists():
                 selected = confirm(
-                    "Dependencies, helper, compatible release and native plan are ready.\nOnly now request a short-lived invitation from your operator.\nReadiness file: "
-                    + str(state / "ready.json")
-                    + "\nContinue opens secure local invitation input.",
+                    ("Resume the saved pairing attempt. Do not request a new invitation." if resuming else
+                     "Dependencies, helper, compatible release and native plan are ready.\nFor your first attempt only, obtain the invitation using readiness: " + str(state / "ready.json"))
+                    + "\nContinue uses existing recovery or opens the secure input once.",
                     ("Cancel", "Back", "Continue"),
                 )
                 if selected != "Continue":
@@ -530,27 +449,23 @@ def run(
                         "installed": False,
                         "native_changed": False,
                     }
-            credentials = (
-                store
-                if store is not None
-                else native_store(
-                    profile, sha((state / "https-profile.json").read_bytes())
-                )
-            )
-            peer = (
-                transport
-                if transport is not None
-                else PairingHTTPS(profile["endpoint"])
-            )
+            same_private(attempt, {"schema": 1, "plan_sha256": plan_sha})
             result = install_once(
                 plan,
                 plan_sha,
-                store=credentials,
-                transport=peer,
+                store=store,
+                transport=transport,
                 secure_input=secure_input,
                 installer=installer,
             )
+            retire_ready(state)
+            if result.get("status") in ("pairing-cancelled", "pairing-invalid-input"):
+                attempt.unlink()
             if result.get("status") == "pairing-reenrollment-review-required":
+                profile_sha = private_json(state / "release-policy.json")["runtime"]["https_profile_sha256"]
+                profile = profile_file(state / "https-profile.json", profile_sha)
+                credentials = store if store is not None else native_store(profile, profile_sha)
+                peer = transport if transport is not None else PairingHTTPS(profile["endpoint"])
                 enrollment = DeviceEnrollment(
                     profile,
                     sha((state / "https-profile.json").read_bytes()),
@@ -558,7 +473,10 @@ def run(
                     peer,
                     None,
                 )
-                return enrollment.reset_terminal(credentials.backend.confirm_reset)
+                reset = enrollment.reset_terminal(credentials.backend.confirm_reset)
+                if reset.get("status") == "pairing-reenrollment-ready":
+                    attempt.unlink()
+                return reset
             return result
     except RuntimeError as error:
         if str(error) == "Another operation is running; retry shortly.":
@@ -577,80 +495,24 @@ def run(
             "status": "first-install-review-or-resume-required",
             "installed": False,
             "native_changed": False,
-            "next_action": "Preserve the prepared payload, configuration, enrollment and journals. Retry the same connection; no new invitation until readiness is confirmed.",
+            "next_action": "Preserve the prepared dependencies, configuration, enrollment and journals. Retry the same connection; no new invitation until readiness is confirmed.",
         }
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bundle", type=Path, required=True)
-    parser.add_argument("--connection", type=Path)
+    parser.add_argument("--connection", type=Path, required=True)
     parser.add_argument("--expected-connection-sha256")
     args = parser.parse_args()
     try:
         if sys.platform != "darwin" or platform.machine().lower() != "arm64":
             raise ValueError("Actual Mac arm64 required")
-        if args.connection is None:
-            chosen = subprocess.run(
-                [
-                    "/usr/bin/osascript",
-                    "-e",
-                    'POSIX path of (choose file with prompt "Choose your credential-free Agent Brain connection file")',
-                ],
-                capture_output=True,
-                timeout=180,
-            )
-            if chosen.returncode:
-                print(
-                    json.dumps(
-                        {"status": "first-install-cancelled", "installed": False}
-                    )
-                )
-                return 2
-            args.connection = Path(chosen.stdout.decode().strip())
         connection, connection_sha = connection_file(
             args.connection, args.expected_connection_sha256
         )
         home = Path.home().resolve()
         native = Path(os.environ.get("CODEX_HOME", str(home / ".codex"))).absolute()
-        target = home / ".config/agent-brain-client/first-install/payload"
-        if args.bundle != target:
-            payload = copy_payload(args.bundle, home)
-            # All later paths bind to the persistent payload, never Downloads or
-            # the app volume. Secret UI has not opened and no network was used.
-            result = subprocess.run(
-                [
-                    str(payload / "dependencies/python/bin/python3"),
-                    "-I",
-                    "-B",
-                    str(payload / "tools/mac_first_install.py"),
-                    "--bundle",
-                    str(payload),
-                    "--connection",
-                    str(args.connection),
-                    "--expected-connection-sha256",
-                    connection_sha,
-                ],
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                timeout=900,
-            )
-            value = json.loads(result.stdout)
-        else:
-            value = run(args.bundle, home, native, connection, connection_sha)
-        # Fixed result keys only. Never forward raw child stderr/errors/HTTP data.
-        if value.get("status") not in ("first-install-cancelled", "pairing-cancelled"):
-            dialog(
-                "Status: "
-                + value.get("status", "first-install-review-required")
-                + "\n"
-                + (
-                    "Installation completed. New MCP processes will use the existing startup update checks."
-                    if value.get("installed")
-                    else "Prepared files and recovery records are preserved. Retry this same connection after resolving the reported condition."
-                ),
-                ("Cancel", "Close"),
-            )
+        value = run(home, native, connection, connection_sha)
         print(json.dumps(value))
         return 0 if value.get("installed") else 2
     except Exception:
