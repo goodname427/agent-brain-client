@@ -189,8 +189,12 @@ def apply(plan,approved_digest,check=probe):
     if approved_digest!=sha(contract.encode(plan)):return {'status':'content-install-plan-review-required','native_changed':False,'installed':False}
     with locked(safe(state/'content-install.lock')):
         previous=private_json(receipt) if receipt.exists() else None
+        # A removal keeps the old install journal for recovery. Reinstall must
+        # run a fresh transaction even when the new plan has identical bytes.
+        removed=safe(state/'uninstall-receipt.json')
+        reinstallation=removed.exists() and not (state/'codex-mcp.json').exists()
         if previous and previous.get('phase') not in ('applying','complete','rolled-back'):raise InstallBlocked('Unknown recovery phase')
-        if previous and previous.get('phase')=='complete' and previous.get('plan_sha256')==approved_digest:
+        if previous and previous.get('phase')=='complete' and previous.get('plan_sha256')==approved_digest and not reinstallation:
             result=inspect(home)
             if result.get('installed'):return result
             raise InstallBlocked('Installed ownership/version changed')

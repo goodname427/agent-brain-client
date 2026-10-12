@@ -102,9 +102,16 @@ class StartupGuard(unittest.TestCase):
         self.assertEqual(calls,0);self.assertTrue(lease.is_symlink());self.assertFalse(lease.resolve().exists())
 
     def test_launch_failure_releases_kernel_lease_for_next_start(self):
-        with patch.object(startup.subprocess,'run',side_effect=OSError('Synthetic launch failed')):
+        with patch.object(startup.subprocess,'run',side_effect=OSError('Synthetic launch failed')), patch('content_install.inspect',return_value={'installed':True}):
             result=startup.serve_content(['synthetic-unused'],self.active,self.policy,'offline')
         self.assertEqual(result['status'],'content-runtime-lifecycle-review-required')
         result,calls=self.call();self.assertTrue(result['served']);self.assertEqual(calls,1)
+
+    def test_removed_registration_after_initial_inspect_cannot_launch_worker(self):
+        self.active['version']='0.2.5'
+        fixed=SimpleNamespace(policy=self.policy,update=lambda:{'status':'current','active':self.active},verified_active=lambda:self.active)
+        with patch.object(startup,'ClientReleases',return_value=fixed),patch.object(startup.subprocess,'run') as serve,patch('content_install.inspect',side_effect=[{'installed':True},{'installed':False}]):
+            result=startup.startup('unused-policy','a'*64)
+        self.assertEqual(result['status'],'content-native-install-pending');self.assertFalse(result['served']);serve.assert_not_called()
 
 if __name__=='__main__':unittest.main()

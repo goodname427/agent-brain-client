@@ -246,7 +246,9 @@ def install_once(plan,approved_digest,*,store=None,transport=None,secure_input=N
         receipt=Path(plan['device_home'])/'.config/agent-brain-client/content-install-receipt.json'
         if receipt.exists():
             previous=private_json(receipt)
-            if previous.get('phase') in ('complete','applying') and previous.get('plan_sha256')==approved_digest:
+            removed=Path(plan['device_home'])/'.config/agent-brain-client/uninstall-receipt.json'
+            reinstallation=removed.exists() and not (receipt.parent/'codex-mcp.json').exists()
+            if previous.get('phase') in ('complete','applying') and previous.get('plan_sha256')==approved_digest and (previous.get('phase')=='applying' or not reinstallation):
                 # Existing apply verifies/restores an interrupted matching journal
                 # before checking the original preimage; pairing already preceded it.
                 return install(plan,approved_digest)

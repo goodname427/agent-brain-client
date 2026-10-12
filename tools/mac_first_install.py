@@ -18,7 +18,7 @@ import secrets
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT
-sys.path[:0] = [str(SOURCE / "adapters/codex"), str(SOURCE / "scripts")]
+sys.path[:0] = [str(SOURCE / name) for name in ("adapters/codex", "scripts", "tools")]
 from brain_lock import locked
 from client_release import (
     ClientReleases,
@@ -276,6 +276,10 @@ def prepare_materials(
     }:
         raise ValueError("Helper health unconfirmed")
     plan_path = state / "install-plan.json"
+    removal = home / ".config/agent-brain-client/uninstall-receipt.json"
+    from client_lifecycle import read_removal
+    if removal.exists() and read_removal(home).get("phase") == "applying":
+        raise ValueError("Resume uninstall with --action repair before reinstall")
     if plan_path.exists():
         plan = private_json(plan_path)
         plan_sha = sha(canonical(plan))
@@ -373,6 +377,69 @@ def confirm_target(message, buttons=("Cancel", "Continue")):
     return chosen if chosen in buttons else "Cancel"
 
 
+def existing_connection(home, native, connection, metadata):
+    from content_install import context
+    policy, _, _, configured_native = context(home, metadata['package'], metadata['release_policy'], metadata['release_policy_sha256'])
+    runtime = policy['runtime']
+    profile = profile_file(runtime['https_profile'], runtime['https_profile_sha256'])
+    if configured_native != Path(native) or profile['endpoint'] != connection['endpoint'] or profile['grant'] != connection['grant'] or any(policy[k] != connection['release'][k] for k in ('origin', 'ref', 'anchor_commit')):
+        raise ValueError('Existing identity or release authority differs; preserve it')
+    return policy
+
+
+def reinstall_removed(home, native, connection, *, store=None, transport=None, secure_input=None, installer=None):
+    """Reuse the original identity/config/cache; update only the fixed source entry."""
+    from client_lifecycle import read_removal, validate_journal, decode
+    from content_install import raw, digest_or_none
+    removed = read_removal(home)
+    validate_journal(home, removed)
+    metadata = removed['registration']
+    existing_connection(home, native, connection, metadata)
+    state = safe(Path(home) / '.config/agent-brain-client/first-install')
+    current_path = state / 'reinstall-current.json'
+    if current_path.exists():
+        current = private_json(current_path)
+        if current.get('removed_plan_sha256') != metadata['plan_sha256'] and current.get('plan_sha256') == metadata['plan_sha256']:
+            same_private(state / ('prior-reinstall-current-' + sha(canonical(current)) + '.json'), current)
+            current_path.unlink()  # Completed previous reinstall; never enrollment state.
+    if current_path.exists():
+        current = private_json(current_path)
+        if set(current) != {'schema', 'removed_plan_sha256', 'plan', 'plan_sha256'} or current['schema'] != 1 or current['removed_plan_sha256'] != metadata['plan_sha256']:
+            raise ValueError('Reinstall attempt differs; preserve it')
+        from content_mcp import pinned
+        plan = pinned(current['plan'], current['plan_sha256'])
+        if plan['device_home'] != str(home) or plan['codex_home'] != str(native) or plan['release_policy'] != metadata['release_policy'] or plan['release_policy_sha256'] != metadata['release_policy_sha256']:
+            raise ValueError('Reinstall scope changed')
+        result = install_once(plan, current['plan_sha256'], store=store, transport=transport,
+                              secure_input=lambda: None, installer=installer)
+        if result.get('installed'):
+            removed['phase'] = 'reinstalled'
+            save(Path(home) / '.config/agent-brain-client/uninstall-receipt.json', removed)
+        return result
+    for name, value in removed['after'].items():
+        if digest_or_none(raw(name, 1048576)) != digest_or_none(decode(value)):
+            raise ValueError('Uninstalled state changed')
+    staging = Path(tempfile.mkdtemp(prefix='reinstall-bootstrap-', dir=state))
+    manifest = export(SOURCE, staging / 'package', https_content_candidate=True)
+    package_sha = sha(canonical(manifest['files']))
+    package = state / ('bootstrap-' + package_sha)
+    if not package.exists():
+        os.rename(staging / 'package', package)
+    # Existing package is independently rehashed by prepare; never overwrite it.
+    plan = prepare(home, package, metadata['release_policy'], metadata['release_policy_sha256'])
+    plan_sha = sha(canonical(plan))
+    plan_path = state / ('reinstall-plan-' + plan_sha + '.json')
+    same_private(plan_path, plan)
+    same_private(current_path, {'schema': 1, 'removed_plan_sha256': metadata['plan_sha256'],
+                                'plan': str(plan_path), 'plan_sha256': plan_sha})
+    result = install_once(plan, plan_sha, store=store, transport=transport,
+                          secure_input=lambda: None, installer=installer)
+    if result.get('installed'):
+        removed['phase'] = 'reinstalled'
+        save(Path(home) / '.config/agent-brain-client/uninstall-receipt.json', removed)
+    return result
+
+
 def run(
     home,
     native,
@@ -412,6 +479,21 @@ def run(
                     "installed": False,
                     "native_changed": False,
                 }
+            from client_lifecycle import read_removal
+            from content_install import inspect
+            registration = Path(home) / '.config/agent-brain-client/codex-mcp.json'
+            if registration.exists() and inspect(home).get('installed'):
+                existing_connection(home, native, connection, private_json(registration))
+                removal = Path(home) / '.config/agent-brain-client/uninstall-receipt.json'
+                if removal.exists() and read_removal(home).get('phase') == 'complete':
+                    removed = read_removal(home)
+                    removed['phase'] = 'reinstalled'
+                    save(removal, removed)
+                return inspect(home)
+            removal = Path(home) / '.config/agent-brain-client/uninstall-receipt.json'
+            if removal.exists() and read_removal(home).get('phase') == 'complete':
+                return reinstall_removed(Path(home), Path(native), connection, store=store,
+                                         transport=transport, secure_input=secure_input, installer=installer)
             retire_ready(state)
             materials = dependency_preparer(Path(home), runner=runner)
             plan, plan_sha, _ = prepare_materials(
@@ -453,6 +535,13 @@ def run(
                 secure_input=secure_input,
                 installer=installer,
             )
+            removal = Path(home) / ".config/agent-brain-client/uninstall-receipt.json"
+            if result.get("installed") and removal.exists():
+                from client_lifecycle import read_removal
+                removed = read_removal(Path(home))
+                if removed.get("phase") == "complete":
+                    removed["phase"] = "reinstalled"
+                    save(removal, removed)
             retire_ready(state)
             if result.get("status") in ("pairing-cancelled", "pairing-invalid-input"):
                 attempt.unlink()
@@ -496,16 +585,31 @@ def run(
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--connection", type=Path, required=True)
+    parser.add_argument("--action", choices=("install", "status", "repair", "uninstall"), default="install")
+    parser.add_argument("--connection", type=Path)
     parser.add_argument("--expected-connection-sha256")
     args = parser.parse_args()
     try:
         if sys.platform != "darwin" or platform.machine().lower() != "arm64":
             raise ValueError("Actual Mac arm64 required")
+        home = Path.home().resolve()
+        if args.action != "install":
+            from client_lifecycle import status, repair, uninstall
+            try:
+                value = uninstall(home, confirm_target) if args.action == "uninstall" else repair(home) if args.action == "repair" else status(home)
+            except RuntimeError:
+                value = {"status": "client-in-use", "native_changed": False,
+                         "next_action": "Quit Codex normally so this client's MCP worker exits, then rerun the same command. No process was killed."}
+            except Exception:
+                value = {"status": "client-ownership-review-required", "native_changed": False,
+                         "next_action": "Preserve local files and recovery receipts; do not delete data or reset Keychain. Use status, then repair for interrupted uninstall."}
+            print(json.dumps(value))
+            return 0 if value.get("installed") or value["status"] in ("client-uninstalled", "client-not-installed") else 2
+        if args.connection is None:
+            parser.error("--connection is required for install")
         connection, connection_sha = connection_file(
             args.connection, args.expected_connection_sha256
         )
-        home = Path.home().resolve()
         native = Path(os.environ.get("CODEX_HOME", str(home / ".codex"))).absolute()
         value = run(home, native, connection, connection_sha)
         print(json.dumps(value))
