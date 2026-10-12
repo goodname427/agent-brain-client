@@ -534,9 +534,22 @@ class ContentAdapter:
         if method in contract.WRITES:
             with locked(self.cache/'content.lock'):
                 row=self._enqueue(request,reconciles)  # Precedes every transport/mapping operation.
+                if row['state']=='blocked':
+                    # Only an explicit identical call retries a blocked request.
+                    # Startup/refresh never discard or automatically replay it.
+                    try:response=self.client.request(request)
+                    except Exception:response=None
+                    if self._server_saved(response,request):
+                        row.update(state='confirmed',response=response)
+                        self._save('outbox/'+request['request_id']+'.json',row)
+                    elif isinstance(response,dict) and response.get('request_id')==request['request_id'] and isinstance(response.get('error'),dict) and response['error'].get('code')=='revision_conflict':
+                        row.update(state='conflict',response=response)
+                        try:row['remote']=self._read_target(request['params']['kind'],request['params']['id'])
+                        except Exception:pass
+                        self._save('outbox/'+request['request_id']+'.json',row)
                 # Only an explicit same-ID retry upgrades an old local receipt.
                 # No automatic loop over the backed-up journal or new scheduler.
-                if row['state']=='confirmed' and (row['response'] or {}).get('persistence',{}).get('state')=='local-confirmed':
+                elif row['state']=='confirmed' and (row['response'] or {}).get('persistence',{}).get('state')=='local-confirmed':
                     try:
                         response=self.client.request(request)
                         if self._server_saved(response,request):
