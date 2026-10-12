@@ -20,8 +20,8 @@ python3 -B tools/build_credential_helper.py --output .local/credential-helper
 
 0.2.4 修复原生配置所有权与计划渲染：运行期只校验本客户端的 MCP 表及登记、包和策略绑定，Codex 模型及其他无关设置可正常变化。安装事务仍保存整文件前后像，只恢复匹配事务后像的文件，保留外部修改。计划保存/读取后的渲染摘要保持一致。升级必须同时覆盖原生固定启动器及其实际导入的依赖；只更新活动包不能修复旧固定入口。旧发布包不原地改写。
 
-`native/CredentialStore.swift` 是普通 login Keychain helper；不要求 Apple Team 或 provisioning。源码构建 helper 需要 macOS Swift 工具链；最终普通用户安装应接收已审核的二进制，首次安装构建器会编译并打包该 helper；另一台裸 Mac 的二进制交付与真实 Keychain/UI 验收仍未完成。Swift 源码与 helper 字节哈希必须分别固定。`DeviceComponent.swift` 是另一个签名候选，不在当前批准安装范围。
+`native/CredentialStore.swift` 是普通 login Keychain helper；不要求 Apple Team 或 provisioning。源码构建 helper 需要 macOS Swift 工具链；仓库安装脚本在稳定用户路径编译并自检原有 helper，复用已固定 helper；另一台新 Mac 的工具准备与真实 Keychain/UI 验收仍未完成。Swift 源码与 helper 字节哈希必须分别固定。`DeviceComponent.swift` 是另一个签名候选，不在当前批准安装范围。
 
 已交付 HTTPS 客户端支持一个审核安装入口：先检查原生计划，再一次安全输入，prepare→安全存储→confirm 后执行原生安装；失败和重试沿用持久配对状态。支持恢复与撤销、来源隔离缓存、CAS outbox。具体交付、恢复及验收边界见 [HTTPS-INSTALL.md](docs/HTTPS-INSTALL.md)。0.2.5 已验收 HTTPS 个人内容范围，见 [PERSONAL-OWNER-SCOPE.md](docs/PERSONAL-OWNER-SCOPE.md)。本轮首次安装候选不重新验收既有 0.2.5，不发布新资产或部署生产；保留既有 SSH 恢复材料。用户资料、部署地址、私钥、配对码、原生配置和会话不进入公开仓库。
 
-Mac arm64 首次安装入口、自动依赖与配置准备、明确拒绝邀请码的恢复以及发布前缺口见 [FIRST-INSTALL-MAC.md](docs/FIRST-INSTALL-MAC.md)。构建和模拟验证不代表安装包已正式发布、签名或公证。普通 Client 不包含管理员发码工具。
+Mac arm64 首次安装入口、自动依赖与配置准备、明确拒绝邀请码的恢复以及发布前缺口见 [FIRST-INSTALL-MAC.md](docs/FIRST-INSTALL-MAC.md)。仓库脚本路线无需 Apple 分发身份或公证；模拟验证不代表真实新设备安装已经完成。普通 Client 不包含管理员发码工具。

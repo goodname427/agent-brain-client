@@ -7,7 +7,7 @@ outside this transaction. No background scheduler or installer is created.
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import subprocess
 import sys
@@ -188,6 +188,22 @@ class ClientReleases:
                     'next_action':'Inspect the pinned release policy/package or failed health check; prior activation is retained or restored.'}
 
 
+def runtime_environment(python, git, core, *, windows=False, system_paths=()):
+    """Pure path/environment contract; granting a platform is a separate check."""
+    path_type = PureWindowsPath if windows else PurePosixPath
+    separator = ';' if windows else ':'
+    values = (python, git, core, *system_paths)
+    if any(separator in v or any(c in v for c in ('\x00','\r','\n')) for v in values):
+        raise UpdateBlocked('Unambiguous runtime paths required')
+    paths = [path_type(v) for v in values]
+    if any(not p.is_absolute() or '..' in p.parts for p in paths):
+        raise UpdateBlocked('Absolute runtime paths required')
+    return {'PATH': separator.join(str(p) for p in (paths[0].parent, paths[1].parent, *paths[3:])),
+            'GIT_EXEC_PATH': str(paths[2]), 'GIT_CONFIG_NOSYSTEM': '1',
+            'GIT_CONFIG_GLOBAL': 'NUL' if windows else '/dev/null',
+            'GIT_TERMINAL_PROMPT': '0', 'GIT_CONFIG_COUNT': '0'}
+
+
 def dependency_environment(policy):
     """Pinned first-install dependencies; existing policies keep their environment."""
     runtime=policy['runtime']
@@ -197,6 +213,21 @@ def dependency_environment(policy):
     raw=path.read_bytes()
     if digest(raw)!=runtime['dependency_policy_sha256']:raise UpdateBlocked('Dependencies changed')
     value=json.loads(raw)
+    if value.get('schema') == 2:
+        if set(value) != {'schema','python','git','git_exec_path','python_sha256','git_sha256'}:
+            raise UpdateBlocked('Dependency scope changed')
+        for name in ('python', 'git'):
+            executable = Path(value[name])
+            if not executable.is_absolute() or executable.is_symlink() or not executable.is_file() or not os.access(executable, os.X_OK) or digest(executable.read_bytes()) != value[name+'_sha256']:
+                raise UpdateBlocked('Prepared executable changed')
+        python, git, core = (Path(value[n]) for n in ('python','git','git_exec_path'))
+        if not core.is_absolute() or core.is_symlink() or not (core/'git-remote-https').is_file():
+            raise UpdateBlocked('Git HTTPS transport required')
+        if Path(sys.executable).resolve() != python:
+            raise UpdateBlocked('Prepared Python runtime required')
+        # Current policy_file/platform validation remains Mac-only. Windows paths
+        # can be tested independently, never widening the actual device grant.
+        return runtime_environment(str(python), str(git), str(core), system_paths=('/usr/bin','/bin'))
     if set(value)!={'schema','root','files'} or value['schema']!=1:raise UpdateBlocked('Dependency scope changed')
     root=Path(value['root'])
     if Path(runtime['device_home']) not in root.parents or not root.is_absolute() or any(p.is_symlink() for p in (root,*root.parents)):raise UpdateBlocked('Device-local dependencies required')
@@ -204,8 +235,7 @@ def dependency_environment(policy):
     python=root/'python/bin/python3';git=root/'git/bin/git';core=root/'git/libexec/git-core'
     if not python.is_file() or not git.is_file() or not core.is_dir() or not os.access(python,os.X_OK) or not os.access(git,os.X_OK):raise UpdateBlocked('Bundled Python and Git required')
     if Path(sys.executable).resolve()!=python.resolve():raise UpdateBlocked('Pinned Python runtime required')
-    return {'PATH':str(python.parent)+':'+str(git.parent)+':/usr/bin:/bin',
-            'GIT_EXEC_PATH':str(core),'GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null','GIT_TERMINAL_PROMPT':'0','GIT_CONFIG_COUNT':'0'}
+    return runtime_environment(str(python), str(git), str(core), system_paths=('/usr/bin','/bin'))
 
 
 def tree_files(root):
