@@ -106,7 +106,7 @@ class HTTPSContent(unittest.TestCase):
             self.assertEqual(self.coordinator().run()['status'],'pairing-resume-required');self.assertEqual(self.prompts,0)
 
     def test_profile_inspection_never_reads_store_and_rejects_wildcard_scope_http(self):
-        client=HTTPSContentClient(self.profile_path,self.digest,store=object(),credential_access=False);self.assertEqual(client.grant,GRANT);self.assertIsNone(client.queue_identity)
+        client=HTTPSContentClient(self.profile_path,self.digest,store=object(),credential_access=False);self.assertEqual(client.grant,GRANT);self.assertIsNone(client.queue_identity);self.assertEqual(client.transport.write_receipt,'local-durable-v1')
         for mutate in (lambda p:p.update(endpoint='http://127.0.0.1:8765'),lambda p:p['grant']['ids'].update(memory='*'),lambda p:p['grant'].update(scopes=['read','put','remove'])):
             value=copy.deepcopy(self.profile);mutate(value);self.profile_path.write_bytes(canonical(value));digest=hashlib.sha256(self.profile_path.read_bytes()).hexdigest()
             with self.assertRaises(ValueError):profile_file(self.profile_path,digest)
