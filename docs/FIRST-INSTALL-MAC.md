@@ -38,13 +38,15 @@ sh tools/install-mac.sh --action status
 
 状态列出已装活动版本、队列各状态数量和自有映射数，不访问 Keychain、不请求 Server、不输出内容正文。它是本机完整性检查，不能替代在线使用验证。
 
+`installation_present:true` 表示已有登记；`installed:true` 和 `installation_state:verified` 才表示该登记、原固定解释器、完整 MCP 表、policy/profile、bootstrap、回执及活动版本通过检查。运行 status 的 Python 可以不同于原安装解释器，它不会重写原 command。`installed:false` 配合 `present-review-required` 表示安装存在但某个完整性检查受阻，不代表未安装。安全 `reason` 和 `next_action` 指明检查点：例如 mcp-binding-changed 保留并恢复原表或审核替换计划，interpreter-unavailable 恢复原解释器，bootstrap-package-changed 恢复原校验包；不改摘要、不删缓存、不自动重装覆盖。没有登记和恢复材料才返回 client-not-installed；登记缺失但安装回执还在则提示恢复原安装。
+
 在 Codex 明确要求通过 `agent_brain_server` 列出获授权的内容，读取一个 Memory 的 revision，再用该 revision 和稳定 request_id 更新用户指定的测试内容；仅 `persistence.durable:true` 确认远端持久保存。用同一个 request_id 重试未知结果，不能当作新写入。初次验收使用用户批准的测试 ID/内容，保存并恢复原值；不要擅自改真实内容、激活 Rule/Skill 或扩大权限。读取和写入采用 `content_catalog` / `content_read` / `content_put`；新增 Rule/Skill 默认 disabled，详见 [内容范围](PERSONAL-OWNER-SCOPE.md)。
 
 同步在启动和工具调用边界发生；原生 Memory/Rule/Skill 映射完成后，已运行模型是否重新读取仍需观察。支持传输离线时读取已核验快照、持久排队和原 ID 重试；冲突保留，不能覆盖远端修改。
 
 ## 卸载
 
-先正常退出 Codex，使本工具 MCP worker 自然退出，再执行：
+先在宿主的 Settings → MCP servers 中，只停用 `agent_brain_server`，保存并使用宿主提供的 Restart/reload 让配置生效，使本工具 MCP worker 退出；不要退出 ChatGPT/CodexCLI，也不杀进程。此精确停用只将本工具表的 enabled 从 true 改为 false，不能改 command、args、env、工具范围、摘要或其他 MCP。公开 status 会报告 content-native-client-disabled、registration_verified:true 和队列/映射统计，卸载仍检查完整原绑定和排他 lease。管理界面没有单服务停用/正常关闭能力，或 worker 未退出时停止报告，不以退出整个宿主兜底。宿主配置能力见 [官方 MCP 说明](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。然后执行：
 
 ```sh
 sh tools/install-mac.sh --action uninstall
@@ -55,7 +57,9 @@ sh tools/install-mac.sh --action status
 
 默认保留专用 login Keychain 身份、固定 helper/bootstrap、依赖、profile/policy、安装及卸载前后像、outbox/imports 和完整快照，用于再次安装和安全恢复。它们主要位于 `~/.config/agent-brain-client`，原有安装也可能使用自己的已登记私有路径；不会卸载 Codex、改变 Server/cloud Data、撤销服务端设备或删除未同步数据。这是明确的可恢复卸载，没有“彻底擦除身份/数据”选项。
 
-`client-in-use`：正常退出 Codex 后重跑，不杀进程、不删 lock。`uninstall-unconfirmed-writes`：保留安装，通过原 MCP 重试原 ID 或协调冲突，队列无 pending/conflict/blocked 后重跑。未知队列、未完成导入、用户修改的自有文件或 Skill 目录新增私有文件会阻断移除，保持现场；不会盲删。
+`client-in-use`：确认宿主只停用了本服务并完成 reload，等待该 MCP 正常退出后重跑；做不到就停止报告，不退出宿主、不杀进程、不删 lock。`uninstall-unconfirmed-writes`：保留安装，只重新启用本服务并 reload，通过原 MCP 重试原 ID 或协调冲突，队列无 pending/conflict/blocked 后再停用并重跑。取消后同样可只重新启用本服务恢复使用，不需要邀请码。未知队列、未完成导入、用户修改的自有文件或 Skill 目录新增私有文件会阻断移除，保持现场；不会盲删。
+
+卸载每次实际写入/删除前重新检查该文件仍是自己的事务前像或后像；期间用户编辑会停止后续修改，保留编辑和恢复 journal，不能报告全部未改。shell 退出码 0 表示所请求的动作完成：uninstall 仅对 client-uninstalled/client-not-installed 成功；取消、未确认写入、活跃 worker 和 review-required 均非零，即使原安装仍存在也不会报成功。始终同时核对 JSON 的 status 与 native_changed。
 
 ## 中断恢复与再次安装
 

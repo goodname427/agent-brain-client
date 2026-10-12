@@ -482,6 +482,9 @@ def run(
             from client_lifecycle import read_removal
             from content_install import inspect
             registration = Path(home) / '.config/agent-brain-client/codex-mcp.json'
+            if registration.exists() and inspect(home).get('status')=='content-native-client-disabled':
+                existing_connection(home,native,connection,private_json(registration))
+                return dict(inspect(home),next_action='Re-enable only Agent Brain in the host MCP settings and reload it to resume, or uninstall the paused service. No invitation is requested.')
             if registration.exists() and inspect(home).get('installed'):
                 existing_connection(home, native, connection, private_json(registration))
                 removal = Path(home) / '.config/agent-brain-client/uninstall-receipt.json'
@@ -583,6 +586,18 @@ def run(
         }
 
 
+def lifecycle_exit(action, value):
+    """Exit success denotes the requested action, never merely an old installation."""
+    status=value.get('status')
+    if action in ('status','repair','uninstall') and status in ('client-uninstalled','client-not-installed'):
+        return 0
+    if action in ('status','repair') and status=='content-native-client-disabled' and value.get('registration_verified') is True:
+        return 0
+    if action in ('status','repair','install') and status=='content-native-client-installed' and value.get('installed') is True:
+        return 0
+    return 2
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--action", choices=("install", "status", "repair", "uninstall"), default="install")
@@ -601,10 +616,17 @@ def main():
                 value = {"status": "client-in-use", "native_changed": False,
                          "next_action": "Quit Codex normally so this client's MCP worker exits, then rerun the same command. No process was killed."}
             except Exception:
-                value = {"status": "client-ownership-review-required", "native_changed": False,
+                partial=False
+                if args.action in ('uninstall','repair'):
+                    from client_lifecycle import journal_path,read_removal
+                    try:
+                        partial=journal_path(home).exists() and read_removal(home).get('phase')=='applying'
+                    except Exception:
+                        partial=True
+                value = {"status": "uninstall-recovery-review-required" if partial else "client-ownership-review-required", "native_changed": None if partial else False,
                          "next_action": "Preserve local files and recovery receipts; do not delete data or reset Keychain. Use status, then repair for interrupted uninstall."}
             print(json.dumps(value))
-            return 0 if value.get("installed") or value["status"] in ("client-uninstalled", "client-not-installed") else 2
+            return lifecycle_exit(args.action,value)
         if args.connection is None:
             parser.error("--connection is required for install")
         connection, connection_sha = connection_file(
@@ -613,7 +635,7 @@ def main():
         native = Path(os.environ.get("CODEX_HOME", str(home / ".codex"))).absolute()
         value = run(home, native, connection, connection_sha)
         print(json.dumps(value))
-        return 0 if value.get("installed") else 2
+        return lifecycle_exit('install',value)
     except Exception:
         print(
             json.dumps(

@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -519,6 +520,30 @@ class PreparingReset(unittest.TestCase):
             opener.status, opener.code = status, code
             with self.assertRaises(ValueError):
                 transport.prepare(self.code, "n" * 32, self.profile)
+
+
+class LifecycleExitCodes(unittest.TestCase):
+    def command(self,action,response):
+        output=io.StringIO()
+        with patch.object(sys,'argv',['mac_first_install.py','--action',action]),patch.object(sys,'platform','darwin'),patch.object(wizard.platform,'machine',return_value='arm64'),patch.object(wizard.Path,'home',return_value=Path('/synthetic/home')),patch('client_lifecycle.'+action,return_value=response),patch.object(sys,'stdout',output):
+            code=wizard.main()
+        self.assertEqual(json.loads(output.getvalue()),response)
+        return code
+
+    def test_uninstall_cancel_and_pending_are_not_success_even_if_installed(self):
+        for status in ('uninstall-cancelled','uninstall-unconfirmed-writes','client-in-use'):
+            with self.subTest(status=status):
+                self.assertEqual(self.command('uninstall',{'status':status,'installed':True,'native_changed':False}),2)
+        for status in ('client-uninstalled','client-not-installed'):
+            self.assertEqual(self.command('uninstall',{'status':status,'installed':False,'native_changed':False}),0)
+
+    def test_status_and_repair_do_not_confuse_review_with_absent_installation(self):
+        self.assertEqual(self.command('status',{'status':'content-native-install-review-required','installed':False,'installation_present':True,'reason':'mcp-binding-changed','native_changed':False}),2)
+        self.assertEqual(self.command('status',{'status':'content-native-client-installed','installed':True,'native_changed':False}),0)
+        self.assertEqual(self.command('repair',{'status':'uninstall-recovery-review-required','installed':False,'native_changed':None}),2)
+        paused={'status':'content-native-client-disabled','installed':False,'registration_verified':True,'native_changed':False}
+        self.assertEqual(self.command('status',paused),0)
+        self.assertEqual(self.command('uninstall',paused),2)
 
 
 if __name__ == "__main__":

@@ -46,8 +46,8 @@ def lease(path):
     return locked(path, timeout=0)
 
 
-def adapter_for(home, meta):
-    policy, mcp, _, native = install.context(home, meta['package'], meta['release_policy'], meta['release_policy_sha256'])
+def adapter_for(home, meta, config_image=None):
+    policy, mcp, _, native = install.registered_context(home, meta, config_image)
     if policy['capabilities'] != HTTPS_CONTENT_CAPABILITIES:
         raise install.InstallBlocked('Only the existing HTTPS Mac installation is supported')
     runtime = policy['runtime']
@@ -128,7 +128,8 @@ def remove_table(raw):
 def prepare_removal(home):
     require_platform('native-install')
     home = install.safe(home)
-    if not install.inspect(home).get('installed'):
+    inspected=install.inspect(home)
+    if not inspected.get('registration_verified',inspected.get('installed')):
         raise install.InstallBlocked('Installed ownership requires repair')
     registration = state_path(home) / 'codex-mcp.json'
     meta = install.private_json(registration)
@@ -168,7 +169,11 @@ def prepare_removal(home):
 def validate_journal(home, journal):
     if set(journal) != {'schema', 'phase', 'device_home', 'registration', 'before', 'after', 'queue', 'removed_mapping_files'} or journal['schema'] != 1 or journal['device_home'] != str(home) or journal['phase'] not in ('prepared', 'applying', 'complete', 'reinstalled'):
         raise install.InstallBlocked('Removal receipt changed')
-    adapter, mcp, native = adapter_for(home, journal['registration'])
+    metadata=journal['registration']
+    policy=install.policy_file(metadata['release_policy'],metadata['release_policy_sha256'],runtime_check=False)
+    config=Path(policy['runtime']['codex_home'])/'config.toml'
+    original_config=decode(journal['before'][str(config)]['data'])
+    adapter, mcp, native = adapter_for(home, metadata, original_config)
     scope = {native / 'config.toml', state_path(home) / 'codex-mcp.json', adapter.cache / 'owned.json', adapter.cache / 'active.json'}
     if set(journal['before']) != set(journal['after']):
         raise install.InstallBlocked('Removal receipt scope changed')
@@ -235,6 +240,9 @@ def finish_removal(home, journal):
     for name, value in journal['after'].items():
         path = install.safe(name)
         desired = decode(value)
+        old=journal['before'][name]
+        if install.digest_or_none(install.raw(path,1048576)) not in (old['sha'],install.digest_or_none(desired)):
+            raise install.InstallBlocked('Outside edit retained')
         if desired is None:
             path.unlink(missing_ok=True)
         else:
@@ -279,7 +287,11 @@ def uninstall(home, confirm):
             meta = previous['registration']
         else:
             meta = install.private_json(registration)
-        adapter, _, _ = adapter_for(home, meta)
+        if continuing:
+            assert previous is not None
+            adapter=validate_journal(home,previous)
+        else:
+            adapter, _, _ = adapter_for(home, meta)
         adapter.cache.mkdir(parents=True, exist_ok=True, mode=0o700)
         private_mode(adapter.cache, directory=True, owner=True, blocked=install.InstallBlocked)
         with lease(adapter.cache / '.content-runtime.lock'), lease(adapter.cache / 'content.lock'):
@@ -304,13 +316,18 @@ def status(home):
             journal = read_removal(home)
             validate_journal(home, journal)
             return {'status': 'client-uninstalled' if journal['phase'] == 'complete' else 'uninstall-resume-required', 'installed': False, 'native_changed': False}
-        return {'status': 'client-not-installed', 'installed': False, 'native_changed': False}
+        return install.inspect(home)
     result = install.inspect(home)
-    if result.get('installed'):
-        adapter, _, _ = adapter_for(home, install.private_json(registration))
-        result['queue'] = queue_counts(adapter)
-        result['owned_mapping_files'] = len(adapter._owned()['files'])
-    result['next_action'] = 'Use install to resume pairing/install; use repair for an interrupted uninstall. Preserve data on ownership drift.'
+    if result.get('registration_verified',result.get('installed')):
+        try:
+            adapter, _, _ = adapter_for(home, install.private_json(registration))
+            result['queue'] = queue_counts(adapter)
+            result['owned_mapping_files'] = len(adapter._owned()['files'])
+        except Exception:
+            return dict(result,status='content-local-state-review-required',installed=False,
+                        installation_state='present-review-required',reason='local-content-state-review-required',
+                        next_action='Preserve outbox, import inventory and native mappings. Review unknown local state or file ownership before uninstall; do not delete data or reset Keychain.')
+        result['next_action'] = 'Service is paused. Re-enable only Agent Brain in the host MCP settings to resume, or use uninstall after its worker exits.' if result['status']=='content-native-client-disabled' else 'Use uninstall to remove only this tool, or the same install command to check its existing registration. No new invitation.'
     return result
 
 
