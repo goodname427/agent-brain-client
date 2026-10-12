@@ -3,13 +3,14 @@
 Rule/Skill records are server-owned JSON, not client-supplied Git paths. The
 registry is intentionally small and extensible; clients cannot invent types.
 """
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import PurePosixPath
 import re
 
 TYPES={'memory','rule','skill'}
-FIELDS={'content_read':{'kind','id'},'content_catalog':{'kinds'},
+FIELDS={'memory_query':{'kind','query','since','until','limit'},'content_read':{'kind','id'},'content_catalog':{'kinds'},
         'content_put':{'kind','id','record','expected_revision'},
         'content_remove':{'kind','id','expected_revision'}}
 WRITES={'content_put','content_remove'}
@@ -28,6 +29,11 @@ def encode(value):return json.dumps(value,sort_keys=True,ensure_ascii=False,sepa
 
 def validate(method,params):
     if method not in FIELDS or not isinstance(params,dict) or set(params)!=FIELDS[method]:raise ValueError('Invalid content request')
+    if method=='memory_query':
+        if params['kind']!='memory' or not isinstance(params['query'],str) or len(params['query'])>1024 or type(params['limit']) is not int or not 1<=params['limit']<=3:raise ValueError('Bounded Memory query required')
+        since,until=query_time(params['since']),query_time(params['until'])
+        if since is not None and until is not None and since>until:raise ValueError('Ordered query range required')
+        return
     if method=='content_catalog':
         kinds=params['kinds']
         if not isinstance(kinds,list) or not kinds or any(not isinstance(k,str) or k not in TYPES for k in kinds) or len(set(kinds))!=len(kinds):raise ValueError('Unsupported kinds')
@@ -125,3 +131,60 @@ def envelope(kind,identity,value,raw=None):
     return {'content_api_version':1,'kind':kind,'id':identity,'revision':hashlib.sha256(raw if raw is not None else encode(value)).hexdigest() if value is not None else 'missing','record':value}
 
 def path(kind,identity):return 'content/'+kind+'/'+identity+'.json'
+
+
+MEMORY_GUIDANCE = (
+    'Actively review useful non-sensitive material within the existing authorized source/scope: ordinary preferences, corrections, useful small facts, personal task progress and short-term continuity can merit saving; major decisions or permanence are not prerequisites. '
+    'Keep a short dated fact/result/next-step, not raw conversation logs. A personal progress summary supplied in an authorized conversation is different from collecting project files or project-only material; do not disguise unauthorized project content as personal memory. '
+    'Honor explicit user memory requests within scope even for small facts; retain provenance/uncertainty. Distinguish user statements and observed results from guesses; uncertain inference needs review. One-time presentation instructions without future utility need not be saved. Reuse the same topic, read its revision, merge valid context and correct outdated facts via content_put/CAS. '
+    'For onboarding, migrate all existing memories from every explicitly authorized accessible memory source by default, in bounded batches, excluding company-sensitive information and secrets. Do not importance-filter existing memories or omit small/short-term items; preserve uncertainty/provenance rather than upgrading guesses into facts. Deduplicate and merge without losing unique information, retain both sides of conflicts; the three-topic retrieval budget is not an import or source-coverage quota. Report imported, duplicate, skipped, deferred, inaccessible and not-checked with reasons. Never imply account-wide coverage from an explicit file list, zero pending writes or a small sample. '
+    'Do not read prohibited sessions/databases, secrets or LocalOnly; unknown/new source access is not authorized by this guidance. Do not mechanically upload everything, overwrite occupied topics, activate imported Rules/Skills, or promote a temporary instruction into a global rule. '
+    'An imported duplicate is covered, not a missing upload; source access gaps and privacy exclusions differ from relevance decisions. Check transport/permission/contract errors separately from editorial choices. '
+)
+
+
+def query_time(value):
+    if value is None:return None
+    if not isinstance(value,str) or not 1<=len(value)<=64:raise ValueError('ISO8601 time required')
+    parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:raise ValueError('Explicit time zone required')
+    return parsed.astimezone(timezone.utc)
+
+
+def review_memory_sources(sources,candidates,mode="daily"):
+    """Offline policy review of explicit metadata, not collection or authorization.
+
+    Caller classifications are evidence to review, never permission grants or
+    automatic language understanding. Bodies/files/credentials are not inputs.
+    """
+    if mode not in ('daily','onboard'):raise ValueError('Explicit review mode required')
+    if not isinstance(sources,list) or not isinstance(candidates,list) or len(sources)>256 or len(candidates)>1024:raise ValueError('Bounded explicit review required')
+    index={};counts={};seen=set();rows=[]
+    for source in sources:
+        if not isinstance(source,dict) or set(source)!={'source_id','status','authorized','expected_candidates','reason'}:raise ValueError('Explicit source coverage required')
+        identity=source['source_id'];expected=source['expected_candidates']
+        if not isinstance(source['reason'],str) or not 1<=len(source['reason'])<=512 or not isinstance(identity,str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}',identity) or identity in index or source['status'] not in ('read','excluded','unavailable','not-checked') or type(source['authorized']) is not bool or expected is not None and (type(expected) is not int or not 0<=expected<=1024):raise ValueError('Invalid source review')
+        index[identity]=source;counts[identity]=0
+    for candidate in candidates:
+        keys={'id','source_id','kind','scope','evidence','utility','sensitive','raw_history','duplicate','requested'}
+        if not isinstance(candidate,dict) or set(candidate)!=keys:raise ValueError('Explicit candidate reasons required')
+        identity=candidate['id'];source=index.get(candidate['source_id'])
+        if not isinstance(identity,str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}',identity) or identity in seen or source is None or candidate['kind'] not in TYPES or candidate['scope'] not in ('personal-shared','project-only','local-only') or candidate['evidence'] not in ('user-stated','observed-result','inferred') or candidate['utility'] not in ('preference','continuity','useful-fact','reusable-guidance','ephemeral','none') or any(type(candidate[k]) is not bool for k in ('sensitive','raw_history','duplicate','requested')):raise ValueError('Invalid candidate review')
+        seen.add(identity);counts[candidate['source_id']]+=1
+        if candidate['sensitive'] or candidate['raw_history'] or candidate['scope']=='local-only':decision,reason='excluded','privacy-or-prohibited-history'
+        elif not source['authorized'] or source['status']!='read':decision,reason='deferred','source-access-not-authorized-or-unavailable'
+        elif candidate['scope']=='project-only':decision,reason='deferred','outside-personal-shared-scope'
+        elif candidate['duplicate']:decision,reason='duplicate','equivalent-record-already-present'
+        elif mode=='onboard' and candidate['kind']=='memory':decision,reason='candidate','all-authorized-existing-memory-preserve-unique-information-and-provenance'
+        elif candidate['requested']:decision,reason='candidate','explicit-user-request-preserve-evidence'
+        elif candidate['evidence']=='inferred':decision,reason='review','unverified-inference'
+        elif candidate['utility'] in ('ephemeral','none'):decision,reason='skipped','no-useful-future-context'
+        else:decision,reason='candidate','useful-authorized-fact-or-continuity'
+        rows.append({'id':identity,'source_id':candidate['source_id'],'kind':candidate['kind'],'decision':decision,'reason':reason})
+    coverage=[]
+    for identity,source in index.items():
+        expected=source['expected_candidates'];actual=counts[identity]
+        if expected is not None and actual>expected:raise ValueError('Source candidate count mismatch')
+        coverage.append(dict(source,reviewed_candidates=actual,fully_reviewed=source['authorized'] and source['status']=='read' and expected is not None and actual==expected))
+    totals={name:sum(r['decision']==name for r in rows) for name in ('candidate','duplicate','skipped','excluded','deferred','review')}
+    return {'mode':mode,'sources':coverage,'candidates':rows,'counts':totals,'accessible_review_complete':all(r['fully_reviewed'] for r in coverage if r['authorized'] and r['status']=='read'),'coverage_gaps':sum(r['status'] in ('unavailable','not-checked') or r['authorized'] and r['status']=='read' and not r['fully_reviewed'] for r in coverage),'account_complete':False,'data_transferred':False,'permissions_granted':False}

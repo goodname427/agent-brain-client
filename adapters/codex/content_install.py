@@ -85,7 +85,7 @@ def context(home,package,policy_path,policy_sha,*,inspection=False):
         client=ComponentClient(runtime['device_plan'],runtime['device_plan_sha256'],signing)
     if client.data_mode!='personal':raise InstallBlocked('Personal content profile required')
     validate_policy(content,client.grant)
-    methods=sorted(contract.methods(client.grant['scopes']))
+    methods=sorted(contract.methods(client.grant['scopes'])-{'memory_query'})
     package_sha=package_check(package,policy)
     mcp={'command':str(Path(sys.executable).resolve()),'args':['-I','-B',str(safe(package)/'adapters/codex/client_startup.py'),'--policy-file',str(policy_path),'--policy-sha256',policy_sha],
          'startup_timeout_sec':60,'tool_timeout_sec':120,'enabled':True,'enabled_tools':methods,'default_tools_approval_mode':'writes'}

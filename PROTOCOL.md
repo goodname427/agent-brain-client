@@ -234,3 +234,7 @@ wait for their workers to exit; their original GitHub-outage queue behavior stay
 The new HTTPS client declares the capability and its HTTP transport accepts only
 strict local-confirmed receipts before the content adapter validates the record.
 The header changes neither authorization, CAS nor the request digest.
+
+Memory behavior and coverage: daily candidates include useful ordinary facts, corrections and short-term personal continuity, not only major/permanent conclusions. Onboard preserves all authorized accessible existing memories by default, excluding company-sensitive/secrets and source-scope boundaries; deduplicate, preserve unique information and explicitly reconcile differences. A three-topic retrieval budget never limits source review/import coverage. See docs/MEMORY-BEHAVIOR.md and the offline metadata-only tools/memory_review.py.
+
+memory_query is an additive read-only typed method: kind=memory, query string (empty for recent), since/until nullable offset-aware ISO8601, limit 1..3. It returns current authorized topic previews/revisions and server memory updated_at, never event occurrence time or historical erased preferences. Existing content_catalog may carry Memory-only query options at the MCP layer and delegates to this method, retaining the original installed tool whitelist; normal catalog calls and v1 record/envelope shapes remain unchanged. Query does not refresh/drain unrelated blocked writes; unavailable/offline query stays an error. No new credential/scope/SQL migration, background collector or raw-session access.
