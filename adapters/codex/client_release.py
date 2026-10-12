@@ -4,7 +4,9 @@ Catalog discovery never executes downloaded code. Startup updates only immutable
 client packages and their pointer; native permissions, credentials and data stay
 outside this transaction. No background scheduler or installer is created.
 """
+import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -30,6 +32,7 @@ SSH_CONTENT_CLIENT_FILES=tuple(n for n in CONTENT_CLIENT_FILES if n!='native/Dev
 SSH_CONTENT_CAPABILITIES=['codex-stdio-mcp','personal-content-explicit','ssh-server-credential-proxy']
 HTTPS_CONTENT_CLIENT_FILES=tuple(n for n in CONTENT_CLIENT_FILES if n!='native/DeviceComponent.swift')+('adapters/codex/https_content.py','adapters/codex/system_credentials.py','native/CredentialStore.swift')
 HTTPS_CONTENT_CAPABILITIES=['codex-stdio-mcp','personal-content-explicit','https-system-credential']
+DEPENDENCY_RUNTIME={'dependency_policy','dependency_policy_sha256'}
 HTTPS_CONTENT_RUNTIME={'https_profile','https_profile_sha256','credential_source_sha256','content_policy','content_policy_sha256','device_home','codex_home','content_cache'}
 SSH_CONTENT_RUNTIME={'ssh_profile','ssh_profile_sha256','content_policy','content_policy_sha256','device_home','codex_home','content_cache'}
 LEGACY_PRESERVATION={'legacy_binding_sha256','legacy_hooks_sha256'}
@@ -80,7 +83,7 @@ def policy_file(path, expected_sha):
         raise UpdateBlocked('Separate client source and package cache required')
     runtime=policy['runtime']
     if content:
-        scopes=(HTTPS_CONTENT_RUNTIME,HTTPS_CONTENT_RUNTIME|LEGACY_PRESERVATION) if https else (SSH_CONTENT_RUNTIME,SSH_CONTENT_RUNTIME|LEGACY_PRESERVATION) if ssh else (CONTENT_RUNTIME,)
+        scopes=(HTTPS_CONTENT_RUNTIME,HTTPS_CONTENT_RUNTIME|LEGACY_PRESERVATION,HTTPS_CONTENT_RUNTIME|DEPENDENCY_RUNTIME) if https else (SSH_CONTENT_RUNTIME,SSH_CONTENT_RUNTIME|LEGACY_PRESERVATION) if ssh else (CONTENT_RUNTIME,)
         if not isinstance(runtime,dict) or set(runtime) not in scopes:raise UpdateBlocked('Fixed content runtime required')
         for name,value in runtime.items():
             if name.endswith('_sha256'):
@@ -89,6 +92,7 @@ def policy_file(path, expected_sha):
         homes=[Path(runtime[k]).resolve() for k in ('device_home','codex_home','content_cache')]
         if homes[2] in homes[:2] or any(homes[2] in p.parents for p in homes[:2]):raise UpdateBlocked('Separate native/content cache required')
         if any(p==repo or repo in p.parents or p==cache or cache in p.parents for p in homes):raise UpdateBlocked('Native paths must be outside client code paths')
+        if https and DEPENDENCY_RUNTIME<=set(runtime):dependency_environment(policy)
         return policy
     if not isinstance(runtime,dict) or set(runtime)!={'endpoint','token_file'}:
         raise UpdateBlocked('Fixed server runtime destination required')
@@ -182,3 +186,46 @@ class ClientReleases:
             except (UpdateBlocked,OSError,ValueError,KeyError,TypeError):active=None
             return {'status':'release-review-required','active':active,
                     'next_action':'Inspect the pinned release policy/package or failed health check; prior activation is retained or restored.'}
+
+
+def dependency_environment(policy):
+    """Pinned first-install dependencies; existing policies keep their environment."""
+    runtime=policy['runtime']
+    if not DEPENDENCY_RUNTIME<=set(runtime):return None
+    path=Path(runtime['dependency_policy'])
+    if not path.is_absolute() or any(p.is_symlink() for p in (path,*path.parents)) or not path.is_file() or path.stat().st_uid!=os.getuid() or path.stat().st_mode&0o077 or path.stat().st_size>2097152:raise UpdateBlocked('Private dependency policy required')
+    raw=path.read_bytes()
+    if digest(raw)!=runtime['dependency_policy_sha256']:raise UpdateBlocked('Dependencies changed')
+    value=json.loads(raw)
+    if set(value)!={'schema','root','files'} or value['schema']!=1:raise UpdateBlocked('Dependency scope changed')
+    root=Path(value['root'])
+    if Path(runtime['device_home']) not in root.parents or not root.is_absolute() or any(p.is_symlink() for p in (root,*root.parents)):raise UpdateBlocked('Device-local dependencies required')
+    verify_tree(root,value['files'])
+    python=root/'python/bin/python3';git=root/'git/bin/git';core=root/'git/libexec/git-core'
+    if not python.is_file() or not git.is_file() or not core.is_dir() or not os.access(python,os.X_OK) or not os.access(git,os.X_OK):raise UpdateBlocked('Bundled Python and Git required')
+    if Path(sys.executable).resolve()!=python.resolve():raise UpdateBlocked('Pinned Python runtime required')
+    return {'PATH':str(python.parent)+':'+str(git.parent)+':/usr/bin:/bin',
+            'GIT_EXEC_PATH':str(core),'GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null','GIT_TERMINAL_PROMPT':'0','GIT_CONFIG_COUNT':'0'}
+
+
+def tree_files(root):
+    """Inventory regular files and internal relative links, never external targets."""
+    root=Path(root)
+    if not root.is_dir() or root.is_symlink():raise UpdateBlocked('Canonical dependency tree required')
+    files={}
+    for path in sorted(root.rglob('*')):
+        name=path.relative_to(root).as_posix()
+        if path.is_symlink():
+            target=os.readlink(path)
+            if Path(target).is_absolute() or not path.resolve().is_relative_to(root.resolve()) or not path.resolve().exists():raise UpdateBlocked('External or broken dependency link')
+            files[name]={'link':target}
+        elif path.is_file():
+            if path.stat().st_nlink!=1:raise UpdateBlocked('Linked dependency file')
+            files[name]={'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'executable':bool(path.stat().st_mode&0o111)}
+        elif not path.is_dir():raise UpdateBlocked('Unsupported dependency file')
+    if not files or len(files)>20000:raise UpdateBlocked('Dependency tree size changed')
+    return files
+
+
+def verify_tree(root,files):
+    if not isinstance(files,dict) or tree_files(root)!=files:raise UpdateBlocked('Dependency inventory changed')

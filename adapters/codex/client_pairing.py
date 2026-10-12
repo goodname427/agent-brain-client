@@ -15,7 +15,7 @@ def allowed_id(ids,kind,identity):
 
 class EnrollmentTerminal(Exception):
     def __init__(self,reason):
-        if reason not in ('pairing_expired','device_revoked'):raise ValueError('Not a terminal enrollment')
+        if reason not in ('pairing_expired','device_revoked','pairing_prepare_rejected'):raise ValueError('Not a terminal enrollment')
         self.reason=reason;super().__init__(reason)
 
 
