@@ -331,6 +331,7 @@ def prepare_materials(
         ):
             return plan, plan_sha, binding
         inspect_plan(plan_path, plan_sha)
+        prepared_at = int(time.time())
         ready = {
             "schema": 1,
             "status": "first-install-ready",
@@ -339,8 +340,8 @@ def prepare_materials(
             "connection_sha256": connection_sha,
             "bundle_sha256": bundle_sha,
             "plan_sha256": plan_sha,
-            "prepared_at": int(time.time()),
-            "valid_until": int(time.time()) + 600,
+            "prepared_at": prepared_at,
+            "valid_until": prepared_at + 600,
             "native_changed": False,
             "credential_accessed": False,
         }
@@ -413,6 +414,7 @@ def prepare_materials(
         home, Path(bundle) / "client", state / "release-policy.json", policy_sha
     )
     plan_sha = same_private(plan_path, plan)
+    prepared_at = int(time.time())
     ready = {
         "schema": 1,
         "status": "first-install-ready",
@@ -421,8 +423,8 @@ def prepare_materials(
         "connection_sha256": connection_sha,
         "bundle_sha256": bundle_sha,
         "plan_sha256": plan_sha,
-        "prepared_at": int(time.time()),
-        "valid_until": int(time.time()) + 600,
+        "prepared_at": prepared_at,
+        "valid_until": prepared_at + 600,
         "native_changed": False,
         "credential_accessed": False,
     }

@@ -358,6 +358,20 @@ class FirstInstall(unittest.TestCase):
         self.assertEqual(environment["GIT_CONFIG_GLOBAL"], "/dev/null")
         self.assertNotIn("DYLD_INSERT_LIBRARIES", environment)
 
+    def test_readiness_expiry_uses_one_clock_snapshot(self):
+        self.fixture()
+        decisions = iter(["Continue", "Back"])
+        with patch.object(wizard.time, "time", side_effect=[2000, 2001]) as clock:
+            self.assertEqual(
+                self.run_wizard(confirm=lambda *args: next(decisions))["status"],
+                "first-install-ready",
+            )
+        ready = content_install.private_json(
+            self.home / ".config/agent-brain-client/first-install/ready.json"
+        )
+        self.assertEqual(clock.call_count, 1)
+        self.assertEqual(ready["valid_until"] - ready["prepared_at"], 600)
+
     def test_dependency_environment_is_optional_for_existing_policies(self):
         self.assertIsNone(dependency_environment({"runtime": {}}))
 
