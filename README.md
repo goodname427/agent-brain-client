@@ -25,3 +25,5 @@ python3 -B tools/build_credential_helper.py --output .local/credential-helper
 已交付 HTTPS 客户端支持一个审核安装入口：先检查原生计划，再一次安全输入，prepare→安全存储→confirm 后执行原生安装；失败和重试沿用持久配对状态。支持恢复与撤销、来源隔离缓存、CAS outbox。具体交付、恢复及验收边界见 [HTTPS-INSTALL.md](docs/HTTPS-INSTALL.md)。0.2.5 已验收 HTTPS 个人内容范围，见 [PERSONAL-OWNER-SCOPE.md](docs/PERSONAL-OWNER-SCOPE.md)。本轮首次安装候选不重新验收既有 0.2.5，不发布新资产或部署生产；保留既有 SSH 恢复材料。用户资料、部署地址、私钥、配对码、原生配置和会话不进入公开仓库。
 
 Mac arm64 的唯一用户操作说明见 [安装、使用、卸载与再次安装](docs/FIRST-INSTALL-MAC.md)，连接交付格式见 [无凭据示例](docs/connection.example.json)。同一个脚本提供 install/status/repair/uninstall；卸载移除入口和自有映射，保留身份及可恢复数据，不卸载 Codex。现有设备再次安装复用原身份、helper/profile/队列与信任锚；无需 Apple 分发身份或公证。独立实机验收仍须实际执行，合成验证不代表已通过。普通 Client 不包含管理员发码工具。
+
+弱网兼容源码区分服务器本地已保存（local_durable:true、GitHub 未确认）和原 durable:true 的 GitHub 确认。前者可继续 CAS/映射，但不会冒称备份完成；同 request_id 明确重试可更新回执。公开协议见 PROTOCOL.md。生产0.2.5和发布渠道未切换；Server部署须配套兼容Client。

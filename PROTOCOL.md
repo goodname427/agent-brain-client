@@ -203,3 +203,18 @@ or activation, and applies bounded global/pairing/per-device budgets. Responses
 are no-store; fixed errors omit raw secrets. Original private routes remain.
 Public routing, issuer/key/ledger configuration and real credential installation
 require separate precise deployment approval; exporting source enables no route.
+
+Server-local durability and GitHub backup are separate receipts. A strict
+local-confirmed write has local_durable=true, github_confirmed=false and
+durable=false; its commit is a journaled, hardened Server Git commit. The device
+outbox acknowledges Server storage and continues CAS/mapping without claiming
+GitHub persistence. remote-confirmed with durable=true remains the original
+GitHub acknowledgement, including legacy receipts without additive flags.
+Contradictory flags, missing commit/result or mismatched records stay pending.
+The outbox schema and request IDs remain unchanged; confirmed means Server saved
+it, with its response describing backup state. Explicit same-ID retry can upgrade
+a local receipt without duplicate mutation. No background confirmed-record scan
+or scheduler is added. Read/catalog persistence includes Server github_backup;
+offline cache cannot establish its current status. Original origin, local HEAD
+ownership and CAS remain enforced. Server deployment and compatible Client
+publication require separate approval; 0.2.5 may hold local receipts pending.
