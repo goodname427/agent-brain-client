@@ -18,6 +18,10 @@ class ContentServer(Server):
     def invoke(self,name,arguments):
         try:
             if name not in self.adapter.methods() or not isinstance(arguments,dict):raise ValueError()
+            if name=='content_catalog' and set(arguments)&{'query','since','until','limit'}:
+                if arguments.get('kinds')!=['memory'] or set(arguments)-{'kinds','query','since','until','limit','request_id'}:raise ValueError()
+                arguments={key:value for key,value in arguments.items() if key!='kinds'};name='memory_query'
+            if name=='memory_query':arguments=dict({'kind':'memory','query':'','since':None,'until':None,'limit':3},**arguments)
             required=contract.FIELDS[name]|({'request_id'} if name in contract.WRITES else set())
             allowed=contract.FIELDS[name]|{'request_id'}|({'reconciles'} if name=='content_put' else set())
             if set(arguments)-allowed or required-set(arguments):raise ValueError()
@@ -48,7 +52,12 @@ class ContentServer(Server):
                 if 'kinds' in fields:properties['kinds']={'type':'array','items':{'type':'string','enum':kinds},'minItems':1,'uniqueItems':True}
                 if 'kind' in fields:properties['kind']['enum']=kinds
                 if 'record' in fields:properties['record']={'type':'object','description':'Typed v1 record: see PROTOCOL.md. Rules preserve enabled/trigger; Skills preserve files/dependencies. Server validates exact fields.'}
-                required=list(sorted(fields))
+                if name=='memory_query':
+                    properties.update(query={'type':'string','default':''},since={'type':['string','null'],'default':None,'description':'Inclusive memory update time, ISO8601 with offset; not event occurrence time.'},until={'type':['string','null'],'default':None},limit={'type':'integer','minimum':1,'maximum':3,'default':3})
+                    properties['kind']={'type':'string','enum':['memory'],'default':'memory'}
+                if name=='content_catalog':
+                    properties.update(query={'type':'string','description':'Optional Memory-only query alias; kinds must be [memory].'},since={'type':['string','null']},until={'type':['string','null']},limit={'type':'integer','minimum':1,'maximum':3})
+                required=[] if name=='memory_query' else list(sorted(fields))
                 if name in contract.WRITES:properties['request_id']={'type':'string','pattern':'^[A-Za-z0-9_-]{16,128}$'};required.append('request_id')
                 if name=='content_put':properties['reconciles']={'type':'object','description':'Explicit local conflict references after merging both versions; never sent to Server. Only durable confirmation resolves them.','properties':{'request_ids':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256},'source_keys':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256}},'required':['request_ids','source_keys'],'additionalProperties':False}
                 tools.append({'name':name,'description':'Approved cloud content only. Server is the sole write boundary; retain CAS revision and request_id on write retries. Transport failures may return a verified stale snapshot with local_cache.stale=true; cache misses never prove remote absence. Local cache refresh does not reload existing model context.','inputSchema':{'type':'object','properties':properties,'required':required,'additionalProperties':False},'annotations':{'readOnlyHint':name not in contract.WRITES,'destructiveHint':name=='content_remove','idempotentHint':True}})
@@ -57,7 +66,7 @@ class ContentServer(Server):
         if isinstance(request,dict) and request.get('method')=='initialize' and isinstance(result,dict):
             self.adapter.refresh()
             result['serverInfo']['name']='agent-brain-content-codex-candidate'
-            result['instructions']='Use approved Memory/Rule/Skill through these Server APIs. Writes enter a private device outbox before transport. Pending means not yet confirmed on Server. local_durable=true with state=local-confirmed means saved in the Server local repository; github_confirmed=false and durable=false mean GitHub backup is pending. Only remote-confirmed with durable=true confirms GitHub persistence. Read/catalog github_backup describes the current backup backlog. Retain exact request_id, record and CAS base on retries; an explicit same-ID retry can refresh a prior local receipt without duplicating the write. Startup/tool boundaries replay pending device writes. Conflicts retain both versions for explicit reconciliation. Reviewed inventory precedes mapping; Rule/Skill import does not enable them. Do not collect native sessions/history, LocalOnly/private material or credentials. Offline reads may use a previously verified snapshot, explicitly marked local_cache.stale=true and durable=false; this never confirms remote freshness or remote absence. Missing or unverified cache remains an error. Refresh does not replace loaded context. Pairing and publication remain separate authorized operations.'
+            result['instructions']=contract.MEMORY_GUIDANCE+'For related or recent saved context, use memory_query or the enabled content_catalog Memory-only query alias (kinds=[memory], query/since/until/limit). Times describe memory updates, not event occurrence. '+'Use approved Memory/Rule/Skill through these Server APIs. Writes enter a private device outbox before transport. Pending means not yet confirmed on Server. local_durable=true with state=local-confirmed means saved in the Server local repository; github_confirmed=false and durable=false mean GitHub backup is pending. Only remote-confirmed with durable=true confirms GitHub persistence. Read/catalog github_backup describes the current backup backlog. Retain exact request_id, record and CAS base on retries; an explicit same-ID retry can refresh a prior local receipt without duplicating the write. Startup/tool boundaries replay pending device writes. Conflicts retain both versions for explicit reconciliation. Reviewed inventory precedes mapping; Rule/Skill import does not enable them. Do not collect native sessions/history, LocalOnly/private material or credentials. Offline reads may use a previously verified snapshot, explicitly marked local_cache.stale=true and durable=false; this never confirms remote freshness or remote absence. Missing or unverified cache remains an error. Refresh does not replace loaded context. Pairing and publication remain separate authorized operations.'
         return result
 
 def pinned(path,digest):
@@ -86,7 +95,7 @@ def installation_check(client,policy,client_version='0.2.0'):
     class Adapter:
         def __init__(self):self.policy=policy
         def refresh(self):return {'status':'protocol-only','native_changed':False}
-        def methods(self):return contract.methods(client.grant['scopes'])
+        def methods(self):return contract.methods(client.grant['scopes'])-{'memory_query'}
         def invoke(self,request):
             if request['method']!='content_catalog':raise ValueError('Read-only check')
             return client.request(request)

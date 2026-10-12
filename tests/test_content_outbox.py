@@ -169,10 +169,11 @@ class Outbox(unittest.TestCase):
         self.cloud.request=failed_read;conflicted=self.request('synthetic_read_disconnect',body='Local conflicting body');self.assertEqual(self.adapter.invoke(conflicted)['local_queue']['state'],'conflict');self.assertIsNone(self.adapter._load('outbox/'+conflicted['request_id']+'.json')['remote'])
         self.cloud.request=original;self.restart().refresh();row=self.adapter._load('outbox/'+conflicted['request_id']+'.json');self.assertEqual(row['remote']['record'],MEMORY);self.assertEqual(row['request'],conflicted);self.assertEqual(self.cloud.puts,1)
 
-    def test_incremental_known_base_and_concurrent_remote_conflicts(self):
-        self.adapter.stage_import(self.plan());self.adapter.refresh();changed=dict(MEMORY,body='Updated source');self.adapter.stage_import(self.plan([('memory','synthetic-topic',changed)],'b'*64));self.adapter.refresh();self.assertEqual(self.cloud.puts,4);self.assertEqual(self.cloud.records[('memory','synthetic-topic')],changed)
-        self.cloud.records[('memory','synthetic-topic')]=dict(changed,body='Other writer update');next_value=dict(changed,body='New local version');self.adapter.stage_import(self.plan([('memory','synthetic-topic',next_value)],'c'*64));self.assertEqual(self.adapter.refresh()['status'],'content-local-changes-retained');self.assertEqual(self.cloud.puts,4)
-        conflict=next(v for v in self.adapter._imports()['items'].values() if v['status']=='conflict');self.assertEqual(conflict['source']['record'],next_value);self.assertEqual(conflict['remote']['record']['body'],'Other writer update')
+    def test_incremental_changed_memory_preserves_unique_info_until_explicit_merge(self):
+        self.adapter.stage_import(self.plan());self.adapter.refresh();changed=dict(MEMORY,body='Updated source');self.adapter.stage_import(self.plan([('memory','synthetic-topic',changed)],'b'*64));self.assertEqual(self.adapter.refresh()['status'],'content-local-changes-retained');self.assertEqual(self.cloud.puts,3);self.assertEqual(self.cloud.records[('memory','synthetic-topic')],MEMORY)
+        key,item=next((k,v) for k,v in self.adapter._imports()['items'].items() if v['status']=='conflict');self.assertEqual(item['source']['record'],changed);self.assertEqual(item['remote']['record'],MEMORY)
+        merged=self.request('synthetic_reviewed_merge',body=MEMORY['body']+'\nUpdated source',revision=item['remote']['revision'])
+        result=self.adapter.invoke(merged,reconciles={'request_ids':[],'source_keys':[key]});self.assertEqual(result['local_queue']['state'],'confirmed');self.assertIn(MEMORY['body'],self.cloud.records[('memory','synthetic-topic')]['body']);self.assertEqual(self.adapter.import_status()['counts'],{'imported':3,'reconciled':1})
 
     def test_import_fingerprint_scope_activation_and_binding_drift_block(self):
         plan=self.plan();self.adapter.stage_import(plan);changed=copy.deepcopy(plan);changed['sources'][0]['record']['body']='Changed without fingerprint'
