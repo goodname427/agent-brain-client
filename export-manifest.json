@@ -4,7 +4,7 @@
   "files": {
     "README.md": "ec4060c98d3a76faa7f950fa84fb71453a148e21cb2a58034962002e5d1c4eae",
     "BOOTSTRAP.md": "613d7653f0e28244c73bf2f9b06e80e08229005380277e7511f35ea727407b9f",
-    "PROTOCOL.md": "2633e2e2a3e2d7cac05eeb2633d06a56956b6da3dfade0879579a9385836b16b",
+    "PROTOCOL.md": "12ef2c1df390b4a36faa61190e8314409a900b38cde513620a5982baffa7c67b",
     "ADAPTERS.md": "ed493bf807e2817b43cb3cb6828060b063451dd1b3340dc60d966e3169d23e3e",
     ".gitignore": "de55ef044a18ae9327358209cabab993cf76a66924055155bcedad2013a0ac6b",
     "connect.py": "eba57cc31800db294c2a3b5d1b0c133c910f8d7c8566d0565557bced6f5504d2",
@@ -16,7 +16,7 @@
     "scripts/brain_release.py": "4b522fb90fd818f73a21c78cfcc052e585a7e175647b2278ff0b813c70fb4e22",
     "scripts/brain_lock.py": "8097e9d30d01d8db65ecbbd647c8bab36cbb30b36eff4007dd0d81932176fb81",
     "adapters/codex/client_pairing.py": "dc547ec3454b2f5f399c4a7437292fefc52408d57a9b71194d8f26fa91252047",
-    "adapters/codex/content_cache.py": "abd11432f3c88fdc2506cff4b4fb11686c1bca4142bafedfb2b6711339963360",
+    "adapters/codex/content_cache.py": "fb39f8e178066aaf7355a9a4dd7e3e5b9d981e48d4fd77a92c880e9c71c68ffe",
     "adapters/codex/content_mcp.py": "fe8294c51900cd6918c1cf3ab0d1c70997cf7cd00783291dbb7b05e004b3f1ed",
     "adapters/codex/content_contract.py": "75c54421f53828d3fa81ed8d06532fd757fd98154bfadd449e866d387213d81b",
     "adapters/codex/content_install.py": "5c5285122a81bf434c34217861c68a0706dfa0518fb754d5f5b2b44426a4ab3c",

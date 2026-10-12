@@ -145,6 +145,13 @@ explicit reconciliation. Cache availability never grants a new operation or
 reloads already loaded Rule/Skill/model context. No Server endpoint, write/durable
 confirmation, outbox format or background scheduler changes.
 
+A blocked device request is retained and never retried by startup or refresh.
+An explicitly repeated content_put with the same request_id, exact parameters and
+unchanged queue identity sends the original request once through the approved
+transport. Only a strictly validated Server receipt marks it confirmed; unknown
+results retain the blocked evidence. A returned CAS conflict enters the existing
+conflict reconciliation flow. This changes no grant, tool, request or queue schema.
+
 CAS conflicts preserve the submitted request and remote record. Unresolved local
 writes or source conflicts block mapping. A new explicit merged content_put may
 include local-only `reconciles` metadata selecting exact conflicts of that artifact:
