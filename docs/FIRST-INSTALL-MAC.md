@@ -6,7 +6,7 @@
 
 依赖复制可以中断重试；现有同字节文件复用，漂移文件保留并停止。运行时依赖树和链接目标固定摘要；只允许树内相对链接。MCP 计划固定新的依赖 PATH / Git helper 路径，禁止 Git 的全局凭据配置及交互提示。旧安装没有这些新增字段，保持原计划。已有登记需要自己的迁移计划，不能由首次安装替换。
 
-配置只接受 `schema: 1`、HTTPS `endpoint`、精确 `grant` 和 `release`。`grant` 沿用现有 Codex / darwin-arm64 / read、put 范围；`release` 只允许既有官方公开 Client origin、`refs/heads/releases/personal-stable` 与审核的 40 位 anchor。邀请码、nonce、token、SSH 或 admin 字段不被接受。安装器不会修改已有信任锚或扩大能力来接受候选。
+配置只接受 `schema: 1`、HTTPS `endpoint`、精确 `grant` 和 `release`。`grant` 沿用现有 Codex / darwin-arm64 / read、put 范围；`release` 只允许既有官方公开 Client origin、`refs/heads/releases/personal-https-stable` 与审核的 40 位 anchor。邀请码、nonce、token、SSH 或 admin 字段不被接受。安装器不会修改已有信任锚或扩大能力来接受候选。
 
 兼容版本必须从该受信发布 ref 通过原有 updater 校验后可用。只构建了候选、还没有发布兼容版本时，向导会停止，不能绕过此检查或把本地候选冒充受信版本。依赖、helper、发布健康和原生计划全部准备好后，向导生成有效期至多十分钟的私有 `ready.json`，展示“现在可以向管理员申请短期邀请码”。私有管理员控制台仅存在独立 Server 仓库，普通 Client 不具有发码或管理权限。
 

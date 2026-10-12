@@ -289,6 +289,7 @@ class FirstInstall(unittest.TestCase):
             lambda v: v["release"].update(
                 origin="https://synthetic.invalid/client.git"
             ),
+            lambda v: v["release"].update(ref="refs/heads/releases/personal-stable"),
             lambda v: v["grant"].update(scopes=["read", "put", "remove"]),
         ):
             value = copy.deepcopy(self.connection)

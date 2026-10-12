@@ -40,7 +40,7 @@ from https_content import (
 from system_credentials import canonical, unique, owned
 
 OFFICIAL_ORIGIN = "https://github.com/goodname427/agent-brain-client.git"
-OFFICIAL_REF = "refs/heads/releases/personal-stable"
+OFFICIAL_REF = "refs/heads/releases/personal-https-stable"
 
 
 def sha(value):
