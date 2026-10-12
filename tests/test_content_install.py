@@ -139,6 +139,57 @@ class ContentInstall(unittest.TestCase):
         self.policy_path.write_text(json.dumps(old))
         with self.assertRaises(releases.UpdateBlocked):releases.policy_file(self.policy_path,install.sha(self.policy_path.read_bytes()))
 
+    def test_inspection_from_different_python_preserves_original_pinned_command(self):
+        plan=self.plan();install.apply(plan,self.digest(plan),lambda p:None)
+        before=self.native_files();original=plan['mcp']['command']
+        other=self.base/'other-python';other.write_bytes(b'SYNTHETIC_UNUSED_INTERPRETER');other.chmod(0o700)
+        with patch.object(sys,'executable',str(other)),patch.object(install.subprocess,'run',side_effect=AssertionError('Inspection executes nothing')):
+            result=install.inspect(self.home)
+        self.assertTrue(result['installed'],result);self.assertTrue(result['installation_present']);self.assertEqual(result['installation_state'],'verified')
+        self.assertEqual(install.tomllib.loads(self.config.read_text())['mcp_servers'][install.NAME]['command'],original)
+        self.assertEqual(self.native_files(),before)
+
+    def test_real_mcp_command_drift_is_not_accepted_from_other_python(self):
+        plan=self.plan();install.apply(plan,self.digest(plan),lambda p:None)
+        self.config.write_text(self.config.read_text().replace(plan['mcp']['command'],'/synthetic/unapproved-python'))
+        before=self.native_files()
+        with patch.object(sys,'executable','/synthetic/unapproved-python'):result=install.inspect(self.home)
+        self.assertFalse(result['installed']);self.assertTrue(result['installation_present']);self.assertEqual(result['reason'],'mcp-binding-changed')
+        self.assertEqual(self.native_files(),before);self.assertNotIn('/synthetic/unapproved-python',json.dumps(result))
+
+    def test_missing_original_interpreter_is_present_but_review_required(self):
+        interpreter=self.base/'original-python';interpreter.write_bytes(b'SYNTHETIC_UNUSED_INTERPRETER');interpreter.chmod(0o700)
+        with patch.object(sys,'executable',str(interpreter)):
+            plan=self.plan();install.apply(plan,self.digest(plan),lambda p:None)
+        interpreter.unlink()
+        result=install.inspect(self.home)
+        self.assertFalse(result['installed']);self.assertTrue(result['installation_present']);self.assertEqual(result['reason'],'interpreter-unavailable')
+        self.assertIn('original',result['next_action']);self.assertTrue((self.home/'.config/agent-brain-client/codex-mcp.json').exists())
+
+    def test_package_drift_reports_safe_checkpoint_without_repair(self):
+        plan=self.plan();install.apply(plan,self.digest(plan),lambda p:None)
+        target=self.package/'adapters/codex/content_cache.py';target.write_bytes(target.read_bytes()+b'\n# SYNTHETIC_UNAPPROVED_EDIT\n')
+        result=install.inspect(self.home)
+        self.assertFalse(result['installed']);self.assertTrue(result['installation_present']);self.assertEqual(result['reason'],'bootstrap-package-changed')
+        self.assertNotIn('SYNTHETIC_UNAPPROVED_EDIT',json.dumps(result));self.assertTrue(target.read_bytes().endswith(b'UNAPPROVED_EDIT\n'))
+
+    def test_absent_registration_is_distinct_from_preserved_recovery_materials(self):
+        result=install.inspect(self.home)
+        self.assertEqual(result['status'],'client-not-installed');self.assertFalse(result['installation_present'])
+        plan=self.plan();install.apply(plan,self.digest(plan),lambda p:None)
+        (self.home/'.config/agent-brain-client/codex-mcp.json').unlink()
+        result=install.inspect(self.home)
+        self.assertEqual(result['reason'],'registration-missing');self.assertFalse(result['installation_present'])
+        self.assertEqual(result['installation_state'],'registration-missing-with-recovery-materials')
+
+    def test_inspection_release_view_cannot_fetch_or_activate_updates(self):
+        view=releases.ClientReleases(self.policy_path,self.policy_sha,inspection=True)
+        before=self.native_files()
+        with patch.object(view.engine,'check',side_effect=AssertionError('Read-only inspection cannot update')):
+            self.assertEqual(view.update()['status'],'release-review-required')
+        self.assertEqual(view.discover('codex','darwin-arm64','0.2.0')['status'],'release-review-required')
+        self.assertEqual(self.native_files(),before)
+
     def test_valid_syntax_failed_package_health_restores_previous_active_version(self):
         old=self.channel.engine.active()
         def unhealthy(manifest,out):

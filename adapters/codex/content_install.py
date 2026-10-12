@@ -7,6 +7,7 @@ import argparse
 import base64
 import copy
 import json
+import os
 from pathlib import Path
 import platform
 import re
@@ -54,9 +55,9 @@ def package_check(package,policy):
     ClientPackage(policy).preflight(package,{'files':manifest['files'],'migrations':[]})
     return sha(contract.encode(manifest['files']))
 
-def context(home,package,policy_path,policy_sha):
+def context(home,package,policy_path,policy_sha,*,inspection=False):
     require_platform('native-install')
-    home=safe(home);policy_path=safe(policy_path);policy=policy_file(policy_path,policy_sha)
+    home=safe(home);policy_path=safe(policy_path);policy=policy_file(policy_path,policy_sha,runtime_check=not inspection)
     if policy['capabilities'] not in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES) or policy['platform']!=native_platform():raise InstallBlocked('Content release scope/platform required')
     runtime=policy['runtime']
     if runtime['device_home']!=str(home):raise InstallBlocked('Device binding changed')
@@ -88,7 +89,7 @@ def context(home,package,policy_path,policy_sha):
     package_sha=package_check(package,policy)
     mcp={'command':str(Path(sys.executable).resolve()),'args':['-I','-B',str(safe(package)/'adapters/codex/client_startup.py'),'--policy-file',str(policy_path),'--policy-sha256',policy_sha],
          'startup_timeout_sec':60,'tool_timeout_sec':120,'enabled':True,'enabled_tools':methods,'default_tools_approval_mode':'writes'}
-    environment=dependency_environment(policy)
+    environment=dependency_environment(policy,runtime_check=not inspection)
     if environment is not None:mcp['env']=environment
     return policy,mcp,package_sha,native
 
@@ -107,6 +108,51 @@ def render(config,mcp,existing):
     desired=(text.rstrip()+'\n'+snippet).encode();expected=copy.deepcopy(before);expected.setdefault('mcp_servers',{})[NAME]=mcp
     if tomllib.loads(desired.decode())!=expected:raise InstallBlocked('Unrelated TOML scope changed')
     return desired
+
+
+def registered_context(home,metadata,config_image=None):
+    """Verify the original pinned command, independently of the inspecting Python.
+
+    Prepare still selects the installing interpreter. Inspection/removal uses
+    the complete registered table's pinned digest and checks its executable;
+    changing command/args/env never becomes acceptable by running another Python.
+    config_image is only an uninstall journal's validated original config image.
+    """
+    policy,mcp,package_sha,native=context(home,metadata['package'],metadata['release_policy'],metadata['release_policy_sha256'],inspection=True)
+    recorded=tomllib.loads((raw(native/'config.toml') if config_image is None else config_image).decode()).get('mcp_servers',{}).get(NAME)
+    if not isinstance(recorded,dict) or registered_mcp_digest(recorded)!=metadata.get('mcp_sha256'):
+        raise InstallBlocked('Installed MCP binding drift')
+    command=recorded.get('command')
+    if not isinstance(command,str):raise InstallBlocked('Installed interpreter unavailable')
+    executable=safe(command)
+    if str(executable.resolve())!=command or not executable.is_file() or not os.access(executable,os.X_OK):
+        raise InstallBlocked('Installed interpreter unavailable')
+    if 'dependency_policy' in policy['runtime']:
+        dependencies=private_json(policy['runtime']['dependency_policy'])
+        if command!=str(Path(dependencies['python']).resolve()):raise InstallBlocked('Installed interpreter dependency binding changed')
+    mcp['command']=command
+    if recorded.get('enabled') is False:mcp['enabled']=False
+    if recorded!=mcp:raise InstallBlocked('Installed MCP binding drift')
+    return policy,mcp,package_sha,native
+
+
+def registered_mcp_digest(mcp):
+    # A host may pause this exact service before owned removal. Authenticate the
+    # entire original table, accepting only enabled True -> False (never expansion).
+    value=dict(mcp,enabled=True) if mcp.get('enabled') is False else mcp
+    return sha(json.dumps(value,sort_keys=True).encode())
+
+
+INSPECTION_REASONS={
+    'Installed MCP binding drift':('mcp-binding-changed','Preserve config and registration. Restore the original pinned Agent Brain table or obtain a reviewed replacement plan; do not edit its digest.'),
+    'Installed interpreter unavailable':('interpreter-unavailable','Restore the originally registered Python at its original canonical path, or obtain a reviewed replacement plan. Do not redirect the registered command.'),
+    'Installed interpreter dependency binding changed':('interpreter-policy-mismatch','Preserve the dependency policy and registration; review the original Python binding instead of substituting the inspecting interpreter.'),
+    'Candidate package changed':('bootstrap-package-changed','Preserve the fixed bootstrap and receipt. Restore the exact verified package or obtain a reviewed replacement; do not rewrite its manifest.'),
+    'Candidate package membership changed':('bootstrap-package-scope-changed','Preserve the fixed bootstrap; review its exact file membership without expanding the release policy.'),
+    'Receipt scope changed':('install-receipt-scope-changed','Preserve registration and receipt. Review the exact transaction scope before recovery.'),
+    'Installed ownership drift':('installation-ownership-changed','Preserve native files and install receipt. Compare the pinned registration/package and transaction images; do not reset or reinstall over unknown state.'),
+    'Mapped instruction ownership drift':('instruction-mapping-changed','Preserve user instructions and the content cache. Review the owned mapping before removal; no user edits are overwritten.'),
+}
 
 def prepare(home,package,policy_path,policy_sha,replace_existing=False):
     policy,mcp,package_sha,native=context(home,package,policy_path,policy_sha)
@@ -233,12 +279,22 @@ def apply(plan,approved_digest,check=probe):
         return {'status':'content-native-client-installed','native_changed':True,'installed':True,'protocol_checked':True,'model_loaded':False}
 
 def inspect(home):
+    present=False;stage='installation-path-review-required'
     try:
         require_platform('native-install')
         home=safe(home);state=home/'.config/agent-brain-client';registration=state/'codex-mcp.json'
+        present=registration.exists() or registration.is_symlink()
+        if not present:
+            if (state/'content-install-receipt.json').exists():
+                return {'status':'content-native-install-review-required','installed':False,'installation_present':False,'installation_state':'registration-missing-with-recovery-materials','reason':'registration-missing','native_changed':False,
+                        'next_action':'Preserve the install receipt and local data. Resume the original install command; for a completed uninstall use the public lifecycle status.'}
+            return {'status':'client-not-installed','installed':False,'installation_present':False,'installation_state':'absent','native_changed':False}
+        stage='registration-metadata-review-required'
         meta=private_json(registration)
-        if meta.get('content_candidate') is not True:return {'status':'not-content-client','native_changed':False}
-        policy,mcp,package_sha,native=context(home,meta['package'],meta['release_policy'],meta['release_policy_sha256'])
+        if meta.get('content_candidate') is not True:return {'status':'not-content-client','installed':False,'installation_present':True,'installation_state':'other-registration','native_changed':False,'reason':'unsupported-registration'}
+        stage='policy-profile-bootstrap-review-required'
+        policy,mcp,package_sha,native=registered_context(home,meta)
+        stage='install-receipt-review-required'
         receipt=private_json(state/'content-install-receipt.json')
         expected={str(native/'config.toml'),str(registration)}
         if str(native/'AGENTS.md') in meta.get('owned_install_paths',[]):expected.add(str(native/'AGENTS.md'))
@@ -251,18 +307,22 @@ def inspect(home):
                 # runtime ownership covers only our exact MCP table. Codex may
                 # legitimately update model, UI or other unrelated settings.
                 current_mcp=tomllib.loads(raw(path).decode()).get('mcp_servers',{}).get(NAME)
-                if current_mcp!=mcp or meta.get('mcp_sha256')!=sha(json.dumps(current_mcp,sort_keys=True).encode()):raise InstallBlocked('Installed MCP binding drift')
+                if current_mcp!=mcp or meta.get('mcp_sha256')!=registered_mcp_digest(current_mcp):raise InstallBlocked('Installed MCP binding drift')
                 continue
             if path!=str(native/'AGENTS.md'):raise InstallBlocked('Installed ownership drift')
             runtime=policy['runtime'];owned=private_json(Path(runtime['content_cache'])/'owned.json');content=pinned(runtime['content_policy'],runtime['content_policy_sha256'])
             binding={'device_home':str(home),'codex_home':str(native)}
             if set(owned)!={'policy_sha','binding','files'} or owned['binding']!=binding or owned['policy_sha']!=sha(contract.encode({'policy':content,'binding':binding})) or owned['files'].get('.codex/AGENTS.md')!=current or BEGIN.encode() in raw(path) or END.encode() in raw(path):raise InstallBlocked('Mapped instruction ownership drift')
-        if receipt.get('phase')!='complete' or receipt.get('plan_sha256')!=meta['plan_sha256'] or package_sha!=meta['package_sha256'] or meta.get('mcp_sha256')!=sha(json.dumps(mcp,sort_keys=True).encode()) or tomllib.loads(raw(native/'config.toml').decode()).get('mcp_servers',{}).get(NAME)!=mcp:raise InstallBlocked('Installed ownership drift')
-        active=ClientReleases(meta['release_policy'],meta['release_policy_sha256']).verified_active()
+        if receipt.get('phase')!='complete' or receipt.get('plan_sha256')!=meta['plan_sha256'] or package_sha!=meta['package_sha256'] or meta.get('mcp_sha256')!=registered_mcp_digest(mcp) or tomllib.loads(raw(native/'config.toml').decode()).get('mcp_servers',{}).get(NAME)!=mcp:raise InstallBlocked('Installed ownership drift')
+        stage='active-release-review-required'
+        active=ClientReleases(meta['release_policy'],meta['release_policy_sha256'],inspection=True).verified_active()
         if active is None:raise InstallBlocked('Verified client version missing')
-        return {'status':'content-native-client-installed','installed':True,'native_changed':False,'protocol_checked':True,'model_loaded':False,'installed_version':active['version'],'update_checkpoint':'approved-MCP-startup'}
+        enabled=mcp.get('enabled') is True
+        return {'status':'content-native-client-installed' if enabled else 'content-native-client-disabled','installed':enabled,'registration_verified':True,'installation_present':True,'installation_state':'verified' if enabled else 'verified-disabled','native_changed':False,'protocol_checked':True,'model_loaded':False,'installed_version':active['version'],'update_checkpoint':'approved-MCP-startup'}
     except PlatformUnsupported as error:return error.result(installed=False,native_changed=False)
-    except Exception:return {'status':'content-native-install-review-required','installed':False,'native_changed':False}
+    except Exception as error:
+        reason,action=INSPECTION_REASONS.get(str(error), (stage,'Preserve native files, registration and recovery receipts. Review the named local integrity checkpoint; do not delete state, rewrite digests or reset Keychain.'))
+        return {'status':'content-native-install-review-required','installed':False,'installation_present':present,'installation_state':'present-review-required' if present else 'path-review-required','native_changed':False,'reason':reason,'next_action':action}
 
 def main():
     cli=argparse.ArgumentParser(description=__doc__);cli.add_argument('action',choices=('plan','apply','inspect'))

@@ -39,7 +39,7 @@ LEGACY_PRESERVATION={'legacy_binding_sha256','legacy_hooks_sha256'}
 CONTENT_RUNTIME={'device_plan','device_plan_sha256','signing_policy','signing_policy_sha256','content_policy','content_policy_sha256','component_source_sha256','device_home','codex_home','content_cache'}
 
 
-def policy_file(path, expected_sha):
+def policy_file(path, expected_sha, *, runtime_check=True):
     require_platform('release-update')
     path = Path(path)
     if path.is_symlink() or not path.is_file() or not re.fullmatch(r'[a-f0-9]{64}', expected_sha or ''):
@@ -65,7 +65,7 @@ def policy_file(path, expected_sha):
     if policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES):
         homes=[Path(policy['runtime'][k]).resolve() for k in ('device_home','codex_home','content_cache')]
         if homes[2] in homes[:2] or any(homes[2] in p.parents for p in homes[:2]) or any(p==repo or repo in p.parents or p==cache or cache in p.parents for p in homes):raise UpdateBlocked('Separate resolved native/cache paths required')
-    if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES:dependency_environment(policy)
+    if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES:dependency_environment(policy,runtime_check=runtime_check)
     return policy
 
 
@@ -158,8 +158,9 @@ class ClientPackage:
 
 
 class ClientReleases:
-    def __init__(self, path, expected_sha):
-        self.policy=policy_file(path,expected_sha)
+    def __init__(self, path, expected_sha, *, inspection=False):
+        self.inspection=inspection
+        self.policy=policy_file(path,expected_sha,runtime_check=not inspection)
         repo=Path(self.policy['repository'])
         if not (repo/'.git').is_dir():raise UpdateBlocked('Approved client-only release checkout required; no silent clone')
         # Bound remote discovery inside the existing 30s MCP startup budget.
@@ -174,6 +175,7 @@ class ClientReleases:
         return active
 
     def discover(self, adapter, platform, installed_version):
+        if getattr(self,'inspection',False):return {'status':'release-review-required','releases':[],'next_action':'Read-only inspection cannot fetch or discover updates.'}
         try:require_platform('release-update',self.policy['platform'])
         except PlatformUnsupported as error:return error.result(releases=[])
         version(installed_version)
@@ -197,6 +199,7 @@ class ClientReleases:
 
     def update(self):
         try:
+            if getattr(self,'inspection',False):raise UpdateBlocked('Read-only inspection cannot update')
             require_platform('release-update',self.policy['platform'])
             result=self.engine.check()
             result['active']=self.verified_active()
@@ -227,7 +230,7 @@ def runtime_environment(python, git, core, *, windows=False, system_paths=()):
             'GIT_TERMINAL_PROMPT': '0', 'GIT_CONFIG_COUNT': '0'}
 
 
-def dependency_environment(policy):
+def dependency_environment(policy, *, runtime_check=True):
     """Pinned first-install dependencies; existing policies keep their environment."""
     runtime=policy['runtime']
     if not DEPENDENCY_RUNTIME<=set(runtime):return None
@@ -248,7 +251,7 @@ def dependency_environment(policy):
         python, git, core = (Path(value[n]) for n in ('python','git','git_exec_path'))
         if not core.is_absolute() or core.is_symlink() or not (core/'git-remote-https').is_file():
             raise UpdateBlocked('Git HTTPS transport required')
-        if Path(sys.executable).resolve() != python:
+        if runtime_check and Path(sys.executable).resolve() != python:
             raise UpdateBlocked('Prepared Python runtime required')
         # Current policy_file/platform validation remains Mac-only. Windows paths
         # can be tested independently, never widening the actual device grant.
@@ -259,7 +262,7 @@ def dependency_environment(policy):
     verify_tree(root,value['files'])
     python=root/'python/bin/python3';git=root/'git/bin/git';core=root/'git/libexec/git-core'
     if not python.is_file() or not git.is_file() or not core.is_dir() or not os.access(python,os.X_OK) or not os.access(git,os.X_OK):raise UpdateBlocked('Bundled Python and Git required')
-    if Path(sys.executable).resolve()!=python.resolve():raise UpdateBlocked('Pinned Python runtime required')
+    if runtime_check and Path(sys.executable).resolve()!=python.resolve():raise UpdateBlocked('Pinned Python runtime required')
     return runtime_environment(str(python), str(git), str(core), system_paths=('/usr/bin','/bin'))
 
 

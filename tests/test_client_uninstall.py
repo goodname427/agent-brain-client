@@ -215,8 +215,108 @@ class ClientUninstall(unittest.TestCase):
         self.assertIsNone(self.f.backend.record)
         self.assertEqual(len(self.f.transport.prepares), before)
 
+    def test_operator_python_can_differ_for_status_removal_and_receipt_recovery(self):
+        other = self.home / "other-python"
+        other.write_bytes(b"SYNTHETIC_UNUSED_INTERPRETER")
+        other.chmod(0o700)
+        identity = copy.deepcopy(self.f.backend.record)
+        with (
+            patch("sys.executable", str(other)),
+            patch.object(
+                self.f.backend,
+                "load",
+                side_effect=AssertionError("Credential access forbidden"),
+            ),
+        ):
+            result = lifecycle.status(self.home)
+            self.assertTrue(result["installed"], result)
+            self.assertEqual(result["queue"]["pending"], 0)
+            self.assertEqual(result["owned_mapping_files"], 4)
+            self.assertEqual(self.remove()["status"], "client-uninstalled")
+            self.assertEqual(
+                lifecycle.status(self.home)["status"], "client-uninstalled"
+            )
+        self.assertEqual(self.f.backend.record, identity)
+
+    def test_unknown_queue_status_is_present_review_with_action(self):
+        path = self.adapter.cache / "outbox"
+        path.mkdir(mode=0o700)
+        (path / "unknown-item").write_bytes(b"SYNTHETIC_UNKNOWN")
+        result = lifecycle.status(self.home)
+        self.assertFalse(result["installed"])
+        self.assertTrue(result["installation_present"])
+        self.assertEqual(result["reason"], "local-content-state-review-required")
+        self.assertEqual(result["installed_version"], "0.2.5")
+        self.assertIn("Preserve", result["next_action"])
+
+    def test_pinned_dependency_bytes_still_checked_from_other_python(self):
+        other = self.home / "other-python"
+        other.write_bytes(b"SYNTHETIC_UNUSED_INTERPRETER")
+        other.chmod(0o700)
+        original = self.home / "tools/python3"
+        original.write_bytes(b"SYNTHETIC_DEPENDENCY_CHANGED")
+        with patch("sys.executable", str(other)):
+            result = lifecycle.status(self.home)
+        self.assertFalse(result["installed"])
+        self.assertTrue(result["installation_present"])
+        self.assertEqual(result["reason"], "policy-profile-bootstrap-review-required")
+
+    def test_host_can_pause_only_this_service_then_owned_uninstall(self):
+        metadata = install.private_json(self.state / "codex-mcp.json")
+        self.f.config.write_text(
+            self.f.config.read_text().replace("enabled = true", "enabled = false")
+        )
+        result = lifecycle.status(self.home)
+        self.assertEqual(result["status"], "content-native-client-disabled")
+        self.assertFalse(result["installed"])
+        self.assertTrue(result["registration_verified"])
+        self.assertEqual(result["owned_mapping_files"], 4)
+        self.assertEqual(install.private_json(self.state / "codex-mcp.json"), metadata)
+        self.assertEqual(self.remove()["status"], "client-uninstalled")
+        self.assertEqual(lifecycle.status(self.home)["status"], "client-uninstalled")
+        self.assertEqual(self.f.backend.record, self.identity)
+
+    def test_paused_service_cannot_change_command_or_other_mcp_fields(self):
+        self.f.config.write_text(
+            self.f.config.read_text()
+            .replace("enabled = true", "enabled = false")
+            .replace(
+                'default_tools_approval_mode = "writes"',
+                'default_tools_approval_mode = "auto"',
+            )
+        )
+        before = self.f.config.read_bytes()
+        result = lifecycle.status(self.home)
+        self.assertFalse(result["installed"])
+        self.assertEqual(result["reason"], "mcp-binding-changed")
+        with self.assertRaises(ValueError):
+            self.remove()
+        self.assertEqual(self.f.config.read_bytes(), before)
+
+    def test_edit_after_global_preflight_is_retained_before_each_unlink_and_repair(
+        self,
+    ):
+        target = (
+            self.home / ".config/agent-brain-client/content/memory/synthetic-memory.md"
+        )
+        original = install.atomic
+
+        def edit_after_config(path, *args):
+            original(path, *args)
+            if path == self.f.config:
+                target.write_bytes(b"SYNTHETIC_CONCURRENT_USER_EDIT")
+
+        with patch.object(install, "atomic", side_effect=edit_after_config):
+            with self.assertRaises(ValueError):
+                self.remove()
+        self.assertEqual(target.read_bytes(), b"SYNTHETIC_CONCURRENT_USER_EDIT")
+        self.assertEqual(lifecycle.read_removal(self.home)["phase"], "applying")
+        with self.assertRaises(ValueError):
+            lifecycle.repair(self.home)
+        self.assertEqual(target.read_bytes(), b"SYNTHETIC_CONCURRENT_USER_EDIT")
+
     def test_windows_boundary_precedes_any_local_access(self):
-        with patch('sys.platform', 'win32'):
+        with patch("sys.platform", "win32"):
             with self.assertRaises(PlatformUnsupported):
                 lifecycle.uninstall(self.home, lambda text: 'Continue')
             with self.assertRaises(PlatformUnsupported):
