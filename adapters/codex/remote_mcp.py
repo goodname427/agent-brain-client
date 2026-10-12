@@ -33,7 +33,7 @@ DESCRIPTIONS = {
 
 
 DAILY_INSTRUCTIONS = ('Daily maintenance of non-sensitive personal shared memory is authorized. '
-    'Read at most three relevant topics when useful for the current task. Before saving stable personal preferences, collaboration habits or personal facts, '
+    'Read at most three relevant topics when useful for the current task. Before saving useful daily facts, short-term personal continuity, preferences, collaboration habits or corrections (not only major or permanent conclusions), '
     'recall and read the matching topic, merge corrections into that topic, preserve unrelated valid facts, and use its revision for a CAS update. '
     'Create a focused topic only when none matches; do not append conversation logs or duplicate each event as a new topic. '
     'Use stable request_id and unchanged parameters for retries; only durable=true confirms persistence. '
