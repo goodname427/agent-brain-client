@@ -63,6 +63,10 @@ def serve_content(command,active,policy,status):
         private_mode(path,owner=True)
         modern=version(active['version'])>=version(OUTBOX_MIN_VERSION)
         with locked(path,timeout=0,shared=modern) as lease:
+            from content_install import inspect
+            if not inspect(policy['runtime']['device_home']).get('installed'):
+                return {'status':'content-native-install-pending','served':False,'native_changed':False,
+                        'next_action':'The client was removed or changed before the worker lease. Reinstall or repair using the public entry.'}
             blocked=content_runtime_blocker(active,policy)
             if blocked:return blocked
             return {'status':status,'served':True,
