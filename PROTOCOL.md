@@ -90,7 +90,8 @@ The complete typed parameters, original request ID and CAS revision are atomical
 written and the file/directories fsynced. Startup and tool boundaries replay those
 exact requests after reconnect or restart. Client 0.2.5 requires a matching
 request ID, durable=true, state=remote-confirmed, a Git commit and matching content.
-Client 0.2.6 also accepts the strict local-confirmed receipt described below;
+Only a client declaring X-Agent-Brain-Write-Receipt: local-durable-v1 accepts
+the strict local-confirmed receipt described below; frozen 0.2.6 does not declare it.
 confirmed then means Server storage, with GitHub backup reported separately.
 Memory follows Core's boundary-whitespace/CRLF normalization and opaque metadata
 revision; Rule/Skill revisions must match the returned JSON record. Queued means
@@ -219,4 +220,10 @@ a local receipt without duplicate mutation. No background confirmed-record scan
 or scheduler is added. Read/catalog persistence includes Server github_backup;
 offline cache cannot establish its current status. Original origin, local HEAD
 ownership and CAS remain enforced. Server deployment and compatible Client
-publication require separate approval; 0.2.5 may hold local receipts pending.
+publication require separate approval. Missing/unknown write-receipt declarations
+retain the original retryable persistence_pending error until GitHub confirms.
+0.2.5 and frozen 0.2.6 do not declare this capability. Server deployment need not
+wait for their workers to exit; their original GitHub-outage queue behavior stays.
+The new HTTPS client declares the capability and its HTTP transport accepts only
+strict local-confirmed receipts before the content adapter validates the record.
+The header changes neither authorization, CAS nor the request digest.

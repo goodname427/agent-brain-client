@@ -17,8 +17,10 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class RemoteClient:
-    def __init__(self, endpoint, token_file=None, data_mode='synthetic', *, credential_provider=None):
+    def __init__(self, endpoint, token_file=None, data_mode='synthetic', *, credential_provider=None, write_receipt=None):
         if data_mode not in ('synthetic','personal'):raise ValueError('Unsupported data mode')
+        if write_receipt not in (None,'local-durable-v1'):raise ValueError('Unsupported write receipt')
+        self.write_receipt=write_receipt
         self.data_mode=data_mode
         url = urlsplit(endpoint)
         if (url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password
@@ -64,6 +66,8 @@ class RemoteClient:
         req.add_header('X-Agent-Brain-Protocol', '1')
         req.add_header('X-Agent-Brain-State-Schema', '1')
         if self.data_mode=='personal':req.add_header('X-Agent-Brain-Data-Mode','personal')
+        if self.write_receipt is not None and request.get('method') in ('remember','forget','content_put','content_remove'):
+            req.add_header('X-Agent-Brain-Write-Receipt',self.write_receipt)
         try:
             with self.opener.open(req, timeout=timeout) as response:
                 value = response.read(262145)
@@ -72,8 +76,15 @@ class RemoteClient:
             result = json.loads(value)
             if not isinstance(result, dict) or result.get('request_id') != rid:
                 raise ValueError('Unexpected response ID')
-            if request.get('method') in ('remember','forget','content_put','content_remove') and 'error' not in result and result.get('persistence', {}).get('durable') is not True:
-                raise ValueError('Write persistence was not confirmed')
+            if request.get('method') in ('remember','forget','content_put','content_remove') and 'error' not in result:
+                receipt=result.get('persistence',{})
+                local=(self.write_receipt=='local-durable-v1' and isinstance(receipt,dict)
+                       and receipt.get('state')=='local-confirmed' and receipt.get('durable') is False
+                       and receipt.get('local_durable') is True and receipt.get('github_confirmed') is False
+                       and isinstance(receipt.get('commit'),str) and re.fullmatch(r'[a-f0-9]{40}',receipt['commit'])
+                       and isinstance(result.get('result'),dict))
+                if not isinstance(receipt,dict) or receipt.get('durable') is not True and not local:
+                    raise ValueError('Write persistence was not confirmed')
             return result
         except HTTPError as error:
             # Redirects are never followed with the bearer credential.
@@ -92,6 +103,7 @@ class RemoteClient:
 
     def _token(self):
         if self.credential_provider is not None:return self.credential_provider()
+        assert self.token_file is not None  # Constructor requires one credential source.
         if self.token_file.stat().st_mode & 0o077:
             raise ValueError('Token file must have mode 0600.')
         return self.token_file.read_text(encoding='utf-8').strip()
