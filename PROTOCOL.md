@@ -88,11 +88,13 @@ command does not grant this candidate protocol. Only memory supports '*'.
 Codex content writes are saved in a private local outbox before any transport.
 The complete typed parameters, original request ID and CAS revision are atomically
 written and the file/directories fsynced. Startup and tool boundaries replay those
-exact requests after reconnect or restart. Completion requires the matching Server
+exact requests after reconnect or restart. Client 0.2.5 requires a matching
 request ID, durable=true, state=remote-confirmed, a Git commit and matching content.
+Client 0.2.6 also accepts the strict local-confirmed receipt described below;
+confirmed then means Server storage, with GitHub backup reported separately.
 Memory follows Core's boundary-whitespace/CRLF normalization and opaque metadata
 revision; Rule/Skill revisions must match the returned JSON record. Queued means
-saved locally, awaiting durable Server/GitHub confirmation. Lost acknowledgements
+saved on the device, awaiting a validated Server storage receipt. Lost acknowledgements
 never generate a new operation ID or silently change expected_revision.
 
 Queue identity binds the native mapping policy and service/principal/destination,
