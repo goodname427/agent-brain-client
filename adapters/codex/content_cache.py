@@ -87,7 +87,8 @@ class ContentAdapter:
 
     def methods(self):
         grant=getattr(self.client,'grant',{'scopes':['read','write'],'artifact_types':self.policy['kinds']})
-        return contract.methods(grant['scopes']) if set(self.policy['kinds'])<=set(grant['artifact_types']) else set()
+        methods=contract.methods(grant['scopes']) if set(self.policy['kinds'])<=set(grant['artifact_types']) else set()
+        return methods if 'memory' in self.policy['kinds'] else methods-{'memory_query'}
 
     def _load(self,name,default=None):
         require_platform('cache-storage',self.platform)
@@ -287,10 +288,14 @@ class ContentAdapter:
             current=remote['record'];desired=source['record']
             if self._import_same(kind,desired,current):item.update(status='duplicate',remote=remote);continue
             if current is None and remote['revision']!='missing':item.update(status='conflict',remote=remote);continue
+            if current is not None and kind=='memory':
+                # Onboarding preserves occupied topics; a changed source is not
+                # authority to replace their unique facts, even from an old base.
+                item.update(status='conflict',remote=remote);continue
             if current is not None:
                 previous=[v['source']['record'] for k,v in state['items'].items() if k!=key and v['source']['source_id']==source['source_id'] and (v['source']['kind'],v['source']['id'])==(kind,identity) and v['status'] in ('imported','duplicate')]
                 if not any(self._import_same(kind,old,current) for old in previous):item.update(status='conflict',remote=remote);continue
-                if kind in ('rule','skill'):desired=dict(desired,enabled=current['enabled'])
+                desired=dict(desired,enabled=current['enabled'])
             params={'kind':kind,'id':identity,'record':desired,'expected_revision':remote['revision']}
             rid='import_'+sha(contract.encode([key,params]));self._enqueue({'request_id':rid,'method':'content_put','params':params})
             item.update(status='pending',request_id=rid,remote=remote)
@@ -301,7 +306,7 @@ class ContentAdapter:
         state=self._imports();counts:dict[str,int]={}
         for item in state['items'].values():counts[item['status']]=counts.get(item['status'],0)+1
         conflicts=[{'source_key':key,'source_id':item['source']['source_id'],'kind':item['source']['kind'],'id':item['source']['id'],'remote_revision':(item['remote'] or {}).get('revision')} for key,item in state['items'].items() if item['status']=='conflict']
-        return {'counts':counts,'conflicts':conflicts,'coverage':state['coverage'],'account_complete':False}
+        return {'counts':counts,'conflicts':conflicts,'coverage':state['coverage'],'account_complete':False,'inventoried_sources':len(state['items']),'scope':'explicit-reviewed-plan-only','coverage_note':'Duplicate is covered; inaccessible/not-checked sources remain gaps. Three-topic retrieval is not an import quota.'}
 
     def _raw(self,name):
         path=self._path(name)
@@ -390,6 +395,7 @@ class ContentAdapter:
 
     def _mapping(self,snapshot,owned):
         desired={};lines=['# Agent Brain cloud content','This mapping is a rebuildable cache. Read/upload through the approved Server API; do not write GitHub directly.','Read at most three relevant memory topics. Read on-demand rules when relevant; conditional rules apply to matching paths. Cloud refresh does not replace already loaded model context.']
+        lines.append(contract.MEMORY_GUIDANCE)
         for value in snapshot['records']:
             kind,identity,record=value['kind'],value['id'],value['record']
             if kind in ('memory','rule'):
@@ -529,6 +535,21 @@ class ContentAdapter:
     def invoke(self,request,reconciles=None):
         require_platform('cache-storage',self.platform)
         method=request.get('method');params=request.get('params');contract.validate(method,params)
+        if method=='memory_query':
+            if 'memory' not in self.policy['kinds'] or 'memory' not in self.client.grant['artifact_types']:raise CacheBlocked()
+            try:response=self.client.request(request)
+            except OSError:response={'request_id':request['request_id'],'error':{'code':'memory_query_unavailable','retryable':True},'persistence':{'durable':False}}
+            if not isinstance(response,dict) or response.get('request_id')!=request['request_id']:raise CacheBlocked()
+            if 'error' in response:return response
+            value=response.get('result')
+            if not isinstance(value,dict) or set(value)!={'content_api_version','commit','method','time_basis','topics'} or value['content_api_version']!=1 or value['time_basis']!='memory_updated_at' or value['method'] not in ('lexical','recent-updates') or not isinstance(value['commit'],str) or not re.fullmatch(r'[a-f0-9]{40}',value['commit']) or not isinstance(value['topics'],list) or len(value['topics'])>params['limit']:raise CacheBlocked()
+            seen=set()
+            for topic in value['topics']:
+                if not isinstance(topic,dict) or set(topic)!={'id','title','description','revision','updated_at','score','preview'}:raise CacheBlocked()
+                contract.validate('content_read',{'kind':'memory','id':topic['id']})
+                if topic['id'] in seen or not self._allows('memory',topic['id']) or not isinstance(topic['revision'],str) or not re.fullmatch(r'[a-f0-9]{64}',topic['revision']) or type(topic['score']) is not int or topic['score']<0 or any(not isinstance(topic[k],str) or len(topic[k])>1024 for k in ('title','description')) or not isinstance(topic['preview'],str) or len(topic['preview'])>320:raise CacheBlocked()
+                contract.query_time(topic['updated_at']);seen.add(topic['id'])
+            return dict(response,local_refresh={'status':'query-only','native_changed':False,'model_loaded':False})
         kinds=params['kinds'] if method=='content_catalog' else [params['kind']]
         if any(kind not in self.policy['kinds'] for kind in kinds) or method!='content_catalog' and not self._allows(params['kind'],params['id']):raise CacheBlocked()
         if method in contract.WRITES:
