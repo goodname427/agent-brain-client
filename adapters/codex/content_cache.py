@@ -18,7 +18,7 @@ ROOT=BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 import content_contract as contract
 from codex_connect import atomic
-from brain_lock import locked
+from brain_lock import locked,require_platform,private_mode,sync_directory
 
 BEGIN='<!-- agent-brain-content:begin -->';END='<!-- agent-brain-content:end -->'
 BLOCK=re.compile(re.escape(BEGIN)+r'.*?'+re.escape(END)+r'(?:\r?\n)?',re.S)
@@ -43,6 +43,7 @@ def validate_policy(policy,grant=None):
 
 class ContentAdapter:
     def __init__(self,home,cache,policy,client,health=None,codex_home=None):
+        self.platform=require_platform('cache-storage',(getattr(client,'grant',None) or {}).get('platform'))
         if Path(home).is_symlink() or Path(cache).is_symlink():raise CacheBlocked()
         self.home,self.cache=Path(home).resolve(),Path(cache).resolve();self.client=client
         native=Path(codex_home or os.environ.get('CODEX_HOME',str(self.home/'.codex'))).expanduser()
@@ -56,12 +57,11 @@ class ContentAdapter:
         if any(self.cache==self.home/name or self.home/name in self.cache.parents for name in ('.codex','.agents','.config/agent-brain-client/content')):raise CacheBlocked()
         self._safe(self.home,self.home);self._safe(self.cache,self.cache)
         self.cache.mkdir(parents=True,exist_ok=True,mode=0o700)
-        if self.cache.stat().st_mode&0o077:raise CacheBlocked()
-        fd=os.open(self.cache.parent,os.O_RDONLY)
-        try:os.fsync(fd)
-        finally:os.close(fd)
+        private_mode(self.cache,directory=True,blocked=CacheBlocked)
+        sync_directory(self.cache.parent)
 
     def _safe(self,path,base):
+        require_platform('cache-storage',self.platform)
         if path!=base and base not in path.parents:raise CacheBlocked()
         for item in [path,*path.parents]:
             if item.is_symlink():raise CacheBlocked()
@@ -90,19 +90,20 @@ class ContentAdapter:
         return contract.methods(grant['scopes']) if set(self.policy['kinds'])<=set(grant['artifact_types']) else set()
 
     def _load(self,name,default=None):
+        require_platform('cache-storage',self.platform)
         path=self.cache/name;self._safe(path,self.cache)
         if not path.exists():return default
-        if not path.is_file() or path.stat().st_mode&0o077 or path.stat().st_size>1048576:raise CacheBlocked()
+        if not path.is_file() or path.stat().st_size>1048576:raise CacheBlocked()
+        private_mode(path,blocked=CacheBlocked)
         return json.loads(path.read_text())
 
     def _save(self,name,value):
+        require_platform('cache-storage',self.platform)
         raw=contract.encode(value)
         if len(raw)>1048576:raise CacheBlocked()
         path=self.cache/name;self._safe(path,self.cache);atomic(path,raw,0o600)
         for directory in [path.parent,*path.parent.parents]:
-            fd=os.open(directory,os.O_RDONLY)
-            try:os.fsync(fd)
-            finally:os.close(fd)
+            sync_directory(directory)
             if directory==self.cache:break
 
     def _check_write(self,request):
@@ -113,8 +114,9 @@ class ContentAdapter:
         if params['kind'] not in self.policy['kinds'] or not self._allows(params['kind'],params['id']):raise CacheBlocked()
 
     def _queued(self):
+        require_platform('cache-storage',self.platform)
         directory=self.cache/'outbox';self._safe(directory,self.cache)
-        if directory.exists() and (not directory.is_dir() or directory.stat().st_mode&0o077):raise CacheBlocked()
+        if directory.exists():private_mode(directory,directory=True,blocked=CacheBlocked)
         paths=list(directory.iterdir()) if directory.exists() else []
         if len(paths)>2048:raise CacheBlocked()
         rows=[]
@@ -123,7 +125,8 @@ class ContentAdapter:
             # Preserve temporary evidence left by killed atomic saves; replay only
             # renamed request files so a lost confirmation remains recoverable.
             if re.fullmatch(r'\.client-native-[A-Za-z0-9_-]+',path.name):
-                if not path.is_file() or path.stat().st_mode&0o077 or path.stat().st_size>1048576:raise CacheBlocked()
+                if not path.is_file() or path.stat().st_size>1048576:raise CacheBlocked()
+                private_mode(path,blocked=CacheBlocked)
                 continue
             if not re.fullmatch(r'[A-Za-z0-9_-]{16,128}\.json',path.name):raise CacheBlocked()
             row=self._load('outbox/'+path.name)
@@ -172,7 +175,7 @@ class ContentAdapter:
             self._save('imports.json',state)
 
     def _drain(self):
-        blocked={}
+        blocked:dict[tuple[str,str],set[str]]={}
         for row in self._queued():
             request=row['request'];params=request['params'];target=(params['kind'],params['id'])
             if row['state'] in ('conflict','blocked'):
@@ -187,11 +190,7 @@ class ContentAdapter:
             except Exception:break
             if not isinstance(response,dict) or response.get('request_id')!=request['request_id']:break
             if 'error' not in response:
-                value=response.get('result');receipt=response.get('persistence')
-                if not isinstance(receipt,dict) or receipt.get('durable') is not True or receipt.get('state')!='remote-confirmed' or not isinstance(receipt.get('commit'),str) or not re.fullmatch(r'[a-f0-9]{40}',receipt['commit']):break
-                try:self._validate_target(value,*target)
-                except Exception:break
-                if not self._import_same(params['kind'],params.get('record'),value['record'],preserve_enabled=False):break
+                if not self._server_saved(response,request):break
                 row.update(state='confirmed',response=response)
             else:
                 error=response['error']
@@ -210,9 +209,22 @@ class ContentAdapter:
         rows=self._queued()
         return {state:sum(row['state']==state for row in rows) for state in ('pending','confirmed','conflict','blocked','reconciled')}
 
+    def _server_saved(self,response,request):
+        if not isinstance(response,dict) or response.get('request_id')!=request['request_id'] or 'error' in response:return False
+        receipt=response.get('persistence');value=response.get('result');params=request['params']
+        if not isinstance(receipt,dict) or not isinstance(value,dict) or not isinstance(receipt.get('commit'),str) or not re.fullmatch(r'[a-f0-9]{40}',receipt['commit']):return False
+        remote=receipt.get('state')=='remote-confirmed' and receipt.get('durable') is True and receipt.get('github_confirmed',True) is True and receipt.get('local_durable',True) is True
+        local=receipt.get('state')=='local-confirmed' and receipt.get('durable') is False and receipt.get('local_durable') is True and receipt.get('github_confirmed') is False
+        if not (remote or local):return False
+        try:self._validate_target(value,params['kind'],params['id'])
+        except Exception:return False
+        return self._import_same(params['kind'],params.get('record'),value['record'],preserve_enabled=False)
+
     def _queue_result(self,row):
         result=row['response'] if row['state']!='pending' else {'request_id':row['request']['request_id'],'error':{'code':'content_upload_queued','retryable':True},'persistence':{'durable':False}}
-        return dict(result,local_queue={'state':row['state'],'saved':True,'request_sha256':row['request_sha']})
+        receipt=result.get('persistence',{})
+        return dict(result,local_queue={'state':row['state'],'saved':True,'request_sha256':row['request_sha'],
+                                       'server_saved':row['state']=='confirmed','github_confirmed':receipt.get('state')=='remote-confirmed' and receipt.get('durable') is True})
 
     def stage_import(self,plan):
         """Explicit reviewed normalized sources only; no native/file discovery."""
@@ -286,7 +298,7 @@ class ContentAdapter:
         if state['items']:self._save('imports.json',state)
 
     def import_status(self):
-        state=self._imports();counts={}
+        state=self._imports();counts:dict[str,int]={}
         for item in state['items'].values():counts[item['status']]=counts.get(item['status'],0)+1
         conflicts=[{'source_key':key,'source_id':item['source']['source_id'],'kind':item['source']['kind'],'id':item['source']['id'],'remote_revision':(item['remote'] or {}).get('revision')} for key,item in state['items'].items() if item['status']=='conflict']
         return {'counts':counts,'conflicts':conflicts,'coverage':state['coverage'],'account_complete':False}
@@ -316,6 +328,7 @@ class ContentAdapter:
                 if not entry.is_file() or entry.relative_to(self.home).as_posix() not in owned:raise CacheBlocked()
 
     def _restore(self,journal):
+        require_platform('cache-recovery',self.platform)
         # Preflight all files before any restoration; preserve outside edits.
         if set(journal)!={'phase','before','after','owned','active'} or set(journal['before'])!=set(journal['after']) or journal['owned'].get('policy_sha')!=self.policy_sha or journal['owned'].get('binding')!=self.binding:raise CacheBlocked()
         for name,old in journal['before'].items():
@@ -449,6 +462,7 @@ class ContentAdapter:
                     if kind not in self.policy['kinds'] or not self._allows(kind,identity) or (kind,identity) in seen:raise CacheBlocked()
                     contract.record(kind,value['record'],identity);seen.add((kind,identity))
                 params=request['params']
+                result:dict|None
                 if request['method']=='content_catalog':
                     result={'content_api_version':1,'commit':snapshot['commit'],'artifacts':[{'kind':v['kind'],'id':v['id'],'revision':v['revision']} for v in snapshot['records'] if v['kind'] in params['kinds']]}
                 else:
@@ -474,6 +488,7 @@ class ContentAdapter:
         return result
 
     def refresh(self):
+        require_platform('cache-recovery',self.platform)
         try:
             with locked(self.cache/'content.lock'):
                 self._recover();self._import_pending();self._drain();self._import_pending()
@@ -512,12 +527,21 @@ class ContentAdapter:
             return {'status':'content-recovery-review-required' if uncertain else 'content-refresh-blocked','native_changed':None if uncertain else False,'model_loaded':False,'next_action':'Preserve local files and prior snapshots. Review transport, contract, content scope, dependencies, owned-file drift or interrupted recovery.'}
 
     def invoke(self,request,reconciles=None):
+        require_platform('cache-storage',self.platform)
         method=request.get('method');params=request.get('params');contract.validate(method,params)
         kinds=params['kinds'] if method=='content_catalog' else [params['kind']]
         if any(kind not in self.policy['kinds'] for kind in kinds) or method!='content_catalog' and not self._allows(params['kind'],params['id']):raise CacheBlocked()
         if method in contract.WRITES:
             with locked(self.cache/'content.lock'):
-                self._enqueue(request,reconciles)  # Precedes every transport/mapping operation.
+                row=self._enqueue(request,reconciles)  # Precedes every transport/mapping operation.
+                # Only an explicit same-ID retry upgrades an old local receipt.
+                # No automatic loop over the backed-up journal or new scheduler.
+                if row['state']=='confirmed' and (row['response'] or {}).get('persistence',{}).get('state')=='local-confirmed':
+                    try:
+                        response=self.client.request(request)
+                        if self._server_saved(response,request):
+                            row['response']=response;self._save('outbox/'+request['request_id']+'.json',row)
+                    except Exception:pass
                 self._drain();result=self._queue_result(self._load('outbox/'+request['request_id']+'.json'))
         else:
             self.refresh();result=self._read_with_cache(request)

@@ -1,6 +1,6 @@
 # Personal owner collection contract
 
-The formal release target is Client 0.2.2 over HTTPS. 0.2.3 is only a synthetic isolated upgrade fixture. Source preparation does not deploy, publish a release, issue an invitation or install credentials.
+Client 0.2.5 is the accepted HTTPS baseline. Earlier 0.2.2→0.2.3 versions remain synthetic isolated upgrade fixtures. The Mac first-install entry is the repository script; see FIRST-INSTALL-MAC.md. It does not require an app bundle or Apple distribution identity. Source preparation does not deploy, publish a release, issue an invitation or install credentials.
 
 A reviewed grant may use `ids` equal to `{"memory":"personal-owner","rule":"personal-owner","skill":"personal-owner"}`. This complete three-kind marker requires exactly `scopes:["read","put"]`. It names the authenticated owner's fixed personal collection, including future IDs; it is not a filesystem wildcard. Partial markers, rule/skill `*`, remove, write aliases and additional grant fields are rejected. Existing exact-ID grants and the legacy memory `*` remain unchanged and are never automatically expanded.
 
