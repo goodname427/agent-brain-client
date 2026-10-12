@@ -9,6 +9,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 from remote_mcp import Server,ProtocolError,keys,pairs,MAX_MESSAGE
 from content_cache import ContentAdapter,contract,validate_policy,ROOT as CLIENT_ROOT
 from client_pairing import ComponentClient
+from brain_lock import PlatformUnsupported,require_platform,private_mode
 
 class ContentServer(Server):
     def __init__(self,adapter,client_version='0.2.0'):
@@ -56,12 +57,14 @@ class ContentServer(Server):
         if isinstance(request,dict) and request.get('method')=='initialize' and isinstance(result,dict):
             self.adapter.refresh()
             result['serverInfo']['name']='agent-brain-content-codex-candidate'
-            result['instructions']='Use approved cloud Memory/Rule/Skill through these Server APIs. Writes are saved to a private local outbox before transport. Queued means local only; durable=true confirms GitHub persistence. Retain exact request_id, record and CAS base on retries; startup/tool boundaries replay pending writes. Conflicts retain both versions for explicit reconciliation. Reviewed inventory precedes mapping; Rule/Skill import does not enable them. Do not collect native sessions/history, LocalOnly/private material or credentials. Offline reads may use a previously verified snapshot, explicitly marked local_cache.stale=true and durable=false; this never confirms remote freshness or remote absence. Missing or unverified cache remains an error. Refresh does not replace loaded context. Pairing and publication remain separate authorized operations.'
+            result['instructions']='Use approved Memory/Rule/Skill through these Server APIs. Writes enter a private device outbox before transport. Pending means not yet confirmed on Server. local_durable=true with state=local-confirmed means saved in the Server local repository; github_confirmed=false and durable=false mean GitHub backup is pending. Only remote-confirmed with durable=true confirms GitHub persistence. Read/catalog github_backup describes the current backup backlog. Retain exact request_id, record and CAS base on retries; an explicit same-ID retry can refresh a prior local receipt without duplicating the write. Startup/tool boundaries replay pending device writes. Conflicts retain both versions for explicit reconciliation. Reviewed inventory precedes mapping; Rule/Skill import does not enable them. Do not collect native sessions/history, LocalOnly/private material or credentials. Offline reads may use a previously verified snapshot, explicitly marked local_cache.stale=true and durable=false; this never confirms remote freshness or remote absence. Missing or unverified cache remains an error. Refresh does not replace loaded context. Pairing and publication remain separate authorized operations.'
         return result
 
 def pinned(path,digest):
+    require_platform("private-metadata")
     path=Path(path)
-    if path.is_symlink() or not path.is_file() or path.stat().st_mode&0o077 or path.stat().st_size>65536:raise ValueError()
+    if path.is_symlink() or not path.is_file() or path.stat().st_size>65536:raise ValueError()
+    private_mode(path)
     raw=path.read_bytes()
     if hashlib.sha256(raw).hexdigest()!=digest:raise ValueError()
     return json.loads(raw,object_pairs_hook=pairs)
@@ -138,7 +141,8 @@ def main():
     adapter=ContentAdapter(args.device_home,args.cache,policy,client,codex_home=args.codex_home)
     if args.import_plan:
         path=Path(args.import_plan)
-        if path.is_symlink() or not path.is_file() or path.stat().st_mode&0o077 or path.stat().st_size>1048576:raise ValueError('Private bounded import plan required')
+        if path.is_symlink() or not path.is_file() or path.stat().st_size>1048576:raise ValueError('Private bounded import plan required')
+        private_mode(path)
         raw=path.read_bytes()
         if hashlib.sha256(raw).hexdigest()!=args.import_plan_sha256:raise ValueError('Import plan drift')
         adapter.stage_import(json.loads(raw,object_pairs_hook=pairs))
@@ -161,4 +165,5 @@ def main():
 
 if __name__=='__main__':
     try:main()
+    except PlatformUnsupported as error:print(json.dumps(error.result(served=False,native_changed=False)),file=sys.stderr);sys.exit(2)
     except Exception:print('Content candidate startup blocked; retain current client and reviewed policies. No credential details returned.',file=sys.stderr);sys.exit(1)
