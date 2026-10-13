@@ -1,6 +1,10 @@
 """Synthetic install/use/remove/reinstall; no real Keychain, server or Codex."""
 import copy
+import io
 import json
+import os
+from pathlib import Path
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -41,6 +45,129 @@ class ClientUninstall(unittest.TestCase):
 
     def remove(self, **kwargs):
         return lifecycle.uninstall(self.home, kwargs.get('confirm', lambda text: 'Continue'))
+
+    def connection_cli(self, *args, execute=True):
+        """Use the real argparse/resolver/transaction with synthetic OS/transport."""
+        wizard = fixture.wizard
+        original = wizard.run
+
+        def run(home, native, connection, digest):
+            return original(home, native, connection, digest,
+                            confirm=lambda *a: 'Continue', store=self.f.store,
+                            transport=self.f.transport,
+                            secure_input=lambda: self.fail('Reinstall must not request an invitation'),
+                            dependency_preparer=lambda *a, **k: self.fail('Existing dependencies must be reused'),
+                            installer=lambda p, d: install.apply(p, d, lambda value: None))
+
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['mac_first_install.py', *args]), \
+                patch.object(Path, 'home', return_value=self.home), \
+                patch.dict(os.environ, CODEX_HOME=str(self.native)), \
+                patch.object(sys, 'stdout', output), \
+                patch.object(wizard, 'run', side_effect=run if execute else AssertionError('Invalid recovery must stop before installation')):
+            code = wizard.main()
+        return code, json.loads(output.getvalue())
+
+    def test_cli_reinstalls_legacy_identity_without_external_or_saved_connection(self):
+        self.remove()
+        for name in ('connection.json', 'binding.json', 'install-plan.json', 'pairing-attempt.json'):
+            (self.preparation / name).unlink(missing_ok=True)
+        (self.f.base / 'connection.json').unlink()
+        code, result = self.connection_cli()
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result['installed'], result)
+        self.assertEqual(self.f.prompts, 1)
+        self.assertEqual(self.f.backend.record, self.identity)
+        self.assertTrue(install.inspect(self.home)['installed'])
+        self.assertFalse((self.preparation / 'connection.json').exists())
+
+    def test_cli_uses_saved_connection_only_with_matching_verified_binding(self):
+        before = (self.preparation / 'connection.json').read_bytes()
+        with patch.object(self.f.backend, 'load', side_effect=AssertionError('Metadata resolution must not access credentials')):
+            code, result = self.connection_cli()
+        self.assertEqual(code, 0, result)
+        self.assertEqual((self.preparation / 'connection.json').read_bytes(), before)
+        saved = json.loads(before)
+        saved['grant']['actor'] = 'synthetic-other-owner'
+        install.save(self.preparation / 'connection.json', saved)
+        code, result = self.connection_cli(execute=False)
+        self.assertEqual((code, result['status']), (2, 'connection-recovery-review-required'))
+
+    def test_cli_rejects_explicit_missing_file_without_fallback(self):
+        self.remove()
+        code, result = self.connection_cli('--connection', str(self.home / 'missing.json'), execute=False)
+        self.assertEqual((code, result['status']), (2, 'connection-file-review-required'))
+
+    def test_cli_missing_identity_does_not_create_one_or_request_invitation(self):
+        self.remove()
+        self.f.backend.record = None
+        before = len(self.f.transport.prepares)
+        code, result = self.connection_cli()
+        self.assertEqual(code, 2, result)
+        self.assertFalse(result['installed'])
+        self.assertIsNone(self.f.backend.record)
+        self.assertEqual(len(self.f.transport.prepares), before)
+        self.assertEqual(self.f.prompts, 1)
+
+    def test_cli_resumes_interrupted_reinstall_without_external_file_or_new_identity(self):
+        self.remove()
+        (self.preparation / 'connection.json').unlink()
+        (self.f.base / 'connection.json').unlink()
+        original = install.atomic
+
+        def crash(path, *args):
+            original(path, *args)
+            if path == self.f.config:
+                raise SystemExit('Synthetic interrupted CLI reinstall')
+
+        with patch.object(install, 'atomic', side_effect=crash):
+            with self.assertRaises(SystemExit):
+                self.connection_cli()
+        code, result = self.connection_cli('--action', 'install')
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result['installed'], result)
+        self.assertEqual(self.f.backend.record, self.identity)
+        self.assertEqual(self.f.prompts, 1)
+
+    def test_cli_rejects_another_native_home_or_unfinished_removal(self):
+        self.remove()
+        with self.assertRaises(ValueError):
+            fixture.wizard.resolve_connection(self.home, self.home / 'different-codex')
+        journal = lifecycle.read_removal(self.home)
+        journal['phase'] = 'applying'
+        install.save(lifecycle.journal_path(self.home), journal)
+        code, result = self.connection_cli(execute=False)
+        self.assertEqual((code, result['status']), (2, 'connection-recovery-review-required'))
+
+    def test_cli_rejects_profile_policy_receipt_or_postimage_drift_before_install(self):
+        self.remove()
+        receipt = lifecycle.read_removal(self.home)
+        policy_path = Path(receipt['registration']['release_policy'])
+        policy = install.private_json(policy_path)
+        profile_path = Path(policy['runtime']['https_profile'])
+        for path in (profile_path, policy_path, lifecycle.journal_path(self.home), self.native / 'config.toml'):
+            before = path.read_bytes()
+            with self.subTest(file=path.name):
+                path.write_bytes(before + b'\nSYNTHETIC_DRIFT')
+                with patch.object(self.f.backend, 'load', side_effect=AssertionError('Credential access forbidden')):
+                    code, result = self.connection_cli(execute=False)
+                self.assertEqual((code, result['status']), (2, 'connection-recovery-review-required'))
+                self.assertFalse(result['credential_accessed'])
+                self.assertEqual(path.read_bytes(), before + b'\nSYNTHETIC_DRIFT')
+            path.write_bytes(before)
+
+    def test_cli_rejects_linked_or_public_saved_connection_without_overwrite(self):
+        saved = self.preparation / 'connection.json'
+        before = saved.read_bytes()
+        saved.chmod(0o644)
+        code, result = self.connection_cli(execute=False)
+        self.assertEqual((code, result['status']), (2, 'connection-recovery-review-required'))
+        saved.chmod(0o600)
+        saved.unlink()
+        saved.symlink_to(self.f.base / 'connection.json')
+        code, result = self.connection_cli(execute=False)
+        self.assertEqual((code, result['status']), (2, 'connection-recovery-review-required'))
+        self.assertEqual(saved.read_bytes(), before)
 
     def request(self, rid='synthetic_lifecycle_write_0001'):
         return {'request_id': rid, 'method': 'content_put', 'params': {'kind': 'memory', 'id': 'synthetic-memory', 'record': dict(MEMORY, body='Synthetic updated body'), 'expected_revision': install.contract.envelope('memory', 'synthetic-memory', MEMORY)['revision']}}
