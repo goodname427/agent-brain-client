@@ -38,7 +38,11 @@ sh tools/install-mac.sh --connection "$CONNECTION_JSON" --expected-connection-sh
 
 准备检查成功后提示 `ready.json` 的完整路径。此时管理员才按这份回执发短期邀请；客户端不发码。收到邀请后选择 `Continue`，仅在原有安全输入窗口中输入一次。不要将邀请粘贴到终端、聊天、命令参数、环境变量或剪贴板。取消/Back 可重跑；网络失败、丢 ACK 或重启必须重跑同一命令，继续原配对尝试，不申请新邀请。只有服务端明确拒绝并经再次检查和确认，才结束错误/过期邀请尝试。
 
-`installed:true` 表示 HTTPS 协议/认证及一个 MCP 表登记完成；打开/重启 Codex，正常新 MCP 进程加载。它不会强杀旧 worker，也不意味着已运行模型自动重读了指令。再次运行安装命令会检查已装身份/范围，不再输入邀请。profile、policy、helper、scope 或配置漂移时停止并保留现场，不自动扩权。
+`installed:true` 表示 HTTPS 协议/认证及一个 MCP 表登记完成；打开/重载 Codex，正常新 MCP 进程加载。它不会强杀旧 worker，也不意味着已运行模型自动重读了指令。`model_loaded:"unknown"` 表示此接口无法观测模型是否采用了指令；不能解释为已加载或未加载。旧回执的历史字段同样不是当前模型加载探针。再次运行安装命令会检查已装身份/范围，不再输入邀请。profile、policy、helper、scope 或配置漂移时停止并保留现场，不自动扩权。
+
+安装与再次安装成功后，结果明确返回 `onboard_check.status:coverage-check-required`。这是给执行 Agent 的下一步交接：宿主工具可用后使用 `agent-brain-onboard` 检查所有已授权可读取记忆来源的覆盖；安装器不扫描私人文件、不启动模型任务、不上传记忆。旧身份、安装完成、旧 imported 标记或 pending=0 不能跳过覆盖核对。缺少覆盖记录、首次只导入一部分、后来新增记忆或新 Harness 来源时按实际能力枚举分页/批次，记录来源范围、指纹、已读/重复/排除/未检查/不可访问/冲突/待处理数量与原因。等价内容跳过写入；缺失、新增或差异才进入明确增量核对，差异保留双方独有信息并用当前 revision/CAS 协调。排除公司敏感、秘密、受禁历史与既有范围外材料，不按重要性或三主题检索预算缩小已有记忆覆盖。普通重连不自动再导入，覆盖检查也不重复配对。
+
+安装协议检查只读，不生成内容映射，因此安装瞬间映射数可为 0。MCP 正常初始化后才刷新获授权映射；之后数量增加属于状态时序，不代表安装失败或记忆 Onboard 已完成。映射文件存在仍不证明模型采用了全部指令。
 
 ## 状态与实际使用
 
@@ -64,6 +68,8 @@ sh tools/install-mac.sh --action status
 ```
 
 确认 `Continue` 后移除本工具 MCP 表、登记和哈希一致的自有 Memory/Rule/Skill 文件；只删自有指令块，保留用户指令与其他 Codex 设置。空的自有 Skill 目录移除；不递归删除目录。退役缓存的 owned/active 映射指针，使再次安装能够重建相同版本映射。`client-uninstalled` 表示入口登记及映射已移除；不能以仍存有恢复材料称已安装，也不能以仍活着的旧进程称卸载验证通过。
+
+卸载后的 `status` 会只读校验完成回执及其中每个事务文件的实际后像，包括 MCP 配置、登记、自有映射和 owned/active 指针。匹配才返回 `client-uninstalled`、`uninstall_verified:true` 和核验数量。登记残留、文件被改回或后像漂移返回 `uninstall-state-review-required`、`uninstall_verified:false` 与安全原因，退出码非零；回执损坏或链接同样停止核验。后续用户对回执记录中的配置或指令文件编辑也会报告后像变化，需区分用户编辑与残留，不据此断言已经重新安装。状态检查不删文件、不修复、不创建锁或访问凭据；重复查询保留原现场。已完成的重新安装按新登记核验，不拿旧卸载后像判断。
 
 默认保留专用 login Keychain 身份、固定 helper/bootstrap、依赖、profile/policy、安装及卸载前后像、outbox/imports 和完整快照，用于再次安装和安全恢复。它们主要位于 `~/.config/agent-brain-client`，原有安装也可能使用自己的已登记私有路径；不会卸载 Codex、改变 Server/cloud Data、撤销服务端设备或删除未同步数据。这是明确的可恢复卸载，没有“彻底擦除身份/数据”选项。
 

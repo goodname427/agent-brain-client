@@ -681,7 +681,7 @@ def main():
                 value = uninstall(home, confirm_target) if args.action == "uninstall" else repair(home) if args.action == "repair" else status(home)
             except RuntimeError:
                 value = {"status": "client-in-use", "native_changed": False,
-                         "next_action": "Quit Codex normally so this client's MCP worker exits, then rerun the same command. No process was killed."}
+                         "next_action": "Disable only agent_brain_server in the host Settings > MCP servers, save and use the host Restart/reload. Wait for this MCP worker to exit before rerunning. If that service cannot be paused or the worker remains active, stop and report the blocker. Preserve other MCP settings and persistent locks."}
             except Exception:
                 partial=False
                 if args.action in ('uninstall','repair'):
@@ -710,6 +710,8 @@ def main():
                               "next_action": "Preserve connection metadata, original profile/policy and recovery receipts. Review the original binding; do not reset identity, replace digests or use an example connection."}))
             return 2
         value = run(home, native, connection, connection_sha)
+        from content_contract import installation_follow_up
+        value = installation_follow_up(value)
         print(json.dumps(value))
         return lifecycle_exit('install',value)
     except Exception:

@@ -111,7 +111,7 @@ def installation_check(client,policy,client_version='0.2.0'):
     for item in catalog['artifacts']:
         contract.validate('content_read',{'kind':item['kind'],'id':item['id']})
         if item['kind'] not in policy['kinds'] or not re.fullmatch(r'[a-f0-9]{64}',item.get('revision','')):raise ValueError('Invalid content catalog')
-    return {'status':'content-native-protocol-checked','protocol_checked':True,'authentication_checked':True,'tools':sorted(adapter.methods()),'native_changed':False,'model_loaded':False}
+    return {'status':'content-native-protocol-checked','protocol_checked':True,'authentication_checked':True,'tools':sorted(adapter.methods()),'native_changed':False,'model_loaded':'unknown'}
 
 def main():
     if sys.argv[1:]==['--self-check']:print(json.dumps(self_check()));return

@@ -6,13 +6,71 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "adapters/codex"))
-from content_contract import MEMORY_GUIDANCE, review_memory_sources
+from content_contract import MEMORY_GUIDANCE, ONBOARD_COVERAGE_GUIDANCE, installation_follow_up, review_memory_sources
 
 
 class MemoryBehavior(unittest.TestCase):
+    def review_cli(self, sources, rows):
+        result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'tools/memory_review.py')],
+                                input=json.dumps({'mode': 'onboard', 'sources': sources, 'candidates': rows}),
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_install_handoff_is_platform_independent_and_old_markers_do_not_prove_coverage(self):
+        original = {'installed': True, 'model_loaded': False,
+                    'installation_complete': True, 'prior_import_complete': True,
+                    'onboard_check': {'status': 'complete', 'coverage': 'old-sources'}}
+        before = copy.deepcopy(original)
+        for platform in ('darwin', 'win32', 'linux'):
+            with patch.object(sys, 'platform', platform):
+                result = installation_follow_up(original)
+            self.assertEqual(result['model_loaded'], 'unknown')
+            self.assertEqual(result['onboard_check']['coverage'], 'unknown')
+            self.assertEqual(result['onboard_check']['status'], 'coverage-check-required')
+            self.assertEqual(result['onboard_check']['next_action'], ONBOARD_COVERAGE_GUIDANCE)
+            self.assertFalse(result['onboard_check']['data_transferred'])
+            self.assertFalse(result['onboard_check']['source_scan_performed'])
+        self.assertEqual(original, before)
+        self.assertNotIn('onboard_check', installation_follow_up({'installed': False}))
+
+    def test_partial_first_import_and_unchecked_new_harness_remain_coverage_gaps(self):
+        sources, rows = self.material()
+        partial = self.review_cli(sources, rows[:3])
+        self.assertEqual(partial['onboard_check']['status'], 'coverage-incomplete')
+        self.assertFalse(partial['accessible_review_complete'])
+        sources = sources[:1] + [{'source_id': 'approved-new-harness', 'status': 'not-checked',
+                                  'authorized': True, 'expected_candidates': 1,
+                                  'reason': 'New authorized synthetic memory source'}]
+        missing = self.review_cli(sources, rows)
+        self.assertEqual(missing['onboard_check']['status'], 'coverage-incomplete')
+        sources[1]['status'] = 'read'
+        new = dict(rows[0], id='new-small-fact', source_id='approved-new-harness', utility='none')
+        checked = self.review_cli(sources, rows + [new])
+        self.assertEqual(checked['onboard_check']['status'], 'provided-sources-reviewed')
+        self.assertEqual(next(r['decision'] for r in checked['candidates'] if r['id'] == 'new-small-fact'), 'candidate')
+        self.assertFalse(checked['account_complete'])
+        self.assertFalse(checked['data_transferred'])
+
+    def test_repeated_equivalent_source_review_requires_no_full_reupload(self):
+        sources, rows = self.material()
+        sources = sources[:1]
+        for row in rows:
+            if not row['sensitive'] and not row['raw_history'] and row['scope'] == 'personal-shared':
+                row['duplicate'] = True
+        first = self.review_cli(sources, rows)
+        second = self.review_cli(sources, rows)
+        self.assertEqual(first, second)
+        self.assertEqual(first['onboard_check']['incremental_candidates'], 0)
+        self.assertEqual(first['onboard_check']['equivalent_records'], 6)
+        self.assertEqual(first['onboard_check']['status'], 'provided-sources-reviewed')
+        self.assertFalse(first['data_transferred'])
+        self.assertFalse(first['permissions_granted'])
+
     def material(self):
         # Same source material: a coffee preference, a small task result, a
         # useful mundane fact, a one-off font request, uncertain inference,
