@@ -32,7 +32,7 @@ jobs:
           ruff check --no-cache --select E4,E7,E9,F --ignore E402 tools/mac_first_install.py tools/client_lifecycle.py tools/prepare_install_runtime.py tools/check_source.py tests/test_mac_first_install.py tests/test_client_uninstall.py tests/test_install_contracts.py
           ruff check --no-cache --select F821,F822,F823,F841 adapters/codex scripts
           ruff check --no-cache --select E4,E7,E9,F --ignore E402 tests/test_content_local_durable.py tests/test_receipt_transport.py tests/test_memory_behavior.py tests/test_memory_query.py tools/memory_review.py
-          mypy --check-untyped-defs --follow-imports skip --ignore-missing-imports tools/mac_first_install.py tools/client_lifecycle.py tools/prepare_install_runtime.py tools/check_source.py
+          mypy --check-untyped-defs --follow-imports skip --ignore-missing-imports tools/mac_first_install.py tools/client_lifecycle.py tools/prepare_install_runtime.py tools/check_source.py tools/memory_review.py
           mypy --check-untyped-defs --follow-imports skip --ignore-missing-imports adapters/codex/content_cache.py adapters/codex/remote_http.py adapters/codex/content_contract.py
       - name: Keychain helper self-check only
         shell: bash

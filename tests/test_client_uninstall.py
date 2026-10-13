@@ -172,6 +172,146 @@ class ClientUninstall(unittest.TestCase):
     def request(self, rid='synthetic_lifecycle_write_0001'):
         return {'request_id': rid, 'method': 'content_put', 'params': {'kind': 'memory', 'id': 'synthetic-memory', 'record': dict(MEMORY, body='Synthetic updated body'), 'expected_revision': install.contract.envelope('memory', 'synthetic-memory', MEMORY)['revision']}}
 
+    def filesystem_state(self):
+        result = {}
+        for path in sorted(self.home.rglob('*')):
+            stat = path.lstat()
+            result[str(path)] = (stat.st_mode, stat.st_ino, stat.st_nlink,
+                                 stat.st_size, stat.st_mtime_ns,
+                                 path.readlink().as_posix() if path.is_symlink()
+                                 else path.read_bytes() if path.is_file() else None)
+        return result
+
+    def status_cli(self, action='status'):
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['mac_first_install.py', '--action', action]), \
+                patch.object(Path, 'home', return_value=self.home), \
+                patch.dict(os.environ, CODEX_HOME=str(self.native)), \
+                patch.object(sys, 'stdout', output), \
+                patch.object(fixture.wizard, 'confirm_target', side_effect=AssertionError('Status/in-use must not open a UI')):
+            code = fixture.wizard.main()
+        return code, json.loads(output.getvalue())
+
+    def test_completed_removal_status_verifies_postimages_repeatedly_without_side_effects(self):
+        self.remove()
+        journal = lifecycle.read_removal(self.home)
+        before = self.filesystem_state()
+        with patch.object(self.f.backend, 'load', side_effect=AssertionError('No credential access')), \
+                patch.object(install, 'atomic', side_effect=AssertionError('No filesystem writes')), \
+                patch.object(install, 'save', side_effect=AssertionError('No metadata writes')), \
+                patch.object(lifecycle, 'lease', side_effect=AssertionError('No lock mutation')):
+            for action in ('status', 'status', 'repair'):
+                code, result = self.status_cli(action)
+                self.assertEqual(code, 0, result)
+                self.assertEqual(result['status'], 'client-uninstalled')
+                self.assertTrue(result['uninstall_verified'])
+                self.assertEqual(result['verified_postimages'], len(journal['after']))
+                self.assertFalse(result['native_changed'])
+        self.assertEqual(self.filesystem_state(), before)
+
+    def test_completed_removal_status_detects_restored_mapping_registration_and_pointers(self):
+        self.remove()
+        journal = lifecycle.read_removal(self.home)
+        targets = [self.native / 'config.toml', self.state / 'codex-mcp.json',
+                   self.native / 'AGENTS.md', self.adapter.cache / 'owned.json',
+                   self.adapter.cache / 'active.json',
+                   self.home / '.config/agent-brain-client/content/memory/synthetic-memory.md',
+                   self.home / '.agents/skills/synthetic-skill/SKILL.md']
+        for path in targets:
+            with self.subTest(path=path.name):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                old = lifecycle.decode(journal['before'][str(path)]['data'])
+                self.assertIsNotNone(old)
+                path.write_bytes(old)
+                path.chmod(0o600)
+                before = self.filesystem_state()
+                with patch.object(self.f.backend, 'load', side_effect=AssertionError('No credential access')):
+                    for _ in range(2):
+                        code, result = self.status_cli()
+                        self.assertEqual(code, 2, result)
+                        self.assertEqual(result['status'], 'uninstall-state-review-required')
+                        self.assertEqual(result['reason'], 'uninstall-postimage-changed')
+                        self.assertEqual(result['changed_postimages'], 1)
+                        self.assertEqual(result['registration_present'], path == self.state / 'codex-mcp.json')
+                        self.assertFalse(result['uninstall_verified'])
+                        self.assertFalse(result['native_changed'])
+                self.assertEqual(self.filesystem_state(), before)
+                desired = lifecycle.decode(journal['after'][str(path)])
+                if desired is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(desired)
+
+    def test_completed_removal_status_reports_drift_links_and_bad_receipt_read_only(self):
+        self.remove()
+        agents = self.native / 'AGENTS.md'
+        agents.write_text(agents.read_text() + 'New user edit after uninstall.\n')
+        before = self.filesystem_state()
+        code, result = self.status_cli()
+        self.assertEqual((code, result['reason']), (2, 'uninstall-postimage-changed'))
+        self.assertEqual(self.filesystem_state(), before)
+        agents.write_bytes(lifecycle.decode(lifecycle.read_removal(self.home)['after'][str(agents)]))
+        registration = self.state / 'codex-mcp.json'
+        registration.symlink_to(self.home / 'missing-registration-target')
+        before = self.filesystem_state()
+        code, result = self.status_cli()
+        # The receipt's scope check rejects a linked current registration first.
+        self.assertEqual((code, result['reason']), (2, 'uninstall-receipt-unverified'))
+        self.assertTrue(result['registration_present'])
+        self.assertEqual(self.filesystem_state(), before)
+        registration.unlink()
+        receipt = lifecycle.journal_path(self.home)
+        receipt.write_bytes(b'[]')
+        before = self.filesystem_state()
+        code, result = self.status_cli()
+        self.assertEqual((code, result['reason']), (2, 'uninstall-receipt-unverified'))
+        self.assertEqual(self.filesystem_state(), before)
+
+    def test_cli_in_use_guides_only_service_pause_reload_without_mutation(self):
+        with locked(self.adapter.cache / '.content-runtime.lock', shared=True):
+            before = self.filesystem_state()
+            code, result = self.status_cli('uninstall')
+            self.assertEqual((code, result['status']), (2, 'client-in-use'))
+            self.assertIn('only agent_brain_server', result['next_action'])
+            self.assertIn('Settings > MCP servers', result['next_action'])
+            self.assertIn('Restart/reload', result['next_action'])
+            self.assertIn('stop and report', result['next_action'])
+            self.assertNotIn('Quit Codex', result['next_action'])
+            self.assertFalse(result['native_changed'])
+            self.assertEqual(self.filesystem_state(), before)
+
+    def test_install_reinstall_and_repeat_cli_require_separate_onboard_coverage_check(self):
+        before_identity = copy.deepcopy(self.f.backend.record)
+        prepare_count = len(self.f.transport.prepares)
+        for _ in range(2):
+            code, result = self.connection_cli()
+            self.assertEqual(code, 0, result)
+            self.assertEqual(result['model_loaded'], 'unknown')
+            handoff = result['onboard_check']
+            self.assertEqual(handoff['status'], 'coverage-check-required')
+            self.assertEqual(handoff['coverage'], 'unknown')
+            self.assertFalse(handoff['account_complete'])
+            self.assertFalse(handoff['source_scan_performed'])
+            self.assertFalse(handoff['data_transferred'])
+        self.remove()
+        (self.preparation / 'connection.json').unlink()
+        code, result = self.connection_cli()
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result['onboard_check']['status'], 'coverage-check-required')
+        self.assertEqual(self.f.backend.record, before_identity)
+        self.assertEqual(len(self.f.transport.prepares), prepare_count)
+        self.assertEqual(self.f.prompts, 1)
+        self.assertFalse((self.adapter.cache / 'imports.json').exists())
+
+    def test_status_does_not_infer_model_loading_from_registration_or_worker_lease(self):
+        with locked(self.adapter.cache / '.content-runtime.lock', shared=True):
+            with patch.object(self.f.backend, 'load', side_effect=AssertionError('No credential access')):
+                code, result = self.status_cli()
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result['registration_verified'])
+        self.assertEqual(result['model_loaded'], 'unknown')
+        self.assertNotIn('onboard_check', result)
+
     def test_read_write_remove_reinstall_retains_identity_and_confirmed_outbox(self):
         read = self.adapter.invoke({'request_id': 'synthetic_lifecycle_read_0001', 'method': 'content_read', 'params': {'kind': 'memory', 'id': 'synthetic-memory'}})
         self.assertEqual(read['result']['record']['body'], MEMORY['body'])

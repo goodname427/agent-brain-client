@@ -138,6 +138,32 @@ class FirstInstall(unittest.TestCase):
             **options,
         )
 
+    def test_first_install_cli_emits_onboard_handoff_without_importing(self):
+        self.fixture()
+        original = wizard.run
+
+        def run(home, native, connection, digest):
+            return original(home, native, connection, digest,
+                            confirm=lambda *a: 'Continue', updater=self.update,
+                            runner=self.runner, dependency_preparer=lambda *a, **k: self.materials,
+                            store=self.store, transport=self.transport, secure_input=self.input,
+                            installer=lambda p, d: content_install.apply(p, d, lambda value: None))
+
+        output = io.StringIO()
+        with patch.object(Path, 'home', return_value=self.home), \
+                patch.dict(os.environ, CODEX_HOME=str(self.native)), \
+                patch.object(sys, 'argv', ['mac_first_install.py', '--connection', str(self.base / 'connection.json')]), \
+                patch.object(wizard, 'run', side_effect=run), patch.object(sys, 'stdout', output):
+            code = wizard.main()
+        result = json.loads(output.getvalue())
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result['installed'])
+        self.assertEqual(result['model_loaded'], 'unknown')
+        self.assertEqual(result['onboard_check']['status'], 'coverage-check-required')
+        self.assertFalse(result['onboard_check']['source_scan_performed'])
+        self.assertFalse(result['onboard_check']['data_transferred'])
+
+
     def test_required_tools_and_helper_are_prepared_once_and_drift_is_preserved(self):
         self.fixture()
         builds = []
@@ -545,6 +571,7 @@ class LifecycleExitCodes(unittest.TestCase):
         paused={'status':'content-native-client-disabled','installed':False,'registration_verified':True,'native_changed':False}
         self.assertEqual(self.command('status',paused),0)
         self.assertEqual(self.command('uninstall',paused),2)
+        self.assertEqual(self.command('status',{'status':'uninstall-state-review-required','installed':False,'native_changed':False,'uninstall_verified':False}),2)
 
 
 class NewDeviceConnectionCLI(unittest.TestCase):

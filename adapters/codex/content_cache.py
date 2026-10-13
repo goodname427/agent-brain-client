@@ -500,14 +500,14 @@ class ContentAdapter:
                 self._recover();self._import_pending();self._drain();self._import_pending()
                 queue=self.queue_status();imports=self.import_status()
                 if queue['pending'] or queue['conflict'] or queue['blocked'] or any(imports['counts'].get(v,0) for v in ('inventoried','pending','conflict','blocked')):
-                    return {'status':'content-local-changes-retained','native_changed':False,'model_loaded':False,'queue':queue,'imports':imports,'next_action':'Reconnect to replay exact saved requests; explicitly reconcile conflicts before mapping.'}
+                    return {'status':'content-local-changes-retained','native_changed':False,'model_loaded':'unknown','queue':queue,'imports':imports,'next_action':'Reconnect to replay exact saved requests; explicitly reconcile conflicts before mapping.'}
                 owned=self._owned();snapshot=self._fetch();desired=self._mapping(snapshot,owned)
                 self._skill_dirs(desired,owned['files'])
                 if any(self.cache==self._path(name) or self.cache in self._path(name).parents for name in desired):raise CacheBlocked()
                 active=self._load('active.json')
                 if active=={'commit':snapshot['commit'],'snapshot_sha':sha(contract.encode(snapshot))} and self._load('snapshots/'+snapshot['commit']+'.json')==snapshot:
                     self._pin_offline_snapshot(snapshot)
-                    return {'status':'content-current','native_changed':False,'model_loaded':False}
+                    return {'status':'content-current','native_changed':False,'model_loaded':'unknown'}
                 before={};after={}
                 for name in set(owned['files'])|set(desired):
                     raw=self._raw(name)
@@ -526,11 +526,11 @@ class ContentAdapter:
                     self._save('active.json',{'commit':snapshot['commit'],'snapshot_sha':sha(contract.encode(snapshot))})
                     self.health();self._owned();self._pin_offline_snapshot(snapshot);self._save('transaction.json',dict(journal,phase='complete'))
                 except Exception:self._restore(journal);raise
-                return {'status':'content-refreshed','native_changed':True,'model_loaded':False,'commit':snapshot['commit']}
+                return {'status':'content-refreshed','native_changed':True,'model_loaded':'unknown','commit':snapshot['commit']}
         except Exception:
             try:journal=self._load('transaction.json');uncertain=journal and journal['phase']=='applying'
             except Exception:uncertain=True
-            return {'status':'content-recovery-review-required' if uncertain else 'content-refresh-blocked','native_changed':None if uncertain else False,'model_loaded':False,'next_action':'Preserve local files and prior snapshots. Review transport, contract, content scope, dependencies, owned-file drift or interrupted recovery.'}
+            return {'status':'content-recovery-review-required' if uncertain else 'content-refresh-blocked','native_changed':None if uncertain else False,'model_loaded':'unknown','next_action':'Preserve local files and prior snapshots. Review transport, contract, content scope, dependencies, owned-file drift or interrupted recovery.'}
 
     def invoke(self,request,reconciles=None):
         require_platform('cache-storage',self.platform)
@@ -549,7 +549,7 @@ class ContentAdapter:
                 contract.validate('content_read',{'kind':'memory','id':topic['id']})
                 if topic['id'] in seen or not self._allows('memory',topic['id']) or not isinstance(topic['revision'],str) or not re.fullmatch(r'[a-f0-9]{64}',topic['revision']) or type(topic['score']) is not int or topic['score']<0 or any(not isinstance(topic[k],str) or len(topic[k])>1024 for k in ('title','description')) or not isinstance(topic['preview'],str) or len(topic['preview'])>320:raise CacheBlocked()
                 contract.query_time(topic['updated_at']);seen.add(topic['id'])
-            return dict(response,local_refresh={'status':'query-only','native_changed':False,'model_loaded':False})
+            return dict(response,local_refresh={'status':'query-only','native_changed':False,'model_loaded':'unknown'})
         kinds=params['kinds'] if method=='content_catalog' else [params['kind']]
         if any(kind not in self.policy['kinds'] for kind in kinds) or method!='content_catalog' and not self._allows(params['kind'],params['id']):raise CacheBlocked()
         if method in contract.WRITES:
@@ -588,5 +588,5 @@ class ContentAdapter:
                 contract.validate('content_read',{'kind':item['kind'],'id':item['id']})
                 if item['kind'] in kinds and self._allows(item['kind'],item['id']):visible.append(item)
             result=dict(result,result=dict(value,artifacts=visible))
-        refresh=self.refresh() if method not in contract.WRITES or result.get('local_queue',{}).get('state')=='confirmed' else {'status':'content-local-changes-retained','native_changed':False,'model_loaded':False,'queue':self.queue_status()}
+        refresh=self.refresh() if method not in contract.WRITES or result.get('local_queue',{}).get('state')=='confirmed' else {'status':'content-local-changes-retained','native_changed':False,'model_loaded':'unknown','queue':self.queue_status()}
         return dict(result,local_refresh=refresh)

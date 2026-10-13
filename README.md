@@ -29,3 +29,5 @@ Mac arm64 的唯一用户操作说明见 [安装、使用、卸载与再次安�
 弱网兼容源码区分服务器本地已保存（local_durable:true、GitHub 未确认）和原 durable:true 的 GitHub 确认。前者可继续 CAS/映射，但不会冒称备份完成；同 request_id 明确重试可更新回执。公开协议见 PROTOCOL.md。HTTPS 0.2.7 通过明确 HTTP 写回执能力声明选择本地确认；运行中的旧 worker 不会热替换。0.2.5 与已冻结 0.2.6 未声明时仍保持原 GitHub 确认/可重试错误语义。Server 兼容部署不要求所有 Client 先升级；本批记忆行为与 query 的源码合入仍不代表发布。
 
 日常保存与已有记忆迁移的默认行为见 [MEMORY-BEHAVIOR.md](docs/MEMORY-BEHAVIOR.md)：普通事实、偏好、纠正和短期进展不以重大或永久价值为门槛；Onboard 默认覆盖全部获准访问的已有记忆，排除公司敏感、秘密和范围外材料，保留来源覆盖、重复及冲突原因。`tools/memory_review.py` 只离线审阅明确提供的元数据，不采集或上传。辅助 `memory_query` 只读当前有效 Memory，最多 3 条；既有 `content_catalog` 的 Memory-only 查询别名复用同一接口。这些源码检查与合入不代表已发布、已部署或模型实测。
+
+安装/重装成功明确交接 `onboard_check:coverage-check-required`，由 Agent 用既有 Onboard 流程核对当前来源；旧身份和旧完成标记不能证明全量，检查不触发重新配对或自动全量上传。无法观测的模型加载状态使用 `model_loaded:"unknown"`，映射数量与模型是否采用指令分开。卸载后 status 只读核验真实事务后像及登记残留，漂移明确报告 review-required。安装入口源码与运行期活动包分别交付，运行期指引和回执变化未发布前不宣称影响现有 worker。

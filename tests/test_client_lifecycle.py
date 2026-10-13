@@ -171,7 +171,7 @@ class NativeConnection(unittest.TestCase):
         report=remote_connect.connect(self.home,service_profile=self.profile);self.assertEqual(report['status'],'ready-to-register')
         blocked=remote_connect.connect(self.home,apply=True,service_profile=self.profile,plan_sha256='0'*64);self.assertEqual(blocked['status'],'plan-review-required')
         for p,raw in self.before.items():self.assertEqual(p.read_bytes(),raw)
-        result=self.register();self.assertTrue(result['native_changed']);self.assertFalse(result['model_loaded'])
+        result=self.register();self.assertTrue(result['native_changed']);self.assertEqual(result['model_loaded'],'unknown')
         self.assertIn('mcp_servers.other',self.config.read_text());self.assertTrue(self.agents.read_text().startswith(self.before[self.agents].decode()))
         after={p:p.read_bytes() for p in self.before};repeat=remote_connect.connect(self.home,apply=True);self.assertEqual(repeat['status'],'native-client-registered');self.assertFalse(repeat['native_changed'])
         for p,raw in after.items():self.assertEqual(p.read_bytes(),raw)

@@ -28,6 +28,13 @@ def main():
         result = review_memory_sources(
             value["sources"], value["candidates"], value["mode"]
         )
+        if value['mode'] == 'onboard':
+            result['onboard_check'] = {
+                'status': 'coverage-incomplete' if result['coverage_gaps'] else 'provided-sources-reviewed',
+                'scope': 'explicit-source-metadata-only', 'account_complete': False,
+                'incremental_candidates': result['counts']['candidate'],
+                'equivalent_records': result['counts']['duplicate'], 'data_transferred': False,
+            }
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except (ValueError, TypeError, KeyError):
