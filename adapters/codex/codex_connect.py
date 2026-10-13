@@ -103,7 +103,7 @@ def connect(home, profile_path=None, apply=False, approved_digest=None):
         if not valid:return {'status':'native-repair-review-required','native_changed':False,'next_action':'Preserve drifted native files and review the owned migration receipt.'}
         if mcp is not None and (installed!=mcp or registered['data_mode']!=candidate['data_mode']):return {'status':'service-change-review-required','native_changed':False,'next_action':'Review changed SSH identity, fixed command, data mode or destination.'}
         updates=probe(installed)
-        return {'status':'native-client-registered','native_changed':False,'protocol_checked':True,'model_loaded':False,'legacy_preserved':legacy.exists(),'updates':updates,'next_action':'Reuse this synthetic MCP. A new release source or runtime bootstrap requires its own pinned approval.'}
+        return {'status':'native-client-registered','native_changed':False,'protocol_checked':True,'model_loaded':'unknown','legacy_preserved':legacy.exists(),'updates':updates,'next_action':'Reuse this synthetic MCP. A new release source or runtime bootstrap requires its own pinned approval.'}
     if legacy.exists():return {'status':'migration-review-required','native_changed':False,'next_action':'Prepare an exact legacy migration with backups; preserve existing hooks, bindings and permissions.'}
     if candidate is None:return {'status':'server-authorization-required','native_changed':False,'next_action':'Locate the approved private SSH service profile. Do not send keys or tokens to chat.'}
     if NAME in cfg.get('mcp_servers',{}) or (agents.exists() and (BEGIN in agents.read_text() or END in agents.read_text())):
@@ -119,7 +119,7 @@ def connect(home, profile_path=None, apply=False, approved_digest=None):
     plan=sha(json.dumps({'profile':candidate,'before':{str(config):sha(config_raw),str(agents):sha(agents_raw)},'after':{str(config):sha(new_config),str(agents):sha(new_agents)}},sort_keys=True).encode())
     if not apply:return {'status':'ready-to-register','native_changed':False,'plan_sha256':plan,'updates':updates,'next_action':'Apply this exact native plan only within authorization; no credentials, hooks or background tasks are installed.'}
     if approved_digest!=plan:return {'status':'plan-review-required','native_changed':False,'plan_sha256':plan,'next_action':'Approve the exact current native plan digest before applying.'}
-    value={'schema':1,'native_mcp_name':NAME,'data_mode':candidate['data_mode'],'real_data_authorized':candidate['data_mode']=='personal-explicit','production_proactive_memory':False,'mcp_sha256':sha(json.dumps(mcp,sort_keys=True).encode()),'platform':candidate['platform'],'model_loaded':False}
+    value={'schema':1,'native_mcp_name':NAME,'data_mode':candidate['data_mode'],'real_data_authorized':candidate['data_mode']=='personal-explicit','production_proactive_memory':False,'mcp_sha256':sha(json.dumps(mcp,sort_keys=True).encode()),'platform':candidate['platform'],'model_loaded':'unknown'}
     payload={config:new_config,agents:new_agents,registration:(json.dumps(value,indent=2)+'\n').encode()}
     receipt=state/'native-install-receipt.json'
     before={str(p):{'data':base64.b64encode(p.read_bytes()).decode(),'mode':p.stat().st_mode&0o777} if p.exists() else None for p in payload}
@@ -145,4 +145,4 @@ def connect(home, profile_path=None, apply=False, approved_digest=None):
             if old:atomic(p,base64.b64decode(old['data']),old['mode'])
             else:p.unlink()
         journal['phase']='rolled-back';atomic(receipt,(json.dumps(journal)+'\n').encode(),0o600);raise
-    return {'status':'native-client-registered','native_changed':True,'protocol_checked':True,'model_loaded':False,'updates':updates,'next_action':'Use the registered synthetic MCP; configuration and protocol checks completed, no extra model or GUI test required.'}
+    return {'status':'native-client-registered','native_changed':True,'protocol_checked':True,'model_loaded':'unknown','updates':updates,'next_action':'Use the registered synthetic MCP; configuration and protocol checks completed, no extra model or GUI test required.'}

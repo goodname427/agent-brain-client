@@ -311,11 +311,39 @@ def status(home):
     require_platform('native-install')
     state = state_path(home)
     registration = state / 'codex-mcp.json'
-    if not registration.exists():
-        if journal_path(home).exists():
+    removal = journal_path(home)
+    journal = None
+    if removal.exists() or removal.is_symlink():
+        review = {'status': 'uninstall-state-review-required', 'installed': False,
+                  'native_changed': False, 'uninstall_verified': False,
+                  'registration_present': registration.exists() or registration.is_symlink(),
+                  'next_action': 'Preserve the current files, registration and removal receipt. Review the recorded uninstall state and any later edits or interrupted reinstall; this status check did not modify or clean up anything.'}
+        try:
             journal = read_removal(home)
+        except Exception:
+            return dict(review, reason='uninstall-receipt-unverified')
+        if not isinstance(journal, dict):
+            return dict(review, reason='uninstall-receipt-unverified')
+        if journal.get('phase') == 'complete':
+            try:
+                validate_journal(home, journal)
+            except Exception:
+                return dict(review, reason='uninstall-receipt-unverified')
+            changed = 0
+            try:
+                for name, value in journal['after'].items():
+                    if install.digest_or_none(install.raw(name, 1048576)) != install.digest_or_none(decode(value)):
+                        changed += 1
+            except Exception:
+                return dict(review, reason='uninstall-postimage-unverified')
+            if changed:
+                return dict(review, reason='uninstall-postimage-changed', changed_postimages=changed)
+            return {'status': 'client-uninstalled', 'installed': False, 'native_changed': False,
+                    'uninstall_verified': True, 'verified_postimages': len(journal['after'])}
+    if not registration.exists():
+        if journal is not None:
             validate_journal(home, journal)
-            return {'status': 'client-uninstalled' if journal['phase'] == 'complete' else 'uninstall-resume-required', 'installed': False, 'native_changed': False}
+            return {'status': 'uninstall-resume-required', 'installed': False, 'native_changed': False}
         return install.inspect(home)
     result = install.inspect(home)
     if result.get('registration_verified',result.get('installed')):

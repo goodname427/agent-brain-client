@@ -60,6 +60,12 @@ def connection_file(path, expected=None):
     if expected is not None and sha(raw) != expected:
         raise ValueError("Connection file drift")
     value = json.loads(raw, object_pairs_hook=unique)
+    connection_value(value)
+    return value, sha(raw)
+
+
+def connection_value(value):
+    """Validate metadata only; this never discovers or creates an identity."""
     if (
         not isinstance(value, dict)
         or set(value) != {"schema", "endpoint", "grant", "release"}
@@ -80,7 +86,68 @@ def connection_file(path, expected=None):
         or not re.fullmatch(r"[a-f0-9]{40}", release["anchor_commit"])
     ):
         raise ValueError("Existing official release authority required")
-    return value, sha(raw)
+    return value
+
+
+class ConnectionRequired(ValueError):
+    pass
+
+
+def resolve_connection(home, native, path=None, expected=None):
+    """Restore only the connection authenticated by an existing local binding.
+
+    Saved connection files alone are not authority. A completed removal receipt
+    or verified registration must still pin the profile, policy and bootstrap.
+    Recovery stays in memory; it never exports helper paths or reads Keychain.
+    """
+    if path is not None:
+        return connection_file(path, expected)
+    if expected is not None:
+        raise ValueError("An expected file digest requires an explicit file")
+    from client_lifecycle import read_removal, validate_journal
+    from content_install import inspect, policy_file
+
+    state = safe(Path(home) / '.config/agent-brain-client')
+    registration = safe(state / 'codex-mcp.json')
+    removal = safe(state / 'uninstall-receipt.json')
+    if removal.exists() and read_removal(home)['phase'] in ('prepared', 'applying'):
+        raise ValueError("Unfinished removal requires its existing recovery")
+    if registration.exists() and inspect(home).get('registration_verified'):
+        metadata = private_json(owned(registration))
+    elif removal.exists():
+        owned(removal)
+        journal = read_removal(home)
+        if journal['phase'] != 'complete':
+            raise ValueError("Unfinished removal requires its existing recovery")
+        validate_journal(home, journal)
+        # An interrupted reinstall is checked by its existing pinned plan below.
+        # Otherwise require every completed uninstall postimage before prompting.
+        if not safe(state / 'first-install/reinstall-current.json').exists():
+            from client_lifecycle import decode
+            from content_install import raw, digest_or_none
+            for name, after in journal['after'].items():
+                if digest_or_none(raw(name, 1048576)) != digest_or_none(decode(after)):
+                    raise ValueError("Uninstalled state changed")
+        metadata = journal['registration']
+    else:
+        if registration.exists() or state.exists() and any(p.name != 'install-runtime' for p in state.iterdir()):
+            raise ValueError("Unverified installation materials preserved")
+        raise ConnectionRequired("Trusted issuer delivery required")
+    policy = policy_file(metadata['release_policy'], metadata['release_policy_sha256'], runtime_check=False)
+    runtime = policy['runtime']
+    owned(Path(metadata['release_policy']))
+    owned(Path(runtime['https_profile']))
+    profile = profile_file(runtime['https_profile'], runtime['https_profile_sha256'])
+    value = connection_value({'schema': 1, 'endpoint': profile['endpoint'],
+                              'grant': profile['grant'],
+                              'release': {k: policy[k] for k in ('origin', 'ref', 'anchor_commit')}})
+    existing_connection(home, native, value, metadata)
+    saved = safe(state / 'first-install/connection.json')
+    if saved.exists():
+        value, digest = connection_file(owned(saved))
+        existing_connection(home, native, value, metadata)
+        return value, digest
+    return value, sha(canonical(value))
 
 
 def private_lease(state):
@@ -614,7 +681,7 @@ def main():
                 value = uninstall(home, confirm_target) if args.action == "uninstall" else repair(home) if args.action == "repair" else status(home)
             except RuntimeError:
                 value = {"status": "client-in-use", "native_changed": False,
-                         "next_action": "Quit Codex normally so this client's MCP worker exits, then rerun the same command. No process was killed."}
+                         "next_action": "Disable only agent_brain_server in the host Settings > MCP servers, save and use the host Restart/reload. Wait for this MCP worker to exit before rerunning. If that service cannot be paused or the worker remains active, stop and report the blocker. Preserve other MCP settings and persistent locks."}
             except Exception:
                 partial=False
                 if args.action in ('uninstall','repair'):
@@ -627,13 +694,24 @@ def main():
                          "next_action": "Preserve local files and recovery receipts; do not delete data or reset Keychain. Use status, then repair for interrupted uninstall."}
             print(json.dumps(value))
             return lifecycle_exit(args.action,value)
-        if args.connection is None:
-            parser.error("--connection is required for install")
-        connection, connection_sha = connection_file(
-            args.connection, args.expected_connection_sha256
-        )
         native = Path(os.environ.get("CODEX_HOME", str(home / ".codex"))).absolute()
+        try:
+            connection, connection_sha = resolve_connection(
+                home, native, args.connection, args.expected_connection_sha256
+            )
+        except ConnectionRequired:
+            print(json.dumps({"status": "first-install-connection-required", "installed": False,
+                              "native_changed": False, "credential_accessed": False,
+                              "next_action": "Obtain connection.json and its SHA-256 through your service issuer's trusted delivery channel. The issuer uses Server tools/export_connection.py; then run this script with --connection and --expected-connection-sha256. See docs/FIRST-INSTALL-MAC.md. No invitation is needed until ready.json exists."}))
+            return 2
+        except Exception:
+            print(json.dumps({"status": "connection-file-review-required" if args.connection else "connection-recovery-review-required",
+                              "installed": False, "native_changed": False, "credential_accessed": False,
+                              "next_action": "Preserve connection metadata, original profile/policy and recovery receipts. Review the original binding; do not reset identity, replace digests or use an example connection."}))
+            return 2
         value = run(home, native, connection, connection_sha)
+        from content_contract import installation_follow_up
+        value = installation_follow_up(value)
         print(json.dumps(value))
         return lifecycle_exit('install',value)
     except Exception:

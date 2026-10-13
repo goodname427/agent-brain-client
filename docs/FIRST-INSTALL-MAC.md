@@ -12,23 +12,37 @@ cd agent-brain-client
 git rev-parse HEAD
 ```
 
-管理员通过可信私有途径交付 `connection.json`，仅含 HTTPS endpoint、grant 与既有官方 release origin/ref/anchor。格式见 [connection.example.json](connection.example.json)：示例为虚构服务，不能用于真实安装；实际 anchor 必须是已批准的发布祖先，不是随意填版本 commit。连接文件没有邀请码、token、nonce、SSH 或 admin 字段。不要把真实部署配置提交到仓库。保持文件和路径稳定；以下命令将其路径保存在普通变量中：
+已有设备再次安装先直接运行 `sh tools/install-mac.sh`，见下文“中断恢复与再次安装”；无需另找开发时的文件。只有全新设备需要发行者交付连接描述。
+
+新设备的连接交付是一个明确的两阶段流程：
+
+1. 在该服务原有、已验证的发行交付渠道申请 **Mac arm64 / Codex 连接资料包**，资料包须包含 `connection.json`、该文件的 SHA-256、发行者身份及准备回执的交回渠道。发行者使用独立 Server 的 [连接交付工具与操作步骤](https://github.com/goodname427/agent-brain-server/blob/main/docs/CONNECTION-DELIVERY.md)，从已有批准的服务范围和发布元数据导出，不发邀请码、不建立设备授权。不要索取开发目录或管理员配置。
+2. 通过该渠道核对发行者、文件及摘要，再运行下方安装命令。脚本完成准备后才产生 `ready.json`；按资料包标明的渠道交回该准备回执及摘要，发行者按既有私有邀请控制台审核并安全交付短期邀请，客户端仅在现有安全输入窗口输入。
+
+此仓库没有内置统一公共服务地址、发行者账号或自助发码网站。尚未获得具体服务的可信交付渠道或发行者未配置交付时，停在 `first-install-connection-required`，由该服务发行者补齐资料包和交付入口；示例、任意网站或 Git 当前 HEAD 不能替代。私有 Server 文档可能需要发行者的仓库权限，普通设备不需要取得该权限。
+
+`connection.json` 仅含 HTTPS endpoint、grant（actor、adapter、platform、scopes、artifact_types、ids）与既有官方 release origin/ref/anchor。格式见 [connection.example.json](connection.example.json)：示例为虚构服务，不能用于真实安装；实际 anchor 必须是已批准的发布祖先，不是随意填版本 commit。连接文件没有邀请码、token、nonce、SSH 或 admin 字段，也不是设备凭证，但服务地址和用户范围仍应按私有交付资料保管。`connect.json` 是同类文件的另一种命名，脚本只检查 `--connection` 指定的内容，不依赖文件名。不要把真实部署配置提交到仓库。保持文件和路径稳定；以下变量均为非凭证资料：
 
 ```sh
 CONNECTION_JSON="/absolute/path/to/connection.json"
+CONNECTION_SHA256="<发行者通过可信渠道交付的文件 SHA-256>"
 ```
 
 ## 安装
 
 ```sh
-sh tools/install-mac.sh --connection "$CONNECTION_JSON"
+sh tools/install-mac.sh --connection "$CONNECTION_JSON" --expected-connection-sha256 "$CONNECTION_SHA256"
 ```
 
 终端展示服务器、actor、内容类型、IDs、read/put 范围及发布源；输入 `Continue` 确认，`Cancel` 退出。缺少命令行工具时，脚本请求标准安装并退出，完成后重跑同一命令。它准备 Git HTTPS、Python 3.11+、系统 TLS 根及原有 Swift helper：工具链 Python 不足时获取固定 SHA 校验的 Python 归档，准备到用户私有目录。无需 Apple 分发身份、公证、sudo、远程脚本或更改系统信任。
 
 准备检查成功后提示 `ready.json` 的完整路径。此时管理员才按这份回执发短期邀请；客户端不发码。收到邀请后选择 `Continue`，仅在原有安全输入窗口中输入一次。不要将邀请粘贴到终端、聊天、命令参数、环境变量或剪贴板。取消/Back 可重跑；网络失败、丢 ACK 或重启必须重跑同一命令，继续原配对尝试，不申请新邀请。只有服务端明确拒绝并经再次检查和确认，才结束错误/过期邀请尝试。
 
-`installed:true` 表示 HTTPS 协议/认证及一个 MCP 表登记完成；打开/重启 Codex，正常新 MCP 进程加载。它不会强杀旧 worker，也不意味着已运行模型自动重读了指令。再次运行安装命令会检查已装身份/范围，不再输入邀请。profile、policy、helper、scope 或配置漂移时停止并保留现场，不自动扩权。
+`installed:true` 表示 HTTPS 协议/认证及一个 MCP 表登记完成；打开/重载 Codex，正常新 MCP 进程加载。它不会强杀旧 worker，也不意味着已运行模型自动重读了指令。`model_loaded:"unknown"` 表示此接口无法观测模型是否采用了指令；不能解释为已加载或未加载。旧回执的历史字段同样不是当前模型加载探针。再次运行安装命令会检查已装身份/范围，不再输入邀请。profile、policy、helper、scope 或配置漂移时停止并保留现场，不自动扩权。
+
+安装与再次安装成功后，结果明确返回 `onboard_check.status:coverage-check-required`。这是给执行 Agent 的下一步交接：宿主工具可用后使用 `agent-brain-onboard` 检查所有已授权可读取记忆来源的覆盖；安装器不扫描私人文件、不启动模型任务、不上传记忆。旧身份、安装完成、旧 imported 标记或 pending=0 不能跳过覆盖核对。缺少覆盖记录、首次只导入一部分、后来新增记忆或新 Harness 来源时按实际能力枚举分页/批次，记录来源范围、指纹、已读/重复/排除/未检查/不可访问/冲突/待处理数量与原因。等价内容跳过写入；缺失、新增或差异才进入明确增量核对，差异保留双方独有信息并用当前 revision/CAS 协调。排除公司敏感、秘密、受禁历史与既有范围外材料，不按重要性或三主题检索预算缩小已有记忆覆盖。普通重连不自动再导入，覆盖检查也不重复配对。
+
+安装协议检查只读，不生成内容映射，因此安装瞬间映射数可为 0。MCP 正常初始化后才刷新获授权映射；之后数量增加属于状态时序，不代表安装失败或记忆 Onboard 已完成。映射文件存在仍不证明模型采用了全部指令。
 
 ## 状态与实际使用
 
@@ -55,6 +69,8 @@ sh tools/install-mac.sh --action status
 
 确认 `Continue` 后移除本工具 MCP 表、登记和哈希一致的自有 Memory/Rule/Skill 文件；只删自有指令块，保留用户指令与其他 Codex 设置。空的自有 Skill 目录移除；不递归删除目录。退役缓存的 owned/active 映射指针，使再次安装能够重建相同版本映射。`client-uninstalled` 表示入口登记及映射已移除；不能以仍存有恢复材料称已安装，也不能以仍活着的旧进程称卸载验证通过。
 
+卸载后的 `status` 会只读校验完成回执及其中每个事务文件的实际后像，包括 MCP 配置、登记、自有映射和 owned/active 指针。匹配才返回 `client-uninstalled`、`uninstall_verified:true` 和核验数量。登记残留、文件被改回或后像漂移返回 `uninstall-state-review-required`、`uninstall_verified:false` 与安全原因，退出码非零；回执损坏或链接同样停止核验。后续用户对回执记录中的配置或指令文件编辑也会报告后像变化，需区分用户编辑与残留，不据此断言已经重新安装。状态检查不删文件、不修复、不创建锁或访问凭据；重复查询保留原现场。已完成的重新安装按新登记核验，不拿旧卸载后像判断。
+
 默认保留专用 login Keychain 身份、固定 helper/bootstrap、依赖、profile/policy、安装及卸载前后像、outbox/imports 和完整快照，用于再次安装和安全恢复。它们主要位于 `~/.config/agent-brain-client`，原有安装也可能使用自己的已登记私有路径；不会卸载 Codex、改变 Server/cloud Data、撤销服务端设备或删除未同步数据。这是明确的可恢复卸载，没有“彻底擦除身份/数据”选项。
 
 `client-in-use`：确认宿主只停用了本服务并完成 reload，等待该 MCP 正常退出后重跑；做不到就停止报告，不退出宿主、不杀进程、不删 lock。`uninstall-unconfirmed-writes`：保留安装，只重新启用本服务并 reload，通过原 MCP 重试原 ID 或协调冲突，队列无 pending/conflict/blocked 后再停用并重跑。取消后同样可只重新启用本服务恢复使用，不需要邀请码。未知队列、未完成导入、用户修改的自有文件或 Skill 目录新增私有文件会阻断移除，保持现场；不会盲删。
@@ -65,10 +81,14 @@ sh tools/install-mac.sh --action status
 
 ```sh
 sh tools/install-mac.sh --action repair
-sh tools/install-mac.sh --connection "$CONNECTION_JSON"
+sh tools/install-mac.sh
 ```
 
-repair 继续自身中断的卸载，只接受事务前后像，外部修改停止并保留双方。安装/配对/再次安装中断重跑安装命令；它复用已保存计划、原 identity/profile/helper 和同一缓存，按现有安装事务恢复。再次安装仅准备经验证的新固定启动器和精确 MCP 计划，保留原发布政策及信任锚，不另建身份，不发新邀请。在线认证通过后重建映射，再启动 Codex 验证读写。不要删除保留目录或 Keychain 项来“修复”。
+repair 继续自身中断的卸载，只接受事务前后像，外部修改停止并保留双方。首次安装/配对中断重跑带同一连接文件及摘要的原命令；已有身份的再次安装直接重跑无参数命令，复用已保存计划、原 identity/profile/helper 和同一缓存，按现有安装事务恢复。
+
+无参数入口先核验现有登记或完成的卸载回执，再验证原 profile、发布政策、bootstrap、设备及 Codex 路径绑定。已有保存的 `first-install/connection.json` 必须与该绑定完全一致；旧安装没有此文件时，在内存中从保留元数据恢复同一连接描述，不生成凭证、不索取新文件、不改变信任锚。不可信、外部修改、未完成卸载或仅有孤立连接文件时报告 `connection-recovery-review-required` 并保留现场；显式指定的错误连接文件报告 `connection-file-review-required`，不会静默换用其他资料。若原身份不存在，现有安装事务停止，不转为新身份配对。
+
+再次安装仅准备经验证的新固定启动器和精确 MCP 计划，保留原发布政策及信任锚，不另建身份，不发新邀请。在线认证通过后重建映射，再启动 Codex 验证读写。不要删除保留目录或 Keychain 项来“修复”。
 
 ## 当前实际限制
 
