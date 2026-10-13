@@ -253,7 +253,7 @@ def apply(plan,approved_digest,check=probe):
         config=native/'config.toml';registration=state/'codex-mcp.json'
         config_raw=raw(config);desired=render(config_raw,plan['mcp'],config_raw is not None and NAME in tomllib.loads(config_raw.decode()).get('mcp_servers',{}))
         if sha(desired)!=plan['config_after_sha256']:raise InstallBlocked('Config rendering differs from approved plan')
-        metadata={'schema':1,'native_mcp_name':NAME,'content_candidate':True,'data_mode':'personal-explicit','installation_complete':True,'protocol_checked':True,'model_loaded':False,'platform':plan['platform'],
+        metadata={'schema':1,'native_mcp_name':NAME,'content_candidate':True,'data_mode':'personal-explicit','installation_complete':True,'protocol_checked':True,'model_loaded':'unknown','platform':plan['platform'],
                   'mcp_sha256':sha(json.dumps(plan['mcp'],sort_keys=True).encode()),'release_policy':plan['release_policy'],'release_policy_sha256':plan['release_policy_sha256'],'package':plan['package'],'package_sha256':plan['package_sha256'],'plan_sha256':approved_digest}
         payload={config:desired,registration:contract.encode(metadata)}
         if plan['legacy_agents']:
@@ -276,7 +276,7 @@ def apply(plan,approved_digest,check=probe):
             try:restore(journal,plan);save(receipt,journal)
             except Exception:return {'status':'content-install-recovery-review-required','native_changed':None,'installed':False}
             return {'status':'content-install-rolled-back','native_changed':False,'installed':False}
-        return {'status':'content-native-client-installed','native_changed':True,'installed':True,'protocol_checked':True,'model_loaded':False}
+        return {'status':'content-native-client-installed','native_changed':True,'installed':True,'protocol_checked':True,'model_loaded':'unknown'}
 
 def inspect(home):
     present=False;stage='installation-path-review-required'
@@ -318,7 +318,7 @@ def inspect(home):
         active=ClientReleases(meta['release_policy'],meta['release_policy_sha256'],inspection=True).verified_active()
         if active is None:raise InstallBlocked('Verified client version missing')
         enabled=mcp.get('enabled') is True
-        return {'status':'content-native-client-installed' if enabled else 'content-native-client-disabled','installed':enabled,'registration_verified':True,'installation_present':True,'installation_state':'verified' if enabled else 'verified-disabled','native_changed':False,'protocol_checked':True,'model_loaded':False,'installed_version':active['version'],'update_checkpoint':'approved-MCP-startup'}
+        return {'status':'content-native-client-installed' if enabled else 'content-native-client-disabled','installed':enabled,'registration_verified':True,'installation_present':True,'installation_state':'verified' if enabled else 'verified-disabled','native_changed':False,'protocol_checked':True,'model_loaded':'unknown','installed_version':active['version'],'update_checkpoint':'approved-MCP-startup'}
     except PlatformUnsupported as error:return error.result(installed=False,native_changed=False)
     except Exception as error:
         reason,action=INSPECTION_REASONS.get(str(error), (stage,'Preserve native files, registration and recovery receipts. Review the named local integrity checkpoint; do not delete state, rewrite digests or reset Keychain.'))

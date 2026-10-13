@@ -11,15 +11,15 @@
     "ADAPTERS.md": "ed493bf807e2817b43cb3cb6828060b063451dd1b3340dc60d966e3169d23e3e",
     "BOOTSTRAP.md": "613d7653f0e28244c73bf2f9b06e80e08229005380277e7511f35ea727407b9f",
     "PROTOCOL.md": "21c5b7618ef8089700bb8f5ab16c73bdb71cb210c8374ee2a508400b229caec2",
-    "README.md": "4d0eed59cdbdd6917f244a99884ee0af16fb2cfa931afb5e9a52489f4930e53b",
+    "README.md": "45bb9f0933c2529a2512af561149626f08755150eadda4a244ca29bee3e78c69",
     "adapters/codex/client_pairing.py": "dc547ec3454b2f5f399c4a7437292fefc52408d57a9b71194d8f26fa91252047",
     "adapters/codex/client_release.py": "b1dfa5ee0917f8a062cb6ab416ee37b2844168c47a84d2a7f5e07f3a6f5fc275",
     "adapters/codex/client_startup.py": "ff895391d6835ae64fa7d9ef068b5d66739833eec3d347b7dc16619f498ecc90",
-    "adapters/codex/codex_connect.py": "d88b4160665a1d6643abc423cb8cb0a1fe0e494ae685ab9c593f48c2c4d27774",
-    "adapters/codex/content_cache.py": "cdbbbfa6f3a92f775c2078577643fd69d4528fca2632c2df523a55e463f173a1",
-    "adapters/codex/content_contract.py": "94254a57ffaa1c1eb39d89af0aa1d0dc616ad6c2f1c17cc832678104b95d4845",
-    "adapters/codex/content_install.py": "1614457ded2125fddba6ca02a0db4b0082a4f4a7c3de06448efa0d6c3e5d9c75",
-    "adapters/codex/content_mcp.py": "92e746386b97bfb3772b432fe8e31028cd36dc450af693559ffc94a2c05e3f5b",
+    "adapters/codex/codex_connect.py": "6cd82f8511fad779bf6ffe11e3c7ca61bc12e899d4d55331ce0226e5d63ba8ed",
+    "adapters/codex/content_cache.py": "d899c51440a8aac3b6c9527f69d9c3557d29111f502c9a45a201434711e30066",
+    "adapters/codex/content_contract.py": "ac6c7816199619794e8b937bb667ea042ecf777ef8e053f7d6a2692065c0e261",
+    "adapters/codex/content_install.py": "2358105d72c419f33c32b37d6ab47dd24f6a8ce8cacd4ebaa892a9820c4f8c70",
+    "adapters/codex/content_mcp.py": "cf1f78cf7e03aecccce933fc18441807881506b328093769d4575a845ce82a1f",
     "adapters/codex/https_content.py": "d909bcd88f2f6055316b0d3ed90a884ef03d4c25d4f0cac5ceedefa8a08bfb9b",
     "adapters/codex/remote_http.py": "f29c438d13d8b9afbcfcac3f55e4948774ca11e2538eb9e7e95609031789f290",
     "adapters/codex/remote_mcp.py": "62c0520cbd5426a25ced058ed26a8d49ad04d409f198526179b6599deb485d16",
@@ -33,5 +33,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.2.9"
+  "version": "0.2.10"
 }

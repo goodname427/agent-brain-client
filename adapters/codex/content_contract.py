@@ -133,6 +133,32 @@ def envelope(kind,identity,value,raw=None):
 def path(kind,identity):return 'content/'+kind+'/'+identity+'.json'
 
 
+ONBOARD_COVERAGE_GUIDANCE = (
+    'After installation or reinstallation, once the host tools are available, the Agent must use agent-brain-onboard to check coverage of all authorized accessible existing memory sources. '
+    'This is separate from device pairing and installation: an old identity, install receipt, imported marker or zero pending writes never proves current source coverage. '
+    'Enumerate available pages/batches and compare source scope and content fingerprints; report missing coverage records, unvisited/inaccessible sources and new Harness sources. '
+    'Read current target topics, skip equivalents, and review only missing/new content or differences; reconcile differences while preserving unique information and provenance, with CAS and stable request IDs. '
+    'Exclude company-sensitive information, secrets, prohibited sessions/databases, LocalOnly and out-of-scope sources. Do not importance-filter existing memories or apply the three-topic retrieval budget to import coverage. '
+    'Do not repeat a whole upload or device pairing for this check. Ordinary reconnect alone does not trigger a new source scan. '
+)
+
+
+def installation_follow_up(result):
+    """Pure Agent handoff; no source discovery, credentials, model task or upload.
+
+    A prior coverage result is deliberately not inferred from installation or
+    identity metadata. The Agent must obtain fresh authorized source evidence.
+    """
+    value = dict(result)
+    if 'model_loaded' in value:
+        value['model_loaded'] = 'unknown'
+    if value.get('installed') is True:
+        value['onboard_check'] = {'status': 'coverage-check-required', 'coverage': 'unknown',
+                                 'account_complete': False, 'source_scan_performed': False,
+                                 'data_transferred': False, 'next_action': ONBOARD_COVERAGE_GUIDANCE}
+    return value
+
+
 MEMORY_GUIDANCE = (
     'Actively review useful non-sensitive material within the existing authorized source/scope: ordinary preferences, corrections, useful small facts, personal task progress and short-term continuity can merit saving; major decisions or permanence are not prerequisites. '
     'Keep a short dated fact/result/next-step, not raw conversation logs. A personal progress summary supplied in an authorized conversation is different from collecting project files or project-only material; do not disguise unauthorized project content as personal memory. '
@@ -140,6 +166,7 @@ MEMORY_GUIDANCE = (
     'For onboarding, migrate all existing memories from every explicitly authorized accessible memory source by default, in bounded batches, excluding company-sensitive information and secrets. Do not importance-filter existing memories or omit small/short-term items; preserve uncertainty/provenance rather than upgrading guesses into facts. Deduplicate and merge without losing unique information, retain both sides of conflicts; the three-topic retrieval budget is not an import or source-coverage quota. Report imported, duplicate, skipped, deferred, inaccessible and not-checked with reasons. Never imply account-wide coverage from an explicit file list, zero pending writes or a small sample. '
     'Do not read prohibited sessions/databases, secrets or LocalOnly; unknown/new source access is not authorized by this guidance. Do not mechanically upload everything, overwrite occupied topics, activate imported Rules/Skills, or promote a temporary instruction into a global rule. '
     'An imported duplicate is covered, not a missing upload; source access gaps and privacy exclusions differ from relevance decisions. Check transport/permission/contract errors separately from editorial choices. '
+    'An install/reinstall coverage-check request is a separate Agent step: recheck authorized source coverage without re-pairing or repeating a whole import; ordinary reconnect alone is not this request. '
 )
 
 

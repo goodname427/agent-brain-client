@@ -4,6 +4,7 @@ import copy
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -136,6 +137,32 @@ class FirstInstall(unittest.TestCase):
             self.connection_sha,
             **options,
         )
+
+    def test_first_install_cli_emits_onboard_handoff_without_importing(self):
+        self.fixture()
+        original = wizard.run
+
+        def run(home, native, connection, digest):
+            return original(home, native, connection, digest,
+                            confirm=lambda *a: 'Continue', updater=self.update,
+                            runner=self.runner, dependency_preparer=lambda *a, **k: self.materials,
+                            store=self.store, transport=self.transport, secure_input=self.input,
+                            installer=lambda p, d: content_install.apply(p, d, lambda value: None))
+
+        output = io.StringIO()
+        with patch.object(Path, 'home', return_value=self.home), \
+                patch.dict(os.environ, CODEX_HOME=str(self.native)), \
+                patch.object(sys, 'argv', ['mac_first_install.py', '--connection', str(self.base / 'connection.json')]), \
+                patch.object(wizard, 'run', side_effect=run), patch.object(sys, 'stdout', output):
+            code = wizard.main()
+        result = json.loads(output.getvalue())
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result['installed'])
+        self.assertEqual(result['model_loaded'], 'unknown')
+        self.assertEqual(result['onboard_check']['status'], 'coverage-check-required')
+        self.assertFalse(result['onboard_check']['source_scan_performed'])
+        self.assertFalse(result['onboard_check']['data_transferred'])
+
 
     def test_required_tools_and_helper_are_prepared_once_and_drift_is_preserved(self):
         self.fixture()
@@ -544,6 +571,37 @@ class LifecycleExitCodes(unittest.TestCase):
         paused={'status':'content-native-client-disabled','installed':False,'registration_verified':True,'native_changed':False}
         self.assertEqual(self.command('status',paused),0)
         self.assertEqual(self.command('uninstall',paused),2)
+        self.assertEqual(self.command('status',{'status':'uninstall-state-review-required','installed':False,'native_changed':False,'uninstall_verified':False}),2)
+
+
+class NewDeviceConnectionCLI(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'darwin' and wizard.platform.machine().lower() == 'arm64', 'Actual Mac arm64 CLI only')
+    def test_actual_process_reports_issuer_delivery_before_preparing_or_pairing(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            env = dict(os.environ, HOME=str(home), CODEX_HOME=str(home / 'codex'))
+            result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'tools/mac_first_install.py')],
+                                    env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            value = json.loads(result.stdout)
+            self.assertEqual(value['status'], 'first-install-connection-required')
+            self.assertIn('tools/export_connection.py', value['next_action'])
+            self.assertFalse(value['credential_accessed'])
+            self.assertFalse((home / '.config').exists())
+
+    def test_orphan_saved_description_is_not_a_trusted_identity(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            path = home / '.config/agent-brain-client/first-install/connection.json'
+            content_install.save(path, {'schema': 1})
+            with patch.object(Path, 'home', return_value=home), \
+                    patch.object(sys, 'argv', ['mac_first_install.py']), \
+                    patch.object(sys, 'stdout', io.StringIO()) as output, \
+                    patch.object(wizard, 'run', side_effect=AssertionError('Must not install')):
+                self.assertEqual(wizard.main(), 2)
+            self.assertEqual(json.loads(output.getvalue())['status'], 'connection-recovery-review-required')
 
 
 if __name__ == "__main__":

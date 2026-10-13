@@ -49,7 +49,7 @@ class ContentInstall(unittest.TestCase):
 
     def test_prepare_read_only_then_apply_inspect_reuse_and_single_link_state(self):
         before=self.native_files();plan=self.plan();self.assertEqual(self.native_files(),before);checks=[]
-        report=install.apply(plan,self.digest(plan),lambda p:checks.append(p));self.assertTrue(report['installed']);self.assertTrue(report['protocol_checked']);self.assertFalse(report['model_loaded']);self.assertEqual(len(checks),2)
+        report=install.apply(plan,self.digest(plan),lambda p:checks.append(p));self.assertTrue(report['installed']);self.assertTrue(report['protocol_checked']);self.assertEqual(report['model_loaded'],'unknown');self.assertEqual(len(checks),2)
         cfg=install.tomllib.loads(self.config.read_text());self.assertEqual(cfg['model'],'synthetic-fixture');self.assertEqual(cfg['mcp_servers']['other'],{'command':'preserve-other'});self.assertEqual(cfg['mcp_servers'][install.NAME]['default_tools_approval_mode'],'writes')
         self.assertEqual(install.inspect(self.home)['installed_version'],'0.2.0');self.assertTrue(install.apply(plan,self.digest(plan),lambda p:checks.append(p))['installed']);self.assertEqual(len(checks),2)
         self.assertEqual(remote_connect.connect(self.home)['status'],'content-native-client-installed');self.assertEqual(remote_connect.connect(self.home)['installed_version'],'0.2.0');self.assertFalse((self.home/'.agents').exists())
