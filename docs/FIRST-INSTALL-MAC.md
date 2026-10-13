@@ -12,16 +12,26 @@ cd agent-brain-client
 git rev-parse HEAD
 ```
 
-管理员通过可信私有途径交付 `connection.json`，仅含 HTTPS endpoint、grant 与既有官方 release origin/ref/anchor。格式见 [connection.example.json](connection.example.json)：示例为虚构服务，不能用于真实安装；实际 anchor 必须是已批准的发布祖先，不是随意填版本 commit。连接文件没有邀请码、token、nonce、SSH 或 admin 字段。不要把真实部署配置提交到仓库。保持文件和路径稳定；以下命令将其路径保存在普通变量中：
+已有设备再次安装先直接运行 `sh tools/install-mac.sh`，见下文“中断恢复与再次安装”；无需另找开发时的文件。只有全新设备需要发行者交付连接描述。
+
+新设备的连接交付是一个明确的两阶段流程：
+
+1. 在该服务原有、已验证的发行交付渠道申请 **Mac arm64 / Codex 连接资料包**，资料包须包含 `connection.json`、该文件的 SHA-256、发行者身份及准备回执的交回渠道。发行者使用独立 Server 的 [连接交付工具与操作步骤](https://github.com/goodname427/agent-brain-server/blob/main/docs/CONNECTION-DELIVERY.md)，从已有批准的服务范围和发布元数据导出，不发邀请码、不建立设备授权。不要索取开发目录或管理员配置。
+2. 通过该渠道核对发行者、文件及摘要，再运行下方安装命令。脚本完成准备后才产生 `ready.json`；按资料包标明的渠道交回该准备回执及摘要，发行者按既有私有邀请控制台审核并安全交付短期邀请，客户端仅在现有安全输入窗口输入。
+
+此仓库没有内置统一公共服务地址、发行者账号或自助发码网站。尚未获得具体服务的可信交付渠道或发行者未配置交付时，停在 `first-install-connection-required`，由该服务发行者补齐资料包和交付入口；示例、任意网站或 Git 当前 HEAD 不能替代。私有 Server 文档可能需要发行者的仓库权限，普通设备不需要取得该权限。
+
+`connection.json` 仅含 HTTPS endpoint、grant（actor、adapter、platform、scopes、artifact_types、ids）与既有官方 release origin/ref/anchor。格式见 [connection.example.json](connection.example.json)：示例为虚构服务，不能用于真实安装；实际 anchor 必须是已批准的发布祖先，不是随意填版本 commit。连接文件没有邀请码、token、nonce、SSH 或 admin 字段，也不是设备凭证，但服务地址和用户范围仍应按私有交付资料保管。`connect.json` 是同类文件的另一种命名，脚本只检查 `--connection` 指定的内容，不依赖文件名。不要把真实部署配置提交到仓库。保持文件和路径稳定；以下变量均为非凭证资料：
 
 ```sh
 CONNECTION_JSON="/absolute/path/to/connection.json"
+CONNECTION_SHA256="<发行者通过可信渠道交付的文件 SHA-256>"
 ```
 
 ## 安装
 
 ```sh
-sh tools/install-mac.sh --connection "$CONNECTION_JSON"
+sh tools/install-mac.sh --connection "$CONNECTION_JSON" --expected-connection-sha256 "$CONNECTION_SHA256"
 ```
 
 终端展示服务器、actor、内容类型、IDs、read/put 范围及发布源；输入 `Continue` 确认，`Cancel` 退出。缺少命令行工具时，脚本请求标准安装并退出，完成后重跑同一命令。它准备 Git HTTPS、Python 3.11+、系统 TLS 根及原有 Swift helper：工具链 Python 不足时获取固定 SHA 校验的 Python 归档，准备到用户私有目录。无需 Apple 分发身份、公证、sudo、远程脚本或更改系统信任。
@@ -65,10 +75,14 @@ sh tools/install-mac.sh --action status
 
 ```sh
 sh tools/install-mac.sh --action repair
-sh tools/install-mac.sh --connection "$CONNECTION_JSON"
+sh tools/install-mac.sh
 ```
 
-repair 继续自身中断的卸载，只接受事务前后像，外部修改停止并保留双方。安装/配对/再次安装中断重跑安装命令；它复用已保存计划、原 identity/profile/helper 和同一缓存，按现有安装事务恢复。再次安装仅准备经验证的新固定启动器和精确 MCP 计划，保留原发布政策及信任锚，不另建身份，不发新邀请。在线认证通过后重建映射，再启动 Codex 验证读写。不要删除保留目录或 Keychain 项来“修复”。
+repair 继续自身中断的卸载，只接受事务前后像，外部修改停止并保留双方。首次安装/配对中断重跑带同一连接文件及摘要的原命令；已有身份的再次安装直接重跑无参数命令，复用已保存计划、原 identity/profile/helper 和同一缓存，按现有安装事务恢复。
+
+无参数入口先核验现有登记或完成的卸载回执，再验证原 profile、发布政策、bootstrap、设备及 Codex 路径绑定。已有保存的 `first-install/connection.json` 必须与该绑定完全一致；旧安装没有此文件时，在内存中从保留元数据恢复同一连接描述，不生成凭证、不索取新文件、不改变信任锚。不可信、外部修改、未完成卸载或仅有孤立连接文件时报告 `connection-recovery-review-required` 并保留现场；显式指定的错误连接文件报告 `connection-file-review-required`，不会静默换用其他资料。若原身份不存在，现有安装事务停止，不转为新身份配对。
+
+再次安装仅准备经验证的新固定启动器和精确 MCP 计划，保留原发布政策及信任锚，不另建身份，不发新邀请。在线认证通过后重建映射，再启动 Codex 验证读写。不要删除保留目录或 Keychain 项来“修复”。
 
 ## 当前实际限制
 
