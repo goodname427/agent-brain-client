@@ -391,7 +391,8 @@ def status(home):
                 return dict(review, reason='uninstall-receipt-unverified')
             try:
                 changed = validate_uninstalled_state(
-                    home, journal, require_owned_postimages=False
+                    home, journal, allow_unrelated_config_edits=True,
+                    require_owned_postimages=False
                 )
             except Exception:
                 return dict(review, reason='uninstall-postimage-unverified')
