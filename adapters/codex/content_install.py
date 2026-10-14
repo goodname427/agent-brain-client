@@ -291,7 +291,10 @@ def apply(plan,approved_digest,check=probe):
             for path,value in payload.items():
                 if digest_or_none(raw(path))!=before[str(path)]['sha']:raise InstallBlocked('Preimage race')
                 atomic(path,value,before[str(path)]['mode'])
-            check(plan);journal['phase']='complete';save(receipt,journal)
+            check(plan)
+            completed=dict(journal,phase='complete')
+            save(receipt,completed)
+            journal['phase']='complete'
         except Exception:
             try:restore(journal,plan);save(receipt,journal)
             except Exception:return {'status':'content-install-recovery-review-required','native_changed':None,'installed':False}

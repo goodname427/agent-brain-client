@@ -57,6 +57,28 @@ class ContentErrors(unittest.TestCase):
         self.server.invoke("content_catalog", {"kinds": ["memory"], "limit": 3})
         self.assertEqual(self.adapter.calls[-1]["method"], "memory_query")
 
+    def test_skill_dependency_schema_matches_shared_validator_limit(self):
+        tools=self.server.handle({'jsonrpc':'2.0','id':1,'method':'tools/list'})['tools']
+        put=next(tool for tool in tools if tool['name']=='content_put')
+        skill=put['inputSchema']['properties']['record']['oneOf'][2]
+        dependencies=skill['properties']['dependencies']['properties']
+        self.assertEqual(dependencies['commands']['maxItems'],32)
+        self.assertEqual(dependencies['python_modules']['maxItems'],32)
+        valid={'description':'Synthetic skill','enabled':False,
+               'files':{'SKILL.md':'---\nname: synthetic-skill\ndescription: Synthetic skill\n---\nSynthetic'},
+               'dependencies':{'commands':[f'synthetic-command-{i}' for i in range(32)],'python_modules':[]}}
+        result=self.server.invoke('content_put',{'kind':'skill','id':'synthetic-skill',
+            'record':valid,'expected_revision':'missing','request_id':'synthetic_valid_request_123456'})
+        self.assertFalse(result['isError'])
+        self.assertEqual(len(self.adapter.calls),1)
+        self.adapter.calls.clear()
+        invalid=dict(valid,dependencies={'commands':[f'synthetic-command-{i}' for i in range(33)],'python_modules':[]})
+        with self.assertRaises(ContentParameterError) as error:
+            self.server.invoke('content_put',{'kind':'skill','id':'synthetic-skill',
+                'record':invalid,'expected_revision':'missing','request_id':'synthetic_request_123456'})
+        self.assertEqual(error.exception.code,-32602)
+        self.assertEqual(self.adapter.calls,[])
+
     def test_read_error_does_not_give_write_parameters_and_mcp_reports_stage(self):
         request = {
             "jsonrpc": "2.0",
