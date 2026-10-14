@@ -181,6 +181,10 @@ class ClientUninstall(unittest.TestCase):
             '[mcp_servers.other]\\ncommand = "preserve-after-status"\\n'
         )
         self.f.config.write_text(edited)
+        journal = lifecycle.read_removal(self.home)
+        changed = lifecycle.validate_uninstalled_state(self.home, journal,
+                    allow_unrelated_config_edits=True, require_owned_postimages=False)
+        self.assertEqual(changed, [], f'unexpected changed postimages: {changed}')
         code, status = self.status_cli()
         self.assertEqual(code, 0, status)
         self.assertEqual(status['status'], 'client-uninstalled')
