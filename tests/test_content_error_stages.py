@@ -64,12 +64,18 @@ class ContentErrors(unittest.TestCase):
         dependencies=skill['properties']['dependencies']['properties']
         self.assertEqual(dependencies['commands']['maxItems'],32)
         self.assertEqual(dependencies['python_modules']['maxItems'],32)
-        record={'description':'Synthetic skill','enabled':False,
-                'files':{'SKILL.md':'---\\nname: synthetic-skill\\ndescription: Synthetic skill\\n---\\nSynthetic'},
-                'dependencies':{'commands':['synthetic-command']*33,'python_modules':[]}}
+        valid={'description':'Synthetic skill','enabled':False,
+               'files':{'SKILL.md':'---\nname: synthetic-skill\ndescription: Synthetic skill\n---\nSynthetic'},
+               'dependencies':{'commands':[f'synthetic-command-{i}' for i in range(32)],'python_modules':[]}}
+        result=self.server.invoke('content_put',{'kind':'skill','id':'synthetic-skill',
+            'record':valid,'expected_revision':'missing','request_id':'synthetic_valid_request_123456'})
+        self.assertFalse(result['isError'])
+        self.assertEqual(len(self.adapter.calls),1)
+        self.adapter.calls.clear()
+        invalid=dict(valid,dependencies={'commands':[f'synthetic-command-{i}' for i in range(33)],'python_modules':[]})
         with self.assertRaises(ContentParameterError) as error:
             self.server.invoke('content_put',{'kind':'skill','id':'synthetic-skill',
-                'record':record,'expected_revision':'missing','request_id':'synthetic_request_123456'})
+                'record':invalid,'expected_revision':'missing','request_id':'synthetic_request_123456'})
         self.assertEqual(error.exception.code,-32602)
         self.assertEqual(self.adapter.calls,[])
 
