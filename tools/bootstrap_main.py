@@ -20,6 +20,25 @@ def _run(args, *, runner, env):
     return runner(args, capture_output=True, text=True, timeout=120, env=env)
 
 
+def should_bootstrap(argv):
+    """Refresh only the default install/reinstall entry, never local maintenance."""
+    args = list(argv)
+    action = None
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == '--action':
+            if index + 1 >= len(args):
+                return False
+            action = args[index + 1]
+            index += 2
+            continue
+        if arg.startswith('--action='):
+            action = arg.split('=', 1)[1]
+        index += 1
+    return action in (None, 'install')
+
+
 def verified_one_shot(root, *, runner=subprocess.run, git='git'):
     root = Path(root).resolve()
     git_dir = root / '.git'
@@ -36,10 +55,14 @@ def verified_one_shot(root, *, runner=subprocess.run, git='git'):
     head = _run([git, '-C', str(root), 'rev-parse', 'HEAD'], runner=runner, env=env)
     branch = _run([git, '-C', str(root), 'branch', '--show-current'], runner=runner, env=env)
     origin = _run([git, '-C', str(root), 'remote', 'get-url', 'origin'], runner=runner, env=env)
+    live_main = _run([git, '-C', str(root), 'ls-remote', '--exit-code', 'origin',
+                       'refs/heads/main'], runner=runner, env=env)
+    live_commit = live_main.stdout.split()[0] if live_main.stdout.split() else ''
     status = _run([git, '-C', str(root), 'status', '--porcelain', '--untracked-files=all'], runner=runner, env=env)
     if (head.returncode or head.stdout.strip() != commit or branch.returncode
             or branch.stdout.strip() != BRANCH or origin.returncode
-            or origin.stdout.strip() != ORIGIN or status.returncode or status.stdout.strip()):
+            or origin.stdout.strip() != ORIGIN or live_main.returncode
+            or live_commit != commit or status.returncode or status.stdout.strip()):
         raise ValueError('Fresh official checkout changed; preserve it and retry from a clean checkout')
     marker.unlink()
     return True
@@ -90,6 +113,8 @@ def ensure_checkout(root, *, home=None, runner=subprocess.run, git='git', base=N
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == '--should-bootstrap':
+        return 0 if should_bootstrap(argv[1:]) else 1
     if argv != ['--ensure']:
         return 2
     try:
