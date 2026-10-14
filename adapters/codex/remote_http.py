@@ -11,6 +11,7 @@ import threading
 import time
 import socket
 import subprocess
+import ssl
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPHandler, HTTPSHandler, HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -294,16 +295,27 @@ class RemoteClient:
         if self.data_mode=='personal':req.add_header('X-Agent-Brain-Data-Mode','personal')
         if self.write_receipt is not None and request.get('method') in ('remember','forget','content_put','content_remove'):
             req.add_header('X-Agent-Brain-Write-Receipt',self.write_receipt)
+        write=request.get('method') in ('remember','forget','content_put','content_remove')
+        def failed(code,stage,retryable=False,**metadata):
+            return {'request_id':rid,'error':{'code':code,'retryable':retryable,'stage':stage,**metadata},'persistence':{'durable':False}}
         try:
             with self.opener.open(req, timeout=request_timeout(timeout)) as response:
                 value = response.read(262145)
+                status = getattr(response, 'status', None)
             check_request()
             if len(value) > 262144:
-                raise ValueError('Response exceeds 256 KB')
-            result = json.loads(value)
-            if not isinstance(result, dict) or result.get('request_id') != rid:
-                raise ValueError('Unexpected response ID')
-            if request.get('method') in ('remember','forget','content_put','content_remove') and 'error' not in result:
+                return failed('response_too_large','response-parse',write)
+            try:result = json.loads(value)
+            except (ValueError,UnicodeError):return failed('invalid_response_json','response-parse',write)
+            if not isinstance(result, dict):return failed('invalid_response_shape','response-validation',write)
+            if result.get('request_id') != rid:return failed('response_id_mismatch','response-validation',write)
+            if 'error' in result:
+                error=result['error']
+                if not isinstance(error,dict) or not isinstance(error.get('code'),str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}',error['code']) or type(error.get('retryable')) is not bool:
+                    return failed('invalid_response_error','response-validation',write)
+                metadata={'http_status':status} if type(status) is int else {}
+                return failed(error['code'],'http',error['retryable'],**metadata)
+            if write and 'error' not in result:
                 receipt=result.get('persistence',{})
                 local=(self.write_receipt=='local-durable-v1' and isinstance(receipt,dict)
                        and receipt.get('state')=='local-confirmed' and receipt.get('durable') is False
@@ -311,23 +323,26 @@ class RemoteClient:
                        and isinstance(receipt.get('commit'),str) and re.fullmatch(r'[a-f0-9]{40}',receipt['commit'])
                        and isinstance(result.get('result'),dict))
                 if not isinstance(receipt,dict) or receipt.get('durable') is not True and not local:
-                    raise ValueError('Write persistence was not confirmed')
+                    return failed('invalid_write_receipt','response-validation',True)
             return result
         except HTTPError as error:
             # Redirects are never followed with the bearer credential.
+            status=error.code
             try:
                 result = json.loads(error.read(262144))
                 if isinstance(result, dict) and result.get('request_id') in (None, rid) and isinstance(result.get('error'), dict):
                     error=result['error'];code=error.get('code')
                     if isinstance(code,str) and re.fullmatch(r'[a-z][a-z0-9_]{0,63}',code) and type(error.get('retryable'))==bool:
-                        return {'request_id':rid,'error':{'code':code,'retryable':error['retryable']},'persistence':{'durable':False}}
-            except (ValueError, OSError):
+                        return failed(code,'http',error['retryable'],http_status=status)
+            except (ValueError, OSError, http.client.HTTPException):
                 pass
-        except (URLError, OSError, ValueError):
-            pass
-        check_request()
-        return {'request_id': rid, 'error': {'code': 'transport_unconfirmed', 'retryable': True},
-                'persistence': {'durable': False}}
+            check_request()
+            return failed('http_response_unconfirmed','http',status>=500 or status in (408,429),http_status=status)
+        except (URLError, OSError, http.client.HTTPException) as error:
+            check_request()
+            reason=getattr(error,'reason',error)
+            kind='timeout' if isinstance(reason,TimeoutError) else 'tls' if isinstance(reason,ssl.SSLError) else 'http-framing' if isinstance(reason,http.client.HTTPException) else 'connection'
+            return failed('transport_unconfirmed','transport',True,failure_kind=kind)
 
     def _token(self):
         if self.credential_provider is not None:return self.credential_provider()

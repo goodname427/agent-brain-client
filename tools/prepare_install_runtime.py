@@ -60,12 +60,26 @@ def extract(archive, destination):
             source.extractall(destination, members=members)
 
 
-def runtime(home, *, fetch=download):
+def existing_runtime(prefix):
+    python = prefix / 'python/bin/python3'
+    marker = prefix / 'archive.sha256'
+    if prefix.is_symlink() or marker.is_symlink() or not marker.is_file() or not python.is_file() or prefix not in python.resolve().parents:
+        raise ValueError('Existing incomplete/drifted runtime preserved')
+    if json.loads(marker.read_bytes()) != {'archive': DIGEST, 'python': hashlib.sha256(python.read_bytes()).hexdigest()}:
+        raise ValueError('Prepared interpreter drift; preserve runtime')
+    return python.resolve()
+
+
+def runtime(home, *, fetch=download, prepare=True):
     if sys.version_info >= (3, 11):
         return Path(sys.executable).resolve()
     directory = Path(home) / '.config/agent-brain-client/install-runtime'
     if any(p.is_symlink() for p in (directory, *directory.parents)):
         raise ValueError('Canonical dependency directory required')
+    if not prepare:
+        if not directory.is_dir() or directory.stat().st_uid != os.getuid() or directory.stat().st_mode & 0o077:
+            raise ValueError('Existing private interpreter required for maintenance')
+        return existing_runtime(directory / DIGEST)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     if directory.stat().st_uid != os.getuid() or directory.stat().st_mode & 0o077:
         raise ValueError('Private dependency directory required')
@@ -75,12 +89,7 @@ def runtime(home, *, fetch=download):
         prefix = directory / DIGEST
         python = prefix / 'python/bin/python3'
         if prefix.exists():
-            marker = prefix / 'archive.sha256'
-            if prefix.is_symlink() or marker.is_symlink() or not marker.is_file() or not python.is_file() or prefix not in python.resolve().parents:
-                raise ValueError('Existing incomplete/drifted runtime preserved')
-            if json.loads(marker.read_bytes()) != {'archive': DIGEST, 'python': hashlib.sha256(python.read_bytes()).hexdigest()}:
-                raise ValueError('Prepared interpreter drift; preserve runtime')
-            return python.resolve()
+            return existing_runtime(prefix)
         staging = Path(tempfile.mkdtemp(prefix='preparing-', dir=directory))
         archive = staging / 'python.tar.gz'
         fetch(archive)
@@ -96,7 +105,8 @@ def main():
     try:
         if sys.platform != 'darwin' or platform.machine().lower() != 'arm64':
             raise ValueError('Reviewed Mac arm64 backend required')
-        python = runtime(Path.home())
+        maintenance = any(arg in ('check-update', 'update', '--action=check-update', '--action=update') for arg in sys.argv[1:])
+        python = runtime(Path.home(), prepare=not maintenance)
         env = {'PATH': '/usr/bin:/bin', 'HOME': str(Path.home()), 'LANG': 'en_US.UTF-8'}
         if 'CODEX_HOME' in os.environ:
             env['CODEX_HOME'] = os.environ['CODEX_HOME']
