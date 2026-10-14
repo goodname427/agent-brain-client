@@ -214,14 +214,23 @@ def inspect_plan(path,digest):
     if sha(contract.encode(plan))!=digest or prepare(home,plan['package'],plan['release_policy'],plan['release_policy_sha256'],plan['replace_existing'])!=plan:raise InstallBlocked('Install plan drift')
     return {'status':'content-native-install-ready','plan_sha256':digest,'native_changed':False,'installed':False,'next_action':'Apply this exact plan within the approved signing, credential, transport and native scope. Protocol/auth checks run before and after the one-table transaction; no new model conversation required.'}
 
-def restore(journal,plan):
+def validate_recovery(journal,plan):
     _,_,paths=plan_scope(plan)
-    if set(journal)!={'schema','phase','plan_sha256','before','after'} or journal['schema']!=1 or journal['plan_sha256']!=sha(contract.encode(plan)) or set(journal['before'])!={str(p) for p in paths} or set(journal['after'])!=set(journal['before']):raise InstallBlocked('Recovery journal mismatch')
+    if (set(journal)!={'schema','phase','plan_sha256','before','after'}
+            or journal['schema']!=1 or journal['phase']!='applying'
+            or journal['plan_sha256']!=sha(contract.encode(plan))
+            or set(journal['before'])!={str(p) for p in paths}
+            or set(journal['after'])!=set(journal['before'])):raise InstallBlocked('Recovery journal mismatch')
     for path in paths:
         old=journal['before'][str(path)]
         if set(old)!={'data','sha','mode'} or type(old['mode'])!=int or old['mode']&~0o777:raise InstallBlocked('Recovery preimage mismatch')
         backup=base64.b64decode(old['data'],validate=True) if old['data'] is not None else None
         if digest_or_none(backup)!=old['sha'] or digest_or_none(raw(path)) not in (old['sha'],journal['after'][str(path)]):raise InstallBlocked('Outside edit preserved')
+    return paths
+
+def restore(journal,plan):
+    _,_,paths=plan_scope(plan)
+    validate_recovery(journal,plan)
     for path in paths:
         old=journal['before'][str(path)]
         if old['data'] is None:path.unlink(missing_ok=True)
@@ -234,7 +243,11 @@ def apply(plan,approved_digest,check=probe):
     home,native,paths=plan_scope(plan);state=home/'.config/agent-brain-client';receipt=safe(state/'content-install-receipt.json')
     if approved_digest!=sha(contract.encode(plan)):return {'status':'content-install-plan-review-required','native_changed':False,'installed':False}
     with locked(safe(state/'content-install.lock')):
-        previous=private_json(receipt) if receipt.exists() else None
+        receipt_preimage=raw(receipt,1048576)
+        if receipt_preimage is not None:
+            private_mode(receipt,blocked=InstallBlocked)
+            previous=json.loads(receipt_preimage,object_pairs_hook=pairs)
+        else:previous=None
         # A removal keeps the old install journal for recovery. Reinstall must
         # run a fresh transaction even when the new plan has identical bytes.
         removed=safe(state/'uninstall-receipt.json')
@@ -247,6 +260,7 @@ def apply(plan,approved_digest,check=probe):
         if previous and previous.get('phase')=='applying':
             try:restore(previous,plan);save(receipt,previous)
             except Exception:return {'status':'content-install-recovery-review-required','native_changed':None,'installed':False}
+            receipt_preimage=raw(receipt,1048576)
         current=prepare(home,plan['package'],plan['release_policy'],plan['release_policy_sha256'],plan['replace_existing'])
         if current!=plan:raise InstallBlocked('Install preimage or inputs changed')
         check(plan)  # Read-only protocol/auth preflight before native mutation.
@@ -264,7 +278,13 @@ def apply(plan,approved_digest,check=probe):
         payload[registration]=contract.encode(metadata)
         before={}
         for p in paths:
-            original=raw(p);before[str(p)]={'data':base64.b64encode(original).decode() if original is not None else None,'sha':digest_or_none(original),'mode':p.stat().st_mode&0o777 if original is not None else 0o600}
+            original=raw(p);original_sha=digest_or_none(original)
+            if original_sha!=plan['before'][str(p)]:raise InstallBlocked('Preimage race')
+            before[str(p)]={'data':base64.b64encode(original).decode() if original is not None else None,'sha':original_sha,'mode':p.stat().st_mode&0o777 if original is not None else 0o600}
+        current_receipt=raw(receipt,1048576)
+        if current_receipt!=receipt_preimage:raise InstallBlocked('Install receipt changed before commit')
+        if {name:value['sha'] for name,value in before.items()}!=plan['before']:
+            raise InstallBlocked('Install preimage changed before commit')
         journal={'schema':1,'phase':'applying','plan_sha256':approved_digest,'before':before,'after':{str(p):sha(v) for p,v in payload.items()}}
         save(receipt,journal)
         try:
