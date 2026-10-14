@@ -38,11 +38,47 @@ class FreshMainCheckout(unittest.TestCase):
             return subprocess.CompletedProcess(args, 0, self.commit + '\n', '')
         if 'branch' in args:
             return subprocess.CompletedProcess(args, 0, 'main\n', '')
+        if 'ls-remote' in args:
+            return subprocess.CompletedProcess(args, 0, self.commit + '\trefs/heads/main\n', '')
         if 'remote' in args:
             return subprocess.CompletedProcess(args, 0, bootstrap_main.ORIGIN + '\n', '')
         if 'status' in args:
             return subprocess.CompletedProcess(args, 0, '', '')
         raise AssertionError(args)
+
+    def test_only_install_entries_bootstrap_fresh_main(self):
+        for args, expected in (
+            ([], True),
+            (['--connection', '/tmp/connection.json'], True),
+            (['--action', 'install'], True),
+            (['--action=install'], True),
+            (['--action', 'status'], False),
+            (['--action=repair'], False),
+            (['--action', 'uninstall'], False),
+            (['--action', 'check-update'], False),
+            (['--action=update'], False),
+        ):
+            with self.subTest(args=args):
+                self.assertEqual(bootstrap_main.should_bootstrap(args), expected)
+
+    def test_stale_or_unreachable_remote_main_never_reuses_one_shot_checkout(self):
+        first = bootstrap_main.fresh_checkout(
+            self.home, root=self.base, runner=self.fake_git
+        )
+        def moved_main(args, **kwargs):
+            if 'ls-remote' in args:
+                return subprocess.CompletedProcess(args, 0, 'f' * 40 + '\trefs/heads/main\n', '')
+            return self.fake_git(args, **kwargs)
+        with self.assertRaisesRegex(ValueError, 'changed'):
+            bootstrap_main.ensure_checkout(first, runner=moved_main)
+        self.assertTrue((first / '.git/agent-brain-bootstrap-once').exists())
+
+        def offline_main(args, **kwargs):
+            if 'ls-remote' in args:
+                return subprocess.CompletedProcess(args, 128, '', 'SYNTHETIC_NETWORK_FAILURE')
+            return self.fake_git(args, **kwargs)
+        with self.assertRaisesRegex(ValueError, 'changed'):
+            bootstrap_main.ensure_checkout(first, runner=offline_main)
 
     def test_modified_old_checkout_is_preserved_while_new_main_is_pinned(self):
         checkout = bootstrap_main.ensure_checkout(
