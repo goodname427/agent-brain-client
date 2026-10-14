@@ -11,7 +11,7 @@ import content_install as install
 from content_cache import ContentAdapter, BEGIN, END, BLOCK
 from content_mcp import pinned
 from brain_lock import locked, require_platform, private_mode
-from client_release import HTTPS_CONTENT_CAPABILITIES
+from client_release import HTTPS_CONTENT_CAPABILITIES,CHECK_UPDATE_COMMAND,UPDATE_COMMAND
 
 
 def state_path(home):
@@ -355,7 +355,9 @@ def status(home):
             return dict(result,status='content-local-state-review-required',installed=False,
                         installation_state='present-review-required',reason='local-content-state-review-required',
                         next_action='Preserve outbox, import inventory and native mappings. Review unknown local state or file ownership before uninstall; do not delete data or reset Keychain.')
-        result['next_action'] = 'Service is paused. Re-enable only Agent Brain in the host MCP settings to resume, or use uninstall after its worker exits.' if result['status']=='content-native-client-disabled' else 'Use uninstall to remove only this tool, or the same install command to check its existing registration. No new invitation.'
+        result.update(active_package_version=result['installed_version'],running_worker_version=None,
+                      latest_channel_version=None,channel_checked=False,reload_required=None)
+        result['next_action'] = ('Service is paused; maintenance does not re-enable it. ' if result['status']=='content-native-client-disabled' else '')+'Status is local only. Run '+CHECK_UPDATE_COMMAND+' to inspect the original trusted channel, then '+UPDATE_COMMAND+' to apply an available package. Repeating install only verifies registration. Confirm the running version from MCP client_runtime after a normal host reload; no new invitation.'
     return result
 
 

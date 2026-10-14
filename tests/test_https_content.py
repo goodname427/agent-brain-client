@@ -161,7 +161,7 @@ class HTTPSContent(unittest.TestCase):
         class Fail:
             def open(s,request,**kwargs):raise HTTPError(request.full_url,401,'ignored',{},io.BytesIO(json.dumps({'request_id':None,'error':{'code':'device_authentication_failed','retryable':False,'debug':token},'raw':token}).encode()))
         client.transport.opener=Fail();result=client.request({'request_id':'synthetic_request_123456','method':'content_catalog','params':{'kinds':['memory']}})
-        self.assertEqual(result['error'],{'code':'device_authentication_failed','retryable':False});self.assertNotIn(token,json.dumps(result))
+        self.assertEqual(result['error'],{'code':'device_authentication_failed','retryable':False,'stage':'http','http_status':401});self.assertNotIn(token,json.dumps(result))
 
     def test_https_pinned_release_health_and_helper_source_change_retains_active(self):
         import shutil

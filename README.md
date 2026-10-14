@@ -1,6 +1,6 @@
 # Agent Brain Client
 
-本仓库是公开 Client 的独立源码权威。`main` 保存源码、测试与构建工具；现有受信发布渠道和已验收的 0.2.5 保持有效，迁移源码不会自动修改安装或发布指针。运行时只通过已批准的 HTTP/HTTPS 或固定 SSH 协议访问 Server；不导入 Server/Core，不克隆私人 Data。
+本仓库是公开 Client 的独立源码权威。`main` 保存源码、测试与构建工具；运行包以安装时固定的受信发布渠道为准，main 或 tags 不是已安装客户端的更新渠道。源码合入不自动发布或修改安装指针。运行时只通过已批准的 HTTP/HTTPS 或固定 SSH 协议访问 Server；不导入 Server/Core，不克隆私人 Data。
 
 Python 3.11+ 与 Git 是现有 Python 客户端的运行依赖。源码测试使用 Python 标准库；每个测试仅使用合成资料，HOME/CODEX_HOME 必须隔离。以下测试命令先准备临时 HOME/CODEX_HOME；不使用当前设备的原生配置或凭据。
 
@@ -31,3 +31,9 @@ Mac arm64 的唯一用户操作说明见 [安装、使用、卸载与再次安�
 日常保存与已有记忆迁移的默认行为见 [MEMORY-BEHAVIOR.md](docs/MEMORY-BEHAVIOR.md)：普通事实、偏好、纠正和短期进展不以重大或永久价值为门槛；Onboard 默认覆盖全部获准访问的已有记忆，排除公司敏感、秘密和范围外材料，保留来源覆盖、重复及冲突原因。`tools/memory_review.py` 只离线审阅明确提供的元数据，不采集或上传。辅助 `memory_query` 只读当前有效 Memory，最多 3 条；既有 `content_catalog` 的 Memory-only 查询别名复用同一接口。这些源码检查与合入不代表已发布、已部署或模型实测。
 
 安装/重装成功明确交接 `onboard_check:coverage-check-required`，由 Agent 用既有 Onboard 流程核对当前来源；旧身份和旧完成标记不能证明全量，检查不触发重新配对或自动全量上传。无法观测的模型加载状态使用 `model_loaded:"unknown"`，映射数量与模型是否采用指令分开。卸载后 status 只读核验真实事务后像及登记残留，漂移明确报告 review-required。安装入口源码与运行期活动包分别交付，运行期指引和回执变化未发布前不宣称影响现有 worker。
+
+用户说“帮我把 Agent Brain 更新到最新版，然后继续完成 Onboarding”时，执行 Agent 从此公开仓库运行 `sh tools/install-mac.sh --action check-update`，确认原受信渠道，再运行 `sh tools/install-mac.sh --action update`。重复 install 只核验登记，不执行更新；status 只报告本地状态。检查可下载并验证候选缓存，但不切换活动包；update 复用原 policy、信任锚、能力范围和固定依赖，健康失败保留或恢复前版，不访问设备凭据，不改原生登记或强杀 worker。
+
+分别报告 `active_package_version`（本地已验证活动包）、`latest_channel_version`（此次成功检查的渠道候选）与 MCP 返回的 `client_runtime.running_worker_version`（实际服务此调用的 worker）。CLI 无法观察 worker，相关字段为 null；更新活动包后正常重载本服务，确认新 worker 版本再继续 Onboard。渠道检查失败时“最新版”未知；不拿本地版本、main 或 tags 推断。worker 仅在正常启动时自动检查，没有周期后台更新或热切换。
+
+完整 Onboard 目录用 `content_catalog` 的 `kinds` 参数，省略 query/since/until/limit；目录没有分页 limit。Memory-only 查询别名和 `memory_query` 最多返回 3 条检索结果，不能证明全量覆盖。参数失败在本地返回 -32602；HTTP、传输、响应解析及校验失败有独立 stage，读取错误不提示写入参数。验收必须记录本轮版本、目录/读取实际次数与结果，历史超时记录单列，见 [验收记录模板](docs/MAC-FIRST-INSTALL-ACCEPTANCE.md)。

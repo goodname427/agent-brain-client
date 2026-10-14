@@ -227,7 +227,7 @@ class HTTPSContentClient:
             return self.transport.request(request)
         except RequestStopped:raise
         except Exception:
-            return {'request_id':request.get('request_id') if isinstance(request,dict) else None,'error':{'code':'device_transport_blocked','retryable':False},'persistence':{'durable':False}}
+            return {'request_id':request.get('request_id') if isinstance(request,dict) else None,'error':{'code':'device_transport_blocked','retryable':False,'stage':'client-policy-or-credential'},'persistence':{'durable':False}}
 
 
 def install_once(plan,approved_digest,*,store=None,transport=None,secure_input=None,installer=None):
