@@ -25,6 +25,9 @@ from client_release import (
     HTTPS_CONTENT_CAPABILITIES,
     HTTPS_CONTENT_CLIENT_FILES,
     dependency_environment,
+    CHECK_UPDATE_COMMAND,
+    UPDATE_COMMAND,
+    DEPENDENCY_RUNTIME,
 )
 from content_install import inspect_plan, prepare, private_json, safe, save
 from https_content import (
@@ -559,7 +562,8 @@ def run(
                     removed = read_removal(home)
                     removed['phase'] = 'reinstalled'
                     save(removal, removed)
-                return inspect(home)
+                return dict(inspect(home), update_check_performed=False,
+                            next_action='Existing installation verified; repeating install does not check or apply updates. Run '+CHECK_UPDATE_COMMAND+' then '+UPDATE_COMMAND+' to use the original trusted channel.')
             removal = Path(home) / '.config/agent-brain-client/uninstall-receipt.json'
             if removal.exists() and read_removal(home).get('phase') == 'complete':
                 return reinstall_removed(Path(home), Path(native), connection, store=store,
@@ -653,9 +657,113 @@ def run(
         }
 
 
+def reexec_update_runtime(home, action, *, runner=subprocess.run):
+    """Use the originally pinned Python/Git without changing their binding."""
+    from content_install import inspect, registered_context
+    if not inspect(home).get('registration_verified'):
+        return None
+    meta = private_json(safe(Path(home) / '.config/agent-brain-client/codex-mcp.json'))
+    policy, mcp, _, native = registered_context(home, meta)
+    if not DEPENDENCY_RUNTIME <= set(policy['runtime']):
+        return None
+    environment = dependency_environment(policy, runtime_check=False)
+    if Path(mcp['command']).resolve() == Path(sys.executable).resolve():
+        return None
+    environment = dict(environment, HOME=str(home), CODEX_HOME=str(native), LANG='en_US.UTF-8')
+    return runner([mcp['command'], '-I', '-B', str(ROOT/'tools/mac_first_install.py'),
+                   '--action', action], env=environment, stdin=subprocess.DEVNULL).returncode
+
+
+def manage_update(home, action, *, channel_factory=None):
+    """Reuse the registered updater; no pairing, native rewrite or worker restart.
+
+    Discovery may cache verified candidates, but never changes the active pointer.
+    The CLI cannot observe host worker versions. MCP responses report their own.
+    """
+    from content_install import inspect, registered_context
+    result = {
+        'operation': action, 'status': 'client-update-review-required',
+        'active_package_version': None, 'active_package_commit': None,
+        'running_worker_version': None, 'running_worker_commit': None,
+        'latest_channel_version': None, 'latest_channel_commit': None,
+        'update_available': None, 'reload_required': None,
+        'channel_checked': False, 'active_package_changed': False,
+        'native_changed': False, 'device_credentials_accessed': False,
+        'next_action': 'Preserve the existing installation. Verify its registration, policy and bootstrap; do not replace trust metadata or re-pair.',
+    }
+    try:
+        if action not in ('check-update', 'update'):
+            raise ValueError('Known maintenance action required')
+        state = inspect(home)
+        if not state.get('registration_verified') or state.get('installation_state') not in ('verified', 'verified-disabled'):
+            return dict(result, reason=state.get('reason', 'verified-installation-required'))
+        meta = private_json(safe(Path(home) / '.config/agent-brain-client/codex-mcp.json'))
+        policy, _, _, _ = registered_context(home, meta)
+        if policy['capabilities'] != HTTPS_CONTENT_CAPABILITIES:
+            return dict(result, reason='existing-https-installation-required')
+        environment = dependency_environment(policy)
+        previous = dict(os.environ)
+        try:
+            if environment is not None:
+                os.environ.clear()
+                os.environ.update(environment, HOME=str(home), LANG='en_US.UTF-8')
+            channel = (channel_factory or ClientReleases)(meta['release_policy'], meta['release_policy_sha256'])
+            before = channel.verified_active()
+            if before is None:
+                return dict(result, reason='verified-active-package-required')
+            result.update(active_package_version=before['version'], active_package_commit=before.get('commit'))
+            if action == 'check-update':
+                discovered = channel.discover('codex', policy['platform'], before['version'])
+                rows = discovered.get('releases', [])
+                if discovered.get('status') not in ('current', 'compatible-update') or len(rows) != 1:
+                    return dict(result, status='client-update-unavailable' if discovered.get('status') == 'release-unavailable' else 'client-update-review-required',
+                                next_action='The trusted channel was not confirmed. Keep the current package and retry '+CHECK_UPDATE_COMMAND+'; do not call the local version the latest.')
+                row = rows[0]
+                latest_version, latest_commit = row['manifest']['version'], row['commit']
+                available = before.get('commit') != latest_commit
+                if channel.verified_active() != before:
+                    return dict(result, reason='active-package-changed-during-check')
+                result.update(status='client-update-available' if available else 'client-update-current',
+                              latest_channel_version=latest_version, latest_channel_commit=latest_commit,
+                              update_available=available, channel_checked=True,
+                              next_action=('Run '+UPDATE_COMMAND+' to apply this trusted candidate. ' if available else 'The local active package matches the trusted channel. ')+
+                                          'The CLI cannot observe the running worker. Confirm MCP client_runtime; a normal host reload starts a new worker when needed.')
+                return result
+            updated = channel.update()
+            after = channel.verified_active()
+            if updated.get('status') not in ('current', 'updated') or after is None:
+                if after is not None:
+                    changed = after != before
+                    result.update(active_package_version=after['version'], active_package_commit=after.get('commit'),
+                                  active_package_changed=changed, reload_required=True if changed else None)
+                else:
+                    result.update(active_package_version=None, active_package_commit=None,
+                                  active_package_changed=None, reload_required=None)
+                return dict(result, status='client-update-unavailable' if updated.get('status') == 'offline' else 'client-update-review-required',
+                            next_action='Update was not confirmed. '+('A verified active package is retained or restored. ' if after is not None else 'No active package was verified; preserve recovery material. ')+
+                                        'Retry the same public update entry after reviewing the installation/channel state. Do not repeat pairing or import.')
+            changed = after != before
+            result.update(status='client-update-updated' if changed else 'client-update-current',
+                          active_package_version=after['version'], active_package_commit=after.get('commit'),
+                          latest_channel_version=after['version'], latest_channel_commit=after.get('commit'),
+                          update_available=False, channel_checked=True, active_package_changed=changed,
+                          reload_required=True if changed else None,
+                          next_action='The verified local package is ready. Normally reload only Agent Brain through the host so a new MCP worker loads it; do not kill in-flight work. Confirm client_runtime.running_worker_version matches latest_channel_version, then continue Onboard with fresh results. This command does not import real memories.')
+            return result
+        finally:
+            os.environ.clear()
+            os.environ.update(previous)
+    except Exception:
+        return result
+
+
 def lifecycle_exit(action, value):
     """Exit success denotes the requested action, never merely an old installation."""
     status=value.get('status')
+    if action == 'check-update' and status in ('client-update-available', 'client-update-current') and value.get('channel_checked') is True:
+        return 0
+    if action == 'update' and status in ('client-update-updated', 'client-update-current') and value.get('channel_checked') is True:
+        return 0
     if action in ('status','repair','uninstall') and status in ('client-uninstalled','client-not-installed'):
         return 0
     if action in ('status','repair') and status=='content-native-client-disabled' and value.get('registration_verified') is True:
@@ -667,7 +775,7 @@ def lifecycle_exit(action, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--action", choices=("install", "status", "repair", "uninstall"), default="install")
+    parser.add_argument("--action", choices=("install", "status", "repair", "uninstall", "check-update", "update"), default="install")
     parser.add_argument("--connection", type=Path)
     parser.add_argument("--expected-connection-sha256")
     args = parser.parse_args()
@@ -675,6 +783,25 @@ def main():
         if sys.platform != "darwin" or platform.machine().lower() != "arm64":
             raise ValueError("Actual Mac arm64 required")
         home = Path.home().resolve()
+        if args.action in ('check-update', 'update'):
+            if args.connection is not None or args.expected_connection_sha256 is not None:
+                value = {'status': 'client-update-review-required', 'reason': 'existing-policy-only',
+                         'native_changed': False, 'device_credentials_accessed': False,
+                         'next_action': 'Update management reuses the verified registration; do not pass a replacement connection or invitation.'}
+            else:
+                try:
+                    delegated = reexec_update_runtime(home, args.action)
+                    if delegated is not None:
+                        return delegated
+                    value = manage_update(home, args.action)
+                except Exception:
+                    value = {'operation': args.action, 'status': 'client-update-review-required',
+                             'reason': 'existing-runtime-or-registration-unverified',
+                             'channel_checked': False, 'native_changed': False,
+                             'device_credentials_accessed': False,
+                             'next_action': 'Restore the verified original runtime/registration; do not prepare new dependencies, replace bindings or re-pair.'}
+            print(json.dumps(value))
+            return lifecycle_exit(args.action, value)
         if args.action != "install":
             from client_lifecycle import status, repair, uninstall
             try:

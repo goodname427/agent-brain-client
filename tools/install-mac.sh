@@ -9,6 +9,14 @@ fi
 # Standard local tools for Git HTTPS and compiling the existing Swift helper.
 # This opens the normal tool installer only; restart this script when it finishes.
 if ! /usr/bin/xcode-select -p >/dev/null 2>&1; then
+    for ARG in "$@"; do
+        case "$ARG" in
+            check-update|update|--action=check-update|--action=update)
+                echo '{"status":"client-update-tools-review-required","native_changed":false,"device_credentials_accessed":false}'
+                exit 2
+                ;;
+        esac
+    done
     /usr/bin/xcode-select --install >/dev/null 2>&1 || true
     echo '{"status":"install-tools-requested-rerun-after-completion","installed":false,"credential_accessed":false}'
     exit 2

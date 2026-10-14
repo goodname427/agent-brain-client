@@ -92,7 +92,26 @@ repair 继续自身中断的卸载，只接受事务前后像，外部修改停�
 
 ## 当前实际限制
 
-0.2.5 活动运行包沿用受信 HTTPS 渠道，main 提供可审核的安装/生命周期源码，不直接替代活动发布渠道。自动更新在 MCP 启动时校验并激活兼容包、健康失败回滚，不自动更新固定 helper/bootstrap；固定入口更新通过明确的再次安装事务。
+活动运行包沿用安装时固定的受信 HTTPS 渠道，main 提供可审核的安装/生命周期源码，不直接替代活动发布渠道。自动更新只在 MCP 正常启动时检查并激活兼容包，健康失败回滚；没有周期后台更新或运行中热切换，不自动更新固定 helper/bootstrap。
+
+## 更新后继续 Onboarding
+
+用户提出“帮我把 Agent Brain 更新到最新版，然后继续完成 Onboarding”时，Agent 使用公开仓库入口：
+
+```sh
+sh tools/install-mac.sh --action check-update
+sh tools/install-mac.sh --action update
+```
+
+不传新 connection 或邀请。两项动作复用已验证登记中的原 policy、渠道、信任锚和固定依赖，不重新配对、不访问设备凭据、不改原生 MCP 设置。check-update 可以下载并校验候选缓存，但不激活、不运行候选健康检查；update 使用既有健康检查及回滚机制切换活动包。维护所需工具/解释器缺失或漂移时停止审核，不重新准备或改写其绑定。重复 install 的已安装分支只核验登记，不检查或应用软件更新，输出会指向上述入口。
+
+check-update 成功返回 client-update-available/current 与 channel_checked:true；update 成功返回 client-update-updated/current。网络不可达、健康失败或信任/范围审核受阻均退出非零并保留恢复材料；不要把旧活动包版本称为已确认最新版，不通过改摘要或信任锚跳过审核。status 不访问渠道。
+
+三个版本分别核查：active_package_version 是本地活动包，latest_channel_version 是本次成功渠道检查的候选，client_runtime.running_worker_version 是 MCP 调用所用 worker。CLI 无法观测 worker，其字段为 null；reload_required:true 表示活动包已变化，需要宿主正常新 worker，null 表示当前 worker 状态未知。通过宿主正常重载本服务，不杀进程；确认新 MCP 返回版本与渠道候选一致后再进行本轮 Onboard。即使更新回报 current，也不能据此断言旧 worker 已重载。main、tags、旧回执和映射数量都不能替代此核验。
+
+完整当前授权目录使用 `content_catalog({"kinds":["memory"]})`（范围内也可加入 rule/skill），省略 query/since/until/limit。目录没有分页 limit；Memory-only query 别名和 memory_query 的 limit=1..3 只是检索，不证明全量。limit=100 在参数阶段拒绝，不发 HTTP。目录后按实际条目读取，记录每次结果、stage/HTTP 状态、取消/超时及重试，不把旧轮次 5 成功/18 超时或旧 3 次重试复制成本轮结果。尚未读完就报告实际剩余，不宣称已完成。
+
+安全错误字段只给阶段和类别：parameters、transport、http、response-parse、response-validation、content-validation 或 client-policy-or-credential。HTTP 状态来自实际响应；transport 没有 HTTP 状态，不能单凭它认定偶发网络。解析/回执失败不归类为网络。读取参数错误不给 stable request_id/expected_revision 的写入提示；写入未知结果仍沿用原 ID 和 CAS 参数，不生成新 ID。报告不包含凭据、响应正文或记忆正文。
 
 已确认 outbox 也占累计 1024 条上限，目前没有自动归档；达到上限会拒绝新请求，保留旧数据。Server 本地提交后 GitHub 推送未确认，会阻塞后续新写；当前 `storage_unowned` 也可能阻断缓存读取，须恢复原请求。256 条 catalog / 512 KiB snapshot 限制仍在。此版本不承诺无限写或弱网下始终可读。
 
