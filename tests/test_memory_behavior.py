@@ -11,9 +11,38 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "adapters/codex"))
 from content_contract import MEMORY_GUIDANCE, ONBOARD_COVERAGE_GUIDANCE, installation_follow_up, review_memory_sources
+import content_mcp
 
 
 class MemoryBehavior(unittest.TestCase):
+    def test_consumer_instructions_delegate_behavior_and_describe_complete_target_schema(self):
+        class Adapter:
+            policy = {'kinds': ['memory', 'rule', 'skill']}
+            def methods(self):
+                return set(content_mcp.contract.FIELDS)
+            def refresh(self):
+                return {'status': 'synthetic-only'}
+
+        server = content_mcp.ContentServer(Adapter(), client_version='synthetic')
+        initialized = server.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+                                     'params': {'protocolVersion': '2025-11-25', 'capabilities': {},
+                                                'clientInfo': {'name': 'synthetic-test', 'version': '1'}}})
+        instructions = initialized['instructions']
+        self.assertIn('agent-brain-memory', instructions)
+        self.assertIn('agent-brain-onboard', instructions)
+        self.assertIn('AgentBrain destination records only', instructions)
+        self.assertNotIn('Do not importance-filter existing memories', instructions)
+        server.handle({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
+        listed = server.handle({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'})
+        catalog = next(tool for tool in listed['tools'] if tool['name'] == 'content_catalog')
+        self.assertIn('does not discover Harness-native sources', catalog['description'])
+        put = next(tool for tool in listed['tools'] if tool['name'] == 'content_put')
+        record_schema = put['inputSchema']['properties']['record']
+        self.assertEqual(len(record_schema['oneOf']), 3)
+        self.assertIn('description', record_schema['oneOf'][2]['required'])
+        self.assertIn('SKILL.md', record_schema['oneOf'][2]['required'])
+
+
     def review_cli(self, sources, rows):
         result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'tools/memory_review.py')],
                                 input=json.dumps({'mode': 'onboard', 'sources': sources, 'candidates': rows}),
