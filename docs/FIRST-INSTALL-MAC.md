@@ -18,7 +18,7 @@ printf 'Installer source commit: %s\nCheckout: %s\n' "$SOURCE_SHA" "$CHECKOUT_RO
 sh "$CHECKOUT_ROOT/tools/install-mac.sh"
 ```
 
-下载失败会停止，不会改用旧目录运行。新入口本身也会从 `main` 建立一份独立 checkout 并记录 SHA；因此从已取得的官方源码启动时可能再建立一层新的入口目录。Git checkout 只负责安装器源码，不改变已安装 MCP 的 HTTPS 发布 origin/ref/anchor 或运行时信任锚。
+下载失败会停止，不会改用旧目录运行。新入口会核对 `origin`、`main`、commit SHA 和干净工作区，再消费一次性标记并执行该 checkout；从普通旧 checkout 启动时才会另建最新 `main` checkout。Git checkout 只负责安装器源码，不改变已安装 MCP 的 HTTPS 发布 origin/ref/anchor 或运行时信任锚。
 
 如果手上只有修改前的旧 checkout，它的 shell 脚本不能被远端 `main` 反向更新。不要从那个目录执行旧入口；先用上述完整命令取得并启动新 checkout。进入新入口后，中断恢复/再次安装继续使用原来的身份、连接、安装计划和审核流程；只有新设备需要发行者交付连接描述。
 
