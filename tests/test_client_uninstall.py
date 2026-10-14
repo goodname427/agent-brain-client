@@ -274,9 +274,9 @@ class ClientUninstall(unittest.TestCase):
         self.remove()
         journal = lifecycle.read_removal(self.home)
         self.f.config.write_text(
-            'model = "synthetic-user-model"\\n'
-            '[features]\\nparallel = true\\n'
-            '[mcp_servers.other]\\ncommand = "preserve-user-server"\\n'
+            'model = "synthetic-user-model"\n'
+            '[features]\nparallel = true\n'
+            '[mcp_servers.other]\ncommand = "preserve-user-server"\n'
         )
         before = self.filesystem_state()
         code, result = self.status_cli()
