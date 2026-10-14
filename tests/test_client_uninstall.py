@@ -259,7 +259,9 @@ class ClientUninstall(unittest.TestCase):
                 code, removed = self.uninstall_cli()
                 self.assertEqual(code, 0, removed)
                 self.assertEqual(removed['status'], 'client-uninstalled', removed)
-                self.assertTrue(removed['uninstall_verified'], removed)
+                code, verified = self.status_cli()
+                self.assertEqual(code, 0, verified)
+                self.assertTrue(verified['uninstall_verified'], verified)
 
                 code, installed = self.connection_cli()
                 self.assertEqual(code, 0, installed)
