@@ -57,6 +57,8 @@ class MemoryBehavior(unittest.TestCase):
         new = dict(rows[0], id='new-small-fact', source_id='approved-new-harness', utility='none')
         checked = self.review_cli(sources, rows + [new])
         self.assertEqual(checked['onboard_check']['status'], 'provided-sources-reviewed')
+        self.assertFalse(checked['onboard_check']['source_discovery_performed'])
+        self.assertEqual(checked['onboard_check']['scope'], 'explicit-source-metadata-only')
         self.assertEqual(next(r['decision'] for r in checked['candidates'] if r['id'] == 'new-small-fact'), 'candidate')
         self.assertFalse(checked['account_complete'])
         self.assertFalse(checked['data_transferred'])
