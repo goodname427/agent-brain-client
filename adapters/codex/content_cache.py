@@ -19,6 +19,7 @@ sys.path.insert(0,str(ROOT/'scripts'))
 import content_contract as contract
 from codex_connect import atomic
 from brain_lock import locked,require_platform,private_mode,sync_directory
+from remote_http import check_request,RequestStopped
 
 BEGIN='<!-- agent-brain-content:begin -->';END='<!-- agent-brain-content:end -->'
 BLOCK=re.compile(re.escape(BEGIN)+r'.*?'+re.escape(END)+r'(?:\r?\n)?',re.S)
@@ -449,7 +450,7 @@ class ContentAdapter:
                     'persistence':{'durable':False},'local_cache':{'available':False}}
         try:
             if self.offline_denied or request['method'] not in ('content_read','content_catalog') or request['method'] not in self.methods():raise CacheBlocked()
-            with locked(self.cache/'content.lock'):
+            with locked(self.cache/'content.lock',cancel_check=check_request):
                 active=self._load('active.json')
                 if active is None:return unavailable('content_offline_cache_miss',True)
                 if not isinstance(active,dict) or set(active)!={'commit','snapshot_sha'} or not re.fullmatch(r'[a-f0-9]{40}',active.get('commit','')) or not re.fullmatch(r'[a-f0-9]{64}',active.get('snapshot_sha','')):raise CacheBlocked()
@@ -476,11 +477,13 @@ class ContentAdapter:
                     if result is None:return unavailable('content_offline_cache_miss',True)
                 return {'request_id':request['request_id'],'result':result,'persistence':{'durable':False,'state':'read-only'},
                         'local_cache':{'available':True,'stale':True,'remote_confirmed':False,'snapshot_commit':snapshot['commit'],'verified_at':pin['verified_at'],'queue':queue}}
+        except RequestStopped:raise
         except Exception:return unavailable('content_offline_cache_unverified',False)
 
     def _read_with_cache(self,request):
         try:result=self.client.request(request)
         except OSError:result={'request_id':request['request_id'],'error':{'code':'transport_unconfirmed','retryable':True},'persistence':{'durable':False}}
+        check_request()
         # Authentication, scope, credential/identity failures and invalid responses
         # must remain errors even if an old local snapshot exists.
         error=result.get('error',{}) if isinstance(result,dict) else {}
@@ -489,7 +492,8 @@ class ContentAdapter:
         if isinstance(result,dict) and 'error' in result:
             self.offline_denied=True
             try:
-                with locked(self.cache/'content.lock'):self._deny_offline_snapshot()
+                with locked(self.cache/'content.lock',cancel_check=check_request):self._deny_offline_snapshot()
+            except RequestStopped:raise
             except Exception:pass
         return result
 
@@ -533,8 +537,10 @@ class ContentAdapter:
             return {'status':'content-recovery-review-required' if uncertain else 'content-refresh-blocked','native_changed':None if uncertain else False,'model_loaded':'unknown','next_action':'Preserve local files and prior snapshots. Review transport, contract, content scope, dependencies, owned-file drift or interrupted recovery.'}
 
     def invoke(self,request,reconciles=None):
+        check_request()
         require_platform('cache-storage',self.platform)
         method=request.get('method');params=request.get('params');contract.validate(method,params)
+        if method not in self.methods():raise CacheBlocked()
         if method=='memory_query':
             if 'memory' not in self.policy['kinds'] or 'memory' not in self.client.grant['artifact_types']:raise CacheBlocked()
             try:response=self.client.request(request)
@@ -578,15 +584,27 @@ class ContentAdapter:
                     except Exception:pass
                 self._drain();result=self._queue_result(self._load('outbox/'+request['request_id']+'.json'))
         else:
-            self.refresh();result=self._read_with_cache(request)
+            # A live read already goes through the authenticated Server. Mapping
+            # every artifact twice here turned a batch into quadratic transport.
+            # Startup and confirmed writes retain the transactional full refresh.
+            result=self._read_with_cache(request)
+            if not isinstance(result,dict) or result.get('request_id')!=request['request_id']:raise CacheBlocked()
+            if 'error' not in result and method=='content_read':
+                self._validate_target(result.get('result'),params['kind'],params['id'])
         if method=='content_catalog' and 'error' not in result:
             value=result.get('result',{})
-            if not isinstance(value.get('artifacts'),list):raise CacheBlocked()
-            visible=[]
+            if set(value)!={'content_api_version','commit','artifacts'} or value['content_api_version']!=1 or not re.fullmatch(r'[a-f0-9]{40}',value.get('commit','')) or not isinstance(value.get('artifacts'),list) or len(value['artifacts'])>256:raise CacheBlocked()
+            visible=[];seen=set()
             for item in value['artifacts']:
                 if not isinstance(item,dict) or set(item)!={'kind','id','revision'}:raise CacheBlocked()
                 contract.validate('content_read',{'kind':item['kind'],'id':item['id']})
+                identity=(item['kind'],item['id'])
+                if identity in seen or item['kind'] not in kinds or not re.fullmatch(r'[a-f0-9]{64}',item['revision']):raise CacheBlocked()
+                seen.add(identity)
                 if item['kind'] in kinds and self._allows(item['kind'],item['id']):visible.append(item)
             result=dict(result,result=dict(value,artifacts=visible))
-        refresh=self.refresh() if method not in contract.WRITES or result.get('local_queue',{}).get('state')=='confirmed' else {'status':'content-local-changes-retained','native_changed':False,'model_loaded':'unknown','queue':self.queue_status()}
+        if method not in contract.WRITES:
+            refresh={'status':'read-only','native_changed':False,'model_loaded':'unknown','next_action':'Mappings refresh at MCP startup and after confirmed writes; this read does not refresh native mappings.'}
+        else:
+            refresh=self.refresh() if result.get('local_queue',{}).get('state')=='confirmed' else {'status':'content-local-changes-retained','native_changed':False,'model_loaded':'unknown','queue':self.queue_status()}
         return dict(result,local_refresh=refresh)

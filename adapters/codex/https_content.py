@@ -18,7 +18,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 BASE=Path(__file__).resolve().parent
 ROOT=BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
-from remote_http import RemoteClient,NoRedirect
+from remote_http import RemoteClient,NoRedirect,RequestStopped
 from client_pairing import EnrollmentTerminal,reviewed_ids,allowed_id
 from system_credentials import NativeKeychain,canonical,unique,owned,credential_fields,profile_credentials,credential_paths,store_for_profile
 from brain_lock import require_platform,platform_paths,PlatformUnsupported
@@ -225,6 +225,7 @@ class HTTPSContentClient:
             if method=='memory_query' and 'memory' not in self.grant['artifact_types']:raise ValueError('Memory read grant required')
             if method in ('content_read','content_put') and not allowed_id(self.grant['ids'],params['kind'],params['id']):raise ValueError('Unreviewed content ID')
             return self.transport.request(request)
+        except RequestStopped:raise
         except Exception:
             return {'request_id':request.get('request_id') if isinstance(request,dict) else None,'error':{'code':'device_transport_blocked','retryable':False},'persistence':{'durable':False}}
 

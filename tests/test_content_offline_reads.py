@@ -62,7 +62,8 @@ class OfflineReads(unittest.TestCase):
         for code,retryable in [('device_revoked',False),('device_authentication_failed',False),('device_authentication_failed',True),('scope_denied',False),('device_transport_blocked',False),('invalid_response',True)]:
             self.failure(code,retryable);reply=self.adapter.invoke(self.request())
             self.assertEqual(reply['error']['code'],code);self.assertNotIn('local_cache',reply)
-        self.failure(rid='synthetic_mismatched_reply');reply=self.adapter.invoke(self.request());self.assertNotIn('local_cache',reply)
+        self.failure(rid='synthetic_mismatched_reply')
+        with self.assertRaises(CacheBlocked):self.adapter.invoke(self.request())
 
     def test_new_service_principal_and_native_binding_cannot_read_old_snapshot(self):
         self.warm();self.cloud.offline=True;self.cloud.grant=dict(self.cloud.grant,actor='another-owner')
@@ -112,7 +113,10 @@ class OfflineReads(unittest.TestCase):
         def mixed(request):
             code='device_revoked' if request['method']=='content_catalog' else 'transport_unconfirmed'
             return {'request_id':request['request_id'],'error':{'code':code,'retryable':code=='transport_unconfirmed'},'persistence':{'durable':False}}
-        self.cloud.request=mixed;reply=self.adapter.invoke(self.request())
+        self.cloud.request=mixed
+        refused=self.adapter.invoke(self.request('content_catalog',{'kinds':['memory']}))
+        self.assertEqual(refused['error']['code'],'device_revoked')
+        reply=self.adapter.invoke(self.request())
         self.assertEqual(reply['error']['code'],'content_offline_cache_unverified')
         self.failure();self.assertEqual(self.restart().invoke(self.request())['error']['code'],'content_offline_cache_unverified')
         self.cloud.request=original;self.assertEqual(self.restart().refresh()['status'],'content-current')

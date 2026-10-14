@@ -11,6 +11,7 @@ import time
 from types import SimpleNamespace
 from client_pairing import reviewed_ids,allowed_id
 import content_contract as contract
+from remote_http import check_request,current_request,request_timeout
 
 PREFIX='/usr/bin/sudo -n -u agent-brain /usr/bin/python3 -I -B '
 COMMAND=r'/opt/agent-brain-client/[A-Za-z0-9_-]+/scripts/brain_ssh_proxy\.py --policy-file /var/lib/agent-brain/auth/[A-Za-z0-9_-]+\.json --policy-sha256 [a-f0-9]{64}'
@@ -88,14 +89,18 @@ class SSHChannel:
                 self.process=self.spawn(argv,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0);self.argv=argv
                 os.set_blocking(self.process.stdin.fileno(),False);os.set_blocking(self.process.stdout.fileno(),False)
             if self.argv!=argv or self.process.poll() is not None:raise OSError('SSH connection ended; no automatic write replay')
-            deadline=time.monotonic()+timeout;remaining=memoryview(input);output=b''
+            deadline=time.monotonic()+request_timeout(timeout);remaining=memoryview(input);output=b''
             while remaining:
+                check_request()
                 wait=deadline-time.monotonic()
-                if wait<=0 or not select.select([],[self.process.stdin],[],wait)[1]:raise subprocess.TimeoutExpired('/usr/bin/ssh',timeout)
+                if wait<=0:raise subprocess.TimeoutExpired('/usr/bin/ssh',timeout)
+                if not select.select([],[self.process.stdin],[],min(wait,.1) if current_request() else wait)[1]:continue
                 remaining=remaining[os.write(self.process.stdin.fileno(),remaining):]
             while b'\n' not in output:
+                check_request()
                 wait=deadline-time.monotonic()
-                if wait<=0 or not select.select([self.process.stdout],[],[],wait)[0]:raise subprocess.TimeoutExpired('/usr/bin/ssh',timeout)
+                if wait<=0:raise subprocess.TimeoutExpired('/usr/bin/ssh',timeout)
+                if not select.select([self.process.stdout],[],[],min(wait,.1) if current_request() else wait)[0]:continue
                 chunk=os.read(self.process.stdout.fileno(),65536)
                 if not chunk:raise OSError('SSH response unconfirmed')
                 output+=chunk
@@ -119,7 +124,7 @@ class SSHContentClient:
             if len(raw)>131072:return blocked('invalid_content_request')
         except (ValueError,KeyError,TypeError,OSError):return blocked('ssh_scope_or_profile_review_required')
         try:
-            run=self.runner(self.argv,input=raw+b'\n',capture_output=True,timeout=120)
+            run=self.runner(self.argv,input=raw+b'\n',capture_output=True,timeout=request_timeout(120))
             if run.returncode or len(run.stdout)>262144:return blocked('ssh_proxy_unconfirmed',True)
             lines=run.stdout.splitlines()
             if len(lines)!=1:return blocked('ssh_proxy_unconfirmed',True)
