@@ -134,14 +134,8 @@ def path(kind,identity):return 'content/'+kind+'/'+identity+'.json'
 
 
 ONBOARD_COVERAGE_GUIDANCE = (
-    'After installation or reinstallation, once the host tools are available, the Agent must use agent-brain-onboard to check coverage of all authorized accessible existing memory sources. '
-    'This is separate from device pairing and installation: an old identity, install receipt, imported marker or zero pending writes never proves current source coverage. '
-    'First inventory the current Harness persistent-memory sources, including memories that predate AgentBrain. Use only authorized, actually exposed source listing/read interfaces or user-approved exports; record source scope, counts, status and fingerprints. If a source cannot be enumerated, mark it unavailable/not-checked and keep coverage incomplete. Never inspect prohibited sessions or databases. '
-    'Keep source inventory separate from the AgentBrain destination: content_catalog/content_read enumerate and read AgentBrain targets only; AgentBrain-owned local mappings are rebuildable target cache, never proof that Harness sources were scanned. '
-    'Compare each source record with the complete current target. Skip exact equivalents; add missing facts; merge complementary facts while preserving unique information, dates, source provenance, scope and uncertainty. For contradictions, compare dated direct evidence, retain both sides, and ask the user when evidence does not justify a resolution; never overwrite blindly. Use current revisions and stable request IDs for approved writes. '
-    'Report every source and candidate as read, duplicate, merged/imported, excluded, inaccessible, not-checked, conflict or pending, with reasons. Only report coverage complete after the authorized accessible source inventory and every candidate are accounted for; a provided-source review or AgentBrain catalog alone cannot prove source or account-wide completeness. Reinstall and repeated install must recheck new and changed sources. '
-    'Exclude company-sensitive information, secrets, prohibited sessions/databases, LocalOnly and out-of-scope sources. Do not importance-filter existing memories or apply the three-topic retrieval budget to import coverage. '
-    'Do not repeat a whole upload or device pairing for this check. Ordinary reconnect alone does not trigger a new source scan. '
+    'After installation or reinstallation, once host tools are available, use the currently loaded agent-brain-onboard Skill for source discovery, comparison, approved writes and coverage reporting. '
+    'This Client handoff records that no source scan or data transfer has occurred; installation, identity and receipt state do not replace the Skill result. '
 )
 
 
@@ -164,22 +158,11 @@ def installation_follow_up(result):
 
 
 MEMORY_GUIDANCE = (
-    'Actively review useful non-sensitive material within the existing authorized source/scope: ordinary preferences, corrections, useful small facts, personal task progress and short-term continuity can merit saving; major decisions or permanence are not prerequisites. '
-    'Keep a short dated fact/result/next-step, not raw conversation logs. A personal progress summary supplied in an authorized conversation is different from collecting project files or project-only material; do not disguise unauthorized project content as personal memory. '
-    'Honor explicit user memory requests within scope even for small facts; retain provenance/uncertainty. Distinguish user statements and observed results from guesses; uncertain inference needs review. One-time presentation instructions without future utility need not be saved. Reuse the same topic, read its revision, merge valid context and correct outdated facts via content_put/CAS. '
-    'For onboarding, migrate all existing memories from every explicitly authorized accessible memory source by default, in bounded batches, excluding company-sensitive information and secrets. Do not importance-filter existing memories or omit small/short-term items; preserve uncertainty/provenance rather than upgrading guesses into facts. Deduplicate and merge without losing unique information, retain both sides of conflicts; the three-topic retrieval budget is not an import or source-coverage quota. Report imported, duplicate, skipped, deferred, inaccessible and not-checked with reasons. Never imply account-wide coverage from an explicit file list, zero pending writes or a small sample. '
-    'Do not read prohibited sessions/databases, secrets or LocalOnly; unknown/new source access is not authorized by this guidance. Do not mechanically upload everything, overwrite occupied topics, activate imported Rules/Skills, or promote a temporary instruction into a global rule. '
-    'An imported duplicate is covered, not a missing upload; source access gaps and privacy exclusions differ from relevance decisions. Check transport/permission/contract errors separately from editorial choices. '
-    'An install/reinstall coverage-check request is a separate Agent step: recheck authorized source coverage without re-pairing or repeating a whole import; ordinary reconnect alone is not this request. '
+    'For daily memory decisions, follow the currently loaded agent-brain-memory Skill; for source import and coverage, follow agent-brain-onboard. This Client text defines interface and authorization constraints, not a second behavior policy. '
+    'Use only content methods and IDs within the granted scope. Do not infer source access or permission from catalogs, prior imports or local mappings; never access prohibited sessions/databases, secrets or LocalOnly material. '
+    'Writes require the current expected_revision and a stable request_id. Only a remote-confirmed durable=true receipt confirms remote persistence; supported conflicts remain pending until reconciled. '
+    'A mapping refresh does not prove an already running model reloaded its context. Importing a Rule or Skill does not enable it. '
 )
-
-
-def query_time(value):
-    if value is None:return None
-    if not isinstance(value,str) or not 1<=len(value)<=64:raise ValueError('ISO8601 time required')
-    parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
-    if parsed.tzinfo is None or parsed.utcoffset() is None:raise ValueError('Explicit time zone required')
-    return parsed.astimezone(timezone.utc)
 
 
 def review_memory_sources(sources,candidates,mode="daily"):
