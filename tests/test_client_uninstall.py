@@ -212,6 +212,7 @@ class ClientUninstall(unittest.TestCase):
         code, result = self.connection_cli()
         self.assertEqual(code, 0, result)
         self.assertTrue(result['installed'], result)
+        self.assertEqual(self.adapter.refresh()['status'], 'content-refreshed')
         self.assertTrue(skill_config.exists())
         self.assertEqual(skill_config.read_text(), 'synthetic skill-local configuration')
 
