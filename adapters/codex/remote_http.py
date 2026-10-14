@@ -1,14 +1,238 @@
 #!/usr/bin/env python3
 """Thin JSON-line HTTP adapter. No Core, repository, Git or host discovery."""
 import argparse
+from contextlib import contextmanager
+import http.client
 import json
 from pathlib import Path
 import re
 import sys
 import threading
+import time
+import socket
+import subprocess
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+from urllib.request import HTTPHandler, HTTPSHandler, HTTPRedirectHandler, ProxyHandler, Request, build_opener
+
+
+class RequestStopped(Exception):
+    """Safe cancellation/deadline signal; never includes transport or secrets."""
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__(reason)
+
+
+_request_scope = threading.local()
+_resolver_slots = threading.BoundedSemaphore(8)
+
+
+class RequestControl:
+    """One MCP request, including queue time; abort only its owned read I/O."""
+    def __init__(self, timeout):
+        self.deadline = time.monotonic() + timeout
+        self.lock = threading.Lock()
+        self.reason = None
+        self.finished = False
+        self.aborters = []
+        self.timer = threading.Timer(timeout, self.cancel, args=('request_deadline_exceeded',))
+        self.timer.daemon = True
+        self.timer.start()
+
+    def cancel(self, reason='request_cancelled'):
+        with self.lock:
+            if self.finished or self.reason is not None:
+                return
+            self.reason = reason
+            aborters = list(self.aborters)
+        for abort in aborters:
+            try: abort()
+            except Exception: pass
+
+    def check(self):
+        if time.monotonic() >= self.deadline:
+            self.cancel('request_deadline_exceeded')
+        with self.lock:
+            reason = self.reason
+        if reason is not None:
+            raise RequestStopped(reason)
+
+    def register(self, abort):
+        with self.lock:
+            stopped = self.reason is not None
+            if not stopped and not self.finished:
+                self.aborters.append(abort)
+        if stopped:
+            try: abort()
+            except Exception: pass
+            self.check()
+
+    def close(self, *, check=False):
+        self.timer.cancel()
+        with self.lock:
+            if check:
+                reason=self.reason
+                if reason is None and time.monotonic()>=self.deadline:
+                    reason='request_deadline_exceeded'
+                if reason is not None:raise RequestStopped(reason)
+            self.finished = True
+            self.aborters.clear()
+
+    @contextmanager
+    def activate(self):
+        previous = getattr(_request_scope, 'control', None)
+        _request_scope.control = self
+        try:
+            self.check()
+            yield
+            self.check()
+        finally:
+            _request_scope.control = previous
+
+
+def current_request():
+    return getattr(_request_scope, 'control', None)
+
+
+def check_request():
+    control = current_request()
+    if control is not None:
+        control.check()
+
+
+def request_timeout(timeout):
+    control = current_request()
+    if control is None:
+        return timeout
+    control.check()
+    return max(.001, min(timeout, control.deadline - time.monotonic()))
+
+
+def controlled_run(runner, command, **kwargs):
+    """Read-only helper invocation; unchanged runner for pairing and writes."""
+    control = current_request()
+    if control is None or runner is not subprocess.run:
+        return runner(command, **kwargs)
+    control.check()
+    options = dict(kwargs)
+    data = options.pop('input', None)
+    timeout = request_timeout(options.pop('timeout'))
+    options.pop('capture_output')
+    with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, **options) as process:
+        control.register(lambda: process.kill() if process.poll() is None else None)
+        try:
+            stdout, stderr = process.communicate(data, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            control.cancel('request_deadline_exceeded')
+            process.kill()
+            process.communicate()
+            control.check()
+            raise
+        control.check()
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _watch_socket(sock):
+    control = current_request()
+    if control is None:
+        return
+    def abort():
+        if sock is not None:
+            try: sock.shutdown(socket.SHUT_RDWR)
+            except OSError: pass
+            sock.close()
+    control.register(abort)
+    control.check()
+
+
+def _read_socket(address, timeout=None, source_address=None):
+    """Register the owned socket before connect, not only after HTTP headers."""
+    check_request()
+    candidates = _resolve_address(address)
+    check_request()
+    error = None
+    for family, kind, protocol, _, destination in candidates:
+        sock = socket.socket(family, kind, protocol)
+        try:
+            sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            _watch_socket(sock)
+            sock.connect(destination)
+            check_request()
+            return sock
+        except OSError as exc:
+            sock.close()
+            check_request()
+            error = exc
+        except BaseException:
+            sock.close()
+            raise
+    if error is not None:
+        raise error
+    raise OSError('No connection address')
+
+
+def _resolve_address(address):
+    control=current_request()
+    if control is None:return socket.getaddrinfo(address[0],address[1],type=socket.SOCK_STREAM)
+    control.check()
+    if not _resolver_slots.acquire(blocking=False):raise OSError('Name resolver busy')
+    done=threading.Event();result=[];errors=[]
+    def resolve():
+        try:result.append(socket.getaddrinfo(address[0],address[1],type=socket.SOCK_STREAM))
+        except Exception as error:errors.append(error)
+        finally:
+            _resolver_slots.release();done.set()
+    # OS DNS is not interruptible. Only a bounded, credential-free lookup may
+    # finish late; it cannot send HTTP, touch the adapter or publish its result.
+    threading.Thread(target=resolve,name='content-read-dns',daemon=True).start()
+    control.register(done.set)
+    if not done.wait(request_timeout(90)):control.cancel('request_deadline_exceeded')
+    control.check()
+    if errors:raise errors[0]
+    return result[0]
+
+
+class ReadHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _read_socket
+
+    def connect(self):
+        check_request()
+        super().connect()
+
+
+class ReadHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _read_socket
+
+    def connect(self):
+        check_request()
+        http.client.HTTPConnection.connect(self)
+        server_hostname = getattr(self,'_tunnel_host',None) or self.host
+        self.sock = getattr(self,'_context').wrap_socket(self.sock, server_hostname=server_hostname,
+                                              do_handshake_on_connect=False)
+        _watch_socket(self.sock)
+        self.sock.do_handshake()
+        check_request()
+
+
+class ReadHTTPHandler(HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(ReadHTTPConnection, req)
+
+
+class ReadHTTPSHandler(HTTPSHandler):
+    def __init__(self, debuglevel=0, context=None):
+        super().__init__(debuglevel,context=context)
+        self.read_context=context
+
+    def https_open(self, req):
+        return self.do_open(ReadHTTPSConnection, req, context=self.read_context)
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -31,7 +255,7 @@ class RemoteClient:
         if credential_provider is not None and url.scheme!='https':raise ValueError('Device credentials require HTTPS')
         self.endpoint, self.token_file = endpoint.rstrip('/'), Path(token_file) if token_file is not None else None
         self.credential_provider=credential_provider
-        self.opener = build_opener(ProxyHandler({}),NoRedirect())
+        self.opener = build_opener(ProxyHandler({}),NoRedirect(),ReadHTTPHandler(),ReadHTTPSHandler())
 
     def request(self, request, *, timeout=90, deadline=None):
         if deadline is None:return self._request(request,timeout=timeout)
@@ -51,10 +275,12 @@ class RemoteClient:
                 'persistence':{'durable':False}}
 
     def _request(self, request, *, timeout=90):
+        check_request()
         rid = request.get('request_id') if isinstance(request, dict) else None
         if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,128}', rid):
             raise ValueError('Supply a stable request_id; retry a write with the same ID and parameters.')
         token = self._token()
+        check_request()
         if not re.fullmatch(r'[A-Za-z0-9_-]{32,256}', token):
             raise ValueError('Invalid credential source')
         data = json.dumps(request, ensure_ascii=False).encode()
@@ -69,8 +295,9 @@ class RemoteClient:
         if self.write_receipt is not None and request.get('method') in ('remember','forget','content_put','content_remove'):
             req.add_header('X-Agent-Brain-Write-Receipt',self.write_receipt)
         try:
-            with self.opener.open(req, timeout=timeout) as response:
+            with self.opener.open(req, timeout=request_timeout(timeout)) as response:
                 value = response.read(262145)
+            check_request()
             if len(value) > 262144:
                 raise ValueError('Response exceeds 256 KB')
             result = json.loads(value)
@@ -98,6 +325,7 @@ class RemoteClient:
                 pass
         except (URLError, OSError, ValueError):
             pass
+        check_request()
         return {'request_id': rid, 'error': {'code': 'transport_unconfirmed', 'retryable': True},
                 'persistence': {'durable': False}}
 
