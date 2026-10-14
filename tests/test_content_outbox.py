@@ -203,4 +203,19 @@ class Outbox(unittest.TestCase):
         self.cloud.offline=True;self.adapter.invoke(self.request());before=(self.cache/'outbox/synthetic_write_0001.json').read_bytes();self.cloud.grant=dict(self.cloud.grant,actor='another-principal');self.cloud.offline=False
         self.assertEqual(self.restart().refresh()['status'],'content-refresh-blocked');self.assertEqual(self.cloud.puts,0);self.assertEqual((self.cache/'outbox/synthetic_write_0001.json').read_bytes(),before)
 
+    def test_client_guidance_change_rebuilds_mapping_for_same_server_snapshot(self):
+        self.cloud.records={('memory','synthetic-topic'):copy.deepcopy(MEMORY)}
+        first=self.adapter.refresh()
+        self.assertEqual(first['status'],'content-refreshed')
+        agents=self.home/'.codex/AGENTS.md'
+        old=agents.read_bytes()
+        snapshot=self.adapter._load('snapshots/'+first['commit']+'.json')
+        with patch.object(contract,'HOST_GUIDANCE','Synthetic updated Agent Brain host guidance.'):
+            second=self.adapter.refresh()
+        self.assertEqual(second['status'],'content-refreshed')
+        self.assertEqual(second['commit'],first['commit'])
+        self.assertEqual(self.adapter._load('snapshots/'+first['commit']+'.json'),snapshot)
+        self.assertNotEqual(agents.read_bytes(),old)
+        self.assertIn(b'Synthetic updated Agent Brain host guidance.',agents.read_bytes())
+
 if __name__=='__main__':unittest.main()
