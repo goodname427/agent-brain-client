@@ -195,6 +195,26 @@ class ClientUninstall(unittest.TestCase):
         self.assertEqual(parsed['mcp_servers']['other']['command'], 'preserve-after-status')
         self.assertIn(install.NAME, parsed['mcp_servers'])
 
+    def test_uninstall_status_and_reinstall_accept_skill_owned_config_toml(self):
+        skill = copy.deepcopy(self.cloud.records[('skill', 'synthetic-skill')])
+        skill['files']['config.toml'] = 'synthetic skill-local configuration'
+        self.cloud.records[('skill', 'synthetic-skill')] = skill
+        self.assertEqual(self.adapter.refresh()['status'], 'content-refreshed')
+        skill_config = self.home / '.agents/skills/synthetic-skill/config.toml'
+        self.assertEqual(skill_config.read_text(), 'synthetic skill-local configuration')
+
+        removed = self.remove()
+        self.assertEqual(removed['status'], 'client-uninstalled')
+        code, status = self.status_cli()
+        self.assertEqual(code, 0, status)
+        self.assertTrue(status['uninstall_verified'], status)
+
+        code, result = self.connection_cli()
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result['installed'], result)
+        self.assertTrue(skill_config.exists())
+        self.assertEqual(skill_config.read_text(), 'synthetic skill-local configuration')
+
     def test_reinstall_rejects_invalid_or_conflicting_owned_config_and_owned_file_drift(self):
         cases = (
             ('invalid-toml', 'model = [\n'),
