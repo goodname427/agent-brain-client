@@ -289,6 +289,8 @@ def validate_uninstalled_state(home, journal, *, allow_unrelated_config_edits=Fa
             if require_owned_postimages:
                 raise install.InstallBlocked('Agent Brain MCP registration conflict')
             changed.append(name)
+        elif name in changed:
+            changed.remove(name)
     return changed
 
 def finish_removal(home, journal):
