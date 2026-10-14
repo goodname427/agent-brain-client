@@ -88,8 +88,8 @@ sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action status
 ## 中断恢复与再次安装
 
 ```sh
-sh tools/install-mac.sh --action repair
-sh tools/install-mac.sh
+sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action repair
+sh "$CHECKOUT_ROOT/tools/install-mac.sh"
 ```
 
 repair 继续自身中断的卸载，只接受事务前后像，外部修改停止并保留双方。首次安装/配对中断重跑带同一连接文件及摘要的原命令；已有身份的再次安装直接重跑无参数命令，复用已保存计划、原 identity/profile/helper 和同一缓存，按现有安装事务恢复。
