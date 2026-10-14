@@ -243,6 +243,30 @@ class ClientUninstall(unittest.TestCase):
                                  else path.read_bytes() if path.is_file() else None)
         return result
 
+    def uninstall_cli(self):
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['mac_first_install.py', '--action', 'uninstall']), \
+                patch.object(Path, 'home', return_value=self.home), \
+                patch.dict(os.environ, CODEX_HOME=str(self.native)), \
+                patch.object(sys, 'stdout', output), \
+                patch.object(fixture.wizard, 'confirm_target', return_value='Continue'):
+            code = fixture.wizard.main()
+        return code, json.loads(output.getvalue())
+
+    def test_public_cli_supports_two_uninstall_reinstall_cycles(self):
+        for cycle in range(2):
+            with self.subTest(cycle=cycle + 1):
+                code, removed = self.uninstall_cli()
+                self.assertEqual(code, 0, removed)
+                self.assertEqual(removed['status'], 'client-uninstalled', removed)
+                self.assertTrue(removed['uninstall_verified'], removed)
+
+                code, installed = self.connection_cli()
+                self.assertEqual(code, 0, installed)
+                self.assertTrue(installed['installed'], installed)
+                self.assertEqual(self.f.backend.record, self.identity)
+                self.assertTrue(install.inspect(self.home)['installed'])
+
     def status_cli(self, action='status'):
         output = io.StringIO()
         with patch.object(sys, 'argv', ['mac_first_install.py', '--action', action]), \
