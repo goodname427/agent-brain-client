@@ -165,6 +165,17 @@ MEMORY_GUIDANCE = (
 )
 
 
+def query_time(value):
+    if value is None:
+        return None
+    if not isinstance(value, str) or not 1 <= len(value) <= 64:
+        raise ValueError('ISO8601 time required')
+    parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError('Explicit time zone required')
+    return parsed.astimezone(timezone.utc)
+
+
 def review_memory_sources(sources,candidates,mode="daily"):
     """Offline policy review of explicit metadata, not collection or authorization.
 
