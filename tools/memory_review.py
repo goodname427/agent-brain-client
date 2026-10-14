@@ -32,6 +32,7 @@ def main():
             result['onboard_check'] = {
                 'status': 'coverage-incomplete' if result['coverage_gaps'] else 'provided-sources-reviewed',
                 'scope': 'explicit-source-metadata-only', 'account_complete': False,
+                'source_discovery_performed': False,
                 'incremental_candidates': result['counts']['candidate'],
                 'equivalent_records': result['counts']['duplicate'], 'data_transferred': False,
             }
