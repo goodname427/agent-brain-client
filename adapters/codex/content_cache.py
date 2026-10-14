@@ -401,7 +401,9 @@ class ContentAdapter:
             kind,identity,record=value['kind'],value['id'],value['record']
             if kind in ('memory','rule'):
                 name='.config/agent-brain-client/content/'+kind+'/'+identity+'.md';desired[name]=record['body'].encode()
-                if kind=='memory':lines.append('Memory '+identity+': '+str(self.home/name))
+                if kind=='memory':
+                    # Discover/read Memory through authorized content tools, not a global AGENTS index.
+                    pass
                 elif record['enabled']:
                     trigger=record['trigger']
                     if trigger['mode']=='always':lines.extend(['## '+record['title'],record['body']])
