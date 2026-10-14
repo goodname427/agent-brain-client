@@ -240,7 +240,8 @@ def validate_uninstalled_state(home, journal, *, allow_unrelated_config_edits=Fa
     """
     adapter = validate_journal(home, journal)
     config = adapter.native_home / 'config.toml'
-    if str(config) not in journal['before']:
+    if not any(Path(name).resolve(strict=False) == config.resolve(strict=False)
+               for name in journal['before']):
         raise install.InstallBlocked('Removal config scope changed')
     resume_paths = set()
     if resume_plan is not None:
@@ -259,7 +260,7 @@ def validate_uninstalled_state(home, journal, *, allow_unrelated_config_edits=Fa
             if resume_receipt is None and install.digest_or_none(current) != resume_plan['before'].get(str(path)):
                 raise install.InstallBlocked('Reinstall preimage changed')
             continue
-        if path != config:
+        if path.resolve(strict=False) != config.resolve(strict=False):
             changed.append(name)
             if require_owned_postimages:
                 raise install.InstallBlocked('Uninstalled state changed')
