@@ -126,8 +126,7 @@ def resolve_connection(home, native, path=None, expected=None):
         if resume_path.exists():
             current = private_json(resume_path)
             if (set(current) != {'schema', 'removed_plan_sha256', 'plan', 'plan_sha256'}
-                    or current['schema'] != 1
-                    or current['removed_plan_sha256'] != journal['registration']['plan_sha256']):
+                    or current['schema'] != 1):
                 raise ValueError('Reinstall recovery metadata changed')
             from content_mcp import pinned
             resume_plan = pinned(current['plan'], current['plan_sha256'])
@@ -136,15 +135,29 @@ def resolve_connection(home, native, path=None, expected=None):
                     or resume_plan.get('release_policy') != journal['registration']['release_policy']
                     or resume_plan.get('release_policy_sha256') != journal['registration']['release_policy_sha256']):
                 raise ValueError('Reinstall recovery scope changed')
-            install_receipt = safe(state / 'content-install-receipt.json')
-            resume_receipt = private_json(owned(install_receipt)) if install_receipt.exists() else None
-            if resume_receipt is not None and resume_receipt.get('phase') == 'applying':
-                if resume_receipt.get('plan_sha256') != current['plan_sha256']:
-                    raise ValueError('Reinstall transaction receipt changed')
-            elif resume_receipt is not None and resume_receipt.get('phase') not in ('complete', 'rolled-back'):
-                raise ValueError('Reinstall transaction phase requires review')
-            validate_uninstalled_state(home, journal, resume_plan=resume_plan,
-                                       resume_receipt=resume_receipt if resume_receipt and resume_receipt.get('phase') == 'applying' else None)
+            removal_plan_sha = journal['registration']['plan_sha256']
+            resumes_this_removal = current['removed_plan_sha256'] == removal_plan_sha
+            is_completed_previous_reinstall = current['plan_sha256'] == removal_plan_sha
+            if not resumes_this_removal and not is_completed_previous_reinstall:
+                raise ValueError('Reinstall recovery metadata changed')
+            if is_completed_previous_reinstall and not resumes_this_removal:
+                # The saved plan is the installation just removed. Let the
+                # existing reinstall_removed branch retire this completed marker
+                # after user confirmation, then prepare the next transaction.
+                validate_uninstalled_state(home, journal,
+                                           allow_unrelated_config_edits=True)
+            else:
+                install_receipt = safe(state / 'content-install-receipt.json')
+                resume_receipt = private_json(owned(install_receipt)) if install_receipt.exists() else None
+                if resume_receipt is not None and resume_receipt.get('phase') == 'applying':
+                    if resume_receipt.get('plan_sha256') != current['plan_sha256']:
+                        raise ValueError('Reinstall transaction receipt changed')
+                elif resume_receipt is not None and resume_receipt.get('phase') not in ('complete', 'rolled-back'):
+                    raise ValueError('Reinstall transaction phase requires review')
+                validate_uninstalled_state(
+                    home, journal, resume_plan=resume_plan,
+                    resume_receipt=resume_receipt if resume_receipt and resume_receipt.get('phase') == 'applying' else None
+                )
         else:
             validate_uninstalled_state(home, journal, allow_unrelated_config_edits=True)
         metadata = journal['registration']
