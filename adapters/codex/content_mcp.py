@@ -4,12 +4,16 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import queue
+import threading
 import uuid
+from typing import Any
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from remote_mcp import Server,ProtocolError,keys,pairs,MAX_MESSAGE
 from content_cache import ContentAdapter,contract,validate_policy,ROOT as CLIENT_ROOT
 from client_pairing import ComponentClient
 from brain_lock import PlatformUnsupported,require_platform,private_mode
+from remote_http import RequestControl,RequestStopped
 
 class ContentServer(Server):
     def __init__(self,adapter,client_version='0.2.0'):
@@ -31,6 +35,7 @@ class ContentServer(Server):
         try:
             request={'request_id':rid,'method':name,'params':params}
             result=self.adapter.invoke(request,reconciles=reconciles) if reconciles is not None else self.adapter.invoke(request)
+        except RequestStopped:raise
         except Exception:result={'request_id':rid,'error':{'code':'content_adapter_blocked','retryable':False},'persistence':{'durable':False}}
         return {'isError':'error' in result,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
 
@@ -48,7 +53,7 @@ class ContentServer(Server):
             kinds=getattr(self.adapter,'policy',{}).get('kinds',['memory','rule','skill'])
             for name,fields in contract.FIELDS.items():
                 if name not in self.adapter.methods():continue
-                properties={field:{'type':'string'} for field in fields}
+                properties:dict[str,Any]={field:{'type':'string'} for field in fields}
                 if 'kinds' in fields:properties['kinds']={'type':'array','items':{'type':'string','enum':kinds},'minItems':1,'uniqueItems':True}
                 if 'kind' in fields:properties['kind']['enum']=kinds
                 if 'record' in fields:properties['record']={'type':'object','description':'Typed v1 record: see PROTOCOL.md. Rules preserve enabled/trigger; Skills preserve files/dependencies. Server validates exact fields.'}
@@ -66,7 +71,7 @@ class ContentServer(Server):
         if isinstance(request,dict) and request.get('method')=='initialize' and isinstance(result,dict):
             self.adapter.refresh()
             result['serverInfo']['name']='agent-brain-content-codex-candidate'
-            result['instructions']=contract.MEMORY_GUIDANCE+'For related or recent saved context, use memory_query or the enabled content_catalog Memory-only query alias (kinds=[memory], query/since/until/limit). Times describe memory updates, not event occurrence. '+'Use approved Memory/Rule/Skill through these Server APIs. Writes enter a private device outbox before transport. Pending means not yet confirmed on Server. local_durable=true with state=local-confirmed means saved in the Server local repository; github_confirmed=false and durable=false mean GitHub backup is pending. Only remote-confirmed with durable=true confirms GitHub persistence. Read/catalog github_backup describes the current backup backlog. Retain exact request_id, record and CAS base on retries; an explicit same-ID retry can refresh a prior local receipt without duplicating the write. Startup/tool boundaries replay pending device writes. Conflicts retain both versions for explicit reconciliation. Reviewed inventory precedes mapping; Rule/Skill import does not enable them. Do not collect native sessions/history, LocalOnly/private material or credentials. Offline reads may use a previously verified snapshot, explicitly marked local_cache.stale=true and durable=false; this never confirms remote freshness or remote absence. Missing or unverified cache remains an error. Refresh does not replace loaded context. Pairing and publication remain separate authorized operations.'
+            result['instructions']=contract.MEMORY_GUIDANCE+'For related or recent saved context, use memory_query or the enabled content_catalog Memory-only query alias (kinds=[memory], query/since/until/limit). Times describe memory updates, not event occurrence. '+'Use approved Memory/Rule/Skill through these Server APIs. Writes enter a private device outbox before transport. Pending means not yet confirmed on Server. local_durable=true with state=local-confirmed means saved in the Server local repository; github_confirmed=false and durable=false mean GitHub backup is pending. Only remote-confirmed with durable=true confirms GitHub persistence. Read/catalog github_backup describes the current backup backlog. Retain exact request_id, record and CAS base on retries; an explicit same-ID retry can refresh a prior local receipt without duplicating the write. Startup and write boundaries replay pending device writes. Ordinary reads fetch fresh Server content without refreshing native mappings. Conflicts retain both versions for explicit reconciliation. Reviewed inventory precedes mapping; Rule/Skill import does not enable them. Do not collect native sessions/history, LocalOnly/private material or credentials. Offline reads may use a previously verified snapshot, explicitly marked local_cache.stale=true and durable=false; this never confirms remote freshness or remote absence. Missing or unverified cache remains an error. Refresh does not replace loaded context. Pairing and publication remain separate authorized operations.'
         return result
 
 def pinned(path,digest):
@@ -113,6 +118,101 @@ def installation_check(client,policy,client_version='0.2.0'):
         if item['kind'] not in policy['kinds'] or not re.fullmatch(r'[a-f0-9]{64}',item.get('revision','')):raise ValueError('Invalid content catalog')
     return {'status':'content-native-protocol-checked','protocol_checked':True,'authentication_checked':True,'tools':sorted(adapter.methods()),'native_changed':False,'model_loaded':'unknown'}
 
+
+def serve(server, source, output, *, request_timeout=90, max_pending=256):
+    """Keep one adapter executor, but receive cancellation while it is working.
+
+    Read deadlines include queue time. No detached adapter work is left after a
+    timeout: its HTTP socket/helper is aborted and its late result is discarded.
+    Active writes finish their durable transaction; retries keep the original ID.
+    """
+    work:queue.Queue=queue.Queue(max_pending)
+    pending:dict[str|int,RequestControl]={}
+    state_lock=threading.Lock();output_lock=threading.Lock();disconnected=threading.Event()
+
+    def emit(rid, *, result=None, error=None):
+        response={'jsonrpc':'2.0','id':rid}
+        response['error' if error is not None else 'result']=error if error is not None else result
+        with output_lock:
+            if disconnected.is_set():return
+            try:
+                output.write(json.dumps(response,ensure_ascii=False)+'\n');output.flush()
+                return
+            except (OSError,ValueError):disconnected.set()
+        # A closed output cannot acknowledge more work. Keep active durable
+        # writes recoverable, but cancel reads and queued operations.
+        with state_lock:controls=list(pending.values())
+        for control in controls:control.cancel()
+
+    def stopped(rid,error):
+        code=-32800 if error.reason=='request_cancelled' else -32001
+        emit(rid,error={'code':code,'message':error.reason})
+
+    def execute():
+        while True:
+            item=work.get()
+            if item is None:
+                return
+            request,rid,control=item
+            try:
+                if control is not None:control.check()
+                params=request.get('params',{}) if isinstance(request,dict) else {}
+                read_only=(request.get('method')=='tools/call' and isinstance(params,dict)
+                           and params.get('name') in ('content_catalog','content_read','memory_query'))
+                if control is not None and read_only:
+                    with control.activate():value=server.handle(request)
+                    control.close(check=True)
+                else:
+                    # Never cancel midway through durable enqueue/CAS/rollback.
+                    if control is not None:control.close(check=True)
+                    value=server.handle(request)
+                if value is not None:emit(rid,result=value)
+            except RequestStopped as error:stopped(rid,error)
+            except ProtocolError as error:emit(rid,error={'code':error.code,'message':error.message})
+            except Exception:emit(rid,error={'code':-32700,'message':'Invalid JSON message.'})
+            finally:
+                if control is not None:
+                    control.close()
+                    with state_lock:
+                        if rid is not None:pending.pop(rid,None)
+
+    worker=threading.Thread(target=execute,name='content-mcp-executor')
+    worker.start()
+    try:
+        while True:
+            raw=source.readline(MAX_MESSAGE+1)
+            if not raw:break
+            if disconnected.is_set():break
+            rid=None;control=None
+            try:
+                if len(raw)>MAX_MESSAGE:raise ProtocolError(-32600,'Message exceeds 128 KB; connection closed.')
+                request=json.loads(raw.decode(),object_pairs_hook=pairs)
+                if isinstance(request,dict) and type(request.get('id')) in (str,int):rid=request['id']
+                if isinstance(request,dict) and request.get('jsonrpc')=='2.0' and request.get('method')=='notifications/cancelled' and 'id' not in request:
+                    params=request.get('params',{})
+                    if isinstance(params,dict) and type(params.get('requestId')) in (str,int):
+                        with state_lock:target=pending.get(params['requestId'])
+                        if target is not None:target.cancel()
+                    continue
+                with state_lock:
+                    if rid is not None:
+                        if rid in pending:raise ProtocolError(-32600,'Request ID already pending.')
+                        if len(pending)>=max_pending:raise ProtocolError(-32000,'MCP request queue full; retry after active work completes.')
+                        control=RequestControl(request_timeout);pending[rid]=control
+                try:work.put_nowait((request,rid,control))
+                except queue.Full:raise ProtocolError(-32000,'MCP request queue full; retry after active work completes.') from None
+            except (ProtocolError,ValueError,UnicodeError) as error:
+                if control is not None:
+                    control.close()
+                    with state_lock:
+                        if rid is not None:pending.pop(rid,None)
+                if isinstance(error,ProtocolError):emit(rid,error={'code':error.code,'message':error.message})
+                else:emit(rid,error={'code':-32700,'message':'Invalid JSON message.'})
+            if len(raw)>MAX_MESSAGE:break
+    finally:
+        work.put(None)
+        worker.join()
+
 def main():
     if sys.argv[1:]==['--self-check']:print(json.dumps(self_check()));return
     parser=argparse.ArgumentParser(description=__doc__)
@@ -155,22 +255,7 @@ def main():
         raw=path.read_bytes()
         if hashlib.sha256(raw).hexdigest()!=args.import_plan_sha256:raise ValueError('Import plan drift')
         adapter.stage_import(json.loads(raw,object_pairs_hook=pairs))
-    server=ContentServer(adapter,args.client_version)
-    while True:
-        raw=sys.stdin.buffer.readline(MAX_MESSAGE+1)
-        if not raw:break
-        rid=None
-        try:
-            if len(raw)>MAX_MESSAGE:raise ProtocolError(-32600,'Message exceeds 128 KB; connection closed.')
-            request=json.loads(raw.decode(),object_pairs_hook=pairs)
-            if isinstance(request,dict) and type(request.get('id')) in (str,int):rid=request['id']
-            value=server.handle(request)
-            if value is None:continue
-            response={'jsonrpc':'2.0','id':rid,'result':value}
-        except ProtocolError as error:response={'jsonrpc':'2.0','id':rid,'error':{'code':error.code,'message':error.message}}
-        except Exception:response={'jsonrpc':'2.0','id':rid,'error':{'code':-32700,'message':'Invalid JSON message.'}}
-        print(json.dumps(response,ensure_ascii=False),flush=True)
-        if len(raw)>MAX_MESSAGE:break
+    serve(ContentServer(adapter,args.client_version),sys.stdin.buffer,sys.stdout)
 
 if __name__=='__main__':
     try:main()
