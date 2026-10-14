@@ -102,7 +102,7 @@ class InstallBoundaries(unittest.TestCase):
             return real(path, *args, **kwargs)
         with patch.object(install,'raw',side_effect=race):
             with self.assertRaisesRegex(install.InstallBlocked,'Preimage race'):
-                install.apply(plan,self.digest(plan),lambda p:None)
+                install.apply(plan,self.f.digest(plan),lambda p:None)
         self.assertIn('synthetic-raced-model',self.f.config.read_text())
         self.assertFalse((self.f.home/'.config/agent-brain-client/codex-mcp.json').exists())
         self.assertFalse((self.f.home/'.config/agent-brain-client/content-install-receipt.json').exists())
