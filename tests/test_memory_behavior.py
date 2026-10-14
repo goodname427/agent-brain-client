@@ -63,6 +63,15 @@ class MemoryBehavior(unittest.TestCase):
         self.assertFalse(checked['account_complete'])
         self.assertFalse(checked['data_transferred'])
 
+    def test_provided_target_list_never_proves_harness_or_account_coverage(self):
+        sources, rows = self.material()
+        sources = sources[:1]
+        report = self.review_cli(sources, rows)
+        self.assertEqual(report['onboard_check']['status'], 'provided-sources-reviewed')
+        self.assertFalse(report['onboard_check']['account_complete'])
+        self.assertFalse(report['onboard_check']['source_discovery_performed'])
+        self.assertEqual(report['onboard_check']['scope'], 'explicit-source-metadata-only')
+
     def test_repeated_equivalent_source_review_requires_no_full_reupload(self):
         sources, rows = self.material()
         sources = sources[:1]
