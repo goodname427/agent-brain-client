@@ -40,7 +40,7 @@ class MemoryBehavior(unittest.TestCase):
         record_schema = put['inputSchema']['properties']['record']
         self.assertEqual(len(record_schema['oneOf']), 3)
         self.assertIn('description', record_schema['oneOf'][2]['required'])
-        self.assertIn('SKILL.md', record_schema['oneOf'][2]['required'])
+        self.assertIn('SKILL.md', record_schema['oneOf'][2]['properties']['files']['required'])
 
 
     def review_cli(self, sources, rows):
@@ -316,7 +316,7 @@ class MemoryBehavior(unittest.TestCase):
             }
         )
         self.assertIn(MEMORY_GUIDANCE, reply["instructions"])
-        self.assertIn(MEMORY_GUIDANCE, (fixture.home / ".codex/AGENTS.md").read_text())
+        self.assertIn(content_mcp.contract.HOST_GUIDANCE, (fixture.home / ".codex/AGENTS.md").read_text())
 
     def test_tool_only_reports_metadata_and_guidance_has_no_three_item_import_cap(self):
         sources, rows = self.material()
