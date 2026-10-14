@@ -14,16 +14,40 @@ from content_cache import ContentAdapter,contract,validate_policy,ROOT as CLIENT
 from client_pairing import ComponentClient
 from brain_lock import PlatformUnsupported,require_platform,private_mode
 from remote_http import RequestControl,RequestStopped
+from client_release import UPDATE_GUIDANCE
+
+
+class ContentParameterError(ProtocolError):
+    def __init__(self,message):
+        super().__init__(-32602,message)
+
+
+def worker_commit(client_version):
+    """Observe this immutable package's receipt, never the current active pointer."""
+    try:
+        path=CLIENT_ROOT/'verified.json'
+        if path.is_symlink() or not path.is_file() or path.stat().st_size>65536:return None
+        receipt=json.loads(path.read_bytes());manifest=receipt['manifest']
+        commit=receipt['commit']
+        import re
+        if manifest['version']!=client_version or not isinstance(commit,str) or not re.fullmatch(r'[a-f0-9]{40}',commit):return None
+        if manifest['files']['adapters/codex/content_mcp.py']!=hashlib.sha256(Path(__file__).read_bytes()).hexdigest():return None
+        return commit
+    except Exception:return None
 
 class ContentServer(Server):
     def __init__(self,adapter,client_version='0.2.0'):
         super().__init__(None,client_version);self.adapter=adapter
+        self.client_runtime={'running_worker_version':client_version,'running_worker_commit':worker_commit(client_version)}
 
     def invoke(self,name,arguments):
         try:
-            if name not in self.adapter.methods() or not isinstance(arguments,dict):raise ValueError()
+            if name not in self.adapter.methods():raise ContentParameterError('Unknown or unavailable content tool; inspect tools/list.')
+            if not isinstance(arguments,dict):raise ContentParameterError('Content tool arguments must be an object.')
             if name=='content_catalog' and set(arguments)&{'query','since','until','limit'}:
-                if arguments.get('kinds')!=['memory'] or set(arguments)-{'kinds','query','since','until','limit','request_id'}:raise ValueError()
+                if arguments.get('kinds')!=['memory']:raise ContentParameterError('Catalog query options are a Memory-only retrieval alias. For complete coverage pass kinds only.')
+                if 'limit' in arguments and (type(arguments['limit']) is not int or not 1<=arguments['limit']<=3):raise ContentParameterError('content_catalog has no pagination limit. For complete Onboard coverage pass kinds only; Memory query alias limit must be an integer from 1 to 3.')
+                if set(arguments)-{'kinds','query','since','until','limit','request_id'}:raise ValueError()
                 arguments={key:value for key,value in arguments.items() if key!='kinds'};name='memory_query'
             if name=='memory_query':arguments=dict({'kind':'memory','query':'','since':None,'until':None,'limit':3},**arguments)
             required=contract.FIELDS[name]|({'request_id'} if name in contract.WRITES else set())
@@ -31,12 +55,17 @@ class ContentServer(Server):
             if set(arguments)-allowed or required-set(arguments):raise ValueError()
             params=dict(arguments);reconciles=params.pop('reconciles',None);rid=params.pop('request_id',uuid.uuid4().hex);contract.validate(name,params)
             if not isinstance(rid,str) or not 16<=len(rid)<=128 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in rid):raise ValueError()
-        except (ValueError,TypeError):raise ProtocolError(-32602,'Invalid typed content request. Writes require a stable request_id and read revision.') from None
+        except ContentParameterError:raise
+        except (ValueError,TypeError):
+            message='Invalid '+name+' arguments; use the exact fields and types in this tool input schema.'
+            if name in contract.WRITES:message+=' Writes require a stable request_id and the expected_revision obtained from content_read.'
+            raise ContentParameterError(message) from None
         try:
             request={'request_id':rid,'method':name,'params':params}
             result=self.adapter.invoke(request,reconciles=reconciles) if reconciles is not None else self.adapter.invoke(request)
         except RequestStopped:raise
-        except Exception:result={'request_id':rid,'error':{'code':'content_adapter_blocked','retryable':False},'persistence':{'durable':False}}
+        except Exception:result={'request_id':rid,'error':{'code':'content_adapter_blocked','retryable':False,'stage':'content-validation'},'persistence':{'durable':False}}
+        result=dict(result,client_runtime=self.client_runtime)
         return {'isError':'error' in result,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
 
     def handle(self,request):
@@ -61,17 +90,21 @@ class ContentServer(Server):
                     properties.update(query={'type':'string','default':''},since={'type':['string','null'],'default':None,'description':'Inclusive memory update time, ISO8601 with offset; not event occurrence time.'},until={'type':['string','null'],'default':None},limit={'type':'integer','minimum':1,'maximum':3,'default':3})
                     properties['kind']={'type':'string','enum':['memory'],'default':'memory'}
                 if name=='content_catalog':
-                    properties.update(query={'type':'string','description':'Optional Memory-only query alias; kinds must be [memory].'},since={'type':['string','null']},until={'type':['string','null']},limit={'type':'integer','minimum':1,'maximum':3})
+                    properties.update(query={'type':'string','description':'Optional Memory-only retrieval alias; not full inventory. Prefer memory_query for retrieval.'},since={'type':['string','null']},until={'type':['string','null']},limit={'type':'integer','minimum':1,'maximum':3,'description':'Memory retrieval alias only; not pagination. Omit query/since/until/limit for complete Onboard inventory.'})
                 required=[] if name=='memory_query' else list(sorted(fields))
                 if name in contract.WRITES:properties['request_id']={'type':'string','pattern':'^[A-Za-z0-9_-]{16,128}$'};required.append('request_id')
                 if name=='content_put':properties['reconciles']={'type':'object','description':'Explicit local conflict references after merging both versions; never sent to Server. Only durable confirmation resolves them.','properties':{'request_ids':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256},'source_keys':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256}},'required':['request_ids','source_keys'],'additionalProperties':False}
-                tools.append({'name':name,'description':'Approved cloud content only. Server is the sole write boundary; retain CAS revision and request_id on write retries. Transport failures may return a verified stale snapshot with local_cache.stale=true; cache misses never prove remote absence. Local cache refresh does not reload existing model context.','inputSchema':{'type':'object','properties':properties,'required':required,'additionalProperties':False},'annotations':{'readOnlyHint':name not in contract.WRITES,'destructiveHint':name=='content_remove','idempotentHint':True}})
+                description='Approved cloud content only. Server is the sole write boundary; retain CAS revision and request_id on write retries. Transport failures may return a verified stale snapshot with local_cache.stale=true; cache misses never prove remote absence. Local cache refresh does not reload existing model context. '
+                if name=='content_catalog':description+='Complete authorized inventory: pass kinds only. It has no pagination limit. Query/since/until/limit selects a Memory-only retrieval alias capped at 3 and does not prove complete Onboard coverage. '
+                description+='Running worker version: '+self.client_version+'. '+UPDATE_GUIDANCE
+                tools.append({'name':name,'description':description,'inputSchema':{'type':'object','properties':properties,'required':required,'additionalProperties':False},'annotations':{'readOnlyHint':name not in contract.WRITES,'destructiveHint':name=='content_remove','idempotentHint':True}})
             return {'tools':tools}
         result=super().handle(request)
         if isinstance(request,dict) and request.get('method')=='initialize' and isinstance(result,dict):
             self.adapter.refresh()
             result['serverInfo']['name']='agent-brain-content-codex-candidate'
             result['instructions']=contract.MEMORY_GUIDANCE+'For related or recent saved context, use memory_query or the enabled content_catalog Memory-only query alias (kinds=[memory], query/since/until/limit). Times describe memory updates, not event occurrence. '+'Use approved Memory/Rule/Skill through these Server APIs. Writes enter a private device outbox before transport. Pending means not yet confirmed on Server. local_durable=true with state=local-confirmed means saved in the Server local repository; github_confirmed=false and durable=false mean GitHub backup is pending. Only remote-confirmed with durable=true confirms GitHub persistence. Read/catalog github_backup describes the current backup backlog. Retain exact request_id, record and CAS base on retries; an explicit same-ID retry can refresh a prior local receipt without duplicating the write. Startup and write boundaries replay pending device writes. Ordinary reads fetch fresh Server content without refreshing native mappings. Conflicts retain both versions for explicit reconciliation. Reviewed inventory precedes mapping; Rule/Skill import does not enable them. Do not collect native sessions/history, LocalOnly/private material or credentials. Offline reads may use a previously verified snapshot, explicitly marked local_cache.stale=true and durable=false; this never confirms remote freshness or remote absence. Missing or unverified cache remains an error. Refresh does not replace loaded context. Pairing and publication remain separate authorized operations.'
+            result['instructions']+=' '+UPDATE_GUIDANCE+' For complete Onboard inventory use content_catalog with kinds only; retrieval limit is not a paging control.'
         return result
 
 def pinned(path,digest):
@@ -168,7 +201,10 @@ def serve(server, source, output, *, request_timeout=90, max_pending=256):
                     value=server.handle(request)
                 if value is not None:emit(rid,result=value)
             except RequestStopped as error:stopped(rid,error)
-            except ProtocolError as error:emit(rid,error={'code':error.code,'message':error.message})
+            except ProtocolError as error:
+                payload:dict[str,Any]={'code':error.code,'message':error.message}
+                if isinstance(error,ContentParameterError):payload['data']={'stage':'parameters','client_runtime':server.client_runtime}
+                emit(rid,error=payload)
             except Exception:emit(rid,error={'code':-32700,'message':'Invalid JSON message.'})
             finally:
                 if control is not None:

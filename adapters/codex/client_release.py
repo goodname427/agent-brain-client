@@ -32,6 +32,9 @@ SSH_CONTENT_CLIENT_FILES=tuple(n for n in CONTENT_CLIENT_FILES if n!='native/Dev
 SSH_CONTENT_CAPABILITIES=['codex-stdio-mcp','personal-content-explicit','ssh-server-credential-proxy']
 HTTPS_CONTENT_CLIENT_FILES=tuple(n for n in CONTENT_CLIENT_FILES if n!='native/DeviceComponent.swift')+('adapters/codex/https_content.py','adapters/codex/system_credentials.py','native/CredentialStore.swift')
 HTTPS_CONTENT_CAPABILITIES=['codex-stdio-mcp','personal-content-explicit','https-system-credential']
+CHECK_UPDATE_COMMAND='sh tools/install-mac.sh --action check-update'
+UPDATE_COMMAND='sh tools/install-mac.sh --action update'
+UPDATE_GUIDANCE=('For Agent Brain software updates, use the public Client repository entry: '+CHECK_UPDATE_COMMAND+' then '+UPDATE_COMMAND+'. Both reuse the verified installed release policy; main/tags are not the installed release channel. Status and repeating install only verify the local registration. The active package, running worker and latest channel release are separate states. A changed active package requires a normal new MCP worker; never claim it is loaded from the package version alone. Confirm client_runtime.running_worker_version before continuing Onboard. Record this run\'s version and actual results; prior read/timeout counts are history, not a new test.')
 DEPENDENCY_RUNTIME={'dependency_policy','dependency_policy_sha256'}
 HTTPS_CONTENT_RUNTIME={'https_profile','https_profile_sha256','credential_source_sha256','content_policy','content_policy_sha256','device_home','codex_home','content_cache'}
 SSH_CONTENT_RUNTIME={'ssh_profile','ssh_profile_sha256','content_policy','content_policy_sha256','device_home','codex_home','content_cache'}

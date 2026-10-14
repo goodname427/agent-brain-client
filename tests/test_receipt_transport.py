@@ -25,7 +25,10 @@ class ReceiptTransport(unittest.TestCase):
                 for key, bad in [('github_confirmed', True), ('local_durable', False), ('commit', 'bad')]:
                     original = response['persistence'][key]
                     response['persistence'][key] = bad
-                    self.assertEqual(client.request(request)['error']['code'], 'transport_unconfirmed')
+                    failure=client.request(request)['error']
+                    self.assertEqual(failure['code'], 'invalid_write_receipt')
+                    self.assertEqual(failure['stage'], 'response-validation')
+                    self.assertTrue(failure['retryable'])
                     response['persistence'][key] = original
                 client.request(dict(request, method='content_read'))
                 self.assertIsNone(client.opener.open.call_args.args[0].get_header('X-agent-brain-write-receipt'))

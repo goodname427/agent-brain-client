@@ -129,6 +129,26 @@ typed records, revisions and scope checks remain required. Mapping refresh and
 outbox/import recovery still run at MCP startup and after confirmed writes.
 Read responses report `local_refresh.status:read-only` and do not claim model reload.
 
+Full inventory uses `content_catalog` with `kinds` only. The optional Memory-only
+query/since/until/limit alias is bounded retrieval (limit 1..3), not pagination or
+full Onboard coverage. Invalid parameters are local JSON-RPC `-32602`, with
+`data.stage:parameters`; no adapter or HTTP request is made. Read parameter
+errors do not request write-only CAS fields.
+
+Content MCP tool results include `client_runtime.running_worker_version` and,
+when its immutable verified package receipt is available, `running_worker_commit`.
+This observes the serving worker, not the mutable active pointer. The public
+repository check-update/update commands reuse the registered release policy;
+CLI active-package and channel-candidate versions do not prove worker reload.
+
+Client HTTP failures expose only safe categories: `transport` (no HTTP status),
+`http` (actual status when available), `response-parse` and `response-validation`.
+Invalid JSON, mismatched IDs and invalid write receipts are not reported as
+network transport failures or served from stale snapshots. Unknown write results
+remain retryable with the original request ID and CAS parameters. Raw exception
+text, headers and error-body details are omitted; content validation and local
+policy/credential failures have separate stages.
+
 The content MCP executor receives cancellation notifications while processing
 requests. Read requests have a 90-second total deadline including queue time;
 expired or cancelled queued requests do not start transport. Active read I/O is
