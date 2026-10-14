@@ -176,9 +176,9 @@ class ClientUninstall(unittest.TestCase):
     def test_status_and_reinstall_accept_unrelated_config_changes_without_losing_them(self):
         self.remove()
         edited = (
-            'model = "synthetic-status-model"\\n'
-            '[features]\\nparallel = true\\n'
-            '[mcp_servers.other]\\ncommand = "preserve-after-status"\\n'
+            'model = "synthetic-status-model"\n'
+            '[features]\nparallel = true\n'
+            '[mcp_servers.other]\ncommand = "preserve-after-status"\n'
         )
         self.f.config.write_text(edited)
         journal = lifecycle.read_removal(self.home)
