@@ -77,7 +77,7 @@ sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action status
 
 确认 `Continue` 后移除本工具 MCP 表、登记和哈希一致的自有 Memory/Rule/Skill 文件；只删自有指令块，保留用户指令与其他 Codex 设置。空的自有 Skill 目录移除；不递归删除目录。退役缓存的 owned/active 映射指针，使再次安装能够重建相同版本映射。`client-uninstalled` 表示入口登记及映射已移除；不能以仍存有恢复材料称已安装，也不能以仍活着的旧进程称卸载验证通过。
 
-卸载后的 `status` 会只读校验完成回执及其中每个事务文件的实际后像，包括 MCP 配置、登记、自有映射和 owned/active 指针。匹配才返回 `client-uninstalled`、`uninstall_verified:true` 和核验数量。登记残留、文件被改回或后像漂移返回 `uninstall-state-review-required`、`uninstall_verified:false` 与安全原因，退出码非零；回执损坏或链接同样停止核验。后续用户对回执记录中的配置或指令文件编辑也会报告后像变化，需区分用户编辑与残留，不据此断言已经重新安装。状态检查不删文件、不修复、不创建锁或访问凭据；重复查询保留原现场。已完成的重新安装按新登记核验，不拿旧卸载后像判断。
+卸载后的 `status` 会只读验证回执、所有 Agent Brain 自有文件后像，以及 Codex 配置仍可解析且不含 Agent Brain 表。用户对其他模型、MCP 表或 TOML 排版的合法改动会保留，仍可返回 `client-uninstalled` 与 `uninstall_verified:true`。自有登记/映射残留、自有文件漂移、非法 TOML、Agent Brain 表冲突、回执损坏或链接均返回 `uninstall-state-review-required`、`uninstall_verified:false` 与安全原因，退出码非零。状态检查不删文件、不修复、不创建锁或访问凭据；重复查询保留原现场。已完成的重新安装按新登记核验，不拿旧卸载后像判断。
 
 默认保留专用 login Keychain 身份、固定 helper/bootstrap、依赖、profile/policy、安装及卸载前后像、outbox/imports 和完整快照，用于再次安装和安全恢复。它们主要位于 `~/.config/agent-brain-client`，原有安装也可能使用自己的已登记私有路径；不会卸载 Codex、改变 Server/cloud Data、撤销服务端设备或删除未同步数据。这是明确的可恢复卸载，没有“彻底擦除身份/数据”选项。
 
