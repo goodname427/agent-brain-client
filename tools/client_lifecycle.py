@@ -389,7 +389,7 @@ def status(home):
             except Exception:
                 return dict(review, reason='uninstall-postimage-unverified')
             if changed:
-                return dict(review, reason='uninstall-postimage-changed', changed_postimages=changed)
+                return dict(review, reason='uninstall-postimage-changed', changed_postimages=len(changed))
             return {'status': 'client-uninstalled', 'installed': False, 'native_changed': False,
                     'uninstall_verified': True, 'verified_postimages': len(journal['after'])}
     if not registration.exists():
