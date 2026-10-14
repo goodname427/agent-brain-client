@@ -107,7 +107,7 @@ def resolve_connection(home, native, path=None, expected=None):
         return connection_file(path, expected)
     if expected is not None:
         raise ValueError("An expected file digest requires an explicit file")
-    from client_lifecycle import read_removal, validate_journal, validate_uninstalled_state
+    from client_lifecycle import read_removal, validate_uninstalled_state
     from content_install import inspect, policy_file
 
     state = safe(Path(home) / '.config/agent-brain-client')
@@ -488,8 +488,7 @@ def existing_connection(home, native, connection, metadata):
 
 def reinstall_removed(home, native, connection, *, store=None, transport=None, secure_input=None, installer=None):
     """Reuse the original identity/config/cache; update only the fixed source entry."""
-    from client_lifecycle import read_removal, validate_journal, decode
-    from content_install import raw, digest_or_none
+    from client_lifecycle import read_removal, validate_journal
     removed = read_removal(home)
     validate_journal(home, removed)
     metadata = removed['registration']
