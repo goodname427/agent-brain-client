@@ -185,6 +185,41 @@ class PublicUpdate(unittest.TestCase):
         self.assertEqual(options["env"]["CODEX_HOME"], str(self.f.native))
         self.assertEqual(self.f.f.config.read_bytes(), self.native_before)
 
+    def test_runtime_failure_reports_update_review_without_install_fallback(self):
+        output = io.StringIO()
+        with (
+            patch.object(sys, "argv", ["mac_first_install.py", "--action", "update"]),
+            patch.object(sys, "stdout", output),
+            patch.object(
+                wizard,
+                "reexec_update_runtime",
+                side_effect=ValueError("SYNTHETIC_PRIVATE_RUNTIME"),
+            ),
+            patch.object(
+                wizard, "run", side_effect=AssertionError("No install fallback")
+            ),
+        ):
+            code = wizard.main()
+        result = json.loads(output.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(result["status"], "client-update-review-required")
+        self.assertFalse(result["channel_checked"])
+        self.assertNotIn("SYNTHETIC_PRIVATE", output.getvalue())
+
+    def test_unverified_post_update_state_does_not_report_previous_version_as_current(
+        self,
+    ):
+        def failed_update(channel):
+            self.active = None
+            return {"status": "release-review-required"}
+
+        with patch.object(self.channel, "update", failed_update):
+            result = self.action("update")
+        self.assertEqual(result["status"], "client-update-review-required")
+        self.assertIsNone(result["active_package_version"])
+        self.assertIsNone(result["latest_channel_version"])
+        self.assertIn("No active package was verified", result["next_action"])
+
     def test_repeating_install_points_to_public_update_without_updater(self):
         with patch.object(
             wizard.ClientReleases,

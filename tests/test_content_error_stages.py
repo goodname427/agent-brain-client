@@ -192,13 +192,31 @@ class HTTPStages(unittest.TestCase):
             self.assertNotIn("SYNTHETIC_PRIVATE", json.dumps(result))
 
     def test_success_status_error_is_sanitized_and_invalid_error_is_validation(self):
-        response = {'request_id': self.request['request_id'], 'error': {'code': 'forbidden', 'retryable': False, 'debug': 'SYNTHETIC_PRIVATE_DEBUG'}}
+        response = {
+            "request_id": self.request["request_id"],
+            "error": {
+                "code": "forbidden",
+                "retryable": False,
+                "debug": "SYNTHETIC_PRIVATE_DEBUG",
+            },
+        }
         self.client.opener.open.return_value.__enter__.return_value.status = 200
         result = self.response(json.dumps(response).encode())
-        self.assertEqual(result['error'], {'code': 'forbidden', 'retryable': False, 'stage': 'http', 'http_status': 200})
-        self.assertNotIn('SYNTHETIC_PRIVATE', json.dumps(result))
-        response['error']['retryable'] = 'false'
-        self.assertEqual(self.response(json.dumps(response).encode())['error']['code'], 'invalid_response_error')
+        self.assertEqual(
+            result["error"],
+            {
+                "code": "forbidden",
+                "retryable": False,
+                "stage": "http",
+                "http_status": 200,
+            },
+        )
+        self.assertNotIn("SYNTHETIC_PRIVATE", json.dumps(result))
+        response["error"]["retryable"] = "false"
+        self.assertEqual(
+            self.response(json.dumps(response).encode())["error"]["code"],
+            "invalid_response_error",
+        )
 
 
 if __name__ == "__main__":

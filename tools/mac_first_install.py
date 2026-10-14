@@ -733,9 +733,15 @@ def manage_update(home, action, *, channel_factory=None):
             after = channel.verified_active()
             if updated.get('status') not in ('current', 'updated') or after is None:
                 if after is not None:
-                    result.update(active_package_version=after['version'], active_package_commit=after.get('commit'))
+                    changed = after != before
+                    result.update(active_package_version=after['version'], active_package_commit=after.get('commit'),
+                                  active_package_changed=changed, reload_required=True if changed else None)
+                else:
+                    result.update(active_package_version=None, active_package_commit=None,
+                                  active_package_changed=None, reload_required=None)
                 return dict(result, status='client-update-unavailable' if updated.get('status') == 'offline' else 'client-update-review-required',
-                            next_action='Update was not confirmed; the verified predecessor is retained or restored. Retry the same public update entry after reviewing the installation/channel state. Do not repeat pairing or import.')
+                            next_action='Update was not confirmed. '+('A verified active package is retained or restored. ' if after is not None else 'No active package was verified; preserve recovery material. ')+
+                                        'Retry the same public update entry after reviewing the installation/channel state. Do not repeat pairing or import.')
             changed = after != before
             result.update(status='client-update-updated' if changed else 'client-update-current',
                           active_package_version=after['version'], active_package_commit=after.get('commit'),
@@ -783,10 +789,17 @@ def main():
                          'native_changed': False, 'device_credentials_accessed': False,
                          'next_action': 'Update management reuses the verified registration; do not pass a replacement connection or invitation.'}
             else:
-                delegated = reexec_update_runtime(home, args.action)
-                if delegated is not None:
-                    return delegated
-                value = manage_update(home, args.action)
+                try:
+                    delegated = reexec_update_runtime(home, args.action)
+                    if delegated is not None:
+                        return delegated
+                    value = manage_update(home, args.action)
+                except Exception:
+                    value = {'operation': args.action, 'status': 'client-update-review-required',
+                             'reason': 'existing-runtime-or-registration-unverified',
+                             'channel_checked': False, 'native_changed': False,
+                             'device_credentials_accessed': False,
+                             'next_action': 'Restore the verified original runtime/registration; do not prepare new dependencies, replace bindings or re-pair.'}
             print(json.dumps(value))
             return lifecycle_exit(args.action, value)
         if args.action != "install":
