@@ -23,7 +23,7 @@ class MemoryBehavior(unittest.TestCase):
             def refresh(self):
                 return {'status': 'synthetic-only'}
 
-        server = content_mcp.ContentServer(Adapter(), client_version='synthetic')
+        server = content_mcp.ContentServer(Adapter(), client_version='0.2.12')
         initialized = server.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
                                      'params': {'protocolVersion': '2025-11-25', 'capabilities': {},
                                                 'clientInfo': {'name': 'synthetic-test', 'version': '1'}}})
@@ -330,8 +330,10 @@ class MemoryBehavior(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(json.loads(result.stdout)["counts"]["candidate"], 5)
-        self.assertIn("migrate all existing memories", MEMORY_GUIDANCE)
-        self.assertIn("not an import", MEMORY_GUIDANCE)
+        self.assertIn("agent-brain-memory", MEMORY_GUIDANCE)
+        self.assertIn("agent-brain-onboard", MEMORY_GUIDANCE)
+        self.assertIn("not a second behavior policy", MEMORY_GUIDANCE)
+        self.assertNotIn("migrate all existing memories", MEMORY_GUIDANCE)
 
 
 if __name__ == "__main__":
