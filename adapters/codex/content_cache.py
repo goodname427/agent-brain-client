@@ -395,13 +395,15 @@ class ContentAdapter:
         return snapshot
 
     def _mapping(self,snapshot,owned):
-        desired={};lines=['# Agent Brain cloud content','This mapping is a rebuildable cache. Read/upload through the approved Server API; do not write GitHub directly.','Read at most three relevant memory topics. Read on-demand rules when relevant; conditional rules apply to matching paths. Cloud refresh does not replace already loaded model context.']
-        lines.append(contract.MEMORY_GUIDANCE)
+        desired={};lines=['# Agent Brain cloud content','This mapping is a rebuildable cache. Read/upload through the approved Server API; do not write GitHub directly.','Cloud refresh does not replace already loaded model context.']
+        lines.append(contract.HOST_GUIDANCE)
         for value in snapshot['records']:
             kind,identity,record=value['kind'],value['id'],value['record']
             if kind in ('memory','rule'):
                 name='.config/agent-brain-client/content/'+kind+'/'+identity+'.md';desired[name]=record['body'].encode()
-                if kind=='memory':lines.append('Memory '+identity+': '+str(self.home/name))
+                if kind=='memory':
+                    # Discover/read Memory through authorized content tools, not a global AGENTS index.
+                    pass
                 elif record['enabled']:
                     trigger=record['trigger']
                     if trigger['mode']=='always':lines.extend(['## '+record['title'],record['body']])
@@ -509,7 +511,11 @@ class ContentAdapter:
                 self._skill_dirs(desired,owned['files'])
                 if any(self.cache==self._path(name) or self.cache in self._path(name).parents for name in desired):raise CacheBlocked()
                 active=self._load('active.json')
-                if active=={'commit':snapshot['commit'],'snapshot_sha':sha(contract.encode(snapshot))} and self._load('snapshots/'+snapshot['commit']+'.json')==snapshot:
+                mapping_matches = (set(owned['files']) == set(desired) and
+                                  all(owned['files'].get(name) == sha(value)
+                                      for name, value in desired.items()))
+                if (active=={'commit':snapshot['commit'],'snapshot_sha':sha(contract.encode(snapshot))} and
+                        self._load('snapshots/'+snapshot['commit']+'.json')==snapshot and mapping_matches):
                     self._pin_offline_snapshot(snapshot)
                     return {'status':'content-current','native_changed':False,'model_loaded':'unknown'}
                 before={};after={}

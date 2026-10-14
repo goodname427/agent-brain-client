@@ -238,12 +238,11 @@ def validate_uninstalled_state(home, journal, *, allow_unrelated_config_edits=Fa
     intact; malformed TOML, an Agent Brain table, and every other owned
     postimage change still require review.
     """
-    validate_journal(home, journal)
-    config_paths = [Path(name) for name in journal['before']
-                    if Path(name).name == 'config.toml']
-    if len(config_paths) != 1:
+    adapter = validate_journal(home, journal)
+    config = adapter.native_home / 'config.toml'
+    if not any(Path(name).resolve(strict=False) == config.resolve(strict=False)
+               for name in journal['before']):
         raise install.InstallBlocked('Removal config scope changed')
-    config = config_paths[0]
     resume_paths = set()
     if resume_plan is not None:
         _, _, scoped = install.plan_scope(resume_plan)
@@ -261,7 +260,7 @@ def validate_uninstalled_state(home, journal, *, allow_unrelated_config_edits=Fa
             if resume_receipt is None and install.digest_or_none(current) != resume_plan['before'].get(str(path)):
                 raise install.InstallBlocked('Reinstall preimage changed')
             continue
-        if path != config:
+        if path.resolve(strict=False) != config.resolve(strict=False):
             changed.append(name)
             if require_owned_postimages:
                 raise install.InstallBlocked('Uninstalled state changed')
@@ -287,6 +286,8 @@ def validate_uninstalled_state(home, journal, *, allow_unrelated_config_edits=Fa
             if require_owned_postimages:
                 raise install.InstallBlocked('Agent Brain MCP registration conflict')
             changed.append(name)
+        elif name in changed:
+            changed.remove(name)
     return changed
 
 def finish_removal(home, journal):
