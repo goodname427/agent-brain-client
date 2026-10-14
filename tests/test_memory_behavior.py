@@ -11,9 +11,38 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "adapters/codex"))
 from content_contract import MEMORY_GUIDANCE, ONBOARD_COVERAGE_GUIDANCE, installation_follow_up, review_memory_sources
+import content_mcp
 
 
 class MemoryBehavior(unittest.TestCase):
+    def test_consumer_instructions_delegate_behavior_and_describe_complete_target_schema(self):
+        class Adapter:
+            policy = {'kinds': ['memory', 'rule', 'skill']}
+            def methods(self):
+                return set(content_mcp.contract.FIELDS)
+            def refresh(self):
+                return {'status': 'synthetic-only'}
+
+        server = content_mcp.ContentServer(Adapter(), client_version='0.2.12')
+        initialized = server.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+                                     'params': {'protocolVersion': '2025-11-25', 'capabilities': {},
+                                                'clientInfo': {'name': 'synthetic-test', 'version': '1'}}})
+        instructions = initialized['instructions']
+        self.assertIn('agent-brain-memory', instructions)
+        self.assertIn('agent-brain-onboard', instructions)
+        self.assertIn('AgentBrain destination records only', instructions)
+        self.assertNotIn('Do not importance-filter existing memories', instructions)
+        server.handle({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
+        listed = server.handle({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'})
+        catalog = next(tool for tool in listed['tools'] if tool['name'] == 'content_catalog')
+        self.assertIn('does not discover Harness-native sources', catalog['description'])
+        put = next(tool for tool in listed['tools'] if tool['name'] == 'content_put')
+        record_schema = put['inputSchema']['properties']['record']
+        self.assertEqual(len(record_schema['oneOf']), 3)
+        self.assertIn('description', record_schema['oneOf'][2]['required'])
+        self.assertIn('SKILL.md', record_schema['oneOf'][2]['properties']['files']['required'])
+
+
     def review_cli(self, sources, rows):
         result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'tools/memory_review.py')],
                                 input=json.dumps({'mode': 'onboard', 'sources': sources, 'candidates': rows}),
@@ -35,6 +64,11 @@ class MemoryBehavior(unittest.TestCase):
             self.assertEqual(result['onboard_check']['next_action'], ONBOARD_COVERAGE_GUIDANCE)
             self.assertFalse(result['onboard_check']['data_transferred'])
             self.assertFalse(result['onboard_check']['source_scan_performed'])
+            self.assertTrue(result['onboard_check']['harness_source_inventory_required'])
+            self.assertFalse(result['onboard_check']['agentbrain_catalog_is_source_inventory'])
+            self.assertIn('agent-brain-onboard', result['onboard_check']['next_action'])
+            self.assertIn('source_scan_performed', result['onboard_check'])
+            self.assertFalse(result['onboard_check']['data_transferred'])
         self.assertEqual(original, before)
         self.assertNotIn('onboard_check', installation_follow_up({'installed': False}))
 
@@ -52,9 +86,20 @@ class MemoryBehavior(unittest.TestCase):
         new = dict(rows[0], id='new-small-fact', source_id='approved-new-harness', utility='none')
         checked = self.review_cli(sources, rows + [new])
         self.assertEqual(checked['onboard_check']['status'], 'provided-sources-reviewed')
+        self.assertFalse(checked['onboard_check']['source_discovery_performed'])
+        self.assertEqual(checked['onboard_check']['scope'], 'explicit-source-metadata-only')
         self.assertEqual(next(r['decision'] for r in checked['candidates'] if r['id'] == 'new-small-fact'), 'candidate')
         self.assertFalse(checked['account_complete'])
         self.assertFalse(checked['data_transferred'])
+
+    def test_provided_target_list_never_proves_harness_or_account_coverage(self):
+        sources, rows = self.material()
+        sources = sources[:1]
+        report = self.review_cli(sources, rows)
+        self.assertEqual(report['onboard_check']['status'], 'provided-sources-reviewed')
+        self.assertFalse(report['onboard_check']['account_complete'])
+        self.assertFalse(report['onboard_check']['source_discovery_performed'])
+        self.assertEqual(report['onboard_check']['scope'], 'explicit-source-metadata-only')
 
     def test_repeated_equivalent_source_review_requires_no_full_reupload(self):
         sources, rows = self.material()
@@ -271,7 +316,7 @@ class MemoryBehavior(unittest.TestCase):
             }
         )
         self.assertIn(MEMORY_GUIDANCE, reply["instructions"])
-        self.assertIn(MEMORY_GUIDANCE, (fixture.home / ".codex/AGENTS.md").read_text())
+        self.assertIn(content_mcp.contract.HOST_GUIDANCE, (fixture.home / ".codex/AGENTS.md").read_text())
 
     def test_tool_only_reports_metadata_and_guidance_has_no_three_item_import_cap(self):
         sources, rows = self.material()
@@ -285,8 +330,29 @@ class MemoryBehavior(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(json.loads(result.stdout)["counts"]["candidate"], 5)
-        self.assertIn("migrate all existing memories", MEMORY_GUIDANCE)
-        self.assertIn("not an import", MEMORY_GUIDANCE)
+        self.assertIn("agent-brain-memory", MEMORY_GUIDANCE)
+        self.assertIn("agent-brain-onboard", MEMORY_GUIDANCE)
+        self.assertIn("not a second behavior policy", MEMORY_GUIDANCE)
+        self.assertNotIn("migrate all existing memories", MEMORY_GUIDANCE)
+
+
+    def test_guidance_distinguishes_server_save_from_backup_and_protocol_defers_behavior(self):
+        self.assertIn("local-confirmed", MEMORY_GUIDANCE)
+        self.assertIn("local_durable=true", MEMORY_GUIDANCE)
+        self.assertIn("github_confirmed=false", MEMORY_GUIDANCE)
+        self.assertIn("Server saved the write", MEMORY_GUIDANCE)
+        self.assertIn("GitHub backup", MEMORY_GUIDANCE)
+        self.assertIn("remote-confirmed with durable=true", MEMORY_GUIDANCE)
+
+        protocol = (ROOT / "PROTOCOL.md").read_text()
+        section = protocol.split("Memory behavior and source-coverage decisions", 1)[1].split("\nmemory_query", 1)[0]
+        self.assertIn("agent-brain-memory", section)
+        self.assertIn("agent-brain-onboard", section)
+        self.assertIn("method schemas", section)
+        self.assertIn("AgentBrain destination contents, not Harness-native source inventory", section)
+        self.assertNotIn("daily candidates include", section)
+        self.assertNotIn("Onboard preserves all", section)
+        self.assertNotIn("three-topic retrieval budget never limits", section)
 
 
 if __name__ == "__main__":
