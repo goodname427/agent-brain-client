@@ -238,12 +238,8 @@ def validate_uninstalled_state(home, journal, *, allow_unrelated_config_edits=Fa
     intact; malformed TOML, an Agent Brain table, and every other owned
     postimage change still require review.
     """
-    validate_journal(home, journal)
-    metadata=journal['registration']
-    policy=install.policy_file(metadata['release_policy'],
-                               metadata['release_policy_sha256'],
-                               runtime_check=False)
-    config=Path(policy['runtime']['codex_home'])/'config.toml'
+    adapter = validate_journal(home, journal)
+    config = adapter.native_home / 'config.toml'
     if str(config) not in journal['before']:
         raise install.InstallBlocked('Removal config scope changed')
     resume_paths = set()
