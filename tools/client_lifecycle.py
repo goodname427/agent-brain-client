@@ -232,11 +232,11 @@ def decode(value):
 def validate_uninstalled_state(home, journal, *, allow_unrelated_config_edits=False,
                                resume_plan=None, resume_receipt=None,
                                require_owned_postimages=True):
-    """Validate the whole completed removal before starting a fresh reinstall.
+    """Validate a completed removal while recognizing safe user config edits.
 
-    A user may edit unrelated Codex settings after removal. In that case the
-    configuration must still parse and the Agent Brain table must still be
-    absent. Every other recorded removal postimage remains byte-pinned.
+    Codex TOML may change outside the Agent Brain table. Such edits remain
+    intact; malformed TOML, an Agent Brain table, and every other owned
+    postimage change still require review.
     """
     validate_journal(home, journal)
     config_paths = [Path(name) for name in journal['before']
@@ -256,31 +256,38 @@ def validate_uninstalled_state(home, journal, *, allow_unrelated_config_edits=Fa
         current = install.raw(path, 1048576)
         if install.digest_or_none(current) == install.digest_or_none(decode(after)):
             continue
-        changed.append(name)
         if path in resume_paths:
+            changed.append(name)
             if resume_receipt is None and install.digest_or_none(current) != resume_plan['before'].get(str(path)):
                 raise install.InstallBlocked('Reinstall preimage changed')
             continue
-        if path != config and require_owned_postimages:
-            raise install.InstallBlocked('Uninstalled state changed')
         if path != config:
+            changed.append(name)
+            if require_owned_postimages:
+                raise install.InstallBlocked('Uninstalled state changed')
             continue
         if resume_plan is not None:
             before_sha = resume_plan['before'].get(str(config))
             if (install.digest_or_none(current) not in
                     (before_sha, resume_plan['config_after_sha256'])):
                 raise install.InstallBlocked('Reinstall config recovery drift')
+            changed.append(name)
             continue
         if not allow_unrelated_config_edits:
+            changed.append(name)
             continue
         try:
             parsed = install.tomllib.loads((current or b'').decode())
         except Exception as error:
-            raise install.InstallBlocked('Uninstalled config is invalid') from error
+            if require_owned_postimages:
+                raise install.InstallBlocked('Uninstalled config is invalid') from error
+            changed.append(name)
+            continue
         if install.NAME in parsed.get('mcp_servers', {}):
-            raise install.InstallBlocked('Agent Brain MCP registration conflict')
+            if require_owned_postimages:
+                raise install.InstallBlocked('Agent Brain MCP registration conflict')
+            changed.append(name)
     return changed
-
 
 def finish_removal(home, journal):
     validate_journal(home, journal)
