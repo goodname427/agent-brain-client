@@ -118,7 +118,7 @@ class InstallBoundaries(unittest.TestCase):
             return rendered
         with patch.object(install,'render',side_effect=race):
             with self.assertRaisesRegex(install.InstallBlocked,'receipt changed before commit'):
-                install.apply(plan,self.digest(plan),lambda p:None)
+                install.apply(plan,self.f.digest(plan),lambda p:None)
         self.assertEqual(install.private_json(receipt),raced)
         self.assertFalse((self.f.home/'.config/agent-brain-client/codex-mcp.json').exists())
 
