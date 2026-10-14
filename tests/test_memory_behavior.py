@@ -37,9 +37,9 @@ class MemoryBehavior(unittest.TestCase):
             self.assertFalse(result['onboard_check']['source_scan_performed'])
             self.assertTrue(result['onboard_check']['harness_source_inventory_required'])
             self.assertFalse(result['onboard_check']['agentbrain_catalog_is_source_inventory'])
-            self.assertIn('predate AgentBrain', result['onboard_check']['next_action'])
-            self.assertIn('rebuildable target cache', result['onboard_check']['next_action'])
-            self.assertIn('dated direct evidence', result['onboard_check']['next_action'])
+            self.assertIn('agent-brain-onboard', result['onboard_check']['next_action'])
+            self.assertIn('source_scan_performed', result['onboard_check'])
+            self.assertFalse(result['onboard_check']['data_transferred'])
         self.assertEqual(original, before)
         self.assertNotIn('onboard_check', installation_follow_up({'installed': False}))
 
