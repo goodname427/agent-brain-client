@@ -509,7 +509,11 @@ class ContentAdapter:
                 self._skill_dirs(desired,owned['files'])
                 if any(self.cache==self._path(name) or self.cache in self._path(name).parents for name in desired):raise CacheBlocked()
                 active=self._load('active.json')
-                if active=={'commit':snapshot['commit'],'snapshot_sha':sha(contract.encode(snapshot))} and self._load('snapshots/'+snapshot['commit']+'.json')==snapshot:
+                mapping_matches = (set(owned['files']) == set(desired) and
+                                  all(owned['files'].get(name) == sha(value)
+                                      for name, value in desired.items()))
+                if (active=={'commit':snapshot['commit'],'snapshot_sha':sha(contract.encode(snapshot))} and
+                        self._load('snapshots/'+snapshot['commit']+'.json')==snapshot and mapping_matches):
                     self._pin_offline_snapshot(snapshot)
                     return {'status':'content-current','native_changed':False,'model_loaded':'unknown'}
                 before={};after={}
