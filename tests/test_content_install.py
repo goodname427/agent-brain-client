@@ -73,6 +73,19 @@ class ContentInstall(unittest.TestCase):
         result=install.apply(self.plan(),self.digest(self.plan()),fail_after)
         self.assertEqual(result['status'],'content-install-rolled-back');self.assertEqual(self.config.read_bytes(),before);self.assertEqual(self.config.stat().st_mode&0o777,mode);self.assertFalse((self.home/'.config/agent-brain-client/codex-mcp.json').exists())
 
+    def test_final_completion_receipt_save_failure_rolls_back_native_files(self):
+        plan=self.plan();before=self.native_files();real_save=install.save
+        def fail_complete(path,value):
+            if value.get('phase')=='complete':raise OSError('Synthetic completion receipt failure')
+            return real_save(path,value)
+        with patch.object(install,'save',side_effect=fail_complete):
+            result=install.apply(plan,self.digest(plan),lambda p:None)
+        self.assertEqual(result['status'],'content-install-rolled-back')
+        after=self.native_files();after.pop('.config/agent-brain-client/content-install-receipt.json')
+        self.assertEqual(after,before)
+        receipt=self.home/'.config/agent-brain-client/content-install-receipt.json'
+        self.assertEqual(install.private_json(receipt)['phase'],'rolled-back')
+
     def test_postcheck_external_edit_blocks_recovery_and_preserves_both(self):
         plan=self.plan();calls=[]
         def drift(p):
