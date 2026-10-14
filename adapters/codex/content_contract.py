@@ -136,8 +136,10 @@ def path(kind,identity):return 'content/'+kind+'/'+identity+'.json'
 ONBOARD_COVERAGE_GUIDANCE = (
     'After installation or reinstallation, once the host tools are available, the Agent must use agent-brain-onboard to check coverage of all authorized accessible existing memory sources. '
     'This is separate from device pairing and installation: an old identity, install receipt, imported marker or zero pending writes never proves current source coverage. '
-    'Enumerate available pages/batches and compare source scope and content fingerprints; report missing coverage records, unvisited/inaccessible sources and new Harness sources. '
-    'Read current target topics, skip equivalents, and review only missing/new content or differences; reconcile differences while preserving unique information and provenance, with CAS and stable request IDs. '
+    'First inventory the current Harness persistent-memory sources, including memories that predate AgentBrain. Use only authorized, actually exposed source listing/read interfaces or user-approved exports; record source scope, counts, status and fingerprints. If a source cannot be enumerated, mark it unavailable/not-checked and keep coverage incomplete. Never inspect prohibited sessions or databases. '
+    'Keep source inventory separate from the AgentBrain destination: content_catalog/content_read enumerate and read AgentBrain targets only; AgentBrain-owned local mappings are rebuildable target cache, never proof that Harness sources were scanned. '
+    'Compare each source record with the complete current target. Skip exact equivalents; add missing facts; merge complementary facts while preserving unique information, dates, source provenance, scope and uncertainty. For contradictions, compare dated direct evidence, retain both sides, and ask the user when evidence does not justify a resolution; never overwrite blindly. Use current revisions and stable request IDs for approved writes. '
+    'Report every source and candidate as read, duplicate, merged/imported, excluded, inaccessible, not-checked, conflict or pending, with reasons. Only report coverage complete after the authorized accessible source inventory and every candidate are accounted for; a provided-source review or AgentBrain catalog alone cannot prove source or account-wide completeness. Reinstall and repeated install must recheck new and changed sources. '
     'Exclude company-sensitive information, secrets, prohibited sessions/databases, LocalOnly and out-of-scope sources. Do not importance-filter existing memories or apply the three-topic retrieval budget to import coverage. '
     'Do not repeat a whole upload or device pairing for this check. Ordinary reconnect alone does not trigger a new source scan. '
 )
@@ -155,6 +157,8 @@ def installation_follow_up(result):
     if value.get('installed') is True:
         value['onboard_check'] = {'status': 'coverage-check-required', 'coverage': 'unknown',
                                  'account_complete': False, 'source_scan_performed': False,
+                                 'harness_source_inventory_required': True,
+                                 'agentbrain_catalog_is_source_inventory': False,
                                  'data_transferred': False, 'next_action': ONBOARD_COVERAGE_GUIDANCE}
     return value
 
