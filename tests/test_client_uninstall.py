@@ -270,6 +270,25 @@ class ClientUninstall(unittest.TestCase):
                 self.assertFalse(result['native_changed'])
         self.assertEqual(self.filesystem_state(), before)
 
+    def test_completed_removal_status_accepts_unrelated_config_edits(self):
+        self.remove()
+        journal = lifecycle.read_removal(self.home)
+        self.f.config.write_text(
+            'model = "synthetic-user-model"\\n'
+            '[features]\\nparallel = true\\n'
+            '[mcp_servers.other]\\ncommand = "preserve-user-server"\\n'
+        )
+        before = self.filesystem_state()
+        code, result = self.status_cli()
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result['status'], 'client-uninstalled')
+        self.assertTrue(result['uninstall_verified'])
+        self.assertEqual(result['verified_postimages'], len(journal['after']))
+        self.assertEqual(self.filesystem_state(), before)
+        parsed = install.tomllib.loads(self.f.config.read_text())
+        self.assertEqual(parsed['model'], 'synthetic-user-model')
+        self.assertEqual(parsed['mcp_servers']['other']['command'], 'preserve-user-server')
+
     def test_completed_removal_status_detects_restored_mapping_registration_and_pointers(self):
         self.remove()
         journal = lifecycle.read_removal(self.home)
