@@ -157,6 +157,12 @@ def installation_follow_up(result):
     return value
 
 
+HOST_GUIDANCE = (
+    'AgentBrain is the shared memory service for authorized durable information. Keep Harness-native memory intact and synchronize approved useful items with AgentBrain tools. '
+    'Use agent-brain-memory for daily memory work and agent-brain-onboard for authorized source onboarding; report when a relevant Skill is unavailable. '
+)
+
+
 MEMORY_GUIDANCE = (
     'For daily memory decisions, follow the currently loaded agent-brain-memory Skill; for source import and coverage, follow agent-brain-onboard. This Client text defines interface and authorization constraints, not a second behavior policy. '
     'Use only content methods and IDs within the granted scope. Do not infer source access or permission from catalogs, prior imports or local mappings; never access prohibited sessions/databases, secrets or LocalOnly material. '
