@@ -87,7 +87,7 @@ command does not grant this candidate protocol. Only memory supports '*'.
 
 Codex content writes are saved in a private local outbox before any transport.
 The complete typed parameters, original request ID and CAS revision are atomically
-written and the file/directories fsynced. Startup and tool boundaries replay those
+written and the file/directories fsynced. Startup and write boundaries replay those
 exact requests after reconnect or restart. Client 0.2.5 requires a matching
 request ID, durable=true, state=remote-confirmed, a Git commit and matching content.
 Only a client declaring X-Agent-Brain-Write-Receipt: local-durable-v1 accepts
@@ -121,6 +121,21 @@ still map remote content. It must not be served through its old entry after new
 local state has been created. Compatible startup can resume exact request/CAS
 replay after recovery. Existing release hashes are integrity checks, not an
 independent digital signature or a new permission grant.
+
+Ordinary `content_catalog`/`content_read` requests fetch fresh authenticated Server
+content once, without rebuilding all native mappings before and after the read.
+Catalogs retain their complete authorized inventory and existing 256-entry bound;
+typed records, revisions and scope checks remain required. Mapping refresh and
+outbox/import recovery still run at MCP startup and after confirmed writes.
+Read responses report `local_refresh.status:read-only` and do not claim model reload.
+
+The content MCP executor receives cancellation notifications while processing
+requests. Read requests have a 90-second total deadline including queue time;
+expired or cancelled queued requests do not start transport. Active read I/O is
+aborted and late results are discarded, with explicit JSON-RPC errors `-32001`
+(deadline) or `-32800` (cancelled). The bounded queue rejects excess work visibly.
+Already-started writes finish their durable transaction; an unknown write result
+still requires recovery with the original request ID and CAS parameters.
 
 The local MCP adapter may answer `content_catalog`/`content_read` from a prior
 verified snapshot only after an unconfirmed transport failure. Responses retain
