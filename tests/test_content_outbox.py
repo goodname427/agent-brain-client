@@ -215,6 +215,7 @@ class Outbox(unittest.TestCase):
         self.assertEqual(second['status'],'content-refreshed')
         self.assertEqual(second['commit'],first['commit'])
         self.assertEqual(self.adapter._load('snapshots/'+first['commit']+'.json'),snapshot)
+        self.assertNotIn(b'Memory synthetic-topic:',agents.read_bytes())
         self.assertNotEqual(agents.read_bytes(),old)
         self.assertIn(b'Synthetic updated Agent Brain host guidance.',agents.read_bytes())
 
