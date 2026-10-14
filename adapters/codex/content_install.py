@@ -214,14 +214,23 @@ def inspect_plan(path,digest):
     if sha(contract.encode(plan))!=digest or prepare(home,plan['package'],plan['release_policy'],plan['release_policy_sha256'],plan['replace_existing'])!=plan:raise InstallBlocked('Install plan drift')
     return {'status':'content-native-install-ready','plan_sha256':digest,'native_changed':False,'installed':False,'next_action':'Apply this exact plan within the approved signing, credential, transport and native scope. Protocol/auth checks run before and after the one-table transaction; no new model conversation required.'}
 
-def restore(journal,plan):
+def validate_recovery(journal,plan):
     _,_,paths=plan_scope(plan)
-    if set(journal)!={'schema','phase','plan_sha256','before','after'} or journal['schema']!=1 or journal['plan_sha256']!=sha(contract.encode(plan)) or set(journal['before'])!={str(p) for p in paths} or set(journal['after'])!=set(journal['before']):raise InstallBlocked('Recovery journal mismatch')
+    if (set(journal)!={'schema','phase','plan_sha256','before','after'}
+            or journal['schema']!=1 or journal['phase']!='applying'
+            or journal['plan_sha256']!=sha(contract.encode(plan))
+            or set(journal['before'])!={str(p) for p in paths}
+            or set(journal['after'])!=set(journal['before'])):raise InstallBlocked('Recovery journal mismatch')
     for path in paths:
         old=journal['before'][str(path)]
         if set(old)!={'data','sha','mode'} or type(old['mode'])!=int or old['mode']&~0o777:raise InstallBlocked('Recovery preimage mismatch')
         backup=base64.b64decode(old['data'],validate=True) if old['data'] is not None else None
         if digest_or_none(backup)!=old['sha'] or digest_or_none(raw(path)) not in (old['sha'],journal['after'][str(path)]):raise InstallBlocked('Outside edit preserved')
+    return paths
+
+def restore(journal,plan):
+    _,_,paths=plan_scope(plan)
+    validate_recovery(journal,plan)
     for path in paths:
         old=journal['before'][str(path)]
         if old['data'] is None:path.unlink(missing_ok=True)
@@ -264,7 +273,9 @@ def apply(plan,approved_digest,check=probe):
         payload[registration]=contract.encode(metadata)
         before={}
         for p in paths:
-            original=raw(p);before[str(p)]={'data':base64.b64encode(original).decode() if original is not None else None,'sha':digest_or_none(original),'mode':p.stat().st_mode&0o777 if original is not None else 0o600}
+            original=raw(p);original_sha=digest_or_none(original)
+            if original_sha!=plan['before'][str(p)]:raise InstallBlocked('Preimage race')
+            before[str(p)]={'data':base64.b64encode(original).decode() if original is not None else None,'sha':original_sha,'mode':p.stat().st_mode&0o777 if original is not None else 0o600}
         journal={'schema':1,'phase':'applying','plan_sha256':approved_digest,'before':before,'after':{str(p):sha(v) for p,v in payload.items()}}
         save(receipt,journal)
         try:

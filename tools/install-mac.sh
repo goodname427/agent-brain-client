@@ -22,4 +22,11 @@ if ! /usr/bin/xcode-select -p >/dev/null 2>&1; then
     exit 2
 fi
 PYTHON=$(/usr/bin/xcrun --find python3)
+if ! CHECKOUT=$("$PYTHON" -I -B "$HERE/tools/bootstrap_main.py" --ensure); then
+    echo '{"status":"official-main-checkout-review-required","installed":false,"native_changed":false}'
+    exit 2
+fi
+if [ "$CHECKOUT" != "$HERE" ]; then
+    exec /bin/sh "$CHECKOUT/tools/install-mac.sh" "$@"
+fi
 exec "$PYTHON" -I -B "$HERE/tools/prepare_install_runtime.py" "$@"

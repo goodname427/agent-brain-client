@@ -90,6 +90,23 @@ class InstallBoundaries(unittest.TestCase):
         self.assertEqual(install.apply(plan,self.f.digest(plan),lambda p:None)['status'],'content-install-recovery-review-required')
         self.assertEqual(self.f.config.read_bytes(),current)
 
+    def test_config_edit_between_render_and_journal_preimage_is_rejected(self):
+        plan=self.f.plan();real=install.raw;calls=[]
+        def race(path, *args, **kwargs):
+            if Path(path)==self.f.config:
+                calls.append(True)
+                # prepare() and rendering have already observed the approved image.
+                if len(calls)==3:
+                    self.f.config.write_text(self.f.config.read_text().replace(
+                        'synthetic-fixture','synthetic-raced-model'))
+            return real(path, *args, **kwargs)
+        with patch.object(install,'raw',side_effect=race):
+            with self.assertRaisesRegex(install.InstallBlocked,'Preimage race'):
+                install.apply(plan,self.digest(plan),lambda p:None)
+        self.assertIn('synthetic-raced-model',self.f.config.read_text())
+        self.assertFalse((self.f.home/'.config/agent-brain-client/codex-mcp.json').exists())
+        self.assertFalse((self.f.home/'.config/agent-brain-client/content-install-receipt.json').exists())
+
     def test_fixed_bootstrap_process_imports_its_reviewed_dependency_after_model_change(self):
         self.apply();self.f.config.write_text(self.f.config.read_text().replace('synthetic-fixture','synthetic-model-changed'))
         fixed=self.f.base/'synthetic-fixed-bootstrap';shutil.copytree(self.f.package,fixed)

@@ -156,6 +156,67 @@ class ClientUninstall(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), before + b'\nSYNTHETIC_DRIFT')
             path.write_bytes(before)
 
+    def test_reinstall_keeps_valid_unrelated_config_edits_after_uninstall(self):
+        self.remove()
+        self.f.config.write_text(
+            'model = "synthetic-user-model"\n'
+            '[features]\nparallel = true\n'
+            '[mcp_servers.other]\ncommand = "preserve-user-server"\n'
+        )
+        code, result = self.connection_cli()
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result['installed'], result)
+        parsed = install.tomllib.loads(self.f.config.read_text())
+        self.assertEqual(parsed['model'], 'synthetic-user-model')
+        self.assertTrue(parsed['features']['parallel'])
+        self.assertEqual(parsed['mcp_servers']['other']['command'], 'preserve-user-server')
+        self.assertIn(install.NAME, parsed['mcp_servers'])
+        self.assertEqual(self.f.backend.record, self.identity)
+
+    def test_reinstall_rejects_invalid_or_conflicting_owned_config_and_owned_file_drift(self):
+        cases = (
+            ('invalid-toml', 'model = [\n'),
+            ('owned-table-conflict',
+             'model = "synthetic"\n[mcp_servers.' + install.NAME + ']\ncommand="foreign"\n'),
+        )
+        for label, text in cases:
+            with self.subTest(case=label):
+                self.remove()
+                self.f.config.write_text(text)
+                code, result = self.connection_cli(execute=False)
+                self.assertEqual((code, result['status']), (2, 'connection-recovery-review-required'))
+                self.assertEqual(self.f.config.read_text(), text)
+                # Restore the exact uninstall postimage before starting the next case.
+                postimage = lifecycle.decode(lifecycle.read_removal(self.home)['after'][str(self.f.config)])
+                self.f.config.write_bytes(postimage)
+        self.remove()
+        owned = self.native / 'AGENTS.md'
+        owned.write_text(owned.read_text() + 'User edit after removal.\n')
+        code, result = self.connection_cli(execute=False)
+        self.assertEqual((code, result['status']), (2, 'connection-recovery-review-required'))
+        self.assertIn('User edit after removal.', owned.read_text())
+
+    def test_interrupted_reinstall_keeps_unrelated_config_preimage_strict(self):
+        self.remove()
+        self.f.config.write_text('model = "changed-after-uninstall"\n[mcp_servers.other]\ncommand="keep"\n')
+        original = install.atomic
+
+        def crash(path, *args):
+            original(path, *args)
+            if path == self.f.config:
+                raise SystemExit('Synthetic interrupted reinstall after valid edit')
+
+        with patch.object(install, 'atomic', side_effect=crash):
+            with self.assertRaises(SystemExit):
+                self.connection_cli()
+        self.assertTrue((self.preparation / 'reinstall-current.json').exists())
+        code, result = self.connection_cli()
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result['installed'], result)
+        parsed = install.tomllib.loads(self.f.config.read_text())
+        self.assertEqual(parsed['model'], 'changed-after-uninstall')
+        self.assertEqual(parsed['mcp_servers']['other']['command'], 'keep')
+
     def test_cli_rejects_linked_or_public_saved_connection_without_overwrite(self):
         saved = self.preparation / 'connection.json'
         before = saved.read_bytes()
