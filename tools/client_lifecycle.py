@@ -239,11 +239,13 @@ def validate_uninstalled_state(home, journal, *, allow_unrelated_config_edits=Fa
     postimage change still require review.
     """
     validate_journal(home, journal)
-    config_paths = [Path(name) for name in journal['before']
-                    if Path(name).name == 'config.toml']
-    if len(config_paths) != 1:
+    metadata=journal['registration']
+    policy=install.policy_file(metadata['release_policy'],
+                               metadata['release_policy_sha256'],
+                               runtime_check=False)
+    config=Path(policy['runtime']['codex_home'])/'config.toml'
+    if str(config) not in journal['before']:
         raise install.InstallBlocked('Removal config scope changed')
-    config = config_paths[0]
     resume_paths = set()
     if resume_plan is not None:
         _, _, scoped = install.plan_scope(resume_plan)
