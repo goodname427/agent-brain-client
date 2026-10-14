@@ -107,6 +107,21 @@ class InstallBoundaries(unittest.TestCase):
         self.assertFalse((self.f.home/'.config/agent-brain-client/codex-mcp.json').exists())
         self.assertFalse((self.f.home/'.config/agent-brain-client/content-install-receipt.json').exists())
 
+    def test_receipt_edit_after_render_is_rechecked_before_journal_overwrite(self):
+        plan=self.f.plan();real=install.render
+        receipt=self.f.home/'.config/agent-brain-client/content-install-receipt.json'
+        raced={'schema':1,'phase':'complete','plan_sha256':'external-receipt-edit',
+               'before':{},'after':{}}
+        def race(config,mcp,existing):
+            rendered=real(config,mcp,existing)
+            install.save(receipt,raced)
+            return rendered
+        with patch.object(install,'render',side_effect=race):
+            with self.assertRaisesRegex(install.InstallBlocked,'receipt changed before commit'):
+                install.apply(plan,self.digest(plan),lambda p:None)
+        self.assertEqual(install.private_json(receipt),raced)
+        self.assertFalse((self.f.home/'.config/agent-brain-client/codex-mcp.json').exists())
+
     def test_fixed_bootstrap_process_imports_its_reviewed_dependency_after_model_change(self):
         self.apply();self.f.config.write_text(self.f.config.read_text().replace('synthetic-fixture','synthetic-model-changed'))
         fixed=self.f.base/'synthetic-fixed-bootstrap';shutil.copytree(self.f.package,fixed)
