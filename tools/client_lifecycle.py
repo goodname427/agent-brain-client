@@ -229,6 +229,66 @@ def decode(value):
     return base64.b64decode(value, validate=True) if value is not None else None
 
 
+def validate_uninstalled_state(home, journal, *, allow_unrelated_config_edits=False,
+                               resume_plan=None, resume_receipt=None,
+                               require_owned_postimages=True):
+    """Validate a completed removal while recognizing safe user config edits.
+
+    Codex TOML may change outside the Agent Brain table. Such edits remain
+    intact; malformed TOML, an Agent Brain table, and every other owned
+    postimage change still require review.
+    """
+    validate_journal(home, journal)
+    config_paths = [Path(name) for name in journal['before']
+                    if Path(name).name == 'config.toml']
+    if len(config_paths) != 1:
+        raise install.InstallBlocked('Removal config scope changed')
+    config = config_paths[0]
+    resume_paths = set()
+    if resume_plan is not None:
+        _, _, scoped = install.plan_scope(resume_plan)
+        resume_paths = scoped
+        if resume_receipt is not None:
+            install.validate_recovery(resume_receipt, resume_plan)
+    changed = []
+    for name, after in journal['after'].items():
+        path = install.safe(name)
+        current = install.raw(path, 1048576)
+        if install.digest_or_none(current) == install.digest_or_none(decode(after)):
+            continue
+        if path in resume_paths:
+            changed.append(name)
+            if resume_receipt is None and install.digest_or_none(current) != resume_plan['before'].get(str(path)):
+                raise install.InstallBlocked('Reinstall preimage changed')
+            continue
+        if path != config:
+            changed.append(name)
+            if require_owned_postimages:
+                raise install.InstallBlocked('Uninstalled state changed')
+            continue
+        if resume_plan is not None:
+            before_sha = resume_plan['before'].get(str(config))
+            if (install.digest_or_none(current) not in
+                    (before_sha, resume_plan['config_after_sha256'])):
+                raise install.InstallBlocked('Reinstall config recovery drift')
+            changed.append(name)
+            continue
+        if not allow_unrelated_config_edits:
+            changed.append(name)
+            continue
+        try:
+            parsed = install.tomllib.loads((current or b'').decode())
+        except Exception as error:
+            if require_owned_postimages:
+                raise install.InstallBlocked('Uninstalled config is invalid') from error
+            changed.append(name)
+            continue
+        if install.NAME in parsed.get('mcp_servers', {}):
+            if require_owned_postimages:
+                raise install.InstallBlocked('Agent Brain MCP registration conflict')
+            changed.append(name)
+    return changed
+
 def finish_removal(home, journal):
     validate_journal(home, journal)
     # All preimages checked before any write; interrupted runs accept only own images.
@@ -329,15 +389,15 @@ def status(home):
                 validate_journal(home, journal)
             except Exception:
                 return dict(review, reason='uninstall-receipt-unverified')
-            changed = 0
             try:
-                for name, value in journal['after'].items():
-                    if install.digest_or_none(install.raw(name, 1048576)) != install.digest_or_none(decode(value)):
-                        changed += 1
+                changed = validate_uninstalled_state(
+                    home, journal, allow_unrelated_config_edits=True,
+                    require_owned_postimages=False
+                )
             except Exception:
                 return dict(review, reason='uninstall-postimage-unverified')
             if changed:
-                return dict(review, reason='uninstall-postimage-changed', changed_postimages=changed)
+                return dict(review, reason='uninstall-postimage-changed', changed_postimages=len(changed))
             return {'status': 'client-uninstalled', 'installed': False, 'native_changed': False,
                     'uninstall_verified': True, 'verified_postimages': len(journal['after'])}
     if not registration.exists():

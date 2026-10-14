@@ -107,7 +107,7 @@ def resolve_connection(home, native, path=None, expected=None):
         return connection_file(path, expected)
     if expected is not None:
         raise ValueError("An expected file digest requires an explicit file")
-    from client_lifecycle import read_removal, validate_journal
+    from client_lifecycle import read_removal, validate_uninstalled_state
     from content_install import inspect, policy_file
 
     state = safe(Path(home) / '.config/agent-brain-client')
@@ -122,15 +122,44 @@ def resolve_connection(home, native, path=None, expected=None):
         journal = read_removal(home)
         if journal['phase'] != 'complete':
             raise ValueError("Unfinished removal requires its existing recovery")
-        validate_journal(home, journal)
-        # An interrupted reinstall is checked by its existing pinned plan below.
-        # Otherwise require every completed uninstall postimage before prompting.
-        if not safe(state / 'first-install/reinstall-current.json').exists():
-            from client_lifecycle import decode
-            from content_install import raw, digest_or_none
-            for name, after in journal['after'].items():
-                if digest_or_none(raw(name, 1048576)) != digest_or_none(decode(after)):
-                    raise ValueError("Uninstalled state changed")
+        resume_path = safe(state / 'first-install/reinstall-current.json')
+        if resume_path.exists():
+            current = private_json(resume_path)
+            if (set(current) != {'schema', 'removed_plan_sha256', 'plan', 'plan_sha256'}
+                    or current['schema'] != 1):
+                raise ValueError('Reinstall recovery metadata changed')
+            from content_mcp import pinned
+            resume_plan = pinned(current['plan'], current['plan_sha256'])
+            if (resume_plan.get('device_home') != str(Path(home))
+                    or resume_plan.get('codex_home') != str(Path(native))
+                    or resume_plan.get('release_policy') != journal['registration']['release_policy']
+                    or resume_plan.get('release_policy_sha256') != journal['registration']['release_policy_sha256']):
+                raise ValueError('Reinstall recovery scope changed')
+            removal_plan_sha = journal['registration']['plan_sha256']
+            resumes_this_removal = current['removed_plan_sha256'] == removal_plan_sha
+            is_completed_previous_reinstall = current['plan_sha256'] == removal_plan_sha
+            if not resumes_this_removal and not is_completed_previous_reinstall:
+                raise ValueError('Reinstall recovery metadata changed')
+            if is_completed_previous_reinstall and not resumes_this_removal:
+                # The saved plan is the installation just removed. Let the
+                # existing reinstall_removed branch retire this completed marker
+                # after user confirmation, then prepare the next transaction.
+                validate_uninstalled_state(home, journal,
+                                           allow_unrelated_config_edits=True)
+            else:
+                install_receipt = safe(state / 'content-install-receipt.json')
+                resume_receipt = private_json(owned(install_receipt)) if install_receipt.exists() else None
+                if resume_receipt is not None and resume_receipt.get('phase') == 'applying':
+                    if resume_receipt.get('plan_sha256') != current['plan_sha256']:
+                        raise ValueError('Reinstall transaction receipt changed')
+                elif resume_receipt is not None and resume_receipt.get('phase') not in ('complete', 'rolled-back'):
+                    raise ValueError('Reinstall transaction phase requires review')
+                validate_uninstalled_state(
+                    home, journal, resume_plan=resume_plan,
+                    resume_receipt=resume_receipt if resume_receipt and resume_receipt.get('phase') == 'applying' else None
+                )
+        else:
+            validate_uninstalled_state(home, journal, allow_unrelated_config_edits=True)
         metadata = journal['registration']
     else:
         if registration.exists() or state.exists() and any(p.name != 'install-runtime' for p in state.iterdir()):
@@ -459,8 +488,7 @@ def existing_connection(home, native, connection, metadata):
 
 def reinstall_removed(home, native, connection, *, store=None, transport=None, secure_input=None, installer=None):
     """Reuse the original identity/config/cache; update only the fixed source entry."""
-    from client_lifecycle import read_removal, validate_journal, decode
-    from content_install import raw, digest_or_none
+    from client_lifecycle import read_removal, validate_journal
     removed = read_removal(home)
     validate_journal(home, removed)
     metadata = removed['registration']
@@ -486,9 +514,8 @@ def reinstall_removed(home, native, connection, *, store=None, transport=None, s
             removed['phase'] = 'reinstalled'
             save(Path(home) / '.config/agent-brain-client/uninstall-receipt.json', removed)
         return result
-    for name, value in removed['after'].items():
-        if digest_or_none(raw(name, 1048576)) != digest_or_none(decode(value)):
-            raise ValueError('Uninstalled state changed')
+    from client_lifecycle import validate_uninstalled_state
+    validate_uninstalled_state(home, removed, allow_unrelated_config_edits=True)
     staging = Path(tempfile.mkdtemp(prefix='reinstall-bootstrap-', dir=state))
     manifest = export(SOURCE, staging / 'package', https_content_candidate=True)
     package_sha = sha(canonical(manifest['files']))

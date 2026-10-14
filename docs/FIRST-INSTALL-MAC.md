@@ -4,15 +4,23 @@
 
 ## 取得源码和连接文件
 
-在终端执行；缺少系统命令行工具时先完成 macOS 提供的标准工具安装，再重跑：
+在终端执行；缺少系统命令行工具时先完成 macOS 提供的标准工具安装，再重跑。每次开始安装或再次安装都从固定官方 `main` 建立独立的新 checkout，写入本次 commit SHA，然后从该 checkout 启动入口；旧 checkout 和其中的用户修改均保留：
 
 ```sh
-git clone https://github.com/goodname427/agent-brain-client.git
-cd agent-brain-client
-git rev-parse HEAD
+set -eu
+CHECKOUT_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/agent-brain-client-main.XXXXXX")
+git clone --depth 1 --single-branch --branch main --no-tags \
+  https://github.com/goodname427/agent-brain-client.git "$CHECKOUT_ROOT"
+SOURCE_SHA=$(git -C "$CHECKOUT_ROOT" rev-parse HEAD)
+printf '%s\n' "$SOURCE_SHA" > "$CHECKOUT_ROOT/.git/agent-brain-source-sha"
+printf '%s\n' "$SOURCE_SHA" > "$CHECKOUT_ROOT/.git/agent-brain-bootstrap-once"
+printf 'Installer source commit: %s\nCheckout: %s\n' "$SOURCE_SHA" "$CHECKOUT_ROOT"
+sh "$CHECKOUT_ROOT/tools/install-mac.sh"
 ```
 
-已有设备再次安装先直接运行 `sh tools/install-mac.sh`，见下文“中断恢复与再次安装”；无需另找开发时的文件。只有全新设备需要发行者交付连接描述。
+下载失败会停止，不会改用旧目录运行。新入口会核对 `origin`、`main`、commit SHA 和干净工作区，再消费一次性标记并执行该 checkout；从普通旧 checkout 启动时才会另建最新 `main` checkout。Git checkout 只负责安装器源码，不改变已安装 MCP 的 HTTPS 发布 origin/ref/anchor 或运行时信任锚。
+
+如果手上只有修改前的旧 checkout，它的 shell 脚本不能被远端 `main` 反向更新。不要从那个目录执行旧入口；先用上述完整命令取得并启动新 checkout。进入新入口后，中断恢复/再次安装继续使用原来的身份、连接、安装计划和审核流程；只有新设备需要发行者交付连接描述。
 
 新设备的连接交付是一个明确的两阶段流程：
 
@@ -31,7 +39,7 @@ CONNECTION_SHA256="<发行者通过可信渠道交付的文件 SHA-256>"
 ## 安装
 
 ```sh
-sh tools/install-mac.sh --connection "$CONNECTION_JSON" --expected-connection-sha256 "$CONNECTION_SHA256"
+sh "$CHECKOUT_ROOT/tools/install-mac.sh" --connection "$CONNECTION_JSON" --expected-connection-sha256 "$CONNECTION_SHA256"
 ```
 
 终端展示服务器、actor、内容类型、IDs、read/put 范围及发布源；输入 `Continue` 确认，`Cancel` 退出。缺少命令行工具时，脚本请求标准安装并退出，完成后重跑同一命令。它准备 Git HTTPS、Python 3.11+、系统 TLS 根及原有 Swift helper：工具链 Python 不足时获取固定 SHA 校验的 Python 归档，准备到用户私有目录。无需 Apple 分发身份、公证、sudo、远程脚本或更改系统信任。
@@ -47,7 +55,7 @@ sh tools/install-mac.sh --connection "$CONNECTION_JSON" --expected-connection-sh
 ## 状态与实际使用
 
 ```sh
-sh tools/install-mac.sh --action status
+sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action status
 ```
 
 状态列出已装活动版本、队列各状态数量和自有映射数，不访问 Keychain、不请求 Server、不输出内容正文。它是本机完整性检查，不能替代在线使用验证。
@@ -63,13 +71,13 @@ sh tools/install-mac.sh --action status
 先在宿主的 Settings → MCP servers 中，只停用 `agent_brain_server`，保存并使用宿主提供的 Restart/reload 让配置生效，使本工具 MCP worker 退出；不要退出 ChatGPT/CodexCLI，也不杀进程。此精确停用只将本工具表的 enabled 从 true 改为 false，不能改 command、args、env、工具范围、摘要或其他 MCP。公开 status 会报告 content-native-client-disabled、registration_verified:true 和队列/映射统计，卸载仍检查完整原绑定和排他 lease。管理界面没有单服务停用/正常关闭能力，或 worker 未退出时停止报告，不以退出整个宿主兜底。宿主配置能力见 [官方 MCP 说明](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。然后执行：
 
 ```sh
-sh tools/install-mac.sh --action uninstall
-sh tools/install-mac.sh --action status
+sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action uninstall
+sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action status
 ```
 
 确认 `Continue` 后移除本工具 MCP 表、登记和哈希一致的自有 Memory/Rule/Skill 文件；只删自有指令块，保留用户指令与其他 Codex 设置。空的自有 Skill 目录移除；不递归删除目录。退役缓存的 owned/active 映射指针，使再次安装能够重建相同版本映射。`client-uninstalled` 表示入口登记及映射已移除；不能以仍存有恢复材料称已安装，也不能以仍活着的旧进程称卸载验证通过。
 
-卸载后的 `status` 会只读校验完成回执及其中每个事务文件的实际后像，包括 MCP 配置、登记、自有映射和 owned/active 指针。匹配才返回 `client-uninstalled`、`uninstall_verified:true` 和核验数量。登记残留、文件被改回或后像漂移返回 `uninstall-state-review-required`、`uninstall_verified:false` 与安全原因，退出码非零；回执损坏或链接同样停止核验。后续用户对回执记录中的配置或指令文件编辑也会报告后像变化，需区分用户编辑与残留，不据此断言已经重新安装。状态检查不删文件、不修复、不创建锁或访问凭据；重复查询保留原现场。已完成的重新安装按新登记核验，不拿旧卸载后像判断。
+卸载后的 `status` 会只读验证回执、所有 Agent Brain 自有文件后像，以及 Codex 配置仍可解析且不含 Agent Brain 表。用户对其他模型、MCP 表或 TOML 排版的合法改动会保留，仍可返回 `client-uninstalled` 与 `uninstall_verified:true`。自有登记/映射残留、自有文件漂移、非法 TOML、Agent Brain 表冲突、回执损坏或链接均返回 `uninstall-state-review-required`、`uninstall_verified:false` 与安全原因，退出码非零。状态检查不删文件、不修复、不创建锁或访问凭据；重复查询保留原现场。已完成的重新安装按新登记核验，不拿旧卸载后像判断。
 
 默认保留专用 login Keychain 身份、固定 helper/bootstrap、依赖、profile/policy、安装及卸载前后像、outbox/imports 和完整快照，用于再次安装和安全恢复。它们主要位于 `~/.config/agent-brain-client`，原有安装也可能使用自己的已登记私有路径；不会卸载 Codex、改变 Server/cloud Data、撤销服务端设备或删除未同步数据。这是明确的可恢复卸载，没有“彻底擦除身份/数据”选项。
 
@@ -80,8 +88,8 @@ sh tools/install-mac.sh --action status
 ## 中断恢复与再次安装
 
 ```sh
-sh tools/install-mac.sh --action repair
-sh tools/install-mac.sh
+sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action repair
+sh "$CHECKOUT_ROOT/tools/install-mac.sh"
 ```
 
 repair 继续自身中断的卸载，只接受事务前后像，外部修改停止并保留双方。首次安装/配对中断重跑带同一连接文件及摘要的原命令；已有身份的再次安装直接重跑无参数命令，复用已保存计划、原 identity/profile/helper 和同一缓存，按现有安装事务恢复。
@@ -99,8 +107,8 @@ repair 继续自身中断的卸载，只接受事务前后像，外部修改停�
 用户提出“帮我把 Agent Brain 更新到最新版，然后继续完成 Onboarding”时，Agent 使用公开仓库入口：
 
 ```sh
-sh tools/install-mac.sh --action check-update
-sh tools/install-mac.sh --action update
+sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action check-update
+sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action update
 ```
 
 不传新 connection 或邀请。两项动作复用已验证登记中的原 policy、渠道、信任锚和固定依赖，不重新配对、不访问设备凭据、不改原生 MCP 设置。check-update 可以下载并校验候选缓存，但不激活、不运行候选健康检查；update 使用既有健康检查及回滚机制切换活动包。维护所需工具/解释器缺失或漂移时停止审核，不重新准备或改写其绑定。重复 install 的已安装分支只核验登记，不检查或应用软件更新，输出会指向上述入口。

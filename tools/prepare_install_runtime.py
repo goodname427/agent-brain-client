@@ -105,8 +105,10 @@ def main():
     try:
         if sys.platform != 'darwin' or platform.machine().lower() != 'arm64':
             raise ValueError('Reviewed Mac arm64 backend required')
-        maintenance = any(arg in ('check-update', 'update', '--action=check-update', '--action=update') for arg in sys.argv[1:])
-        python = runtime(Path.home(), prepare=not maintenance)
+        sys.path.insert(0, str(ROOT / 'tools'))
+        from bootstrap_main import should_bootstrap
+        prepare_runtime = should_bootstrap(sys.argv[1:])
+        python = runtime(Path.home(), prepare=prepare_runtime)
         env = {'PATH': '/usr/bin:/bin', 'HOME': str(Path.home()), 'LANG': 'en_US.UTF-8'}
         if 'CODEX_HOME' in os.environ:
             env['CODEX_HOME'] = os.environ['CODEX_HOME']
