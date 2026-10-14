@@ -395,7 +395,7 @@ class ContentAdapter:
         return snapshot
 
     def _mapping(self,snapshot,owned):
-        desired={};lines=['# Agent Brain cloud content','This mapping is a rebuildable cache. Read/upload through the approved Server API; do not write GitHub directly.','Read at most three relevant memory topics. Read on-demand rules when relevant; conditional rules apply to matching paths. Cloud refresh does not replace already loaded model context.']
+        desired={};lines=['# Agent Brain cloud content','This mapping is a rebuildable cache. Read/upload through the approved Server API; do not write GitHub directly.','Cloud refresh does not replace already loaded model context.']
         lines.append(contract.MEMORY_GUIDANCE)
         for value in snapshot['records']:
             kind,identity,record=value['kind'],value['id'],value['record']
