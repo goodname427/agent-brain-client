@@ -173,6 +173,28 @@ class ClientUninstall(unittest.TestCase):
         self.assertIn(install.NAME, parsed['mcp_servers'])
         self.assertEqual(self.f.backend.record, self.identity)
 
+    def test_status_and_reinstall_accept_unrelated_config_changes_without_losing_them(self):
+        self.remove()
+        edited = (
+            'model = "synthetic-status-model"\\n'
+            '[features]\\nparallel = true\\n'
+            '[mcp_servers.other]\\ncommand = "preserve-after-status"\\n'
+        )
+        self.f.config.write_text(edited)
+        code, status = self.status_cli()
+        self.assertEqual(code, 0, status)
+        self.assertEqual(status['status'], 'client-uninstalled')
+        self.assertTrue(status['uninstall_verified'])
+        self.assertEqual(self.f.config.read_text(), edited)
+
+        code, result = self.connection_cli()
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result['installed'], result)
+        parsed = install.tomllib.loads(self.f.config.read_text())
+        self.assertEqual(parsed['model'], 'synthetic-status-model')
+        self.assertEqual(parsed['mcp_servers']['other']['command'], 'preserve-after-status')
+        self.assertIn(install.NAME, parsed['mcp_servers'])
+
     def test_reinstall_rejects_invalid_or_conflicting_owned_config_and_owned_file_drift(self):
         cases = (
             ('invalid-toml', 'model = [\n'),
