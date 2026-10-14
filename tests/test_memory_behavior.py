@@ -336,5 +336,24 @@ class MemoryBehavior(unittest.TestCase):
         self.assertNotIn("migrate all existing memories", MEMORY_GUIDANCE)
 
 
+    def test_guidance_distinguishes_server_save_from_backup_and_protocol_defers_behavior(self):
+        self.assertIn("local-confirmed", MEMORY_GUIDANCE)
+        self.assertIn("local_durable=true", MEMORY_GUIDANCE)
+        self.assertIn("github_confirmed=false", MEMORY_GUIDANCE)
+        self.assertIn("Server saved the write", MEMORY_GUIDANCE)
+        self.assertIn("GitHub backup", MEMORY_GUIDANCE)
+        self.assertIn("remote-confirmed with durable=true", MEMORY_GUIDANCE)
+
+        protocol = (ROOT / "PROTOCOL.md").read_text()
+        section = protocol.split("Memory behavior and source-coverage decisions", 1)[1].split("\nmemory_query", 1)[0]
+        self.assertIn("agent-brain-memory", section)
+        self.assertIn("agent-brain-onboard", section)
+        self.assertIn("method schemas", section)
+        self.assertIn("AgentBrain destination contents, not Harness-native source inventory", section)
+        self.assertNotIn("daily candidates include", section)
+        self.assertNotIn("Onboard preserves all", section)
+        self.assertNotIn("three-topic retrieval budget never limits", section)
+
+
 if __name__ == "__main__":
     unittest.main()
