@@ -11,6 +11,7 @@ from urllib.error import HTTPError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "adapters" / "codex"))
 
 import client_release
+import client_startup
 from brain_release import UpdateBlocked
 import content_mcp
 from content_mcp import emit_startup_failure
@@ -103,6 +104,47 @@ class StartupDiagnostics(unittest.TestCase):
                 "error_code": "startup_validation_error",
             },
         )
+        self.assertNotIn("SYNTHETIC_SECRET", output.getvalue())
+
+    def test_normal_startup_emits_bounded_release_diagnostic(self):
+        diagnostic = {
+            "stage": "release-check",
+            "error_class": "OSError",
+            "error_code": "release-check-failed",
+        }
+        releases = mock.Mock()
+        releases.update.return_value = {
+            "status": "release-review-required",
+            "active": {"version": "0.2.13"},
+            "diagnostic": diagnostic,
+        }
+        releases.verified_active.return_value = {
+            "version": "0.2.13",
+            "package": "/synthetic/package",
+        }
+        releases.policy = {
+            "platform": "synthetic-platform",
+            "capabilities": ["codex-stdio-mcp", "personal-memory-explicit"],
+            "runtime": {
+                "endpoint": "https://synthetic.invalid",
+                "token_file": "/synthetic/token",
+            },
+        }
+        output = io.StringIO()
+        with (
+            mock.patch.object(client_startup, "ClientReleases", return_value=releases),
+            mock.patch.object(client_startup, "content_runtime_blocker", return_value=None),
+            mock.patch.object(
+                client_startup.subprocess, "run", return_value=mock.Mock(returncode=0)
+            ),
+            mock.patch("sys.stderr", output),
+        ):
+            result = client_startup.startup("synthetic-policy", "synthetic-digest")
+
+        self.assertTrue(result["served"])
+        self.assertEqual(result["status"], "release-review-required")
+        lines = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertIn(diagnostic, lines)
         self.assertNotIn("SYNTHETIC_SECRET", output.getvalue())
 
     def test_release_failure_keeps_review_gate_and_only_adds_safe_diagnostic(self):
