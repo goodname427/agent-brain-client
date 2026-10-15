@@ -227,7 +227,7 @@ class ContentInstall(unittest.TestCase):
         self.publish('0.2.1')
         update=self.channel.update();self.assertEqual(update['status'],'updated')
         self.package=Path(update['active']['package'])
-        replacement=self.plan();replacement_digest=self.digest(replacement)
+        replacement=self.plan(replace=True);replacement_digest=self.digest(replacement)
         real_save=install.save
         def fail_replacement_completion(path,value):
             if value.get('phase')=='complete' and value.get('plan_sha256')==replacement_digest:
