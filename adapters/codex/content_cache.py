@@ -13,6 +13,7 @@ import shutil
 import sys
 import time
 import uuid
+import stat
 BASE=Path(__file__).resolve().parent
 ROOT=BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
@@ -27,6 +28,91 @@ OFFLINE_TRANSPORT_ERRORS=frozenset(('transport_unconfirmed','ssh_proxy_unconfirm
 
 class CacheBlocked(Exception):pass
 def sha(raw):return hashlib.sha256(raw).hexdigest()
+
+
+def inventory_codex_memories(codex_home, *, max_files=4096, max_file_bytes=1048576,
+                             max_total_bytes=16777216):
+    """Fingerprint only Codex's persistent memory tree; never inspect sessions.
+
+    The output deliberately contains no source paths or text. Inventoried entries
+    remain ``not-checked`` until a separate review classifies and normalizes
+    them for import. A digest cursor lets a caller detect a changed inventory
+    without treating this scan as coverage or an import plan.
+    """
+    root=Path(codex_home).expanduser()/'memories'
+    rows=[];total=0;walked=0
+    def source_id(relative):return 'codex-memory:'+sha(relative.encode('utf-8','surrogateescape'))
+    if root.is_symlink() or not root.exists():
+        return {'schema':1,'status':'unavailable','reason':'memory root missing or symlinked',
+                'sources':[],'cursor':sha(b'codex-memory-root-unavailable')}
+    if not root.is_dir():
+        return {'schema':1,'status':'unavailable','reason':'memory root is not a directory',
+                'sources':[],'cursor':sha(b'codex-memory-root-invalid')}
+    try:
+        root_stat=root.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(root_stat.st_mode):raise OSError()
+    except OSError:
+        return {'schema':1,'status':'unavailable','reason':'memory root unavailable',
+                'sources':[],'cursor':sha(b'codex-memory-root-unavailable')}
+    pending=[(root,'')]
+    while pending:
+        directory, prefix=pending.pop()
+        try:
+            entries=sorted(os.scandir(directory),key=lambda entry:entry.name,reverse=True)
+        except OSError:
+            rows.append({'source_id':source_id(prefix or '.'),'source_fingerprint':None,
+                         'status':'unavailable','reason':'directory unreadable'})
+            continue
+        for entry in entries:
+            relative=(prefix+'/'+entry.name).strip('/')
+            try:
+                info=entry.stat(follow_symlinks=False)
+            except OSError:
+                rows.append({'source_id':source_id(relative),'source_fingerprint':None,
+                             'status':'unavailable','reason':'entry unreadable'})
+                continue
+            if stat.S_ISLNK(info.st_mode):
+                rows.append({'source_id':source_id(relative),'source_fingerprint':None,
+                             'status':'excluded','reason':'symlink source excluded'})
+            elif stat.S_ISDIR(info.st_mode):
+                pending.append((Path(entry.path),relative))
+            elif stat.S_ISREG(info.st_mode):
+                walked+=1
+                if walked>max_files:
+                    return {'schema':1,'status':'incomplete','reason':'file inventory limit reached',
+                            'sources':rows,'cursor':sha(contract.encode(rows))}
+                if info.st_size>max_file_bytes or total+info.st_size>max_total_bytes:
+                    rows.append({'source_id':source_id(relative),'source_fingerprint':None,
+                                 'status':'excluded','reason':'bounded inventory limit exceeded'})
+                    continue
+                try:
+                    digest=hashlib.sha256();size=0
+                    fd=os.open(entry.path,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))
+                    with os.fdopen(fd,'rb') as source:
+                        while True:
+                            chunk=source.read(65536)
+                            if not chunk:break
+                            size+=len(chunk);total+=len(chunk)
+                            if size>max_file_bytes or total>max_total_bytes:raise OverflowError()
+                            digest.update(chunk)
+                    rows.append({'source_id':source_id(relative),'source_fingerprint':digest.hexdigest(),
+                                 'status':'not-checked','reason':'fingerprinted; semantic review required'})
+                except OverflowError:
+                    rows.append({'source_id':source_id(relative),'source_fingerprint':None,
+                                 'status':'excluded','reason':'bounded inventory limit exceeded'})
+                except OSError:
+                    rows.append({'source_id':source_id(relative),'source_fingerprint':None,
+                                 'status':'unavailable','reason':'file unreadable'})
+            else:
+                rows.append({'source_id':source_id(relative),'source_fingerprint':None,
+                             'status':'excluded','reason':'non-regular source excluded'})
+    rows.sort(key=lambda item:item['source_id'])
+    snapshot=sha(contract.encode(rows))
+    counts={}
+    for item in rows:counts[item['status']]=counts.get(item['status'],0)+1
+    return {'schema':1,'status':'complete' if not counts.get('unavailable') else 'incomplete',
+            'reason':'metadata inventory only; no import coverage claimed','sources':rows,
+            'counts':counts,'cursor':snapshot}
 
 def validate_policy(policy,grant=None):
     if not isinstance(policy,dict) or set(policy)!={'schema','adapter','kinds','ids','dependencies'} or policy['schema']!=1 or policy['adapter']!='codex':raise CacheBlocked()
@@ -252,6 +338,60 @@ class ContentAdapter:
             state['coverage']=coverage;self._save('imports.json',json.loads(contract.encode(state)))
         return {'status':'content-sources-inventoried','sources':len(plan['sources']),'data_transferred':False,'native_changed':False}
 
+    def inventory_memory_sources(self):
+        """Persist a path-free memory inventory in the existing private cache.
+
+        This inventories only; it never creates an import plan or contacts the
+        Server. Unchanged fingerprints retain their review/import state.
+        """
+        require_platform('cache-storage',self.platform)
+        with locked(self.cache/'content.lock'):
+            fresh=inventory_codex_memories(self.native_home)
+            previous=self._load('memory-inventory.json',None)
+            if previous is not None and (not isinstance(previous,dict) or
+                    set(previous)!={'schema','binding','cursor','status','sources'} or
+                    previous['schema']!=1 or previous['binding']!=self.binding or
+                    not isinstance(previous['sources'],dict) or len(previous['sources'])>1024):
+                raise CacheBlocked()
+            old=previous['sources'] if previous else {}
+            current={}
+            seen_ids=set()
+            for row in fresh['sources']:
+                source_id=row['source_id'];fingerprint=row['source_fingerprint'];seen_ids.add(source_id)
+                inventory_key=sha(contract.encode([source_id,fingerprint]))
+                prior=old.get(inventory_key)
+                if prior and prior.get('source_fingerprint')==fingerprint:
+                    row=dict(row,status=prior['status'],reason=prior['reason'])
+                current[inventory_key]=row
+            for inventory_key,prior in old.items():
+                if inventory_key in current:continue
+                if prior['source_id'] not in seen_ids and fresh['status']=='complete':
+                    current[inventory_key]=dict(prior,status='excluded',reason='source no longer present')
+                else:
+                    current[inventory_key]=prior
+            if len(current)>1024:raise CacheBlocked()
+            fresh=dict(fresh,sources=sorted(current.values(),key=lambda item:item['source_id']))
+            counts={}
+            for item in fresh['sources']:counts[item['status']]=counts.get(item['status'],0)+1
+            fresh['counts']=counts
+            fresh['cursor']=sha(contract.encode(fresh['sources']))
+            ledger={'schema':1,'binding':self.binding,'cursor':fresh['cursor'],
+                    'status':fresh['status'],'sources':current}
+            self._save('memory-inventory.json',ledger)
+            tracked=self._imports();sources=[]
+            for source_id,item in current.items():
+                value=dict(item);fingerprint=value['source_fingerprint']
+                if isinstance(fingerprint,str) and value['status'] not in ('excluded','unavailable'):
+                    imported=tracked['items'].get(sha(contract.encode([value['source_id'],fingerprint])))
+                    if imported is not None:value.update(status=imported['status'],reason='linked to reviewed import ledger')
+                sources.append(value)
+            sources.sort(key=lambda item:(item['source_id'],item['source_fingerprint'] or ''))
+            cursor=sha(contract.encode(sources));counts={}
+            for item in sources:counts[item['status']]=counts.get(item['status'],0)+1
+            return {'status':fresh['status'],'counts':counts,'cursor':cursor,
+                    'sources':sources,'reason':fresh.get('reason','metadata inventory only; no import coverage claimed'),
+                    'data_transferred':False,'account_complete':False}
+
     def _check_source(self,item):
         if not isinstance(item,dict) or set(item)!={'source_id','source_fingerprint','kind','id','record'} or not isinstance(item['source_id'],str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}',item['source_id']) or not isinstance(item['source_fingerprint'],str) or not re.fullmatch(r'[a-f0-9]{64}',item['source_fingerprint']):raise CacheBlocked()
         contract.validate('content_put',{'kind':item['kind'],'id':item['id'],'record':item['record'],'expected_revision':'missing'})
@@ -307,7 +447,20 @@ class ContentAdapter:
         state=self._imports();counts:dict[str,int]={}
         for item in state['items'].values():counts[item['status']]=counts.get(item['status'],0)+1
         conflicts=[{'source_key':key,'source_id':item['source']['source_id'],'kind':item['source']['kind'],'id':item['source']['id'],'remote_revision':(item['remote'] or {}).get('revision')} for key,item in state['items'].items() if item['status']=='conflict']
-        return {'counts':counts,'conflicts':conflicts,'coverage':state['coverage'],'account_complete':False,'inventoried_sources':len(state['items']),'scope':'explicit-reviewed-plan-only','coverage_note':'Duplicate is covered; inaccessible/not-checked sources remain gaps. Three-topic retrieval is not an import quota.'}
+        source_inventory=self._load('memory-inventory.json')
+        inventory_summary=None
+        if source_inventory is not None:
+            if not isinstance(source_inventory,dict) or set(source_inventory)!={'schema','binding','cursor','status','sources'} or source_inventory['schema']!=1 or source_inventory['binding']!=self.binding or not isinstance(source_inventory['sources'],dict) or len(source_inventory['sources'])>1024:raise CacheBlocked()
+            inventory_counts={}
+            for inventory_key,item in source_inventory['sources'].items():
+                if not isinstance(item,dict) or set(item)!={'source_id','source_fingerprint','status','reason'} or item['status'] not in ('not-checked','inventoried','imported','duplicate','conflict','blocked','reconciled','excluded','unavailable'):raise CacheBlocked()
+                status=item['status'];fingerprint=item['source_fingerprint']
+                if isinstance(fingerprint,str) and item['status'] not in ('excluded','unavailable'):
+                    tracked=state['items'].get(sha(contract.encode([item['source_id'],fingerprint])))
+                    if tracked is not None:status=tracked['status']
+                inventory_counts[status]=inventory_counts.get(status,0)+1
+            inventory_summary={'status':source_inventory['status'],'counts':inventory_counts,'cursor':source_inventory['cursor'],'account_complete':False}
+        return {'counts':counts,'conflicts':conflicts,'coverage':state['coverage'],'account_complete':False,'inventoried_sources':len(state['items']),'source_inventory':inventory_summary,'scope':'explicit-reviewed-plan-only','coverage_note':'Duplicate is covered; inaccessible/not-checked sources remain gaps. Three-topic retrieval is not an import quota.'}
 
     def _raw(self,name):
         path=self._path(name)

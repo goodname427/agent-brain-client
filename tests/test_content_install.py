@@ -132,7 +132,7 @@ class ContentInstall(unittest.TestCase):
             grant=outer.grant
             def request(c,request):
                 outer.assertEqual(request['method'],'content_catalog');return {'request_id':request['request_id'],'result':{'content_api_version':1,'commit':'a'*40,'artifacts':[]},'persistence':{'state':'read-only'}}
-        before=self.native_files();result=installation_check(Client(),self.content_value);self.assertTrue(result['authentication_checked']);self.assertEqual(set(result['tools']),{'content_catalog','content_read','content_put'});self.assertFalse(result['native_changed']);self.assertEqual(self.native_files(),before)
+        before=self.native_files();result=installation_check(Client(),self.content_value);self.assertTrue(result['authentication_checked']);self.assertEqual(set(result['tools']),{'content_catalog','content_read','content_put','content_sources_inventory'});self.assertFalse(result['native_changed']);self.assertEqual(self.native_files(),before)
 
     def test_content_release_discovery_update_failure_offline_and_startup_wiring(self):
         report=self.channel.discover('codex','darwin-arm64','0.1.0');self.assertEqual(report['status'],'compatible-update');self.assertEqual(len(report['releases'][0]['manifest']['files']),19)

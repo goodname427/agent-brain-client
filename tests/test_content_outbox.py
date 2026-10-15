@@ -161,6 +161,23 @@ class Outbox(unittest.TestCase):
             return value
         self.cloud.request=tombstone;self.adapter.stage_import(self.plan([('memory','synthetic-topic',MEMORY)]));self.assertEqual(self.adapter.refresh()['status'],'content-local-changes-retained');self.assertEqual(self.adapter.import_status()['counts'],{'conflict':1});self.assertEqual(self.cloud.puts,0)
 
+    def test_changed_source_after_explicit_forget_is_not_reimported(self):
+        plan=self.plan([('memory','synthetic-topic',MEMORY)])
+        self.adapter.stage_import(plan);self.adapter.refresh();self.assertEqual(self.cloud.puts,1)
+        self.cloud.records.pop(('memory','synthetic-topic'))
+        original=self.cloud.request
+        def forgotten(request):
+            value=original(request)
+            if request['method']=='content_read':value['result']['revision']='b'*64
+            return value
+        self.cloud.request=forgotten
+        changed=dict(MEMORY,body='Synthetic changed source after forget')
+        new_plan=self.plan([('memory','synthetic-topic',changed)],'c'*64)
+        self.adapter.stage_import(new_plan);self.adapter.refresh()
+        self.assertEqual(self.adapter.import_status()['counts'],{'conflict':1,'imported':1})
+        self.assertEqual(self.cloud.puts,1)
+        self.assertNotIn(('memory','synthetic-topic'),self.cloud.records)
+
     def test_conflict_remote_read_disconnect_recovers_both_versions(self):
         self.adapter.invoke(self.request());original=self.cloud.request
         def failed_read(request):

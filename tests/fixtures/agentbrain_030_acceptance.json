@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "records": [
+    {"id":"exp-01","title":"Rail launch","description":"Synthetic delivery experience","body":"Led the station-map launch for the Harbor rail project; opened on schedule after a two-week field trial.","type":"feedback"},
+    {"id":"exp-02","title":"Correction","description":"Synthetic correction","body":"Correction: the Harbor launch was in May, not April.","type":"feedback"},
+    {"id":"exp-03","title":"Mentoring","description":"Synthetic experience","body":"Mentored two new analysts; weekly paired reviews helped both ship their first reports.","type":"feedback"},
+    {"id":"exp-04","title":"Research","description":"Synthetic experience","body":"Interviewed twelve ferry riders and found the timetable labels caused most missed connections.","type":"feedback"},
+    {"id":"exp-05","title":"Incident","description":"Synthetic experience","body":"During the storm outage, coordinated a six-person response and restored the public status page before dawn.","type":"feedback"},
+    {"id":"exp-06","title":"Writing","description":"Synthetic experience","body":"A one-page decision memo helped the committee choose the lower-cost depot option.","type":"feedback"},
+    {"id":"exp-07","title":"Short progress","description":"Synthetic progress","body":"This week the prototype passed the accessibility audit; keyboard navigation still needs follow-up.","type":"feedback"},
+    {"id":"exp-08","title":"Correction","description":"Synthetic correction","body":"Correction: the prototype passed keyboard checks, but the screen-reader audit is still open.","type":"feedback"},
+    {"id":"exp-09","title":"Community","description":"Synthetic experience","body":"Organized a neighborhood repair clinic where volunteers fixed twenty bicycles in one afternoon.","type":"feedback"},
+    {"id":"exp-10","title":"Budget","description":"Synthetic experience","body":"Negotiated a print contract that reduced the annual field-guide budget by fifteen percent.","type":"feedback"},
+    {"id":"exp-11","title":"Learning","description":"Synthetic experience","body":"Learned enough SQL to replace a weekly manual spreadsheet reconciliation with a checked query.","type":"feedback"},
+    {"id":"exp-12","title":"Handoff","description":"Synthetic experience","body":"Created a handoff checklist that let the night team operate the exhibit without calling the day team.","type":"feedback"},
+    {"id":"exp-13","title":"Feedback","description":"Synthetic experience","body":"After visitor feedback, moved the ticket desk beside the entrance and shortened the queue.","type":"feedback"},
+    {"id":"exp-14","title":"Short progress","description":"Synthetic progress","body":"The grant draft is complete; the partner letter is the only remaining item before Friday.","type":"feedback"},
+    {"id":"exp-15","title":"Partnership","description":"Synthetic experience","body":"Built a library partnership that brought the mobile science workshop to four rural schools.","type":"feedback"},
+    {"id":"exp-16","title":"Quality","description":"Synthetic experience","body":"Added a second reviewer to the translation workflow and caught a recurring units error.","type":"feedback"},
+    {"id":"exp-17","title":"Planning","description":"Synthetic experience","body":"Split the migration into reversible stages so the archive stayed available during the move.","type":"feedback"},
+    {"id":"exp-18","title":"Decision","description":"Synthetic experience","body":"Chose a smaller pilot after the first estimate showed the full rollout exceeded staff capacity.","type":"feedback"},
+    {"id":"exp-19","title":"Presentation","description":"Synthetic experience","body":"Presented the watershed findings to the council and answered questions with the original measurements.","type":"feedback"},
+    {"id":"exp-20","title":"Follow-up","description":"Synthetic progress","body":"The replacement sensors arrived today; installation is booked for Tuesday morning.","type":"feedback"}
+  ],
+  "recall": [
+    {"question":"When did the Harbor rail project launch?","id":"exp-02","evidence":"May, not April"},
+    {"question":"What helped the two new analysts ship their first reports?","id":"exp-03","evidence":"weekly paired reviews"},
+    {"question":"What caused missed ferry connections?","id":"exp-04","evidence":"timetable labels"},
+    {"question":"What was restored before dawn during the storm?","id":"exp-05","evidence":"public status page"},
+    {"question":"What did the committee choose after reading the memo?","id":"exp-06","evidence":"lower-cost depot option"},
+    {"question":"Which accessibility audit remains open?","id":"exp-08","evidence":"screen-reader audit"},
+    {"question":"How many bicycles did volunteers repair?","id":"exp-09","evidence":"twenty bicycles"},
+    {"question":"How much did the print contract reduce the budget?","id":"exp-10","evidence":"fifteen percent"},
+    {"question":"What replaced manual spreadsheet reconciliation?","id":"exp-11","evidence":"checked query"},
+    {"question":"What remains before the grant can be sent Friday?","id":"exp-14","evidence":"partner letter"}
+  ]
+}

@@ -132,3 +132,11 @@ component_source_sha256 固定已批准的签名组件源码关联。候选源�
 `brain_activation_plan.py` 在私有 Core 中生成分阶段参数计划；`brain_credential_delivery.py` 只在服务账户、私密预建目录和精确部署计划 SHA 下生成/复用 authority key并内部交付设备记录。不设置管理员 issuer，不需要把原值发给用户／Mac。文件不覆盖未知记录，确认响应丢失从 pending 恢复；缺失/漂移或不可确认返回 review-required，保留状态，不自动重配。未知客户端仍 adapter-review-required。
 
 `brain_content_migration.py` 仅根据已批准 repository inventory 的名称、触发、依赖、资源和哈希准备迁移提案，不读正文、不上传、不执行 Skill。每个 Rule 保留 enabled/trigger，Skill 源启用状态未知时默认 disabled；已有本地 Core CLI/相对 wrapper 的 Brain Skills 须先改为服务流程，Core 仓库维护保留 repository scope。原生 Skill 目录冲突、UE 编辑器 prerequisites、正文转换/request SHA 与真实目标 revision 尚须具体处理；清单非空不表示迁移完成。合成验证用同样的 IDs/资源结构和改写后的合成正文，不能替代真实 Skill 适配。
+
+## Codex Stop 增量保存候选（0.3.0）
+
+`adapters/codex/content_mcp.py --codex-stop-hook` 是单次结构化事件处理入口。仅当 `hook_event_name=Stop`、有 `session_id`/`turn_id` 且 `stop_hook_active=false` 时输出一次 `decision=block`，请求 Codex 在同一活动会话做一次续跑；续跑再次触发时 no-op。续跑仅考虑用户直接陈述或明确要求记住的持久事实；AgentBrain 跨项目共享，因此不得写入项目、客户、雇主、组织或保密细节，也不得将助手猜测或工具输出作为用户事实。已接线且授权的 `memory_query`、`content_catalog`、`content_read`、`content_put`、`content_remove` 保持 read/CAS、稳定 request_id、现有 outbox 和耐久回执。
+
+本地只读工具 `content_sources_inventory` 以及 `content_cache.inventory_codex_memories()` 只扫描明确的 `<CODEX_HOME>/memories` 持久化目录，拒绝符号链接；不读取 `sessions`、数据库或 `transcript_path`。工具每页最多 64 项，返回路径哈希、逐文件 SHA256、处理状态与确定性快照 cursor；不返回正文，也不构成语义导入或完整覆盖证明。清单保存在现有私有 Client cache，未变化 fingerprint 保留状态，内容变化产生新的未检查版本，已消失文件保留为 excluded；与 reviewed import ledger 匹配的项目显示当前导入状态。所有新项初始为 `not-checked`，必须由独立复核完成来源授权、LocalOnly 排除、语义归类及规范化后，才能交给现有 `--import-plan` 的 reviewed plan/CAS/outbox 流程；不可读项记为 unavailable，越界/特殊项排除，扫描受限记为 incomplete。当前 0.3.0 候选未把真实用户源接入 Server，也未读取生产源；扫描行为用隔离合成夹具测试。
+
+这是 opt-in 的 Codex Desktop 本地命令 Hook 候选。需要在用户自己的 Codex Hooks 配置中显式登记实际安装路径，并按 Codex 的 Hook 审查与信任流程核对命令及文件摘要；Client 的安装器不会写入 hooks 配置或自动授信。命令 Hook 不适用于云端 orchestration。Stop 事件提供新回合触发入口，memory inventory 只覆盖支持的持久记忆目录；两者均不枚举全部历史会话。未完成逐项复核的条目保持未完成，不能报告来源覆盖完成；Hook 未被用户配置和信任时也不承诺自动触发。

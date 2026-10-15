@@ -44,6 +44,20 @@ class ContentServer(Server):
 
     def invoke(self,name,arguments):
         try:
+            if name=='content_sources_inventory':
+                if not isinstance(arguments,dict) or set(arguments)-{'cursor'}:raise ContentParameterError('Inventory accepts only an optional cursor.')
+                inventory=self.adapter.inventory_memory_sources();cursor=arguments.get('cursor');offset=0
+                if cursor is not None:
+                    if not isinstance(cursor,str) or len(cursor)>96 or ':' not in cursor:raise ContentParameterError('Invalid inventory cursor; restart enumeration.')
+                    snapshot,raw_offset=cursor.split(':',1)
+                    if len(snapshot)!=64 or any(char not in '0123456789abcdef' for char in snapshot) or not raw_offset.isdecimal() or len(raw_offset)>6:raise ContentParameterError('Invalid inventory cursor; restart enumeration.')
+                    if snapshot!=inventory['cursor']:raise ContentParameterError('Inventory changed; restart enumeration from the first page.')
+                    offset=int(raw_offset)
+                sources=inventory['sources'];page=sources[offset:offset+64];next_offset=offset+len(page)
+                result={'status':inventory['status'],'counts':inventory['counts'],'cursor':inventory['cursor'],
+                        'sources':page,'next_cursor':f"{inventory['cursor']}:{next_offset}" if next_offset<len(sources) else None,
+                        'reason':inventory['reason'],'data_transferred':False,'account_complete':False}
+                return {'isError':False,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
             if name not in self.adapter.methods():raise ContentParameterError('Unknown or unavailable content tool; inspect tools/list.')
             if not isinstance(arguments,dict):raise ContentParameterError('Content tool arguments must be an object.')
             if name=='content_catalog' and set(arguments)&{'query','since','until','limit'}:
@@ -105,6 +119,7 @@ class ContentServer(Server):
                 if name=='content_catalog':description+='AgentBrain destination records only; this does not discover Harness-native sources. Pass kinds only for the complete authorized target inventory; there is no pagination limit. Query/since/until/limit selects a Memory-only retrieval alias capped at 3. '
                 description+='Running worker version: '+self.client_version+'. '+UPDATE_GUIDANCE
                 tools.append({'name':name,'description':description,'inputSchema':{'type':'object','properties':properties,'required':required,'additionalProperties':False},'annotations':{'readOnlyHint':name not in contract.WRITES,'destructiveHint':name=='content_remove','idempotentHint':True}})
+            tools.append({'name':'content_sources_inventory','description':'Enumerate only the Codex persistent memories directory. Returns path-free IDs, file fingerprints and per-item processing status in pages of 64; never returns memory text or reads session/transcript files. Inventory is not semantic review or import coverage. Use the returned cursor for the next page; restart if it changes. Local-only read; no Server request or data transfer.','inputSchema':{'type':'object','properties':{'cursor':{'type':'string','maxLength':96}},'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
             return {'tools':tools}
         result=super().handle(request)
         if isinstance(request,dict) and request.get('method')=='initialize' and isinstance(result,dict):
@@ -129,7 +144,7 @@ def self_check():
     server=ContentServer(Adapter())
     server.handle({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'synthetic-package-check','version':'1'}}})
     server.handle({'jsonrpc':'2.0','method':'notifications/initialized'})
-    assert {t['name'] for t in server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})['tools']}==set(contract.FIELDS)
+    assert {t['name'] for t in server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})['tools']}==set(contract.FIELDS)|{'content_sources_inventory'}
     assert not any(m in sys.modules for m in ('brain_core','brain_runtime','brain_cli'))
     return {'content_mcp_self_check':'passed','core_imported':False,'native_changed':False,'keychain_accessed':False,'network_used':False}
 
@@ -172,6 +187,60 @@ class SafeArgumentParser(argparse.ArgumentParser):
         sys.exit(emit_startup_failure('arguments',ValueError('invalid_arguments')))
 
 
+# Codex Stop hook contract. This hook deliberately consumes only the structured
+# event envelope. In particular, it never opens transcript_path or any other
+# native session store. Codex itself performs the single continuation pass.
+_STOP_HOOK_REASON=(
+    'Consider saving only a durable, useful fact the user directly stated or '
+    'explicitly asked to remember, including a meaningful experience, '
+    'correction, or short-term progress/result. Ignore assistant guesses, '
+    'tool output, and facts merely inferred from context. AgentBrain memory is '
+    'shared across projects: never save project, customer, employer, '
+    'organization, or confidential details, or information that would expose '
+    'one project in another. Keep only a generalized personal fact safe to '
+    'reuse across all projects. '
+    'Use only already-authorized AgentBrain memory_query/content_catalog, '
+    'content_read, content_put, and content_remove tools. For writes, read '
+    'the current record '
+    'and use its expected_revision plus a stable request_id; preserve distinct '
+    'useful facts, merge only when supported by the conversation, and honor '
+    'explicit forgetting using content_remove only when explicitly requested '
+    'and authorized. Do not read transcript files, secrets, or LocalOnly '
+    'sources. Do not claim a memory was saved unless the durable Server result '
+    'confirms it. If no fact meets these rules or no authorized write path is '
+    'available, finish without changing AgentBrain.'
+)
+
+
+def codex_stop_hook(event):
+    """Return a Codex Stop decision for one eligible turn, without reading history."""
+    if not isinstance(event,dict) or event.get('hook_event_name')!='Stop':
+        return None
+    if event.get('stop_hook_active') is not False:
+        return None
+    # These IDs bind the event to a real turn. No path or message body is read
+    # from the hook payload; the continuation sees the active conversation.
+    if any(not isinstance(event.get(key),str) or not event[key] for key in ('session_id','turn_id')):
+        return None
+    return {'decision':'block','reason':_STOP_HOOK_REASON}
+
+
+def stop_hook_main(stdin=None,stdout=None):
+    """CLI entrypoint suitable for a reviewed local Codex Stop command hook."""
+    stdin=stdin or sys.stdin
+    stdout=stdout or sys.stdout
+    try:
+        raw=stdin.read(1048577)
+        if len(raw)>1048576:return 0
+        event=json.loads(raw)
+    except (ValueError,TypeError):
+        return 0
+    decision=codex_stop_hook(event)
+    if decision is not None:
+        print(json.dumps(decision,ensure_ascii=False),file=stdout)
+    return 0
+
+
 def installation_check(client,policy,client_version='0.2.0'):
     """Fixed read-only MCP/auth check. No content cache/native mapping is created."""
     validate_policy(policy,client.grant)
@@ -187,14 +256,14 @@ def installation_check(client,policy,client_version='0.2.0'):
     server.handle({'jsonrpc':'2.0','method':'notifications/initialized'})
     tools=server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})
     result=server.handle({'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':'content_catalog','arguments':{'kinds':policy['kinds']}}})
-    if first['serverInfo']['name']!='agent-brain-content-codex-candidate' or {t['name'] for t in tools['tools']}!=adapter.methods() or result['isError']:raise ValueError('Content protocol check failed')
+    if first['serverInfo']['name']!='agent-brain-content-codex-candidate' or {t['name'] for t in tools['tools']}!=adapter.methods()|{'content_sources_inventory'} or result['isError']:raise ValueError('Content protocol check failed')
     catalog=result['structuredContent']['result']
     import re
     if catalog.get('content_api_version')!=1 or not re.fullmatch(r'[a-f0-9]{40}',catalog.get('commit','')) or not isinstance(catalog.get('artifacts'),list) or len(catalog['artifacts'])>256:raise ValueError('Unconfirmed content catalog')
     for item in catalog['artifacts']:
         contract.validate('content_read',{'kind':item['kind'],'id':item['id']})
         if item['kind'] not in policy['kinds'] or not re.fullmatch(r'[a-f0-9]{64}',item.get('revision','')):raise ValueError('Invalid content catalog')
-    return {'status':'content-native-protocol-checked','protocol_checked':True,'authentication_checked':True,'tools':sorted(adapter.methods()),'native_changed':False,'model_loaded':'unknown'}
+    return {'status':'content-native-protocol-checked','protocol_checked':True,'authentication_checked':True,'tools':sorted(adapter.methods()|{'content_sources_inventory'}),'native_changed':False,'model_loaded':'unknown'}
 
 
 def serve(server, source, output, *, request_timeout=90, max_pending=256):
@@ -299,6 +368,8 @@ _STARTUP_STAGE='arguments'
 def main():
     global _STARTUP_STAGE
     _STARTUP_STAGE='arguments'
+    if sys.argv[1:]==['--codex-stop-hook']:
+        raise SystemExit(stop_hook_main())
     if sys.argv[1:]==['--self-check']:print(json.dumps(self_check()));return
     parser=SafeArgumentParser(description=__doc__)
     for name in ('content-policy','content-policy-sha256','device-home','cache'):parser.add_argument('--'+name,required=True)
