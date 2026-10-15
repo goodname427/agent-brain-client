@@ -33,6 +33,7 @@ Mac arm64 的唯一用户操作说明见 [安装、使用、卸载与再次安�
 安装/重装成功明确交接 `onboard_check:coverage-check-required`，由 Agent 用既有 Onboard 流程核对当前来源；旧身份和旧完成标记不能证明全量，检查不触发重新配对或自动全量上传。无法观测的模型加载状态使用 `model_loaded:"unknown"`，映射数量与模型是否采用指令分开。卸载后 status 只读核验真实事务后像及登记残留，漂移明确报告 review-required。安装入口源码与运行期活动包分别交付，运行期指引和回执变化未发布前不宣称影响现有 worker。
 
 用户说“帮我把 Agent Brain 更新到最新版，然后继续完成 Onboarding”时，执行 Agent 先按以下命令取得独立官方 main checkout 并记录源码 SHA，再运行两个更新动作。不要从已有旧 checkout 执行安装脚本：
+
 ```sh
 set -eu
 CHECKOUT_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/agent-brain-client-main.XXXXXX")
@@ -40,8 +41,8 @@ git clone --depth 1 --single-branch --branch main --no-tags \
   https://github.com/goodname427/agent-brain-client.git "$CHECKOUT_ROOT"
 CHECKOUT_ROOT=$(cd "$CHECKOUT_ROOT" && pwd -P)
 SOURCE_SHA=$(git -C "$CHECKOUT_ROOT" rev-parse HEAD)
-printf '%s\\n' "$SOURCE_SHA" > "$CHECKOUT_ROOT/.git/agent-brain-source-sha"
-printf '%s\\n' "$SOURCE_SHA" > "$CHECKOUT_ROOT/.git/agent-brain-bootstrap-once"
+printf '%s\n' "$SOURCE_SHA" > "$CHECKOUT_ROOT/.git/agent-brain-source-sha"
+printf '%s\n' "$SOURCE_SHA" > "$CHECKOUT_ROOT/.git/agent-brain-bootstrap-once"
 sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action check-update
 sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action update
 ```
