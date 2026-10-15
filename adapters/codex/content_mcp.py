@@ -131,6 +131,43 @@ def self_check():
     assert not any(m in sys.modules for m in ('brain_core','brain_runtime','brain_cli'))
     return {'content_mcp_self_check':'passed','core_imported':False,'native_changed':False,'keychain_accessed':False,'network_used':False}
 
+STARTUP_STAGES={
+    'arguments','component-source-check','content-policy-validation',
+    'https-profile-load','credential-source-validation','device-binding-validation',
+    'identity-activation','ssh-profile-load','signing-policy-validation',
+    'device-component-load','transport-policy-validation','installation-check',
+    'content-adapter-start','import-plan-validation','mcp-serve'
+}
+STARTUP_ERROR_CLASSES={'OSError','ValueError','KeyError','TypeError','RuntimeError','TimeoutExpired','SSLError','HTTPError'}
+
+def emit_startup_failure(stage,error,stream=None):
+    """Emit a bounded diagnostic; exception values and tracebacks are never serialized."""
+    if stream is None:stream=sys.stderr
+    if isinstance(error,OSError):
+        error_class='OSError';error_code='startup_io_error'
+    elif isinstance(error,ValueError):
+        error_class='ValueError';error_code='startup_validation_error'
+    elif isinstance(error,KeyError):
+        error_class='KeyError';error_code='startup_validation_error'
+    elif isinstance(error,TypeError):
+        error_class='TypeError';error_code='startup_validation_error'
+    elif isinstance(error,RuntimeError):
+        error_class='RuntimeError';error_code='startup_blocked'
+    elif type(error).__name__ in ('TimeoutExpired','SSLError','HTTPError'):
+        error_class=type(error).__name__;error_code='startup_transport_error'
+    else:
+        error_class='StartupError';error_code='startup_blocked'
+    safe_stage=stage if stage in STARTUP_STAGES else 'startup'
+    print(json.dumps({'stage':safe_stage,'error_class':error_class,'error_code':error_code}),file=stream)
+    return 1
+
+
+class SafeArgumentParser(argparse.ArgumentParser):
+    """Keep invalid argument values out of stderr."""
+    def error(self,message):
+        sys.exit(emit_startup_failure('arguments',ValueError('invalid_arguments')))
+
+
 def installation_check(client,policy,client_version='0.2.0'):
     """Fixed read-only MCP/auth check. No content cache/native mapping is created."""
     validate_policy(policy,client.grant)
@@ -253,9 +290,13 @@ def serve(server, source, output, *, request_timeout=90, max_pending=256):
         work.put(None)
         worker.join()
 
+_STARTUP_STAGE='arguments'
+
 def main():
+    global _STARTUP_STAGE
+    _STARTUP_STAGE='arguments'
     if sys.argv[1:]==['--self-check']:print(json.dumps(self_check()));return
-    parser=argparse.ArgumentParser(description=__doc__)
+    parser=SafeArgumentParser(description=__doc__)
     for name in ('content-policy','content-policy-sha256','device-home','cache'):parser.add_argument('--'+name,required=True)
     for name in ('device-plan','device-plan-sha256','signing-policy','signing-policy-sha256','ssh-profile','ssh-profile-sha256','https-profile','https-profile-sha256','credential-source-sha256'):parser.add_argument('--'+name)
     parser.add_argument('--codex-home',help='Approved actual Codex home; otherwise honor CODEX_HOME and preserve device-level skills.')
@@ -265,39 +306,54 @@ def main():
     parser.add_argument('--component-source-sha256',help='Release policy pin for the separately approved signed component source.')
     parser.add_argument('--client-version',default='0.2.0',help='Verified active version supplied by the pinned startup.')
     args=parser.parse_args()
+    _STARTUP_STAGE='component-source-check'
     if args.component_source_sha256 and hashlib.sha256((CLIENT_ROOT/'native/DeviceComponent.swift').read_bytes()).hexdigest()!=args.component_source_sha256:raise ValueError('Native source review required')
+    _STARTUP_STAGE='content-policy-validation'
     policy=pinned(args.content_policy,args.content_policy_sha256)
     if args.https_profile:
+        _STARTUP_STAGE='https-profile-load'
         if any((args.device_plan,args.device_plan_sha256,args.signing_policy,args.signing_policy_sha256,args.component_source_sha256,args.ssh_profile,args.ssh_profile_sha256)):raise ValueError('Distinct transport policies required')
         from https_content import HTTPSContentClient
         client=HTTPSContentClient(args.https_profile,args.https_profile_sha256,credential_access=False)
+        _STARTUP_STAGE='credential-source-validation'
         source=CLIENT_ROOT/'native/CredentialStore.swift'
         if not args.credential_source_sha256 or hashlib.sha256(source.read_bytes()).hexdigest()!=args.credential_source_sha256 or client.profile['credential_source_sha256']!=args.credential_source_sha256:raise ValueError('Credential helper source review required')
+        _STARTUP_STAGE='device-binding-validation'
         if Path(client.profile['state_directory'])!=Path(args.device_home)/'.config/agent-brain-client/https':raise ValueError('Credential device binding changed')
         if Path(args.device_home) not in Path(client.profile['credential_helper']).parents:raise ValueError('Device-local helper required')
+        _STARTUP_STAGE='identity-activation'
         client.activate_identity()
     elif args.https_profile_sha256 or args.credential_source_sha256:raise ValueError('HTTPS profile required')
     elif args.ssh_profile:
+        _STARTUP_STAGE='ssh-profile-load'
         if any((args.device_plan,args.device_plan_sha256,args.signing_policy,args.signing_policy_sha256,args.component_source_sha256)):raise ValueError('Distinct transport policies required')
         from ssh_content import SSHContentClient
         client=SSHContentClient(args.ssh_profile,args.ssh_profile_sha256)
     else:
         if args.ssh_profile_sha256:raise ValueError('SSH profile required')
+        _STARTUP_STAGE='signing-policy-validation'
         signing=pinned(args.signing_policy,args.signing_policy_sha256)
+        _STARTUP_STAGE='device-component-load'
         client=ComponentClient(args.device_plan,args.device_plan_sha256,signing)
+    _STARTUP_STAGE='transport-policy-validation'
     if bool(args.import_plan)!=bool(args.import_plan_sha256) or args.installation_check and args.import_plan:raise ValueError('Separate exact import approval required')
-    if args.installation_check:print(json.dumps(installation_check(client,policy,args.client_version)));return
+    if args.installation_check:
+        _STARTUP_STAGE='installation-check'
+        print(json.dumps(installation_check(client,policy,args.client_version)));return
+    _STARTUP_STAGE='content-adapter-start'
     adapter=ContentAdapter(args.device_home,args.cache,policy,client,codex_home=args.codex_home)
     if args.import_plan:
+        _STARTUP_STAGE='import-plan-validation'
         path=Path(args.import_plan)
         if path.is_symlink() or not path.is_file() or path.stat().st_size>1048576:raise ValueError('Private bounded import plan required')
         private_mode(path)
         raw=path.read_bytes()
         if hashlib.sha256(raw).hexdigest()!=args.import_plan_sha256:raise ValueError('Import plan drift')
         adapter.stage_import(json.loads(raw,object_pairs_hook=pairs))
+    _STARTUP_STAGE='mcp-serve'
     serve(ContentServer(adapter,args.client_version),sys.stdin.buffer,sys.stdout)
 
 if __name__=='__main__':
     try:main()
     except PlatformUnsupported as error:print(json.dumps(error.result(served=False,native_changed=False)),file=sys.stderr);sys.exit(2)
-    except Exception:print('Content candidate startup blocked; retain current client and reviewed policies. No credential details returned.',file=sys.stderr);sys.exit(1)
+    except Exception as error:sys.exit(emit_startup_failure(_STARTUP_STAGE,error))
