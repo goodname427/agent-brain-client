@@ -217,4 +217,27 @@ class ContentInstall(unittest.TestCase):
         self.publish('0.2.1',native_change)
         self.assertEqual(self.channel.discover('codex','darwin-arm64','0.2.0')['status'],'release-review-required');self.assertEqual(self.channel.update()['status'],'release-review-required');self.assertEqual(self.channel.engine.active(),old)
 
+
+    def test_failed_replacement_restores_completed_receipt_for_inspection(self):
+        original_plan=self.plan()
+        self.assertTrue(install.apply(original_plan,self.digest(original_plan),lambda p:None)['installed'])
+        before=self.native_files()
+        receipt_path=self.home/'.config/agent-brain-client/content-install-receipt.json'
+        original_receipt=install.private_json(receipt_path)
+        self.publish('0.2.1')
+        update=self.channel.update();self.assertEqual(update['status'],'updated')
+        self.package=Path(update['active']['package'])
+        replacement=self.plan(replace=True);replacement_digest=self.digest(replacement)
+        real_save=install.save
+        def fail_replacement_completion(path,value):
+            if value.get('phase')=='complete' and value.get('plan_sha256')==replacement_digest:
+                raise OSError('Synthetic replacement completion receipt failure')
+            return real_save(path,value)
+        with patch.object(install,'save',side_effect=fail_replacement_completion):
+            result=install.apply(replacement,replacement_digest,lambda p:None)
+        self.assertEqual(result['status'],'content-install-rolled-back')
+        self.assertEqual(self.native_files(),before)
+        self.assertEqual(install.private_json(receipt_path),original_receipt)
+        self.assertTrue(install.inspect(self.home)['installed'])
+
 if __name__=='__main__':unittest.main()

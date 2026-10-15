@@ -296,7 +296,10 @@ def apply(plan,approved_digest,check=probe):
             save(receipt,completed)
             journal['phase']='complete'
         except Exception:
-            try:restore(journal,plan);save(receipt,journal)
+            try:
+                restore(journal,plan)
+                if previous and previous.get('phase')=='complete' and not reinstallation:save(receipt,previous)
+                else:save(receipt,journal)
             except Exception:return {'status':'content-install-recovery-review-required','native_changed':None,'installed':False}
             return {'status':'content-install-rolled-back','native_changed':False,'installed':False}
         return {'status':'content-native-client-installed','native_changed':True,'installed':True,'protocol_checked':True,'model_loaded':'unknown'}

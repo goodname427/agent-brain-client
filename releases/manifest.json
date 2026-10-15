@@ -18,7 +18,7 @@
     "adapters/codex/codex_connect.py": "6cd82f8511fad779bf6ffe11e3c7ca61bc12e899d4d55331ce0226e5d63ba8ed",
     "adapters/codex/content_cache.py": "3baaea78b23b0d23c7c5ec09ca4154fd6a6cbb72d4e46c271006f227dc90aa78",
     "adapters/codex/content_contract.py": "35b0899d3541d6122a548551bb26442538e71238401ad3b73ed7b6f131f83661",
-    "adapters/codex/content_install.py": "8f998ad11fbc1dfd75e1859f626482305e92a240cd23abfa4b208611c54b8abd",
+    "adapters/codex/content_install.py": "25bdaaee68756e7904d5f47d1209993ebd4e5222041ada4e1f2d47b9bac94dd7",
     "adapters/codex/content_mcp.py": "ae737fc3b49f5ba0ff17d7030915be9c759028638f2f86fc545d56cd2cf3a7c7",
     "adapters/codex/https_content.py": "ee655e6ef2b0086659158afae79ca22e03491d365b992f54aa0bf27dfab046ce",
     "adapters/codex/remote_http.py": "919244e96787b7f494295f6fbef1b389342d957e34d5b89d9f9b733865d659dc",
