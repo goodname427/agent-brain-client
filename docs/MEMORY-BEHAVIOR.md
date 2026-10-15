@@ -1,43 +1,12 @@
-# 记忆保存与首次迁移行为规范
+# Client 记忆接口与状态
 
-重点是Agent知道何时保存，以及Onboard完整覆盖已授权已有记忆；不是再建同步平台。以下规范由content MCP启动instructions与owned原生映射共用，离线审阅工具memory_review只处理明确输入的来源/候选元数据，不采集、不授予权限、不上传。
+日常保存/检索决策由当前加载的 `agent-brain-memory` Skill 定义；来源导入与覆盖决策由 `agent-brain-onboard` Skill 定义。本文件和 Client 的 MCP instructions 只说明工具、范围、回执及安装交接，不复制或覆盖这些 Skill 的行为规则。若相应 Skill 未加载，报告该能力缺口，不从 Client 文档推导另一套记忆政策。
 
-## 日常新内容
+`tools/memory_review.py` 只审阅调用者明确提供的非正文候选元数据，不发现来源、不授予权限、不采集、不上传。
 
-在既有授权范围内主动判断普通偏好、纠正、个人事实、个人任务进展、短期连续上下文和有用琐事。重大决策、长期永久价值不是门槛。用户明确要求记住的小事实按要求保留；未确定推测不能写成确定事实。简短写日期/事实/结果/下一步，优先同稳定主题合并，读revision再完整CAS更新。不能把一次临时格式要求升为全局偏好，也不机械上传无后续用途的噪声。
+## 安装后的 Onboard 交接
 
-用户在已授权对话提供的非敏感个人工作进展摘要，和采集项目文件/项目专属规则是不同操作。前者可用于连续上下文；后者如不在授权范围仍deferred，不用个人ID伪装项目隔离。公司敏感、密码密钥等秘密、LocalOnly、受禁sessions/数据库/raw历史排除，不用筛选规范创造新来源授权。
-
-## Onboard已有记忆
-
-首次安装、旧身份重装及重复运行安装入口成功后都返回独立的 `onboard_check:coverage-check-required` 交接。执行 Agent 在宿主接口可用后调用现有 `agent-brain-onboard`，检查当前获准来源，不以身份、installation_complete 或历史导入标记推断覆盖。安装器只输出交接，不枚举私人来源、不调用模型或上传内容；普通 reconnect/refresh 不触发此交接。
-
-缺少覆盖记录或记录不完整时重新枚举全部获准可读来源；已有覆盖记录也须与当前来源范围和指纹核对，识别新增记忆、变更和新 Harness 来源。重复检查不等于重复写入：同主题先读当前全文与 revision，等价记录记为已覆盖，缺失/新增内容做增量处理，差异保留并协调，不全量重传或重新配对。工具不能访问的来源明确报告缺口，不用搜索样本或“完成”标签遮盖。
-
-`tools/memory_review.py` 的 onboard 模式只审阅明确输入的非正文候选元数据，报告 `coverage-incomplete` 或 `provided-sources-reviewed`，以及增量候选和等价记录数。后者仅证明这份输入清单已审阅，不代表账户全量、上传完成或权限授予；输入分类是审阅证据，不是自动秘密识别或来源授权。
-
-默认完整增量迁移每个已授权且可读取来源中的所有已有记忆，除公司敏感及秘密/既有范围边界；不按重要性、时效长短或是否重大再挑小部分。已有不确定记忆保留来源和不确定性，而不是自动变成事实或因为不够确定丢弃。逐页/逐批枚举所有已授权候选；最多3个相关主题是日常检索预算，不是导入总量/来源覆盖配额。
-
-等价记录跳过写入、记为duplicate（已覆盖）；不同记录先读取现有全文，保留双方独有信息，协调后才用原CAS提交。首次/再次Onboard不得仅因源版本变化自动替换一个已有Memory；主线实现把这种差异保留为conflict，需显式合并。Rule/Skill已有资源、trigger和enabled保护不变，不隐式启用。
-
-报告每个来源可访问/已读/不可访问/未检查/排除及原因、已枚举数/已审阅数；每个候选candidate、duplicate、skipped、excluded、deferred、review及理由；上传另报imported/pending/conflict/blocked。覆盖缺口与编辑决策、重复、权限/运输/合约错误分开。不能用pending=0、一份显式文件清单或几个主题推断账号全量。新具体来源或敏感运输仍要核实授权。
-
-## 相同材料的隔离行为用例
-
-| 材料 | 日常 | Onboard（该内容已经是记忆且来源已授权） | 原因 |
-| --- | --- | --- | --- |
-| 用户普通咖啡偏好 | candidate | candidate | 有用个人偏好，不必重大 |
-| 完成一个小步骤、下一步明确 | candidate | candidate | 短期连续性可用 |
-| 有用琐事 | candidate | candidate | 可以帮助未来任务 |
-| 本次临时字体要求 | skipped，除非用户明确记住 | candidate | 新内容不必噪声化；已有记忆不再按重要性过滤 |
-| 未证实推测 | review，或按明确请求保留不确定性 | candidate并保留原不确定性 | 不编造事实、不丢已有来源 |
-| 与目标等价 | duplicate | duplicate | 已覆盖，不重复上传 |
-| 公司敏感/秘密 | excluded | excluded | 不是上传候选 |
-| 原始聊天/受禁session | excluded | excluded | 不是“已有记忆”授权的延伸 |
-| 未授权项目文件/LocalOnly | deferred/excluded | deferred/excluded | 真实范围边界 |
-| 账号出口未检查/不可访问 | coverage gap | coverage gap | 不能宣称完整 |
-
-测试采用有依据的合成候选元数据，并验证MCP/映射规范接入、完整Onboard默认、完整来源计数、显式请求、重复、秘密、越界与保留独有信息。它是政策用例，不声称模型真实理解或已遍历用户账户；不新增付费模型验收。
+安装与再次安装成功后，Client 返回 `coverage-check-required`、`source_scan_performed:false` 和 `data_transferred:false`。执行 Agent 按当前加载的 `agent-brain-onboard` Skill 继续；这些字段仅表示 Client 未执行来源扫描或迁移。
 
 ## 辅助query
 
