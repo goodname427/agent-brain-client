@@ -209,11 +209,24 @@ class ClientReleases:
             result['next_action']='Use the verified active client; native permissions and data are unchanged.'
             return result
         except PlatformUnsupported as error:return error.result(active=None)
-        except (UpdateBlocked,OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired):
+        except (UpdateBlocked,OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired) as error:
             # Never echo upstream paths, credentials, raw stderr or exception values.
             try:active=self.verified_active()
             except (UpdateBlocked,OSError,ValueError,KeyError,TypeError):active=None
+            if isinstance(error,UpdateBlocked):
+                error_class='UpdateBlocked';error_code='release-policy-blocked'
+            elif isinstance(error,OSError):
+                error_class='OSError';error_code='release-check-failed'
+            elif isinstance(error,ValueError):
+                error_class='ValueError';error_code='release-check-failed'
+            elif isinstance(error,KeyError):
+                error_class='KeyError';error_code='release-check-failed'
+            elif isinstance(error,TypeError):
+                error_class='TypeError';error_code='release-check-failed'
+            else:
+                error_class='TimeoutExpired';error_code='release-check-failed'
             return {'status':'release-review-required','active':active,
+                    'diagnostic':{'stage':'release-check','error_class':error_class,'error_code':error_code},
                     'next_action':'Inspect the pinned release policy/package or failed health check; prior activation is retained or restored.'}
 
 
