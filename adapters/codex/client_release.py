@@ -17,7 +17,7 @@ BASE = Path(__file__).resolve().parent
 ROOT = BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
 sys.path.insert(0, str(ROOT/'scripts'))
 from brain_release import GitReleaseSource, ReleaseEngine, UpdateBlocked, digest, version
-from brain_lock import locked,require_platform,platform_paths,WINDOWS_PLATFORMS,private_mode,PlatformUnsupported
+from brain_lock import locked,require_platform,platform_paths,WINDOWS_PLATFORMS,private_mode,PlatformUnsupported,LockTimeout
 
 CLIENT_FILES = ('README.md', 'BOOTSTRAP.md', 'PROTOCOL.md', 'ADAPTERS.md', '.gitignore',
                 'connect.py', 'adapters/codex/remote_http.py', 'adapters/codex/remote_mcp.py',
@@ -209,11 +209,13 @@ class ClientReleases:
             result['next_action']='Use the verified active client; native permissions and data are unchanged.'
             return result
         except PlatformUnsupported as error:return error.result(active=None)
-        except (UpdateBlocked,OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired) as error:
+        except (UpdateBlocked,LockTimeout,OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired) as error:
             # Never echo upstream paths, credentials, raw stderr or exception values.
             try:active=self.verified_active()
-            except (UpdateBlocked,OSError,ValueError,KeyError,TypeError):active=None
-            if isinstance(error,UpdateBlocked):
+            except (UpdateBlocked,LockTimeout,OSError,ValueError,KeyError,TypeError):active=None
+            if isinstance(error,LockTimeout):
+                error_class='LockTimeout';error_code='release-lock-busy'
+            elif isinstance(error,UpdateBlocked):
                 error_class='UpdateBlocked';error_code='release-policy-blocked'
             elif isinstance(error,OSError):
                 error_class='OSError';error_code='release-check-failed'
