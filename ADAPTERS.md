@@ -135,7 +135,7 @@ component_source_sha256 固定已批准的签名组件源码关联。候选源�
 
 ## Codex notify 增量保存候选（0.3.0）
 
-`adapters/codex/content_mcp.py --codex-notify <event-json>` 接收官方 `agent-turn-complete` notify 的单个 JSON 参数。只在 `input-messages` 非空且有 `thread-id`/`turn-id` 时，用 `codex queue --thread … --message …` 在原线程排入一次内部捕获任务；空输入、非完成事件、无 CLI 或内部捕获标记均 no-op。内部消息有 turn digest，使用现有 AgentBrain Memory MCP 指引处理来源和新经历；它不阻塞原 turn、不读取 transcript、不保存原始消息正文。`CODEX_CLI` 可固定 CLI 路径；否则使用 PATH 中的 `codex` 或 ChatGPT.app bundle 内的 CLI。需在用户自己的 `config.toml` 中审核后登记 notify 命令并信任确切文件；安装器不改原生配置或信任。
+`adapters/codex/content_mcp.py --codex-notify <event-json>` 接收官方 `agent-turn-complete` notify 的单个 JSON 参数。只在 `input-messages` 非空且有 `thread-id`/`turn-id` 时，用 `codex queue --thread … --message …` 在原线程排入一次内部捕获任务；空输入、非完成事件、无 CLI 或内部捕获标记均 no-op。队列调用等待最多 8 秒，失败时用相同线程和 turn digest 重试一次；两次仍失败时返回非零。内部消息有 turn digest，使用现有 AgentBrain Memory MCP 指引处理来源和新经历；它不阻塞原 turn、不读取 transcript、不保存原始消息正文。`CODEX_CLI` 可固定 CLI 路径；否则使用 PATH 中的 `codex` 或 ChatGPT.app bundle 内的 CLI。需在用户自己的 `config.toml` 中审核后登记 notify 命令并信任确切文件；安装器不改原生配置或信任。重试仅限当前 notify 进程；跨进程持久重试未实现。
 
 完成验收的来源范围是支持且允许读取的 `<CODEX_HOME>/memories` 持久化目录；不要求也不读取历史会话、sessions、数据库或 `transcript_path`。每个 turn 生成确定性 `agentbrain_<turn-sha256>` request_id，使重试可幂等。模型只将用户直接陈述当作证据，忽略助手猜测和工具输出；普通用户项目经历/决策/进展可泛化为共享个人摘要，移除客户/雇主标识、秘密和机密，无法安全泛化则 deferred。Server 写入仍走 read/CAS、现有 outbox 与耐久回执。
 

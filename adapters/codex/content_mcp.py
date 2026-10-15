@@ -254,7 +254,7 @@ def codex_notify_capture(event):
             'message':message,'input_message_count':len(messages)}
 
 
-def codex_notify_main(argv=None,popen=None):
+def codex_notify_main(argv=None,runner=None):
     """Queue a capture turn only when notify proves this completion followed user input."""
     argv=sys.argv[2:] if argv is None else argv
     if len(argv)!=1 or len(argv[0])>1048576:return 0
@@ -267,11 +267,19 @@ def codex_notify_main(argv=None,popen=None):
         bundled='/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex'
         if Path(bundled).is_file():cli=bundled
     if not cli:return 0
-    try:
-        (popen or subprocess.Popen)([cli,'queue','--thread',capture['thread_id'],'--message',capture['message']],
-            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True)
-    except OSError:return 0
-    return 0
+    command=[cli,'queue','--thread',capture['thread_id'],'--message',capture['message']]
+    # Do not detach and silently lose a turn when queue rejects it. Retry the
+    # exact same request once; the downstream turn digest keeps any write ID
+    # stable across a retry. Never print the queue command or its payload.
+    for _attempt in range(2):
+        try:
+            result=(runner or subprocess.run)(command,stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True,
+                timeout=8,check=False)
+        except (OSError,subprocess.TimeoutExpired):
+            continue
+        if result.returncode==0:return 0
+    return 1
 
 
 def installation_check(client,policy,client_version='0.2.0'):

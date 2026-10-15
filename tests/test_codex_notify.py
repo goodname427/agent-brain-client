@@ -2,6 +2,7 @@
 import json
 import subprocess
 import sys
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from unittest.mock import Mock,patch
@@ -24,12 +25,24 @@ class CodexNotify(unittest.TestCase):
         self.assertEqual(capture['turn_sha256'],__import__('hashlib').sha256(b'synthetic-turn').hexdigest())
         self.assertIn(_NOTIFY_CAPTURE_MARKER+'synthetic-turn',capture['message'])
         self.assertEqual(capture['input_message_count'],1)
-        launch=Mock();self.assertEqual(codex_notify_main([json.dumps(event)],launch),0)
+        launch=Mock(return_value=SimpleNamespace(returncode=0));self.assertEqual(codex_notify_main([json.dumps(event)],launch),0)
         args,kwargs=launch.call_args
         self.assertEqual(args[0][1:5],['queue','--thread','synthetic-thread','--message'])
         self.assertIn(_NOTIFY_CAPTURE_MARKER+'synthetic-turn',args[0][5])
         self.assertNotIn('Synthetic user stated progress.',args[0][5])
         self.assertEqual(kwargs['stdin'],subprocess.DEVNULL)
+        self.assertEqual(kwargs['timeout'],8)
+
+    def test_queue_failure_retries_exact_request_then_surfaces_failure(self):
+        event=self.event();launch=Mock(return_value=SimpleNamespace(returncode=1))
+        self.assertEqual(codex_notify_main([json.dumps(event)],launch),1)
+        self.assertEqual(launch.call_count,2)
+        self.assertEqual(launch.call_args_list[0],launch.call_args_list[1])
+
+    def test_queue_transient_failure_retries_and_succeeds(self):
+        event=self.event();launch=Mock(side_effect=[subprocess.TimeoutExpired('codex queue',8),SimpleNamespace(returncode=0)])
+        self.assertEqual(codex_notify_main([json.dumps(event)],launch),0)
+        self.assertEqual(launch.call_count,2)
 
     def test_empty_or_internal_messages_do_not_start_a_capture(self):
         self.assertIsNone(codex_notify_capture(self.event(type='approval-requested')))
@@ -46,9 +59,9 @@ class CodexNotify(unittest.TestCase):
 
     def test_script_flag_runs_before_mcp_configuration_is_required(self):
         import content_mcp
-        event=self.event();launch=Mock()
+        event=self.event();launch=Mock(return_value=SimpleNamespace(returncode=0))
         with patch.object(content_mcp.sys,'argv',['content_mcp.py','--codex-notify',json.dumps(event)]), \
-             patch.object(content_mcp.subprocess,'Popen',launch):
+             patch.object(content_mcp.subprocess,'run',launch):
             with self.assertRaises(SystemExit) as result:content_mcp.main()
         self.assertEqual(result.exception.code,0)
         launch.assert_called_once()
