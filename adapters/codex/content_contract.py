@@ -134,12 +134,8 @@ def path(kind,identity):return 'content/'+kind+'/'+identity+'.json'
 
 
 ONBOARD_COVERAGE_GUIDANCE = (
-    'After installation or reinstallation, once the host tools are available, the Agent must use agent-brain-onboard to check coverage of all authorized accessible existing memory sources. '
-    'This is separate from device pairing and installation: an old identity, install receipt, imported marker or zero pending writes never proves current source coverage. '
-    'Enumerate available pages/batches and compare source scope and content fingerprints; report missing coverage records, unvisited/inaccessible sources and new Harness sources. '
-    'Read current target topics, skip equivalents, and review only missing/new content or differences; reconcile differences while preserving unique information and provenance, with CAS and stable request IDs. '
-    'Exclude company-sensitive information, secrets, prohibited sessions/databases, LocalOnly and out-of-scope sources. Do not importance-filter existing memories or apply the three-topic retrieval budget to import coverage. '
-    'Do not repeat a whole upload or device pairing for this check. Ordinary reconnect alone does not trigger a new source scan. '
+    'After installation or reinstallation, once host tools are available, use the currently loaded agent-brain-onboard Skill for source discovery, comparison, approved writes and coverage reporting. '
+    'This Client handoff records that no source scan or data transfer has occurred; installation, identity and receipt state do not replace the Skill result. '
 )
 
 
@@ -155,26 +151,34 @@ def installation_follow_up(result):
     if value.get('installed') is True:
         value['onboard_check'] = {'status': 'coverage-check-required', 'coverage': 'unknown',
                                  'account_complete': False, 'source_scan_performed': False,
+                                 'harness_source_inventory_required': True,
+                                 'agentbrain_catalog_is_source_inventory': False,
                                  'data_transferred': False, 'next_action': ONBOARD_COVERAGE_GUIDANCE}
     return value
 
 
+HOST_GUIDANCE = (
+    'AgentBrain is the shared memory service for authorized durable information. Keep Harness-native memory intact and synchronize approved useful items with AgentBrain tools. '
+    'Use agent-brain-memory for daily memory work and agent-brain-onboard for authorized source onboarding; report when a relevant Skill is unavailable. '
+)
+
+
 MEMORY_GUIDANCE = (
-    'Actively review useful non-sensitive material within the existing authorized source/scope: ordinary preferences, corrections, useful small facts, personal task progress and short-term continuity can merit saving; major decisions or permanence are not prerequisites. '
-    'Keep a short dated fact/result/next-step, not raw conversation logs. A personal progress summary supplied in an authorized conversation is different from collecting project files or project-only material; do not disguise unauthorized project content as personal memory. '
-    'Honor explicit user memory requests within scope even for small facts; retain provenance/uncertainty. Distinguish user statements and observed results from guesses; uncertain inference needs review. One-time presentation instructions without future utility need not be saved. Reuse the same topic, read its revision, merge valid context and correct outdated facts via content_put/CAS. '
-    'For onboarding, migrate all existing memories from every explicitly authorized accessible memory source by default, in bounded batches, excluding company-sensitive information and secrets. Do not importance-filter existing memories or omit small/short-term items; preserve uncertainty/provenance rather than upgrading guesses into facts. Deduplicate and merge without losing unique information, retain both sides of conflicts; the three-topic retrieval budget is not an import or source-coverage quota. Report imported, duplicate, skipped, deferred, inaccessible and not-checked with reasons. Never imply account-wide coverage from an explicit file list, zero pending writes or a small sample. '
-    'Do not read prohibited sessions/databases, secrets or LocalOnly; unknown/new source access is not authorized by this guidance. Do not mechanically upload everything, overwrite occupied topics, activate imported Rules/Skills, or promote a temporary instruction into a global rule. '
-    'An imported duplicate is covered, not a missing upload; source access gaps and privacy exclusions differ from relevance decisions. Check transport/permission/contract errors separately from editorial choices. '
-    'An install/reinstall coverage-check request is a separate Agent step: recheck authorized source coverage without re-pairing or repeating a whole import; ordinary reconnect alone is not this request. '
+    'For daily memory decisions, follow the currently loaded agent-brain-memory Skill; for source import and coverage, follow agent-brain-onboard. This Client text defines interface and authorization constraints, not a second behavior policy. '
+    'Use only content methods and IDs within the granted scope. Do not infer source access or permission from catalogs, prior imports or local mappings; never access prohibited sessions/databases, secrets or LocalOnly material. '
+    'Writes require the current expected_revision and a stable request_id. A local-confirmed receipt with local_durable=true, github_confirmed=false and durable=false confirms the Server saved the write, but not its GitHub backup. Only remote-confirmed with durable=true confirms the GitHub backup; supported conflicts remain pending until reconciled. '
+    'A mapping refresh does not prove an already running model reloaded its context. Importing a Rule or Skill does not enable it. '
 )
 
 
 def query_time(value):
-    if value is None:return None
-    if not isinstance(value,str) or not 1<=len(value)<=64:raise ValueError('ISO8601 time required')
-    parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
-    if parsed.tzinfo is None or parsed.utcoffset() is None:raise ValueError('Explicit time zone required')
+    if value is None:
+        return None
+    if not isinstance(value, str) or not 1 <= len(value) <= 64:
+        raise ValueError('ISO8601 time required')
+    parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError('Explicit time zone required')
     return parsed.astimezone(timezone.utc)
 
 
