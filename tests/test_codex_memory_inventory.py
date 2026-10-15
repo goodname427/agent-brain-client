@@ -73,7 +73,7 @@ class CodexMemoryInventory(unittest.TestCase):
         source_file.write_text('synthetic corrected durable fact')
         updated=restarted.inventory_memory_sources()
         self.assertNotEqual(inventory['cursor'],updated['cursor'])
-        self.assertEqual(restarted.import_status()['source_inventory']['counts'],{'imported':1,'not-checked':1})
+        self.assertEqual(restarted.import_status()['source_inventory']['counts'],{'excluded':1,'not-checked':1})
         source_file.unlink();removed=restarted.inventory_memory_sources()
         self.assertEqual(removed['counts'],{'excluded':2})
         self.assertEqual(restarted.import_status()['source_inventory']['counts'],{'excluded':2})

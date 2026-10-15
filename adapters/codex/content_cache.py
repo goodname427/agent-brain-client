@@ -448,8 +448,9 @@ class ContentAdapter:
                 current[inventory_key]=row
             for inventory_key,prior in old.items():
                 if inventory_key in current:continue
-                if prior['source_id'] not in seen_ids and fresh['status']=='complete':
-                    current[inventory_key]=dict(prior,status='excluded',reason='source no longer present')
+                if fresh['status']=='complete':
+                    reason='source no longer present' if prior['source_id'] not in seen_ids else 'previous fingerprint superseded by a changed source'
+                    current[inventory_key]=dict(prior,status='excluded',reason=reason)
                 else:
                     current[inventory_key]=prior
             if len(current)>1024:raise CacheBlocked()

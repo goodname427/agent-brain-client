@@ -2,8 +2,11 @@
 import argparse
 import hashlib
 import json
+import os
 import re
+import shutil
 import ssl
+import subprocess
 from urllib.error import HTTPError
 from pathlib import Path
 import sys
@@ -48,7 +51,7 @@ class ContentServer(Server):
             if name=='content_request_id':
                 required={'turn_sha256','method','kind','id'}
                 if not isinstance(arguments,dict) or set(arguments)!=required:raise ContentParameterError('Generate an idempotent request ID for one target and operation.')
-                if not isinstance(arguments['turn_sha256'],str) or not re.fullmatch(r'[a-f0-9]{64}',arguments['turn_sha256']):raise ContentParameterError('turn_sha256 must be the digest from the active Stop event.')
+                if not isinstance(arguments['turn_sha256'],str) or not re.fullmatch(r'[a-f0-9]{64}',arguments['turn_sha256']):raise ContentParameterError('turn_sha256 must be the digest from the active Codex notify event.')
                 if arguments['method'] not in ('content_put','content_remove'):raise ContentParameterError('Only content_put or content_remove request IDs are supported.')
                 contract.validate('content_read',{'kind':arguments['kind'],'id':arguments['id']})
                 rid='agentbrain_'+hashlib.sha256(contract.encode([arguments['turn_sha256'],arguments['method'],arguments['kind'],arguments['id']])).hexdigest()
@@ -142,7 +145,7 @@ class ContentServer(Server):
                 if name=='content_catalog':description+='AgentBrain destination records only; this does not discover Harness-native sources. Pass kinds only for the complete authorized target inventory; there is no pagination limit. Query/since/until/limit selects a Memory-only retrieval alias capped at 3. '
                 description+='Running worker version: '+self.client_version+'. '+UPDATE_GUIDANCE
                 tools.append({'name':name,'description':description,'inputSchema':{'type':'object','properties':properties,'required':required,'additionalProperties':False},'annotations':{'readOnlyHint':name not in contract.WRITES,'destructiveHint':name=='content_remove','idempotentHint':True}})
-            tools.append({'name':'content_request_id','description':'Generate a deterministic idempotent write request_id from the active Stop turn digest, operation and AgentBrain target identity. Different targets/operations in one turn receive different IDs; retries of the same operation get the same ID. Local-only; no transfer.','inputSchema':{'type':'object','properties':{'turn_sha256':{'type':'string','pattern':'^[a-f0-9]{64}$'},'method':{'type':'string','enum':['content_put','content_remove']},'kind':{'type':'string','enum':kinds},'id':{'type':'string','pattern':'^[a-z0-9][a-z0-9-]{0,63}$'}},'required':['turn_sha256','method','kind','id'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
+                tools.append({'name':'content_request_id','description':'Generate a deterministic idempotent write request_id from the completed Codex turn digest, operation and AgentBrain target identity. Different targets/operations in one turn receive different IDs; retries of the same operation get the same ID. Local-only; no transfer.','inputSchema':{'type':'object','properties':{'turn_sha256':{'type':'string','pattern':'^[a-f0-9]{64}$'},'method':{'type':'string','enum':['content_put','content_remove']},'kind':{'type':'string','enum':kinds},'id':{'type':'string','pattern':'^[a-z0-9][a-z0-9-]{0,63}$'}},'required':['turn_sha256','method','kind','id'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
             tools.append({'name':'content_sources_inventory','description':'Enumerate only the Codex persistent memories directory. Returns path-free IDs, file fingerprints and per-item processing status in pages of 64; never returns memory text or reads session/transcript files. Inventory is not semantic review or import coverage. Use the returned cursor for the next page; restart if it changes. Local-only read; no Server request or data transfer.','inputSchema':{'type':'object','properties':{'cursor':{'type':'string','maxLength':96}},'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
             tools.append({'name':'content_sources_read','description':'Read the bounded body of exactly one previously inventoried Codex persistent Memory file, matching its ID and fingerprint. Local-only; never reads transcript/session paths and does not transfer data. Review the returned text for secrets, LocalOnly, customer/employer confidential data and cross-project scope before staging.','inputSchema':{'type':'object','properties':{'source_id':{'type':'string','pattern':'^codex-memory:[a-f0-9]{64}$'},'source_fingerprint':{'type':'string','pattern':'^[a-f0-9]{64}$'}},'required':['source_id','source_fingerprint'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
             tools.append({'name':'content_sources_review','description':'Record an explicit review decision for a previously read exact source. This creates only a path-free status marker in the private cache, never stores text or transfers content. A shareable decision is required before any candidate from this source can be staged. Mark LocalOnly, secrets, or confidential sources excluded; mark unsafe project scope or uncertainty deferred.','inputSchema':{'type':'object','properties':{'source_id':{'type':'string','pattern':'^codex-memory:[a-f0-9]{64}$'},'source_fingerprint':{'type':'string','pattern':'^[a-f0-9]{64}$'},'decision':{'type':'string','enum':['shareable','excluded','deferred','skipped']},'reason_code':{'type':'string','enum':['safe-cross-project-personal-summary','secret-localonly-or-confidential','project-scope-unavailable','uncertain-content','no-durable-user-fact']}},'required':['source_id','source_fingerprint','decision','reason_code'],'additionalProperties':False},'annotations':{'readOnlyHint':False,'destructiveHint':False,'idempotentHint':True}})
@@ -214,69 +217,60 @@ class SafeArgumentParser(argparse.ArgumentParser):
         sys.exit(emit_startup_failure('arguments',ValueError('invalid_arguments')))
 
 
-# Codex Stop hook contract. This hook deliberately consumes only the structured
-# event envelope. In particular, it never opens transcript_path or any other
-# native session store. Codex itself performs the single continuation pass.
-_STOP_HOOK_REASON=(
-    'Consider saving only a durable, useful fact the user directly stated or '
-    'explicitly asked to remember, including a meaningful experience, '
-    'correction, or short-term progress/result. Ignore assistant guesses, '
-    'tool output, and facts merely inferred from context. If the active '
-    'conversation has no new user request/message for this turn, make no '
-    'tool calls and finish without changes. AgentBrain memory is '
-    'shared across projects: the user\'s own ordinary project experiences, '
-    'decisions, and progress may be saved as a generalized personal work '
-    'summary when safe to reuse across projects. Remove project/customer/'
-    'employer identifiers, secrets, and confidential details. If a useful '
-    'experience cannot be safely generalized because Server has no project '
-    'isolation, leave it unstaged and report the scope limitation. Never '
-    'silently discard a meaningful experience. '
-    'Use only already-authorized AgentBrain memory_query/content_catalog, '
-    'content_read, content_put, and content_remove tools. For each selected '
-    'Codex Memory source, call content_sources_review after reading; only '
-    'mark shareable when safe across projects and never stage before this '
-    'review is recorded. For writes, read '
-    'the current record '
-    'and use its expected_revision plus the deterministic request_id returned '
-    'by content_request_id, passing the Stop event turn-sha256, operation, '
-    'kind, and target id. This gives separate IDs to different targets and '
-    'makes retries of one operation idempotent. Preserve distinct '
-    'useful facts, merge only when supported by the conversation, and honor '
-    'explicit forgetting using content_remove only when explicitly requested '
-    'and authorized. Do not read transcript files, secrets, or LocalOnly '
-    'sources. Do not claim a memory was saved unless the durable Server result '
-    'confirms it. If no fact meets these rules or no authorized write path is '
-    'available, finish without changing AgentBrain.'
+# Codex invokes notify once after a turn and passes the event as one JSON argv.
+# An internal marker makes the queued capture turn a one-shot, not a loop.
+_NOTIFY_CAPTURE_MARKER='AGENTBRAIN_NOTIFY_CAPTURE:'
+_NOTIFY_CAPTURE_INSTRUCTIONS=(
+    'Review the immediately preceding completed Codex turn for durable user-stated '
+    'preferences, facts, experiences, corrections, or short-term progress worth '
+    'remembering. Use only direct user statements as evidence; ignore assistant '
+    'guesses and tool output. Process only the supported, authorized Codex Memories '
+    'scope exposed by content_sources_inventory/read/review/stage. Read every '
+    'eligible source to completion in bounded pages; do not claim account-wide or '
+    'session-history coverage. Do not count unread items as complete. Generalize '
+    'ordinary user project experience safely for the shared personal Memory scope; '
+    'exclude secrets, LocalOnly, confidential or customer-identifying content, and '
+    'report unsafe scope as deferred. For memory writes use content_read/CAS and '
+    'content_request_id with the supplied turn digest. Honor explicit forgetting '
+    'with the existing authorized content_remove path. Do not read transcripts or '
+    'store raw conversation text. Never claim durable save without the Server receipt.'
 )
 
 
-def codex_stop_hook(event):
-    """Return a Codex Stop decision for one eligible turn, without reading history."""
-    if not isinstance(event,dict) or event.get('hook_event_name')!='Stop':
-        return None
-    if event.get('stop_hook_active') is not False:
-        return None
-    # These IDs bind the event to a real turn. No path or message body is read
-    # from the hook payload; the continuation sees the active conversation.
-    if any(not isinstance(event.get(key),str) or not event[key] for key in ('session_id','turn_id')):
-        return None
-    turn_digest=hashlib.sha256(event['turn_id'].encode('utf-8')).hexdigest()
-    return {'decision':'block','reason':_STOP_HOOK_REASON+' Stop turn_sha256: '+turn_digest+'.'}
+def codex_notify_capture(event):
+    """Validate the documented notify payload and prepare one capture message."""
+    if not isinstance(event,dict) or event.get('type')!='agent-turn-complete':return None
+    thread_id=event.get('thread-id');turn_id=event.get('turn-id');messages=event.get('input-messages')
+    if (not isinstance(thread_id,str) or not thread_id or len(thread_id)>128 or
+            not isinstance(turn_id,str) or not turn_id or len(turn_id)>256 or
+            not isinstance(messages,list) or not messages or len(messages)>128):return None
+    if any(not isinstance(item,str) or len(item)>65536 for item in messages):return None
+    if any(item.startswith(_NOTIFY_CAPTURE_MARKER) for item in messages):return None
+    last=event.get('last-assistant-message','')
+    if not isinstance(last,str) or len(last)>65536:return None
+    turn_digest=hashlib.sha256(turn_id.encode('utf-8')).hexdigest()
+    message=(_NOTIFY_CAPTURE_MARKER+turn_id+'\nTurn digest: '+turn_digest+'\n'+_NOTIFY_CAPTURE_INSTRUCTIONS)
+    return {'thread_id':thread_id,'turn_id':turn_id,'turn_sha256':turn_digest,
+            'message':message,'input_message_count':len(messages)}
 
 
-def stop_hook_main(stdin=None,stdout=None):
-    """CLI entrypoint suitable for a reviewed local Codex Stop command hook."""
-    stdin=stdin or sys.stdin
-    stdout=stdout or sys.stdout
+def codex_notify_main(argv=None,popen=None):
+    """Queue a capture turn only when notify proves this completion followed user input."""
+    argv=sys.argv[2:] if argv is None else argv
+    if len(argv)!=1 or len(argv[0])>1048576:return 0
+    try:event=json.loads(argv[0])
+    except (ValueError,TypeError):return 0
+    capture=codex_notify_capture(event)
+    if capture is None:return 0
+    cli=os.environ.get('CODEX_CLI') or shutil.which('codex')
+    if not cli:
+        bundled='/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex'
+        if Path(bundled).is_file():cli=bundled
+    if not cli:return 0
     try:
-        raw=stdin.read(1048577)
-        if len(raw)>1048576:return 0
-        event=json.loads(raw)
-    except (ValueError,TypeError):
-        return 0
-    decision=codex_stop_hook(event)
-    if decision is not None:
-        print(json.dumps(decision,ensure_ascii=False),file=stdout)
+        (popen or subprocess.Popen)([cli,'queue','--thread',capture['thread_id'],'--message',capture['message']],
+            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True)
+    except OSError:return 0
     return 0
 
 
@@ -407,8 +401,8 @@ _STARTUP_STAGE='arguments'
 def main():
     global _STARTUP_STAGE
     _STARTUP_STAGE='arguments'
-    if sys.argv[1:]==['--codex-stop-hook']:
-        raise SystemExit(stop_hook_main())
+    if sys.argv[1:2]==['--codex-notify']:
+        raise SystemExit(codex_notify_main())
     if sys.argv[1:]==['--self-check']:print(json.dumps(self_check()));return
     parser=SafeArgumentParser(description=__doc__)
     for name in ('content-policy','content-policy-sha256','device-home','cache'):parser.add_argument('--'+name,required=True)

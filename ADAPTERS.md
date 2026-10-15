@@ -133,10 +133,12 @@ component_source_sha256 固定已批准的签名组件源码关联。候选源�
 
 `brain_content_migration.py` 仅根据已批准 repository inventory 的名称、触发、依赖、资源和哈希准备迁移提案，不读正文、不上传、不执行 Skill。每个 Rule 保留 enabled/trigger，Skill 源启用状态未知时默认 disabled；已有本地 Core CLI/相对 wrapper 的 Brain Skills 须先改为服务流程，Core 仓库维护保留 repository scope。原生 Skill 目录冲突、UE 编辑器 prerequisites、正文转换/request SHA 与真实目标 revision 尚须具体处理；清单非空不表示迁移完成。合成验证用同样的 IDs/资源结构和改写后的合成正文，不能替代真实 Skill 适配。
 
-## Codex Stop 增量保存候选（0.3.0）
+## Codex notify 增量保存候选（0.3.0）
 
-`adapters/codex/content_mcp.py --codex-stop-hook` 是结构化 Stop 事件候选入口。仅当 `hook_event_name=Stop`、有 `session_id`/`turn_id` 且 `stop_hook_active=false` 时输出 `decision=block`，请求 Codex 在活动会话续跑；续跑再次触发时 no-op。它不会读取 `transcript_path`，模型只应考虑用户直接陈述或明确要求记住的事实；不能从 Stop 元数据独立证明该回合含有用户输入。每个 turn 生成确定性 `agentbrain_<turn-sha256>` request_id，使同一回合写入可幂等重试。普通个人项目经历/决策/进展可先泛化为跨项目安全的个人摘要；移除项目/客户/雇主标识、秘密和机密。无法安全泛化且 Server 没有项目隔离时应报告范围限制，不写入。助手猜测和工具输出不作为用户事实。AgentBrain 写入仍通过 read/CAS、稳定 request_id、现有 outbox 和耐久回执。
+`adapters/codex/content_mcp.py --codex-notify <event-json>` 接收官方 `agent-turn-complete` notify 的单个 JSON 参数。只在 `input-messages` 非空且有 `thread-id`/`turn-id` 时，用 `codex queue --thread … --message …` 在原线程排入一次内部捕获任务；空输入、非完成事件、无 CLI 或内部捕获标记均 no-op。内部消息有 turn digest，使用现有 AgentBrain Memory MCP 指引处理来源和新经历；它不阻塞原 turn、不读取 transcript、不保存原始消息正文。`CODEX_CLI` 可固定 CLI 路径；否则使用 PATH 中的 `codex` 或 ChatGPT.app bundle 内的 CLI。需在用户自己的 `config.toml` 中审核后登记 notify 命令并信任确切文件；安装器不改原生配置或信任。
+
+完成验收的来源范围是支持且允许读取的 `<CODEX_HOME>/memories` 持久化目录；不要求也不读取历史会话、sessions、数据库或 `transcript_path`。每个 turn 生成确定性 `agentbrain_<turn-sha256>` request_id，使重试可幂等。模型只将用户直接陈述当作证据，忽略助手猜测和工具输出；普通用户项目经历/决策/进展可泛化为共享个人摘要，移除客户/雇主标识、秘密和机密，无法安全泛化则 deferred。Server 写入仍走 read/CAS、现有 outbox 与耐久回执。
 
 本地工具 `content_sources_inventory` 及 `content_cache.inventory_codex_memories()` 仅扫描明确的 `<CODEX_HOME>/memories` 持久化目录，拒绝符号链接；最多 1024 个目录项、16 层、1024 个文件、每文件 128 KiB、总文件字节 16 MiB，不读取 `sessions`、数据库或 `transcript_path`。清单每页最多 64 项，返回路径哈希、逐文件 SHA256、处理状态与确定性快照 cursor；不返回正文。`content_sources_read` 只允许按当前 inventory 的精确 ID/fingerprint 读取单个最多 128 KiB 的 UTF-8 文件，检查后不缓存正文、不传输内容；fingerprint 变化时拒绝。调用方必须先用 `content_sources_review` 对该确切指纹作 shareable/excluded/deferred/skipped 决策，私有缓存只保存固定决策码、不保留文本；只有 shareable 标记可进入 `content_sources_stage`。Stage 复用现有 `stage_import`、CAS/outbox 流程。清单保存在现有私有 Client cache；新来源初始为 `not-checked`，已消失来源标为 `excluded`，Server 导入状态从现有 ledger 关联。此审查依赖模型/调用方如实判断正文是否包含 LocalOnly/机密，因此不能声称代码能自动识别所有敏感语义。此流程不构成整个账号或历史会话覆盖证明；当前未读取生产 Memories，也未接入真实用户源。行为由隔离合成夹具和一次独立本地 Server/Core E2E 验证。
 
-这是 opt-in 的 Codex Desktop 本地命令 Hook 候选。需要在用户自己的 Codex Hooks 配置中登记稳定的已安装路径，并按 Hook 审查与信任流程核对确切命令和文件摘要；Client 安装器不会写入 hooks 配置或自动授信。命令 Hook 不适用于云端 orchestration。Stop 事件提供回合结束入口，但不证明本地持久 Memories 已自动覆盖；受支持历史源目前只枚举 `<CODEX_HOME>/memories`，两者均不枚举全部历史会话。未完成逐项读取/语义处理的条目保持未完成，不能报告完整覆盖；Hook 未被用户配置和信任时不承诺自动触发。
+此路径只负责在真实用户输入回合完成后排入捕获任务；要称为完整 Memories 覆盖，必须对 inventory 的每个允许来源记录真实处理状态，未读取不能计为完成。合成 payload 测试不等于本机 app 的实时 notify 集成或真实模型验收；未配置/信任 notify 时不承诺自动触发。
