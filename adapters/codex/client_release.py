@@ -211,8 +211,13 @@ class ClientReleases:
         except PlatformUnsupported as error:return error.result(active=None)
         except (UpdateBlocked,LockTimeout,OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired) as error:
             # Never echo upstream paths, credentials, raw stderr or exception values.
-            try:active=self.verified_active()
-            except (UpdateBlocked,LockTimeout,OSError,ValueError,KeyError,TypeError):active=None
+            # A lock timeout can overlap an activation before its health check.
+            # Do not read the live pointer; fail closed until the owner completes.
+            if isinstance(error,LockTimeout):
+                active=None
+            else:
+                try:active=self.verified_active()
+                except (UpdateBlocked,LockTimeout,OSError,ValueError,KeyError,TypeError):active=None
             if isinstance(error,LockTimeout):
                 error_class='LockTimeout';error_code='release-lock-busy'
             elif isinstance(error,UpdateBlocked):
