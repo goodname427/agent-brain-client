@@ -82,6 +82,8 @@ def serve_content(command,active,policy,status):
 def startup(policy_path, policy_sha256, check_only=False, installation_check=False):
     releases=ClientReleases(policy_path,policy_sha256)
     result=releases.update()
+    if result.get('diagnostic') and not check_only:
+        print(json.dumps(result['diagnostic']),file=sys.stderr)
     active=result.get('active')
     if not active:
         if check_only:return result
@@ -99,11 +101,7 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
         for name,value in runtime.items():
             if name not in LEGACY_PRESERVATION|DEPENDENCY_RUNTIME:command.extend(['--'+name.replace('_','-').replace('content-cache','cache'),value])
         if installation_check:command.append('--installation-check')
-        if installation_check:
-            diagnostic=result.get('diagnostic')
-            if diagnostic:
-                print(json.dumps(diagnostic),file=sys.stderr)
-            return {'status':result['status'],'served':True,'exit_code':subprocess.run(command).returncode}
+        if installation_check:return {'status':result['status'],'served':True,'exit_code':subprocess.run(command).returncode}
         return serve_content(command,active,releases.policy,result['status'])
     if installation_check:return {'status':'content-runtime-review-required','served':False}
     command=[sys.executable,'-I','-B',str(Path(active['package'])/'adapters/codex/remote_mcp.py'),
