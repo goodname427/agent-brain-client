@@ -10,6 +10,11 @@ MAC_PLATFORMS = ('darwin-arm64', 'darwin-x86_64')
 WINDOWS_PLATFORMS = ('win32-amd64', 'win32-arm64')
 
 
+class LockTimeout(RuntimeError):
+    """Bounded wait for a client update lock expired; callers may retain old code."""
+    pass
+
+
 class PlatformUnsupported(ValueError):
     def __init__(self, operation, target):
         self.operation = operation
@@ -90,7 +95,7 @@ def locked(path, timeout=20, shared=False, cancel_check=None):
                 break
             except OSError:
                 if time.monotonic() >= deadline:
-                    raise RuntimeError('Another operation is running; retry shortly.')
+                    raise LockTimeout('Another operation is running; retry shortly.')
                 time.sleep(.1)
         if cancel_check is not None:cancel_check()
         yield handle

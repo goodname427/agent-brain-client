@@ -82,6 +82,8 @@ def serve_content(command,active,policy,status):
 def startup(policy_path, policy_sha256, check_only=False, installation_check=False):
     releases=ClientReleases(policy_path,policy_sha256)
     result=releases.update()
+    if result.get('diagnostic') and not check_only:
+        print(json.dumps(result['diagnostic']),file=sys.stderr)
     active=result.get('active')
     if not active:
         if check_only:return result
