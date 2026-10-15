@@ -2,7 +2,7 @@
 
 日常保存/检索决策由当前加载的 `agent-brain-memory` Skill 定义；来源导入与覆盖决策由 `agent-brain-onboard` Skill 定义。本文件和 Client 的 MCP instructions 只说明工具、范围、回执及安装交接，不复制或覆盖这些 Skill 的行为规则。若相应 Skill 未加载，报告该能力缺口，不从 Client 文档推导另一套记忆政策。
 
-`tools/memory_review.py` 只审阅调用者明确提供的非正文候选元数据，不发现来源、不授予权限、不采集、不上传。
+`tools/memory_review.py` 只离线审阅调用者明确提供的非正文候选元数据，不发现来源、不授予权限、不采集、不上传。Onboard 模式的 `coverage-incomplete` 表示所提供元数据存在来源覆盖缺口；`provided-sources-reviewed` 只表示所提供的来源清单已审阅。两种回执都带 `account_complete:false`、`source_discovery_performed:false` 和 `data_transferred:false`，并报告增量候选数与等价记录数；它们不证明账户全量或迁移完成。输入无效时返回 `source-review-invalid`，且 `data_transferred:false`。
 
 ## 安装后的 Onboard 交接
 
