@@ -161,7 +161,7 @@ class Outbox(unittest.TestCase):
             return value
         self.cloud.request=tombstone;self.adapter.stage_import(self.plan([('memory','synthetic-topic',MEMORY)]));self.assertEqual(self.adapter.refresh()['status'],'content-local-changes-retained');self.assertEqual(self.adapter.import_status()['counts'],{'conflict':1});self.assertEqual(self.cloud.puts,0)
 
-    def test_changed_source_after_explicit_forget_is_not_reimported(self):
+    def test_changed_source_after_synthetic_remote_tombstone_revision_is_not_reimported(self):
         plan=self.plan([('memory','synthetic-topic',MEMORY)])
         self.adapter.stage_import(plan);self.adapter.refresh();self.assertEqual(self.cloud.puts,1)
         self.cloud.records.pop(('memory','synthetic-topic'))

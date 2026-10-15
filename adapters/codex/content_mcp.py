@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import re
 import ssl
 from urllib.error import HTTPError
 from pathlib import Path
@@ -44,6 +45,15 @@ class ContentServer(Server):
 
     def invoke(self,name,arguments):
         try:
+            if name=='content_request_id':
+                required={'turn_sha256','method','kind','id'}
+                if not isinstance(arguments,dict) or set(arguments)!=required:raise ContentParameterError('Generate an idempotent request ID for one target and operation.')
+                if not isinstance(arguments['turn_sha256'],str) or not re.fullmatch(r'[a-f0-9]{64}',arguments['turn_sha256']):raise ContentParameterError('turn_sha256 must be the digest from the active Stop event.')
+                if arguments['method'] not in ('content_put','content_remove'):raise ContentParameterError('Only content_put or content_remove request IDs are supported.')
+                contract.validate('content_read',{'kind':arguments['kind'],'id':arguments['id']})
+                rid='agentbrain_'+hashlib.sha256(contract.encode([arguments['turn_sha256'],arguments['method'],arguments['kind'],arguments['id']])).hexdigest()
+                result={'request_id':rid,'data_transferred':False,'native_changed':False}
+                return {'isError':False,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
             if name=='content_sources_inventory':
                 if not isinstance(arguments,dict) or set(arguments)-{'cursor'}:raise ContentParameterError('Inventory accepts only an optional cursor.')
                 inventory=self.adapter.inventory_memory_sources();cursor=arguments.get('cursor');offset=0
@@ -57,6 +67,19 @@ class ContentServer(Server):
                 result={'status':inventory['status'],'counts':inventory['counts'],'cursor':inventory['cursor'],
                         'sources':page,'next_cursor':f"{inventory['cursor']}:{next_offset}" if next_offset<len(sources) else None,
                         'reason':inventory['reason'],'data_transferred':False,'account_complete':False}
+                return {'isError':False,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
+            if name=='content_sources_read':
+                if not isinstance(arguments,dict) or set(arguments)!={'source_id','source_fingerprint'}:raise ContentParameterError('Read exactly one inventoried source by ID and fingerprint.')
+                result=self.adapter.read_memory_source(arguments['source_id'],arguments['source_fingerprint'])
+                return {'isError':False,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
+            if name=='content_sources_review':
+                if not isinstance(arguments,dict) or set(arguments)!={'source_id','source_fingerprint','decision','reason_code'}:raise ContentParameterError('Review requires one exact source fingerprint, a decision, and a fixed reason code.')
+                result=self.adapter.review_memory_source(arguments['source_id'],arguments['source_fingerprint'],arguments['decision'],arguments['reason_code'])
+                return {'isError':False,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
+            if name=='content_sources_stage':
+                expected={'source_id','source_fingerprint','id','record'}
+                if not isinstance(arguments,dict) or set(arguments)!=expected:raise ContentParameterError('Stage requires one locally read source and a normalized AgentBrain Memory record.')
+                result=self.adapter.stage_memory_import(arguments['source_id'],arguments['source_fingerprint'],'memory',arguments['id'],arguments['record'])
                 return {'isError':False,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
             if name not in self.adapter.methods():raise ContentParameterError('Unknown or unavailable content tool; inspect tools/list.')
             if not isinstance(arguments,dict):raise ContentParameterError('Content tool arguments must be an object.')
@@ -119,7 +142,11 @@ class ContentServer(Server):
                 if name=='content_catalog':description+='AgentBrain destination records only; this does not discover Harness-native sources. Pass kinds only for the complete authorized target inventory; there is no pagination limit. Query/since/until/limit selects a Memory-only retrieval alias capped at 3. '
                 description+='Running worker version: '+self.client_version+'. '+UPDATE_GUIDANCE
                 tools.append({'name':name,'description':description,'inputSchema':{'type':'object','properties':properties,'required':required,'additionalProperties':False},'annotations':{'readOnlyHint':name not in contract.WRITES,'destructiveHint':name=='content_remove','idempotentHint':True}})
+            tools.append({'name':'content_request_id','description':'Generate a deterministic idempotent write request_id from the active Stop turn digest, operation and AgentBrain target identity. Different targets/operations in one turn receive different IDs; retries of the same operation get the same ID. Local-only; no transfer.','inputSchema':{'type':'object','properties':{'turn_sha256':{'type':'string','pattern':'^[a-f0-9]{64}$'},'method':{'type':'string','enum':['content_put','content_remove']},'kind':{'type':'string','enum':kinds},'id':{'type':'string','pattern':'^[a-z0-9][a-z0-9-]{0,63}$'}},'required':['turn_sha256','method','kind','id'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
             tools.append({'name':'content_sources_inventory','description':'Enumerate only the Codex persistent memories directory. Returns path-free IDs, file fingerprints and per-item processing status in pages of 64; never returns memory text or reads session/transcript files. Inventory is not semantic review or import coverage. Use the returned cursor for the next page; restart if it changes. Local-only read; no Server request or data transfer.','inputSchema':{'type':'object','properties':{'cursor':{'type':'string','maxLength':96}},'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
+            tools.append({'name':'content_sources_read','description':'Read the bounded body of exactly one previously inventoried Codex persistent Memory file, matching its ID and fingerprint. Local-only; never reads transcript/session paths and does not transfer data. Review the returned text for secrets, LocalOnly, customer/employer confidential data and cross-project scope before staging.','inputSchema':{'type':'object','properties':{'source_id':{'type':'string','pattern':'^codex-memory:[a-f0-9]{64}$'},'source_fingerprint':{'type':'string','pattern':'^[a-f0-9]{64}$'}},'required':['source_id','source_fingerprint'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
+            tools.append({'name':'content_sources_review','description':'Record an explicit review decision for a previously read exact source. This creates only a path-free status marker in the private cache, never stores text or transfers content. A shareable decision is required before any candidate from this source can be staged. Mark LocalOnly, secrets, or confidential sources excluded; mark unsafe project scope or uncertainty deferred.','inputSchema':{'type':'object','properties':{'source_id':{'type':'string','pattern':'^codex-memory:[a-f0-9]{64}$'},'source_fingerprint':{'type':'string','pattern':'^[a-f0-9]{64}$'},'decision':{'type':'string','enum':['shareable','excluded','deferred','skipped']},'reason_code':{'type':'string','enum':['safe-cross-project-personal-summary','secret-localonly-or-confidential','project-scope-unavailable','uncertain-content','no-durable-user-fact']}},'required':['source_id','source_fingerprint','decision','reason_code'],'additionalProperties':False},'annotations':{'readOnlyHint':False,'destructiveHint':False,'idempotentHint':True}})
+            tools.append({'name':'content_sources_stage','description':'Stage one normalized AgentBrain Memory candidate for an exact source that was read locally and explicitly reviewed as shareable. The local import plan remains in the existing durable cache/outbox; staging itself sends no content. Only use for user-provided durable facts safe across projects. Generalize ordinary project experiences/progress to personal context; never include secrets, LocalOnly, customer/employer confidential data or details unsafe to share across projects. Read the current AgentBrain record and reconcile duplicates/corrections before normal refresh writes.','inputSchema':{'type':'object','properties':{'source_id':{'type':'string','pattern':'^codex-memory:[a-f0-9]{64}$'},'source_fingerprint':{'type':'string','pattern':'^[a-f0-9]{64}$'},'id':{'type':'string','pattern':'^[a-z0-9][a-z0-9-]{0,63}$'},'record':{'type':'object','properties':{'title':{'type':'string','maxLength':1024},'description':{'type':'string','maxLength':1024},'body':{'type':'string'},'type':{'type':'string','enum':['user','feedback','reference']}},'required':['title','description','body','type'],'additionalProperties':False}},'required':['source_id','source_fingerprint','id','record'],'additionalProperties':False},'annotations':{'readOnlyHint':False,'destructiveHint':False,'idempotentHint':True}})
             return {'tools':tools}
         result=super().handle(request)
         if isinstance(request,dict) and request.get('method')=='initialize' and isinstance(result,dict):
@@ -144,7 +171,7 @@ def self_check():
     server=ContentServer(Adapter())
     server.handle({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'synthetic-package-check','version':'1'}}})
     server.handle({'jsonrpc':'2.0','method':'notifications/initialized'})
-    assert {t['name'] for t in server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})['tools']}==set(contract.FIELDS)|{'content_sources_inventory'}
+    assert {t['name'] for t in server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})['tools']}==set(contract.FIELDS)|{'content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'}
     assert not any(m in sys.modules for m in ('brain_core','brain_runtime','brain_cli'))
     return {'content_mcp_self_check':'passed','core_imported':False,'native_changed':False,'keychain_accessed':False,'network_used':False}
 
@@ -194,15 +221,26 @@ _STOP_HOOK_REASON=(
     'Consider saving only a durable, useful fact the user directly stated or '
     'explicitly asked to remember, including a meaningful experience, '
     'correction, or short-term progress/result. Ignore assistant guesses, '
-    'tool output, and facts merely inferred from context. AgentBrain memory is '
-    'shared across projects: never save project, customer, employer, '
-    'organization, or confidential details, or information that would expose '
-    'one project in another. Keep only a generalized personal fact safe to '
-    'reuse across all projects. '
+    'tool output, and facts merely inferred from context. If the active '
+    'conversation has no new user request/message for this turn, make no '
+    'tool calls and finish without changes. AgentBrain memory is '
+    'shared across projects: the user\'s own ordinary project experiences, '
+    'decisions, and progress may be saved as a generalized personal work '
+    'summary when safe to reuse across projects. Remove project/customer/'
+    'employer identifiers, secrets, and confidential details. If a useful '
+    'experience cannot be safely generalized because Server has no project '
+    'isolation, leave it unstaged and report the scope limitation. Never '
+    'silently discard a meaningful experience. '
     'Use only already-authorized AgentBrain memory_query/content_catalog, '
-    'content_read, content_put, and content_remove tools. For writes, read '
+    'content_read, content_put, and content_remove tools. For each selected '
+    'Codex Memory source, call content_sources_review after reading; only '
+    'mark shareable when safe across projects and never stage before this '
+    'review is recorded. For writes, read '
     'the current record '
-    'and use its expected_revision plus a stable request_id; preserve distinct '
+    'and use its expected_revision plus the deterministic request_id returned '
+    'by content_request_id, passing the Stop event turn-sha256, operation, '
+    'kind, and target id. This gives separate IDs to different targets and '
+    'makes retries of one operation idempotent. Preserve distinct '
     'useful facts, merge only when supported by the conversation, and honor '
     'explicit forgetting using content_remove only when explicitly requested '
     'and authorized. Do not read transcript files, secrets, or LocalOnly '
@@ -222,7 +260,8 @@ def codex_stop_hook(event):
     # from the hook payload; the continuation sees the active conversation.
     if any(not isinstance(event.get(key),str) or not event[key] for key in ('session_id','turn_id')):
         return None
-    return {'decision':'block','reason':_STOP_HOOK_REASON}
+    turn_digest=hashlib.sha256(event['turn_id'].encode('utf-8')).hexdigest()
+    return {'decision':'block','reason':_STOP_HOOK_REASON+' Stop turn_sha256: '+turn_digest+'.'}
 
 
 def stop_hook_main(stdin=None,stdout=None):
@@ -256,14 +295,14 @@ def installation_check(client,policy,client_version='0.2.0'):
     server.handle({'jsonrpc':'2.0','method':'notifications/initialized'})
     tools=server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})
     result=server.handle({'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':'content_catalog','arguments':{'kinds':policy['kinds']}}})
-    if first['serverInfo']['name']!='agent-brain-content-codex-candidate' or {t['name'] for t in tools['tools']}!=adapter.methods()|{'content_sources_inventory'} or result['isError']:raise ValueError('Content protocol check failed')
+    if first['serverInfo']['name']!='agent-brain-content-codex-candidate' or {t['name'] for t in tools['tools']}!=adapter.methods()|{'content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'} or result['isError']:raise ValueError('Content protocol check failed')
     catalog=result['structuredContent']['result']
     import re
     if catalog.get('content_api_version')!=1 or not re.fullmatch(r'[a-f0-9]{40}',catalog.get('commit','')) or not isinstance(catalog.get('artifacts'),list) or len(catalog['artifacts'])>256:raise ValueError('Unconfirmed content catalog')
     for item in catalog['artifacts']:
         contract.validate('content_read',{'kind':item['kind'],'id':item['id']})
         if item['kind'] not in policy['kinds'] or not re.fullmatch(r'[a-f0-9]{64}',item.get('revision','')):raise ValueError('Invalid content catalog')
-    return {'status':'content-native-protocol-checked','protocol_checked':True,'authentication_checked':True,'tools':sorted(adapter.methods()|{'content_sources_inventory'}),'native_changed':False,'model_loaded':'unknown'}
+    return {'status':'content-native-protocol-checked','protocol_checked':True,'authentication_checked':True,'tools':sorted(adapter.methods()|{'content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'}),'native_changed':False,'model_loaded':'unknown'}
 
 
 def serve(server, source, output, *, request_timeout=90, max_pending=256):

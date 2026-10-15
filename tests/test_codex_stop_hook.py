@@ -22,12 +22,34 @@ class CodexStopHook(unittest.TestCase):
         result=codex_stop_hook(self.event())
         self.assertEqual(result['decision'],'block')
         self.assertIn('explicitly asked to remember',result['reason'])
-        self.assertIn('stable request_id',result['reason'])
+        self.assertIn('no new user request/message',result['reason'])
+        self.assertIn('request_id returned',result['reason'])
         self.assertIn('Do not read transcript files',result['reason'])
         self.assertIn('shared across projects',result['reason'])
-        self.assertIn('never save project, customer',result['reason'])
+        self.assertIn('ordinary project experiences',result['reason'])
+        self.assertIn('cannot be safely generalized',result['reason'])
         self.assertIn('Ignore assistant guesses',result['reason'])
         self.assertIn('durable Server result',result['reason'])
+        self.assertRegex(result['reason'],r'Stop turn_sha256: [a-f0-9]{64}')
+
+    def test_same_turn_reuses_stable_request_id(self):
+        first=codex_stop_hook(self.event())['reason']
+        repeated=codex_stop_hook(self.event())['reason']
+        self.assertEqual(first,repeated)
+        other=codex_stop_hook(self.event(turn_id='another-synthetic-turn'))['reason']
+        self.assertNotEqual(first,other)
+
+    def test_request_id_is_stable_per_operation_and_distinct_per_target(self):
+        from content_mcp import ContentServer
+        class Adapter:
+            def methods(self):return set()
+            policy={'kinds':['memory']}
+        server=ContentServer(Adapter())
+        args={'turn_sha256':'a'*64,'method':'content_put','kind':'memory','id':'synthetic-a'}
+        first=server.invoke('content_request_id',args)['structuredContent']['request_id']
+        self.assertEqual(first,server.invoke('content_request_id',args)['structuredContent']['request_id'])
+        other=server.invoke('content_request_id',dict(args,id='synthetic-b'))['structuredContent']['request_id']
+        self.assertNotEqual(first,other)
 
     def test_continuation_and_non_stop_events_are_noops(self):
         self.assertIsNone(codex_stop_hook(self.event(stop_hook_active=True)))
