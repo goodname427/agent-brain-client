@@ -34,7 +34,7 @@ class StartupDiagnostics(unittest.TestCase):
 
     def test_release_failure_keeps_review_gate_and_only_adds_safe_diagnostic(self):
         releases = object.__new__(client_release.ClientReleases)
-        releases.policy = {}
+        releases.policy = {"platform": "synthetic-platform"}
         releases.inspection = False
         releases.engine = mock.Mock()
         releases.engine.check.side_effect = UpdateBlocked(
