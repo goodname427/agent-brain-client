@@ -1,10 +1,12 @@
 """Bounded startup diagnostics never expose exception values or credentials."""
 import io
 import json
+import ssl
 from pathlib import Path
 import sys
 import unittest
 from unittest import mock
+from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "adapters" / "codex"))
 
@@ -33,6 +35,40 @@ class StartupDiagnostics(unittest.TestCase):
         )
         self.assertNotIn("SYNTHETIC_SECRET", output.getvalue())
 
+
+    def test_tls_and_http_errors_are_classified_before_oserror(self):
+        cases = (
+            (
+                "identity-activation",
+                ssl.SSLError("SYNTHETIC_TLS_SECRET"),
+                "SSLError",
+            ),
+            (
+                "installation-check",
+                HTTPError(
+                    "https://synthetic.invalid",
+                    503,
+                    "SYNTHETIC_HTTP_SECRET",
+                    {},
+                    io.BytesIO(b"SYNTHETIC_HTTP_BODY"),
+                ),
+                "HTTPError",
+            ),
+        )
+        for stage, error, error_class in cases:
+            with self.subTest(error_class=error_class):
+                output = io.StringIO()
+                code = emit_startup_failure(stage, error, output)
+                self.assertEqual(code, 1)
+                self.assertEqual(
+                    json.loads(output.getvalue()),
+                    {
+                        "stage": stage,
+                        "error_class": error_class,
+                        "error_code": "startup_transport_error",
+                    },
+                )
+                self.assertNotIn("SYNTHETIC_", output.getvalue())
 
     def test_oserror_subclasses_are_reported_as_safe_io_category(self):
         output = io.StringIO()
