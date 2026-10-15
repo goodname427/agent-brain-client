@@ -2,6 +2,8 @@
 import argparse
 import hashlib
 import json
+import ssl
+from urllib.error import HTTPError
 from pathlib import Path
 import sys
 import queue
@@ -138,12 +140,14 @@ STARTUP_STAGES={
     'device-component-load','transport-policy-validation','installation-check',
     'content-adapter-start','import-plan-validation','mcp-serve'
 }
-STARTUP_ERROR_CLASSES={'OSError','ValueError','KeyError','TypeError','RuntimeError','TimeoutExpired','SSLError','HTTPError'}
-
 def emit_startup_failure(stage,error,stream=None):
     """Emit a bounded diagnostic; exception values and tracebacks are never serialized."""
     if stream is None:stream=sys.stderr
-    if isinstance(error,OSError):
+    if isinstance(error,ssl.SSLError):
+        error_class='SSLError';error_code='startup_transport_error'
+    elif isinstance(error,HTTPError):
+        error_class='HTTPError';error_code='startup_transport_error'
+    elif isinstance(error,OSError):
         error_class='OSError';error_code='startup_io_error'
     elif isinstance(error,ValueError):
         error_class='ValueError';error_code='startup_validation_error'
