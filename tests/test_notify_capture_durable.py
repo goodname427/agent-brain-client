@@ -86,11 +86,13 @@ class NotifyCaptureDurableTests(unittest.TestCase):
         internal["input-messages"] = ["AGENTBRAIN_NOTIFY_CAPTURE:internal"]
         self.assertIsNone(queue.enqueue(internal))
         self.assertIsNone(queue.enqueue(self.event(thread="../private")))
+        self.assertIsNone(queue.enqueue(self.event(thread="t" * 129)))
         self.assertIsNone(queue.enqueue(self.event(turn="bad/id")))
+        self.assertIsNotNone(queue.enqueue(self.event(turn="t" * 256)))
         one = queue.enqueue(self.event(thread="thread-one", turn="same-turn"))
         two = queue.enqueue(self.event(thread="thread-two", turn="same-turn"))
         self.assertNotEqual(one, two)
-        self.assertEqual(len(queue.snapshot()), 2)
+        self.assertEqual(len(queue.snapshot()), 3)
 
     def test_bounded_ledger_prunes_old_done_but_never_drops_pending(self):
         queue = NotifyCaptureQueue(self.ledger, max_jobs=2)

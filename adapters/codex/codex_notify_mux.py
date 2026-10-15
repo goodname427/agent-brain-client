@@ -22,7 +22,8 @@ from pathlib import Path
 _TIMEOUT_SECONDS = 8
 _MAX_EVENT_BYTES = 1_048_576
 _MAX_COMMAND_BYTES = 16_384
-_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
+_THREAD_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_TURN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _DIGEST_RE = re.compile(r"^[a-f0-9]{64}$")
 _CAPTURE_MARKER = "AGENTBRAIN_NOTIFY_CAPTURE:"
 
@@ -31,8 +32,8 @@ def _valid_job(job):
     return (isinstance(job, dict) and
             set(job) == {"job_id", "thread_id", "turn_id", "turn_digest", "status",
                          "attempts", "created_at", "lease_until"} and
-            isinstance(job["thread_id"], str) and _ID_RE.fullmatch(job["thread_id"]) and
-            isinstance(job["turn_id"], str) and _ID_RE.fullmatch(job["turn_id"]) and
+            isinstance(job["thread_id"], str) and _THREAD_ID_RE.fullmatch(job["thread_id"]) and
+            isinstance(job["turn_id"], str) and _TURN_ID_RE.fullmatch(job["turn_id"]) and
             isinstance(job["turn_digest"], str) and _DIGEST_RE.fullmatch(job["turn_digest"]) and
             job["job_id"] == hashlib.sha256((job["thread_id"] + "\0" + job["turn_digest"]).encode()).hexdigest() and
             job["status"] in ("pending", "processing", "done") and
@@ -111,9 +112,9 @@ class NotifyCaptureQueue:
                 any(item.startswith(_CAPTURE_MARKER) for item in event["input-messages"])):
             return None
         thread_id, turn_id = event.get("thread-id"), event.get("turn-id")
-        if not isinstance(thread_id, str) or not _ID_RE.fullmatch(thread_id):
+        if not isinstance(thread_id, str) or not _THREAD_ID_RE.fullmatch(thread_id):
             return None
-        if not isinstance(turn_id, str) or not _ID_RE.fullmatch(turn_id):
+        if not isinstance(turn_id, str) or not _TURN_ID_RE.fullmatch(turn_id):
             return None
         digest = hashlib.sha256(turn_id.encode("utf-8")).hexdigest()
         job_id = hashlib.sha256((thread_id + "\0" + digest).encode()).hexdigest()
