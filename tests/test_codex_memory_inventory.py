@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'adapters/codex'))
-from content_cache import inventory_codex_memories,CacheBlocked
+from content_cache import inventory_codex_memories,CacheBlocked,contract,locked
 sys.path.insert(0,str(ROOT/'tests'))
 import test_content_outbox as base
 from content_mcp import ContentParameterError, ContentServer
@@ -98,8 +98,6 @@ class CodexMemoryInventory(unittest.TestCase):
         self.assertEqual(body['text'],'Synthetic user-owned project progress, generalized')
         record={'title':'Synthetic progress','description':'Generalized synthetic experience','body':'User made synthetic progress on a personal project.','type':'feedback'}
         with self.assertRaises(CacheBlocked):helper.adapter.stage_memory_import(row['source_id'],row['source_fingerprint'],'memory','synthetic-topic',record)
-        helper.adapter.review_memory_source(row['source_id'],row['source_fingerprint'],'excluded','secret-localonly-or-confidential')
-        with self.assertRaises(CacheBlocked):helper.adapter.stage_memory_import(row['source_id'],row['source_fingerprint'],'memory','synthetic-topic',record)
         helper.adapter.review_memory_source(row['source_id'],row['source_fingerprint'],'shareable','safe-cross-project-personal-summary')
         helper.adapter.stage_memory_import(row['source_id'],row['source_fingerprint'],'memory','synthetic-topic',record)
         status=helper.adapter.import_status()
@@ -115,6 +113,23 @@ class CodexMemoryInventory(unittest.TestCase):
         changed=helper.adapter.inventory_memory_sources()['sources']
         self.assertIn('not-checked',{item['status'] for item in changed})
         with self.assertRaises(CacheBlocked):helper.adapter.stage_memory_import(row['source_id'],row['source_fingerprint'],'memory','synthetic-topic',record)
+
+    def test_inventory_alone_cannot_be_reviewed_or_staged(self):
+        helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        helper.setUp();self.addCleanup(helper.doCleanups)
+        memory_root=helper.home/'.codex/memories';memory_root.mkdir(parents=True)
+        (memory_root/'experience.md').write_text('Synthetic memory fixture')
+        row=helper.adapter.inventory_memory_sources()['sources'][0]
+        with self.assertRaises(CacheBlocked):
+            helper.adapter.review_memory_source(row['source_id'],row['source_fingerprint'],'shareable','safe-cross-project-personal-summary')
+        key=__import__('hashlib').sha256(contract.encode([row['source_id'],row['source_fingerprint']])).hexdigest()
+        with locked(helper.adapter.cache/'content.lock'):
+            inventory=helper.adapter._load('memory-inventory.json')
+            inventory['sources'][key]['status']='inventoried'
+            helper.adapter._save('memory-inventory.json',inventory)
+        with self.assertRaises(CacheBlocked):
+            helper.adapter.stage_memory_import(row['source_id'],row['source_fingerprint'],'memory','synthetic-topic',
+                {'title':'Fixture','description':'Fixture','body':'Fixture','type':'feedback'})
 
     def test_memory_tree_traversal_bounds_directory_fanout(self):
         with tempfile.TemporaryDirectory() as tmp:

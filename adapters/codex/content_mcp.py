@@ -145,7 +145,7 @@ class ContentServer(Server):
                 if name=='content_catalog':description+='AgentBrain destination records only; this does not discover Harness-native sources. Pass kinds only for the complete authorized target inventory; there is no pagination limit. Query/since/until/limit selects a Memory-only retrieval alias capped at 3. '
                 description+='Running worker version: '+self.client_version+'. '+UPDATE_GUIDANCE
                 tools.append({'name':name,'description':description,'inputSchema':{'type':'object','properties':properties,'required':required,'additionalProperties':False},'annotations':{'readOnlyHint':name not in contract.WRITES,'destructiveHint':name=='content_remove','idempotentHint':True}})
-                tools.append({'name':'content_request_id','description':'Generate a deterministic idempotent write request_id from the completed Codex turn digest, operation and AgentBrain target identity. Different targets/operations in one turn receive different IDs; retries of the same operation get the same ID. Local-only; no transfer.','inputSchema':{'type':'object','properties':{'turn_sha256':{'type':'string','pattern':'^[a-f0-9]{64}$'},'method':{'type':'string','enum':['content_put','content_remove']},'kind':{'type':'string','enum':kinds},'id':{'type':'string','pattern':'^[a-z0-9][a-z0-9-]{0,63}$'}},'required':['turn_sha256','method','kind','id'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
+            tools.append({'name':'content_request_id','description':'Generate a deterministic idempotent write request_id from the completed Codex turn digest, operation and AgentBrain target identity. Different targets/operations in one turn receive different IDs; retries of the same operation get the same ID. Local-only; no transfer.','inputSchema':{'type':'object','properties':{'turn_sha256':{'type':'string','pattern':'^[a-f0-9]{64}$'},'method':{'type':'string','enum':['content_put','content_remove']},'kind':{'type':'string','enum':kinds},'id':{'type':'string','pattern':'^[a-z0-9][a-z0-9-]{0,63}$'}},'required':['turn_sha256','method','kind','id'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
             tools.append({'name':'content_sources_inventory','description':'Enumerate only the Codex persistent memories directory. Returns path-free IDs, file fingerprints and per-item processing status in pages of 64; never returns memory text or reads session/transcript files. Inventory is not semantic review or import coverage. Use the returned cursor for the next page; restart if it changes. Local-only read; no Server request or data transfer.','inputSchema':{'type':'object','properties':{'cursor':{'type':'string','maxLength':96}},'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
             tools.append({'name':'content_sources_read','description':'Read the bounded body of exactly one previously inventoried Codex persistent Memory file, matching its ID and fingerprint. Local-only; never reads transcript/session paths and does not transfer data. Review the returned text for secrets, LocalOnly, customer/employer confidential data and cross-project scope before staging.','inputSchema':{'type':'object','properties':{'source_id':{'type':'string','pattern':'^codex-memory:[a-f0-9]{64}$'},'source_fingerprint':{'type':'string','pattern':'^[a-f0-9]{64}$'}},'required':['source_id','source_fingerprint'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
             tools.append({'name':'content_sources_review','description':'Record an explicit review decision for a previously read exact source. This creates only a path-free status marker in the private cache, never stores text or transfers content. A shareable decision is required before any candidate from this source can be staged. Mark LocalOnly, secrets, or confidential sources excluded; mark unsafe project scope or uncertainty deferred.','inputSchema':{'type':'object','properties':{'source_id':{'type':'string','pattern':'^codex-memory:[a-f0-9]{64}$'},'source_fingerprint':{'type':'string','pattern':'^[a-f0-9]{64}$'},'decision':{'type':'string','enum':['shareable','excluded','deferred','skipped']},'reason_code':{'type':'string','enum':['safe-cross-project-personal-summary','secret-localonly-or-confidential','project-scope-unavailable','uncertain-content','no-durable-user-fact']}},'required':['source_id','source_fingerprint','decision','reason_code'],'additionalProperties':False},'annotations':{'readOnlyHint':False,'destructiveHint':False,'idempotentHint':True}})
@@ -174,7 +174,9 @@ def self_check():
     server=ContentServer(Adapter())
     server.handle({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'synthetic-package-check','version':'1'}}})
     server.handle({'jsonrpc':'2.0','method':'notifications/initialized'})
-    assert {t['name'] for t in server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})['tools']}==set(contract.FIELDS)|{'content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'}
+    names=[t['name'] for t in server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})['tools']]
+    assert len(names)==len(set(names))
+    assert set(names)==set(contract.FIELDS)|{'content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'}
     assert not any(m in sys.modules for m in ('brain_core','brain_runtime','brain_cli'))
     return {'content_mcp_self_check':'passed','core_imported':False,'native_changed':False,'keychain_accessed':False,'network_used':False}
 
@@ -261,12 +263,12 @@ def codex_notify_main(argv=None,runner=None):
     try:event=json.loads(argv[0])
     except (ValueError,TypeError):return 0
     capture=codex_notify_capture(event)
-    if capture is None:return 0
+    if capture is None:return 1
     cli=os.environ.get('CODEX_CLI') or shutil.which('codex')
     if not cli:
         bundled='/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex'
         if Path(bundled).is_file():cli=bundled
-    if not cli:return 0
+    if not cli:return 1
     command=[cli,'queue','--thread',capture['thread_id'],'--message',capture['message']]
     # Do not detach and silently lose a turn when queue rejects it. Retry the
     # exact same request once; the downstream turn digest keeps any write ID
@@ -297,7 +299,8 @@ def installation_check(client,policy,client_version='0.2.0'):
     server.handle({'jsonrpc':'2.0','method':'notifications/initialized'})
     tools=server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})
     result=server.handle({'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':'content_catalog','arguments':{'kinds':policy['kinds']}}})
-    if first['serverInfo']['name']!='agent-brain-content-codex-candidate' or {t['name'] for t in tools['tools']}!=adapter.methods()|{'content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'} or result['isError']:raise ValueError('Content protocol check failed')
+    tool_names=[tool['name'] for tool in tools['tools']]
+    if first['serverInfo']['name']!='agent-brain-content-codex-candidate' or len(tool_names)!=len(set(tool_names)) or set(tool_names)!=adapter.methods()|{'content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'} or result['isError']:raise ValueError('Content protocol check failed')
     catalog=result['structuredContent']['result']
     import re
     if catalog.get('content_api_version')!=1 or not re.fullmatch(r'[a-f0-9]{40}',catalog.get('commit','')) or not isinstance(catalog.get('artifacts'),list) or len(catalog['artifacts'])>256:raise ValueError('Unconfirmed content catalog')

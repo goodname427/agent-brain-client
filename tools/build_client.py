@@ -26,10 +26,10 @@ def export(source,output,pairing_candidate=False,content_candidate=False,ssh_con
     output.mkdir(parents=True)
     for name,data in payload.items():
         p=output/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(data)
-    manifest={'schema':1,'review_status':'unpublished-candidate','files':{n:hashlib.sha256(v).hexdigest() for n,v in payload.items()},'git_history_copied':False,'core_exported':False,'native_install_wired':not any((pairing_candidate,content_candidate,ssh_content_candidate,https_content_candidate)),'actual_deployment':'not-performed-by-build','source_authority':'independent-client-repository'}
-    if https_content_candidate:manifest.update(content='https-system-credential-uninstalled-candidate',production_release_policy_compatible=False,credential_helper_installed=False,keychain_accessed=False)
-    if ssh_content_candidate:manifest.update(content='ssh-server-credential-uninstalled-candidate',production_release_policy_compatible=False)
-    if pairing_candidate or content_candidate:manifest.update(pairing='source-only-uninstalled-unsigned-candidate',production_release_policy_compatible=False,existing_ssh_checkpoint_available=True)
+    manifest={'schema':1,'review_status':'unpublished-candidate','files':{n:hashlib.sha256(v).hexdigest() for n,v in payload.items()},'git_history_copied':False,'core_exported':False,'native_install_wired':not any((pairing_candidate,content_candidate,ssh_content_candidate,https_content_candidate)),'actual_deployment':'not-performed-by-build','source_authority':'independent-client-repository','release_policy_scope_delta':{'added':['adapters/codex/codex_notify_mux.py'],'removed':[]},'production_release_policy_scope_compatibility':'not-checked-by-build'}
+    if https_content_candidate:manifest.update(content='https-system-credential-uninstalled-candidate',production_release_policy_compatible=False,production_release_policy_compatibility_reason='Candidate has not been installed or deployed; production compatibility is not claimed.',credential_helper_installed=False,keychain_accessed=False)
+    if ssh_content_candidate:manifest.update(content='ssh-server-credential-uninstalled-candidate',production_release_policy_compatible=False,production_release_policy_compatibility_reason='Candidate has not been installed or deployed; production compatibility is not claimed.')
+    if pairing_candidate or content_candidate:manifest.update(pairing='source-only-uninstalled-unsigned-candidate',production_release_policy_compatible=False,production_release_policy_compatibility_reason='Candidate has not been installed or deployed; production compatibility is not claimed.',existing_ssh_checkpoint_available=True)
     (output/'export-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     return manifest
 

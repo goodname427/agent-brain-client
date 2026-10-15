@@ -1,5 +1,6 @@
 """Exact public allowlist and client-only registration, without native changes."""
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -40,6 +41,18 @@ class ClientExport(unittest.TestCase):
         result = subprocess.run(command, capture_output=True, text=True)
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(json.loads(result.stdout)['status'], 'server-authorization-required')
+
+    def test_notify_mux_is_in_candidate_manifest_and_hash_matches_file(self):
+        output = self.base / 'notify-client'
+        manifest = build_client_export.export(ROOT, output, ssh_content_candidate=True)
+        relative = 'adapters/codex/codex_notify_mux.py'
+        self.assertIn(relative, manifest['files'])
+        self.assertEqual(manifest['files'][relative], hashlib.sha256((output / relative).read_bytes()).hexdigest())
+        self.assertEqual((output / relative).read_bytes(), (ROOT / relative).read_bytes())
+        self.assertEqual(manifest['release_policy_scope_delta'], {'added': [relative], 'removed': []})
+        self.assertEqual(manifest['production_release_policy_scope_compatibility'], 'not-checked-by-build')
+        self.assertFalse(manifest['production_release_policy_compatible'])
+        self.assertIn('production_release_policy_compatibility_reason', manifest)
 
     def test_registration_is_idempotent_and_service_drift_is_preserved(self):
         home = self.base / 'client-home';token = self.base / 'client.token'

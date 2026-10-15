@@ -380,7 +380,7 @@ class ContentAdapter:
                         review['source_id']!=source_id or review['source_fingerprint']!=fingerprint or
                         review['decision'] not in REVIEW_DECISIONS or review['reason_code'] not in REVIEW_DECISIONS[review['decision']]):raise CacheBlocked()
                 if status=='read':
-                    if (fingerprint is None or source.get('status') not in ('read','inventoried') and imported is None or
+                    if (fingerprint is None or source.get('status')!='read' and imported is None or
                             not isinstance(review,dict) or review.get('decision')!='shareable' or review.get('reason_code')!='safe-cross-project-personal-summary' or
                             source_fingerprints.get(source_id)!=fingerprint and imported is None):raise CacheBlocked()
                 elif status=='excluded':
@@ -566,7 +566,7 @@ class ContentAdapter:
         with locked(self.cache/'content.lock'):
             inventory=self._load('memory-inventory.json');key=sha(contract.encode([source_id,fingerprint]))
             row=inventory.get('sources',{}).get(key) if isinstance(inventory,dict) else None
-            if row is None or row.get('source_id')!=source_id or row.get('source_fingerprint')!=fingerprint or row.get('status') not in ('read','inventoried'):
+            if row is None or row.get('source_id')!=source_id or row.get('source_fingerprint')!=fingerprint or row.get('status')!='read':
                 raise CacheBlocked()
             state=self._load('memory-reviews.json',{'schema':1,'binding':self.binding,'items':{}})
             if (not isinstance(state,dict) or set(state)!={'schema','binding','items'} or state['schema']!=1 or
@@ -585,7 +585,7 @@ class ContentAdapter:
             if (not isinstance(inventory,dict) or inventory.get('binding')!=self.binding or not isinstance(inventory.get('sources'),dict)):
                 raise CacheBlocked()
             key=sha(contract.encode([source_id,fingerprint]));row=inventory['sources'].get(key)
-            if row is None or row.get('status') not in ('read','inventoried') or row.get('source_id')!=source_id or row.get('source_fingerprint')!=fingerprint:
+            if row is None or row.get('status')!='read' or row.get('source_id')!=source_id or row.get('source_fingerprint')!=fingerprint:
                 raise CacheBlocked()
             reviews=self._load('memory-reviews.json')
             review=reviews.get('items',{}).get(key) if isinstance(reviews,dict) and reviews.get('binding')==self.binding else None
@@ -599,7 +599,7 @@ class ContentAdapter:
         result=self.stage_import(plan)
         with locked(self.cache/'content.lock'):
             inventory=self._load('memory-inventory.json');inventory_key=sha(contract.encode([source_id,fingerprint]))
-            row=dict(inventory['sources'][inventory_key],status='inventoried',reason='reviewed normalized candidate staged')
+            row=dict(inventory['sources'][inventory_key],reason='reviewed normalized candidate staged')
             inventory['sources'][inventory_key]=row;self._save('memory-inventory.json',inventory)
         return dict(result,status='content-source-staged',source_id=source_id)
 
@@ -664,7 +664,7 @@ class ContentAdapter:
             if not isinstance(source_inventory,dict) or set(source_inventory)!={'schema','binding','cursor','status','sources'} or source_inventory['schema']!=1 or source_inventory['binding']!=self.binding or not isinstance(source_inventory['sources'],dict) or len(source_inventory['sources'])>1024:raise CacheBlocked()
             inventory_counts={}
             for inventory_key,item in source_inventory['sources'].items():
-                if not isinstance(item,dict) or set(item)!={'source_id','source_fingerprint','status','reason'} or item['status'] not in ('not-checked','inventoried','imported','duplicate','conflict','blocked','reconciled','excluded','unavailable'):raise CacheBlocked()
+                if not isinstance(item,dict) or set(item)!={'source_id','source_fingerprint','status','reason'} or item['status'] not in ('not-checked','read','inventoried','imported','duplicate','conflict','blocked','reconciled','excluded','unavailable'):raise CacheBlocked()
                 status=item['status'];fingerprint=item['source_fingerprint']
                 if isinstance(fingerprint,str) and item['status'] not in ('excluded','unavailable'):
                     tracked=state['items'].get(sha(contract.encode([item['source_id'],fingerprint])))
