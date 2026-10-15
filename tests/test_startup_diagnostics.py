@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "adapters" / "codex
 
 import client_release
 from brain_release import UpdateBlocked
+import content_mcp
 from content_mcp import emit_startup_failure
 
 
@@ -28,6 +29,42 @@ class StartupDiagnostics(unittest.TestCase):
                 "stage": "identity-activation",
                 "error_class": "RuntimeError",
                 "error_code": "startup_blocked",
+            },
+        )
+        self.assertNotIn("SYNTHETIC_SECRET", output.getvalue())
+
+
+    def test_oserror_subclasses_are_reported_as_safe_io_category(self):
+        output = io.StringIO()
+        code = emit_startup_failure(
+            "content-policy-validation",
+            FileNotFoundError("SYNTHETIC_SECRET_PATH"),
+            output,
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            {
+                "stage": "content-policy-validation",
+                "error_class": "OSError",
+                "error_code": "startup_io_error",
+            },
+        )
+        self.assertNotIn("SYNTHETIC_SECRET", output.getvalue())
+
+    def test_invalid_arguments_do_not_echo_untrusted_values(self):
+        output = io.StringIO()
+        argv = ["content_mcp.py", "--unknown-option", "SYNTHETIC_SECRET_ARGUMENT"]
+        with mock.patch.object(sys, "argv", argv), mock.patch("sys.stderr", output):
+            with self.assertRaises(SystemExit) as failure:
+                content_mcp.main()
+        self.assertEqual(failure.exception.code, 1)
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            {
+                "stage": "arguments",
+                "error_class": "ValueError",
+                "error_code": "startup_validation_error",
             },
         )
         self.assertNotIn("SYNTHETIC_SECRET", output.getvalue())

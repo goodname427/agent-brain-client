@@ -143,20 +143,29 @@ STARTUP_ERROR_CLASSES={'OSError','ValueError','KeyError','TypeError','RuntimeErr
 def emit_startup_failure(stage,error,stream=None):
     """Emit a bounded diagnostic; exception values and tracebacks are never serialized."""
     if stream is None:stream=sys.stderr
-    name=type(error).__name__
-    error_class=name if name in STARTUP_ERROR_CLASSES else 'StartupError'
-    error_code={
-        'OSError':'startup_io_error',
-        'ValueError':'startup_validation_error',
-        'KeyError':'startup_validation_error',
-        'TypeError':'startup_validation_error',
-        'TimeoutExpired':'startup_transport_error',
-        'SSLError':'startup_transport_error',
-        'HTTPError':'startup_transport_error'
-    }.get(error_class,'startup_blocked')
+    if isinstance(error,OSError):
+        error_class='OSError';error_code='startup_io_error'
+    elif isinstance(error,ValueError):
+        error_class='ValueError';error_code='startup_validation_error'
+    elif isinstance(error,KeyError):
+        error_class='KeyError';error_code='startup_validation_error'
+    elif isinstance(error,TypeError):
+        error_class='TypeError';error_code='startup_validation_error'
+    elif isinstance(error,RuntimeError):
+        error_class='RuntimeError';error_code='startup_blocked'
+    elif type(error).__name__ in ('TimeoutExpired','SSLError','HTTPError'):
+        error_class=type(error).__name__;error_code='startup_transport_error'
+    else:
+        error_class='StartupError';error_code='startup_blocked'
     safe_stage=stage if stage in STARTUP_STAGES else 'startup'
     print(json.dumps({'stage':safe_stage,'error_class':error_class,'error_code':error_code}),file=stream)
     return 1
+
+
+class SafeArgumentParser(argparse.ArgumentParser):
+    """Keep invalid argument values out of stderr."""
+    def error(self,message):
+        sys.exit(emit_startup_failure('arguments',ValueError('invalid_arguments')))
 
 
 def installation_check(client,policy,client_version='0.2.0'):
@@ -287,7 +296,7 @@ def main():
     global _STARTUP_STAGE
     _STARTUP_STAGE='arguments'
     if sys.argv[1:]==['--self-check']:print(json.dumps(self_check()));return
-    parser=argparse.ArgumentParser(description=__doc__)
+    parser=SafeArgumentParser(description=__doc__)
     for name in ('content-policy','content-policy-sha256','device-home','cache'):parser.add_argument('--'+name,required=True)
     for name in ('device-plan','device-plan-sha256','signing-policy','signing-policy-sha256','ssh-profile','ssh-profile-sha256','https-profile','https-profile-sha256','credential-source-sha256'):parser.add_argument('--'+name)
     parser.add_argument('--codex-home',help='Approved actual Codex home; otherwise honor CODEX_HOME and preserve device-level skills.')
