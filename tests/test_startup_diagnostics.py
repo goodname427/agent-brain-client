@@ -167,7 +167,7 @@ class StartupDiagnostics(unittest.TestCase):
                     with locked(path, timeout=20):
                         self.fail("lock should time out before entering")
 
-    def test_lock_timeout_preserves_verified_active_with_bounded_diagnostic(self):
+    def test_lock_timeout_never_reads_live_pointer_and_fails_closed(self):
         releases = object.__new__(client_release.ClientReleases)
         releases.policy = {"platform": "synthetic-platform"}
         releases.inspection = False
@@ -175,19 +175,18 @@ class StartupDiagnostics(unittest.TestCase):
         releases.engine.check.side_effect = LockTimeout(
             "SYNTHETIC_SECRET_LOCK_CONTENTION_DETAIL"
         )
-        releases.verified_active = lambda: {
-            "version": "0.2.13",
-            "package": "/synthetic/verified-package",
-        }
+        # This would be an unhealth-checked candidate if read during activation.
+        releases.verified_active = mock.Mock(return_value={
+            "version": "0.2.14",
+            "package": "/synthetic/unhealth-checked-candidate",
+        })
 
         with mock.patch.object(client_release, "require_platform"):
             result = client_release.ClientReleases.update(releases)
 
         self.assertEqual(result["status"], "release-review-required")
-        self.assertEqual(
-            result["active"],
-            {"version": "0.2.13", "package": "/synthetic/verified-package"},
-        )
+        self.assertIsNone(result["active"])
+        releases.verified_active.assert_not_called()
         self.assertEqual(
             result["diagnostic"],
             {
@@ -197,6 +196,18 @@ class StartupDiagnostics(unittest.TestCase):
             },
         )
         self.assertNotIn("SYNTHETIC_SECRET", json.dumps(result))
+
+        # Startup must not serve when no previously verified package was retained.
+        releases_for_startup = mock.Mock()
+        releases_for_startup.update.return_value = result
+        output = io.StringIO()
+        with (
+            mock.patch.object(client_startup, "ClientReleases", return_value=releases_for_startup),
+            mock.patch("sys.stderr", output),
+        ):
+            startup_result = client_startup.startup("synthetic-policy", "synthetic-digest")
+        self.assertFalse(startup_result["served"])
+        self.assertEqual(startup_result["status"], "release-review-required")
 
         releases.engine.check.side_effect = RuntimeError("SYNTHETIC_OTHER_RUNTIME")
         with mock.patch.object(client_release, "require_platform"):
