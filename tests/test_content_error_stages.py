@@ -64,6 +64,12 @@ class ContentErrors(unittest.TestCase):
         dependencies=skill['properties']['dependencies']['properties']
         self.assertEqual(dependencies['commands']['maxItems'],32)
         self.assertEqual(dependencies['python_modules']['maxItems'],32)
+        for field in ('commands','python_modules'):
+            self.assertTrue(dependencies[field]['uniqueItems'])
+            self.assertEqual(dependencies[field]['items']['pattern'],r'^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,63}(?![\s\S])')
+        rule=put['inputSchema']['properties']['record']['oneOf'][1]
+        self.assertEqual(rule['properties']['trigger']['allOf'][0]['then']['properties']['patterns']['minItems'],1)
+        self.assertEqual(rule['properties']['trigger']['allOf'][0]['else']['properties']['patterns']['maxItems'],0)
         valid={'description':'Synthetic skill','enabled':False,
                'files':{'SKILL.md':'---\nname: synthetic-skill\ndescription: Synthetic skill\n---\nSynthetic'},
                'dependencies':{'commands':[f'synthetic-command-{i}' for i in range(32)],'python_modules':[]}}
