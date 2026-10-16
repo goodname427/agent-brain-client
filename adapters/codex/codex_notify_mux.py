@@ -26,8 +26,6 @@ _THREAD_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _TURN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _DIGEST_RE = re.compile(r"^[a-f0-9]{64}$")
 _CAPTURE_MARKER = "AGENTBRAIN_NOTIFY_CAPTURE:"
-_SYNTHETIC_HOME_MARKER = ".agent-brain-client-synthetic-codex-home"
-_SYNTHETIC_HOME_MARKER_CONTENT = "agent-brain-client synthetic Codex home v1\n"
 
 
 def _valid_job(job):
@@ -209,48 +207,6 @@ def _decode_command(raw):
     return command
 
 
-def _capture_scope_enabled(event, cwd_allowlist_raw, codex_home_raw):
-    """Fail closed unless notify and the configured empty synthetic source agree."""
-    try:
-        allowed_cwds = json.loads(cwd_allowlist_raw)
-        if (not isinstance(allowed_cwds, list) or not allowed_cwds or
-                any(not isinstance(path, str) or not path or not Path(path).is_absolute()
-                    for path in allowed_cwds)):
-            return False
-        cwd = event.get("cwd") if isinstance(event, dict) else None
-        if not isinstance(cwd, str) or cwd not in allowed_cwds:
-            return False
-
-        # Require canonical, existing directories. Exact string equality above
-        # prevents a symlink or path alias from broadening the event allowlist.
-        for path in allowed_cwds:
-            candidate = Path(path)
-            if candidate.is_symlink() or candidate.resolve(strict=True) != candidate:
-                return False
-            if not candidate.is_dir():
-                return False
-
-        if not isinstance(codex_home_raw, str) or not codex_home_raw:
-            return False
-        codex_home = Path(codex_home_raw)
-        if (not codex_home.is_absolute() or codex_home.is_symlink() or
-                codex_home.resolve(strict=True) != codex_home or not codex_home.is_dir()):
-            return False
-        # CODEX_HOME controls the default content MCP source. Require it to
-        # agree with the reviewed path even when an MCP config has --codex-home.
-        if os.environ.get("CODEX_HOME") != str(codex_home):
-            return False
-        marker = codex_home / _SYNTHETIC_HOME_MARKER
-        memories = codex_home / "memories"
-        if (marker.is_symlink() or not marker.is_file() or
-                marker.read_text(encoding="utf-8") != _SYNTHETIC_HOME_MARKER_CONTENT or
-                memories.is_symlink() or not memories.is_dir() or any(memories.iterdir())):
-            return False
-        return True
-    except (OSError, ValueError, TypeError, RuntimeError):
-        return False
-
-
 def _run_independently(command, event_json, runner):
     """Run one callback without allowing its failure to skip the next one."""
     try:
@@ -267,9 +223,7 @@ def dispatch_notify(argv, runner=subprocess.run):
 
     ``argv`` excludes the executable name and must end in Codex's event JSON.
     The preceding arguments must contain exactly one ``--callback-argv-json``
-    and one ``--capture-argv-json`` value, in either order. Capture also needs
-    explicit ``--capture-cwd-allowlist-json`` and ``--capture-codex-home``
-    values; without them it is disabled while the original callback still runs.
+    and one ``--capture-argv-json`` value, in either order.
     """
     if not isinstance(argv, (list, tuple)) or len(argv) < 5:
         return 0
@@ -286,22 +240,15 @@ def dispatch_notify(argv, runner=subprocess.run):
     index = 0
     while index < len(options):
         flag = options[index]
-        if flag not in ("--callback-argv-json", "--capture-argv-json",
-                        "--capture-cwd-allowlist-json", "--capture-codex-home") or index + 1 >= len(options):
+        if flag not in ("--callback-argv-json", "--capture-argv-json") or index + 1 >= len(options):
             return 0
         if flag in commands:
             return 0
-        raw_value = options[index + 1]
-        if flag in ("--callback-argv-json", "--capture-argv-json"):
-            commands[flag] = _decode_command(raw_value)
-            if commands[flag] is None:
-                return 0
-        else:
-            if not isinstance(raw_value, str) or len(raw_value.encode("utf-8")) > _MAX_COMMAND_BYTES:
-                return 0
-            commands[flag] = raw_value
+        commands[flag] = _decode_command(options[index + 1])
+        if commands[flag] is None:
+            return 0
         index += 2
-    if not {"--callback-argv-json", "--capture-argv-json"}.issubset(commands):
+    if set(commands) != {"--callback-argv-json", "--capture-argv-json"}:
         return 0
 
     # Preserve the pre-existing callback's exact argv. Store only IDs in the
@@ -309,12 +256,6 @@ def dispatch_notify(argv, runner=subprocess.run):
     callback_ok = _run_independently(commands["--callback-argv-json"], event_json, runner)
     try:
         event = json.loads(event_json)
-    except (ValueError, TypeError):
-        event = None
-    if not _capture_scope_enabled(event, commands.get("--capture-cwd-allowlist-json"),
-                                  commands.get("--capture-codex-home")):
-        return 0 if callback_ok else 1
-    try:
         queue_path = os.environ.get("AGENTBRAIN_NOTIFY_QUEUE_PATH")
         if not queue_path:
             queue_path = str(Path.home() / ".cache" / "agent-brain-client" / "notify-capture" / "jobs.json")
