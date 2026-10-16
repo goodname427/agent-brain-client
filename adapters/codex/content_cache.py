@@ -157,6 +157,13 @@ class ContentAdapter:
         native=Path(codex_home or os.environ.get('CODEX_HOME',str(self.home/'.codex'))).expanduser()
         if not native.is_absolute() or native.is_symlink():raise CacheBlocked()
         self.native_home=native.resolve();self.binding={'device_home':str(self.home),'codex_home':str(self.native_home)}
+        capture_home=os.environ.get('AGENTBRAIN_NOTIFY_CAPTURE_CODEX_HOME')
+        if capture_home is not None:
+            expected=Path(capture_home).expanduser()
+            if (not expected.is_absolute() or expected.is_symlink() or
+                    expected.resolve()!=expected or self.native_home!=expected or
+                    os.environ.get('CODEX_HOME')!=str(expected)):
+                raise CacheBlocked()
         self.policy=policy;self.policy_sha=sha(contract.encode({'policy':policy,'binding':self.binding}));self.health=health or (lambda:None);self.offline_denied=False
         # Bind pending writes to a service/principal, independently of source/data Git.
         self.queue_sha=sha(contract.encode({'policy_sha':self.policy_sha,'service':getattr(client,'queue_identity',getattr(client,'grant',None))}))

@@ -30,7 +30,7 @@ Mac arm64 的唯一用户操作说明见 [安装、使用、卸载与再次安�
 
 日常记忆行为由当前加载的 `agent-brain-memory` 与 `agent-brain-onboard` Skills 定义；[MEMORY-BEHAVIOR.md](docs/MEMORY-BEHAVIOR.md) 仅记录 Client 工具、范围和回执语义，不复制记忆政策。`tools/memory_review.py` 只离线审阅明确提供的元数据，不采集或上传。辅助 `memory_query` 只读当前有效 Memory，最多 3 条；既有 `content_catalog` 的 Memory-only 查询别名复用同一接口。这些源码检查与合入不代表已发布、已部署或模型实测。
 
-Notify 自动捕获默认关闭；启用需要精确 `cwd` allowlist 与空的合成 Codex Memory 源，且用户级 notify 会影响同一 profile 下其他项目。见 [Codex notify capture scope](docs/CODEX-NOTIFY-CAPTURE.md)。本仓库不启用该全局 hook。
+Notify 自动捕获默认关闭；显式 synthetic 验收模式要求空的合成 Codex Memory 源，authorized 模式允许受现有策略/授权约束的非空来源。两种模式都要求精确 `cwd` allowlist 和匹配的 Codex home 绑定；用户级 notify 会影响同一 profile 下其他项目。见 [Codex notify capture scope](docs/CODEX-NOTIFY-CAPTURE.md)。本仓库不启用该全局 hook。
 
 安装/重装成功明确交接 `onboard_check:coverage-check-required`，由 Agent 用既有 Onboard 流程核对当前来源；旧身份和旧完成标记不能证明全量，检查不触发重新配对或自动全量上传。无法观测的模型加载状态使用 `model_loaded:"unknown"`，映射数量与模型是否采用指令分开。卸载后 status 只读核验真实事务后像及登记残留，漂移明确报告 review-required。安装入口源码与运行期活动包分别交付，运行期指引和回执变化未发布前不宣称影响现有 worker。
 

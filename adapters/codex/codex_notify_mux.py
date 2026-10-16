@@ -209,8 +209,8 @@ def _decode_command(raw):
     return command
 
 
-def _capture_scope_enabled(event, cwd_allowlist_raw, codex_home_raw):
-    """Fail closed unless notify and the configured empty synthetic source agree."""
+def _capture_scope_enabled(event, cwd_allowlist_raw, codex_home_raw, source_mode):
+    """Fail closed unless notify scope and the selected Codex home agree."""
     try:
         allowed_cwds = json.loads(cwd_allowlist_raw)
         if (not isinstance(allowed_cwds, list) or not allowed_cwds or
@@ -230,22 +230,26 @@ def _capture_scope_enabled(event, cwd_allowlist_raw, codex_home_raw):
             if not candidate.is_dir():
                 return False
 
+        if source_mode not in ("synthetic", "authorized"):
+            return False
         if not isinstance(codex_home_raw, str) or not codex_home_raw:
             return False
         codex_home = Path(codex_home_raw)
         if (not codex_home.is_absolute() or codex_home.is_symlink() or
                 codex_home.resolve(strict=True) != codex_home or not codex_home.is_dir()):
             return False
-        # CODEX_HOME controls the default content MCP source. Require it to
-        # agree with the reviewed path even when an MCP config has --codex-home.
-        if os.environ.get("CODEX_HOME") != str(codex_home):
+        # Both the notify process and ContentAdapter must share this binding.
+        # ContentAdapter rejects an explicit --codex-home that differs from it.
+        if (os.environ.get("CODEX_HOME") != str(codex_home) or
+                os.environ.get("AGENTBRAIN_NOTIFY_CAPTURE_CODEX_HOME") != str(codex_home)):
             return False
-        marker = codex_home / _SYNTHETIC_HOME_MARKER
-        memories = codex_home / "memories"
-        if (marker.is_symlink() or not marker.is_file() or
-                marker.read_text(encoding="utf-8") != _SYNTHETIC_HOME_MARKER_CONTENT or
-                memories.is_symlink() or not memories.is_dir() or any(memories.iterdir())):
-            return False
+        if source_mode == "synthetic":
+            marker = codex_home / _SYNTHETIC_HOME_MARKER
+            memories = codex_home / "memories"
+            if (marker.is_symlink() or not marker.is_file() or
+                    marker.read_text(encoding="utf-8") != _SYNTHETIC_HOME_MARKER_CONTENT or
+                    memories.is_symlink() or not memories.is_dir() or any(memories.iterdir())):
+                return False
         return True
     except (OSError, ValueError, TypeError, RuntimeError):
         return False
@@ -268,8 +272,10 @@ def dispatch_notify(argv, runner=subprocess.run):
     ``argv`` excludes the executable name and must end in Codex's event JSON.
     The preceding arguments must contain exactly one ``--callback-argv-json``
     and one ``--capture-argv-json`` value, in either order. Capture also needs
-    explicit ``--capture-cwd-allowlist-json`` and ``--capture-codex-home``
-    values; without them it is disabled while the original callback still runs.
+    explicit ``--capture-cwd-allowlist-json``, ``--capture-codex-home`` and
+    ``--capture-source-mode`` values; without them it is disabled while the
+    original callback still runs. The source mode is ``synthetic`` or
+    ``authorized``.
     """
     if not isinstance(argv, (list, tuple)) or len(argv) < 5:
         return 0
@@ -287,7 +293,8 @@ def dispatch_notify(argv, runner=subprocess.run):
     while index < len(options):
         flag = options[index]
         if flag not in ("--callback-argv-json", "--capture-argv-json",
-                        "--capture-cwd-allowlist-json", "--capture-codex-home") or index + 1 >= len(options):
+                        "--capture-cwd-allowlist-json", "--capture-codex-home",
+                        "--capture-source-mode") or index + 1 >= len(options):
             return 0
         if flag in commands:
             return 0
@@ -312,7 +319,8 @@ def dispatch_notify(argv, runner=subprocess.run):
     except (ValueError, TypeError):
         event = None
     if not _capture_scope_enabled(event, commands.get("--capture-cwd-allowlist-json"),
-                                  commands.get("--capture-codex-home")):
+                                  commands.get("--capture-codex-home"),
+                                  commands.get("--capture-source-mode")):
         return 0 if callback_ok else 1
     try:
         queue_path = os.environ.get("AGENTBRAIN_NOTIFY_QUEUE_PATH")

@@ -44,6 +44,21 @@ class Outbox(unittest.TestCase):
     def setUp(self):
         tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);self.base=Path(tmp.name).resolve();self.home=self.base/'home';self.home.mkdir();self.cache=self.base/'cache';self.cloud=Cloud();self.adapter=self.restart()
     def restart(self):return ContentAdapter(self.home,self.cache,POLICY,self.cloud,codex_home=self.home/'.codex')
+
+    def test_notify_capture_binding_rejects_explicit_mcp_home_mismatch(self):
+        expected=self.base/'approved-codex-home';expected.mkdir()
+        mismatched=self.base/'different-codex-home';mismatched.mkdir()
+        binding={'CODEX_HOME':str(expected),'AGENTBRAIN_NOTIFY_CAPTURE_CODEX_HOME':str(expected)}
+        with patch.dict('os.environ',binding,clear=False):
+            with self.assertRaises(CacheBlocked):
+                ContentAdapter(self.home,self.cache,POLICY,self.cloud,codex_home=mismatched)
+            adapter=ContentAdapter(self.home,self.cache,POLICY,self.cloud,codex_home=expected)
+            self.assertEqual(adapter.native_home,expected)
+        with patch.dict('os.environ',{'CODEX_HOME':str(mismatched),
+                                      'AGENTBRAIN_NOTIFY_CAPTURE_CODEX_HOME':str(expected)},clear=False):
+            with self.assertRaises(CacheBlocked):
+                ContentAdapter(self.home,self.cache,POLICY,self.cloud,codex_home=expected)
+
     def request(self,rid='synthetic_write_0001',body=None,revision='missing'):
         return {'request_id':rid,'method':'content_put','params':{'kind':'memory','id':'synthetic-topic','record':dict(MEMORY,body=body or MEMORY['body']),'expected_revision':revision}}
     def plan(self,records=None,fingerprint='a'*64):

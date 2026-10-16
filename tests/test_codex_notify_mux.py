@@ -31,6 +31,8 @@ class CodexNotifyMuxTests(unittest.TestCase):
             "agent-brain-client synthetic Codex home v1\n", encoding="utf-8")
         self.old_codex_home = os.environ.get("CODEX_HOME")
         os.environ["CODEX_HOME"] = str(self.codex_home)
+        self.old_capture_home = os.environ.get("AGENTBRAIN_NOTIFY_CAPTURE_CODEX_HOME")
+        os.environ["AGENTBRAIN_NOTIFY_CAPTURE_CODEX_HOME"] = str(self.codex_home)
         self.addCleanup(self._restore_codex_home)
         self.event = json.dumps({
             "type": "agent-turn-complete",
@@ -46,6 +48,7 @@ class CodexNotifyMuxTests(unittest.TestCase):
             "--capture-argv-json", json.dumps(self.agentbrain),
             "--capture-cwd-allowlist-json", json.dumps([str(self.cwd)]),
             "--capture-codex-home", str(self.codex_home),
+            "--capture-source-mode", "synthetic",
             self.event,
         ]
 
@@ -54,6 +57,10 @@ class CodexNotifyMuxTests(unittest.TestCase):
             os.environ.pop("CODEX_HOME", None)
         else:
             os.environ["CODEX_HOME"] = self.old_codex_home
+        if self.old_capture_home is None:
+            os.environ.pop("AGENTBRAIN_NOTIFY_CAPTURE_CODEX_HOME", None)
+        else:
+            os.environ["AGENTBRAIN_NOTIFY_CAPTURE_CODEX_HOME"] = self.old_capture_home
 
     def _restore_queue_path(self):
         if self.old_queue_path is None:
@@ -139,6 +146,17 @@ class CodexNotifyMuxTests(unittest.TestCase):
         os.environ["CODEX_HOME"] = str(Path(self.tmp.name) / "different-home")
         self.assertEqual(dispatch_notify(self.argv, runner), 0)
         self.assertEqual(runner.call_count, 1)
+
+    def test_authorized_mode_allows_a_nonempty_bound_memory_source(self):
+        runner = Mock(return_value=SimpleNamespace(returncode=0))
+        (self.codex_home / "memories" / "existing-synthetic-memory.md").write_text(
+            "synthetic authorized memory", encoding="utf-8")
+        (self.codex_home / ".agent-brain-client-synthetic-codex-home").unlink()
+        authorized_argv = list(self.argv)
+        authorized_argv[authorized_argv.index("--capture-source-mode") + 1] = "authorized"
+        self.assertEqual(dispatch_notify(authorized_argv, runner), 0)
+        self.assertEqual(runner.call_count, 2)
+        self.assertEqual(runner.call_args_list[0].args[0], self.old_callback + [self.event])
 
     def test_missing_capture_scope_options_fail_closed(self):
         runner = Mock(return_value=SimpleNamespace(returncode=0))
