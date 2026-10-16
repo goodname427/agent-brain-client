@@ -133,12 +133,8 @@ component_source_sha256 固定已批准的签名组件源码关联。候选源�
 
 `brain_content_migration.py` 仅根据已批准 repository inventory 的名称、触发、依赖、资源和哈希准备迁移提案，不读正文、不上传、不执行 Skill。每个 Rule 保留 enabled/trigger，Skill 源启用状态未知时默认 disabled；已有本地 Core CLI/相对 wrapper 的 Brain Skills 须先改为服务流程，Core 仓库维护保留 repository scope。原生 Skill 目录冲突、UE 编辑器 prerequisites、正文转换/request SHA 与真实目标 revision 尚须具体处理；清单非空不表示迁移完成。合成验证用同样的 IDs/资源结构和改写后的合成正文，不能替代真实 Skill 适配。
 
-## Codex notify 增量保存候选（0.3.0）
+## Codex notify 自动捕获（延期，不属于 0.3.0）
 
-`adapters/codex/codex_notify_mux.py` 接收 Codex `agent-turn-complete` notify，并分别调用原有回调和 AgentBrain 捕获回调。原有回调收到原始事件和原 argv；捕获队列只持久化线程/轮次 ID、轮次摘要、尝试次数与状态，不保存输入或回复正文。队列使用私有目录、原子替换、文件锁和过期租约；每次新 notify 最多派发一条最早待处理任务，失败或进程中断后在后续 notify 重试。队列与内容 CAS/outbox 分离，队列成功只表示内部捕获任务已排入原线程，不表示 Memory 已保存。`adapters/codex/content_mcp.py --codex-notify <event-json>` 仍会验证完成事件、非空用户输入及 turn ID；内部消息要求总结直接用户陈述中的持久事实、经历、纠正和短期进展。此路径不读取 transcript，也不保存原始消息正文。重试依赖之后再次发生 notify；没有后台定时执行器。需在用户自己的 `config.toml` 中审核后登记 notify 命令并信任确切文件；安装器不改原生配置或信任。`CODEX_CLI` 可固定 CLI 路径；否则使用 PATH 中的 `codex` 或 ChatGPT.app bundle 内的 CLI。
+0.3.0 只涵盖获授权的来源迁移、显式保存与跨会话召回。自动 Notify 捕获尚未完成安全隔离和实时验收，不属于本版本提供、安装或验收的能力。请勿在用户级 Codex `config.toml` 中登记或启用捕获 hook；该配置会影响其他项目。安装器不会修改用户级配置。源码树中保留的 `codex_notify_mux.py` 仅为未交付的开发候选，存在不代表已批准启用。
 
-完成验收的来源范围是支持且允许读取的 `<CODEX_HOME>/memories` 持久化目录；不要求也不读取历史会话、sessions、数据库或 `transcript_path`。每个 turn 生成确定性 `agentbrain_<turn-sha256>` request_id，使重试可幂等。模型只将用户直接陈述当作证据，忽略助手猜测和工具输出；普通用户项目经历/决策/进展可泛化为共享个人摘要，移除客户/雇主标识、秘密和机密，无法安全泛化则 deferred。Server 写入仍走 read/CAS、现有 outbox 与耐久回执。
-
-本地工具 `content_sources_inventory` 及 `content_cache.inventory_codex_memories()` 仅扫描明确的 `<CODEX_HOME>/memories` 持久化目录，拒绝符号链接；最多 1024 个目录项、16 层、1024 个文件、每文件 128 KiB、总文件字节 16 MiB，不读取 `sessions`、数据库或 `transcript_path`。清单每页最多 64 项，返回路径哈希、逐文件 SHA256、处理状态与确定性快照 cursor；不返回正文。`content_sources_read` 只允许按当前 inventory 的精确 ID/fingerprint 读取单个最多 128 KiB 的 UTF-8 文件，检查后不缓存正文、不传输内容；fingerprint 变化时拒绝。调用方必须先用 `content_sources_review` 对该确切指纹作 shareable/excluded/deferred/skipped 决策，私有缓存只保存固定决策码、不保留文本；旧 `no-durable-user-fact` 原因码不表示持久性或重要性门槛。对每个获准且可安全共享的来源都应处理；普通经历、事件、决策、纠正和短期进展可安全泛化时也应归纳，不按重要性或是否长期留存筛掉。进入 `content_sources_stage` 前，先用 `content_read` 读取目标，完成去重、合并和纠正并保留双方独有信息，再暂存最终候选。相同 source fingerprint 已有候选后不可改写。Stage 只在现有私有缓存写本地导入计划，不向 Server 写入；返回的 `source_key` 用于后续直接 `content_put` 的本地 `reconciles.source_keys`。写入使用先前 `content_read` 返回的 CAS revision、稳定 request_id 和现有 outbox；reconciliation metadata 不转发给 Server；尚未自动导入的 source_key 只允许提交与暂存记录完全相同的候选，已有冲突则沿用现有显式合并校验。只有 Server 返回要求的持久化回执后才能标为已保存，refresh 不负责触发这次写入。清单保存在现有私有 Client cache；新来源初始为 `not-checked`，已消失来源标为 `excluded`，Server 导入状态从现有 ledger 关联。此审查依赖模型/调用方如实判断正文是否包含 LocalOnly/机密，因此不能声称代码能自动识别所有敏感语义。此流程不构成整个账号或历史会话覆盖证明；当前未读取生产 Memories，也未接入真实用户源。行为由隔离合成夹具和一次独立本地 Server/Core E2E 验证。
-
-此路径只负责在用户输入回合完成后排入捕获任务；要称为完整 Memories 覆盖，必须对 inventory 的每个允许来源记录真实处理状态，未读取不能计为完成。合成 payload 测试不等于本机 app 的实时 notify 集成或真实模型验收；未配置/信任 notify 时不承诺自动触发。
+此候选尚缺事件 `cwd` 精确 allowlist（缺失时 fail closed）、隔离合成测试上下文及测试 Memories/MCP 来源，也未完成本机 app 的实时 notify 和真实模型验收。因此不能声称完整 Memories 覆盖、自动触发或生产数据已处理。历史会话、sessions、数据库和 `transcript_path` 不属于已批准的来源范围。
