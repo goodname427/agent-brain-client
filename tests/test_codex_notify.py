@@ -9,10 +9,18 @@ from unittest.mock import Mock,patch
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'adapters/codex'))
+import content_mcp
 from content_mcp import codex_notify_capture,codex_notify_main,_NOTIFY_CAPTURE_MARKER
 
 
 class CodexNotify(unittest.TestCase):
+    def setUp(self):
+        # These are isolated contract tests with a mocked subprocess; don't
+        # require the Codex CLI to be installed on the test runner.
+        self.cli_path=patch.object(content_mcp.shutil,'which',return_value='codex')
+        self.cli_path.start()
+        self.addCleanup(self.cli_path.stop)
+
     def event(self,**changes):
         value={'type':'agent-turn-complete','thread-id':'synthetic-thread','turn-id':'synthetic-turn',
                'input-messages':['Synthetic user stated progress.'],'last-assistant-message':'Synthetic acknowledgement.'}
