@@ -13,7 +13,7 @@
     "PROTOCOL.md": "c3cd5a93438394525ed441c5031f67d2b2d8c1a67043cfd33bca799866efd424",
     "README.md": "7fd568551ae60d8c8e4f90986afa650f0a7cbda9792372820a924db9c307803d",
     "adapters/codex/client_pairing.py": "dc547ec3454b2f5f399c4a7437292fefc52408d57a9b71194d8f26fa91252047",
-    "adapters/codex/client_release.py": "83a245c66725346ef17a24867c40b3f08e4ed97d32a59a47e26b84be8869f280",
+    "adapters/codex/client_release.py": "ce4984cdb46c2ae27f74b921ed04a48e0bc0b563d792641773175dcbb8eae7df",
     "adapters/codex/client_startup.py": "2d77f0d7bae8e98157da28bcd4c1fdef6f62484d67fd323e5a4ff27bc5443d2b",
     "adapters/codex/codex_connect.py": "6cd82f8511fad779bf6ffe11e3c7ca61bc12e899d4d55331ce0226e5d63ba8ed",
     "adapters/codex/codex_notify_mux.py": "60f7018170661c02e2a0dff9dc4bc3a0065cf346d0ed431ff4881baa3c57aa42",
