@@ -124,13 +124,17 @@ class CodexMemoryInventory(unittest.TestCase):
         by_name={tool['name']:tool for tool in tools}
         stage=by_name['content_sources_stage']['description']
         review=by_name['content_sources_review']['description']
+        put_reconcile=by_name['content_put']['inputSchema']['properties']['reconciles']['description']
         self.assertNotIn('Only use for user-provided durable facts',stage)
         for phrase in ('all authorized shareable sources','ordinary user experiences, events, decisions, corrections and short-term progress',
                        'do not filter by importance or long-term durability','content_read for the target',
                        'deduplication, merging and corrections','same source fingerprint is immutable',
-                       'local import-plan entry only','content_put','CAS revision','persistence receipt'):
+                       'local import-plan entry only','returns source_key','content_put','CAS revision',
+                       'refresh is not required to perform the write','persistence receipt'):
             self.assertIn(phrase,stage)
         self.assertIn('no-durable-user-fact reason is not a durability or importance threshold',review)
+        self.assertIn('exact staged record',put_reconcile)
+        self.assertIn('explicit merge',put_reconcile)
 
     def test_final_experience_candidate_stages_locally_then_saves_with_cas_receipt(self):
         helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
@@ -170,6 +174,54 @@ class CodexMemoryInventory(unittest.TestCase):
         self.assertEqual(helper.cloud.records[('memory','synthetic-topic')],final)
         self.assertEqual(helper.adapter.queue_status()['confirmed'],1)
         self.assertEqual(helper.adapter.import_status()['counts'],{'imported':1})
+
+    def test_staged_candidate_direct_cas_put_resolves_existing_and_new_target(self):
+        for with_existing in (False,True):
+            with self.subTest(with_existing=with_existing):
+                helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+                helper.setUp()
+                try:
+                    original={'title':'Synthetic prior','description':'Prior distinct detail',
+                              'body':'The team already keeps a checklist for this event.','type':'feedback'}
+                    if with_existing:helper.cloud.records[('memory','synthetic-topic')]=original
+                    memory_root=helper.home/'.codex/memories';memory_root.mkdir(parents=True)
+                    source_file=memory_root/'experience.md';source_file.write_text('This week I corrected the sign and checked the shorter queue.')
+                    server=ContentServer(helper.adapter)
+                    target=server.invoke('content_read',{'kind':'memory','id':'synthetic-topic'})['structuredContent']['result']
+                    revision=target['revision']
+                    row=helper.adapter.inventory_memory_sources()['sources'][0]
+                    server.invoke('content_sources_read',{'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint']})
+                    server.invoke('content_sources_review',{'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint'],
+                                                            'decision':'shareable','reason_code':'safe-cross-project-personal-summary'})
+                    record={'title':'Synthetic current experience','description':'Recent change with prior detail preserved',
+                            'body':(original['body']+' This week I corrected the sign and checked the shorter queue.') if with_existing else 'This week I corrected the sign and checked the shorter queue.',
+                            'type':'feedback'}
+                    staged=server.invoke('content_sources_stage',{'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint'],
+                                                                  'id':'synthetic-topic','record':record})
+                    self.assertFalse(staged['isError'],staged)
+                    self.assertFalse(staged['structuredContent']['data_transferred'])
+                    source_key=staged['structuredContent']['source_key']
+                    self.assertEqual(helper.cloud.calls[-1]['method'],'content_read')
+                    changed=dict(record,body=record['body']+' Not in staged candidate.')
+                    rejected=server.invoke('content_put',{'kind':'memory','id':'synthetic-topic','record':changed,
+                                                          'expected_revision':revision,'request_id':'synthetic_bad_put_0001',
+                                                          'reconciles':{'request_ids':[],'source_keys':[source_key]}})
+                    self.assertTrue(rejected['isError'],rejected)
+                    self.assertFalse(any(call['method']=='content_put' for call in helper.cloud.calls))
+                    request_id='synthetic_direct_put_'+('existing' if with_existing else 'new')
+                    saved=server.invoke('content_put',{'kind':'memory','id':'synthetic-topic','record':record,
+                                                       'expected_revision':revision,'request_id':request_id,
+                                                       'reconciles':{'request_ids':[],'source_keys':[source_key]}})
+                    self.assertFalse(saved['isError'],saved)
+                    self.assertTrue(saved['structuredContent']['persistence']['durable'])
+                    put=next(call for call in helper.cloud.calls if call['method']=='content_put')
+                    self.assertEqual(put['params']['expected_revision'],revision)
+                    self.assertNotIn('reconciles',put['params'])
+                    self.assertEqual(helper.cloud.records[('memory','synthetic-topic')],record)
+                    self.assertEqual(helper.adapter.import_status()['counts'],{'reconciled':1})
+                    self.assertEqual(helper.adapter._imports()['items'][source_key]['request_id'],request_id)
+                finally:
+                    helper.doCleanups()
 
     def test_inventory_alone_cannot_be_reviewed_or_staged(self):
         helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')

@@ -266,7 +266,8 @@ class ContentAdapter:
             if previous is None or previous['state']!='conflict' or (previous['request']['params']['kind'],previous['request']['params']['id'])!=target:raise CacheBlocked()
         for key in reconciles['source_keys']:
             item=self._imports()['items'].get(key)
-            if item is None or item['status']!='conflict' or (item['source']['kind'],item['source']['id'])!=target:raise CacheBlocked()
+            if item is None or item['status'] not in ('conflict','inventoried') or (item['source']['kind'],item['source']['id'])!=target:raise CacheBlocked()
+            if item['status']=='inventoried' and not self._import_same(target[0],item['source']['record'],request['params']['record'],preserve_enabled=False):raise CacheBlocked()
         row={'schema':1,'policy_sha':self.queue_sha,'created':time.time_ns(),'request':request,'request_sha':digest,'state':'pending','response':None,'remote':None,'reconciles':reconciles,'resolution_request_id':None}
         self._save(name,row);return row
 
@@ -280,7 +281,7 @@ class ContentAdapter:
             state=self._imports()
             for key in row['reconciles']['source_keys']:
                 item=state['items'][key]
-                if item['status']=='conflict':item.update(status='reconciled',request_id=row['request']['request_id'])
+                if item['status'] in ('conflict','inventoried'):item.update(status='reconciled',request_id=row['request']['request_id'])
             self._save('imports.json',state)
 
     def _drain(self):
@@ -601,7 +602,8 @@ class ContentAdapter:
             inventory=self._load('memory-inventory.json');inventory_key=sha(contract.encode([source_id,fingerprint]))
             row=dict(inventory['sources'][inventory_key],reason='reviewed normalized candidate staged')
             inventory['sources'][inventory_key]=row;self._save('memory-inventory.json',inventory)
-        return dict(result,status='content-source-staged',source_id=source_id)
+        return dict(result,status='content-source-staged',source_id=source_id,
+                    source_key=sha(contract.encode([source_id,fingerprint])))
 
     def _check_source(self,item):
         if not isinstance(item,dict) or set(item)!={'source_id','source_fingerprint','kind','id','record'} or not isinstance(item['source_id'],str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}',item['source_id']) or not isinstance(item['source_fingerprint'],str) or not re.fullmatch(r'[a-f0-9]{64}',item['source_fingerprint']):raise CacheBlocked()
