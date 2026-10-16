@@ -223,7 +223,9 @@ def dispatch_notify(argv, runner=subprocess.run):
 
     ``argv`` excludes the executable name and must end in Codex's event JSON.
     The preceding arguments must contain exactly one ``--callback-argv-json``
-    and one ``--capture-argv-json`` value, in either order.
+    and one ``--capture-argv-json`` value, in either order. Previously
+    documented capture scope options are accepted and ignored so legacy hooks
+    continue to invoke their original callback.
     """
     if not isinstance(argv, (list, tuple)) or len(argv) < 5:
         return 0
@@ -240,12 +242,24 @@ def dispatch_notify(argv, runner=subprocess.run):
     index = 0
     while index < len(options):
         flag = options[index]
-        if flag not in ("--callback-argv-json", "--capture-argv-json") or index + 1 >= len(options):
+        if flag not in ("--callback-argv-json", "--capture-argv-json",
+                        "--capture-cwd-allowlist-json", "--capture-codex-home") or index + 1 >= len(options):
             return 0
         if flag in commands:
             return 0
-        commands[flag] = _decode_command(options[index + 1])
-        if commands[flag] is None:
+        value = options[index + 1]
+        if flag in ("--callback-argv-json", "--capture-argv-json"):
+            commands[flag] = _decode_command(value)
+            if commands[flag] is None:
+                return 0
+        elif flag == "--capture-cwd-allowlist-json":
+            try:
+                scope = json.loads(value)
+            except (ValueError, TypeError):
+                return 0
+            if not isinstance(scope, list) or any(not isinstance(path, str) for path in scope):
+                return 0
+        elif not isinstance(value, str) or not value:
             return 0
         index += 2
     if set(commands) != {"--callback-argv-json", "--capture-argv-json"}:

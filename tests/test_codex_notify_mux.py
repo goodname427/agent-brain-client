@@ -79,6 +79,20 @@ class CodexNotifyMuxTests(unittest.TestCase):
         self.assertEqual(runner.call_args_list[1].args[0], self.old_callback + [second_event])
         self.assertFalse(Path(os.environ["AGENTBRAIN_NOTIFY_QUEUE_PATH"]).exists())
 
+    def test_previously_documented_scope_options_preserve_original_callback(self):
+        scoped_argv = [
+            "--callback-argv-json", json.dumps(self.old_callback),
+            "--capture-argv-json", json.dumps(self.agentbrain),
+            "--capture-cwd-allowlist-json", json.dumps(["/synthetic/project"]),
+            "--capture-codex-home", "/synthetic/codex-home",
+            self.event,
+        ]
+        runner = Mock(return_value=SimpleNamespace(returncode=0))
+        self.assertEqual(dispatch_notify(scoped_argv, runner), 0)
+        self.assertEqual(runner.call_count, 1)
+        self.assertEqual(runner.call_args_list[0].args[0], self.old_callback + [self.event])
+        self.assertFalse(Path(os.environ["AGENTBRAIN_NOTIFY_QUEUE_PATH"]).exists())
+
     def test_invalid_event_or_command_configuration_runs_neither_callback(self):
         runner = Mock()
         self.assertEqual(dispatch_notify(self.argv[:-1] + ["not-json"], runner), 0)

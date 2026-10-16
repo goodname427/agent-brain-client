@@ -16,7 +16,7 @@
     "adapters/codex/client_release.py": "ce4984cdb46c2ae27f74b921ed04a48e0bc0b563d792641773175dcbb8eae7df",
     "adapters/codex/client_startup.py": "2d77f0d7bae8e98157da28bcd4c1fdef6f62484d67fd323e5a4ff27bc5443d2b",
     "adapters/codex/codex_connect.py": "6cd82f8511fad779bf6ffe11e3c7ca61bc12e899d4d55331ce0226e5d63ba8ed",
-    "adapters/codex/codex_notify_mux.py": "7cb62194f0486e8c25aa4b6fd683c15b5c8e2328d1de5d67af49a8e1bd95e0dc",
+    "adapters/codex/codex_notify_mux.py": "2a71c967dece09c313818723342d76e5af9daca279d283d60fff7a1093dd6a55",
     "adapters/codex/content_cache.py": "09ddcb0d7a599ba1bf5cac59d8b8940860ff720ed5813adaed35768c0cba2706",
     "adapters/codex/content_contract.py": "35b0899d3541d6122a548551bb26442538e71238401ad3b73ed7b6f131f83661",
     "adapters/codex/content_install.py": "25bdaaee68756e7904d5f47d1209993ebd4e5222041ada4e1f2d47b9bac94dd7",
