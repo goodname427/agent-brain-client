@@ -5,6 +5,7 @@ boundaries is automatic when this candidate is wired; no new daemon is created.
 """
 import base64
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ import shutil
 import sys
 import time
 import uuid
+import stat
 BASE=Path(__file__).resolve().parent
 ROOT=BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
@@ -24,9 +26,114 @@ from remote_http import check_request,RequestStopped
 BEGIN='<!-- agent-brain-content:begin -->';END='<!-- agent-brain-content:end -->'
 BLOCK=re.compile(re.escape(BEGIN)+r'.*?'+re.escape(END)+r'(?:\r?\n)?',re.S)
 OFFLINE_TRANSPORT_ERRORS=frozenset(('transport_unconfirmed','ssh_proxy_unconfirmed','server_proxy_unconfirmed'))
+REVIEW_DECISIONS={'shareable':{'safe-cross-project-personal-summary'},
+                  'excluded':{'secret-localonly-or-confidential'},
+                  'deferred':{'project-scope-unavailable','uncertain-content'},
+                  'skipped':{'no-durable-user-fact'}}
 
 class CacheBlocked(Exception):pass
 def sha(raw):return hashlib.sha256(raw).hexdigest()
+
+
+def inventory_codex_memories(codex_home, *, max_files=1024, max_file_bytes=131072,
+                             max_total_bytes=16777216, max_entries=1024, max_depth=16):
+    """Fingerprint only Codex's persistent memory tree; never inspect sessions.
+
+    The output deliberately contains no source paths or text. Inventoried entries
+    remain ``not-checked`` until a separate review classifies and normalizes
+    them for import. A digest cursor lets a caller detect a changed inventory
+    without treating this scan as coverage or an import plan.
+    """
+    root=Path(codex_home).expanduser()/'memories'
+    rows=[];total=0;walked=0;entries_seen=0;directories_seen=0
+    def source_id(relative):return 'codex-memory:'+sha(relative.encode('utf-8','surrogateescape'))
+    if root.is_symlink() or not root.exists():
+        return {'schema':1,'status':'unavailable','reason':'memory root missing or symlinked',
+                'sources':[],'cursor':sha(b'codex-memory-root-unavailable')}
+    if not root.is_dir():
+        return {'schema':1,'status':'unavailable','reason':'memory root is not a directory',
+                'sources':[],'cursor':sha(b'codex-memory-root-invalid')}
+    directory_flag=getattr(os,'O_DIRECTORY',0)
+    nofollow=getattr(os,'O_NOFOLLOW',0)
+    try:root_fd=os.open(root,os.O_RDONLY|directory_flag|nofollow)
+    except OSError:
+        return {'schema':1,'status':'unavailable','reason':'memory root unavailable',
+                'sources':[],'cursor':sha(b'codex-memory-root-unavailable')}
+    pending=[(root_fd,'',0)]
+    try:
+        while pending:
+            directory_fd,prefix,depth=pending.pop();directories_seen+=1
+            if directories_seen>max_entries or depth>max_depth:
+                rows.append({'source_id':source_id(prefix or '.'),'source_fingerprint':None,
+                             'status':'unavailable','reason':'directory traversal limit reached'})
+                os.close(directory_fd);continue
+            try:
+                with os.scandir(directory_fd) as scan:
+                    entries=sorted(itertools.islice(scan,max_entries-entries_seen+1),key=lambda entry:entry.name,reverse=True)
+            except OSError:
+                rows.append({'source_id':source_id(prefix or '.'),'source_fingerprint':None,
+                             'status':'unavailable','reason':'directory unreadable'})
+                os.close(directory_fd);continue
+            try:
+                for entry in entries:
+                    entries_seen+=1
+                    if entries_seen>max_entries:
+                        row={'source_id':source_id(prefix or '.'),'source_fingerprint':None,
+                             'status':'unavailable','reason':'entry inventory limit reached'}
+                        rows=rows[:max_entries-1]+[row]
+                        return {'schema':1,'status':'incomplete','reason':'bounded directory inventory limit reached',
+                                'sources':rows,'cursor':sha(contract.encode(rows))}
+                    relative=(prefix+'/'+entry.name).strip('/')
+                    try:info=entry.stat(follow_symlinks=False)
+                    except OSError:
+                        rows.append({'source_id':source_id(relative),'source_fingerprint':None,'status':'unavailable','reason':'entry unreadable'});continue
+                    if stat.S_ISLNK(info.st_mode):
+                        rows.append({'source_id':source_id(relative),'source_fingerprint':None,'status':'excluded','reason':'symlink source excluded'});continue
+                    if stat.S_ISDIR(info.st_mode):
+                        try:
+                            child_fd=os.open(entry.name,os.O_RDONLY|directory_flag|nofollow,dir_fd=directory_fd)
+                            if not stat.S_ISDIR(os.fstat(child_fd).st_mode):raise OSError()
+                            pending.append((child_fd,relative,depth+1))
+                        except OSError:
+                            rows.append({'source_id':source_id(relative),'source_fingerprint':None,'status':'unavailable','reason':'directory changed or unreadable'})
+                        continue
+                    if not stat.S_ISREG(info.st_mode):
+                        rows.append({'source_id':source_id(relative),'source_fingerprint':None,'status':'excluded','reason':'non-regular source excluded'});continue
+                    walked+=1
+                    if walked>max_files:
+                        return {'schema':1,'status':'incomplete','reason':'file inventory limit reached','sources':rows,'cursor':sha(contract.encode(rows))}
+                    if info.st_size>max_file_bytes or total+info.st_size>max_total_bytes:
+                        rows.append({'source_id':source_id(relative),'source_fingerprint':None,'status':'excluded','reason':'bounded inventory limit exceeded'});continue
+                    try:
+                        file_fd=os.open(entry.name,os.O_RDONLY|nofollow,dir_fd=directory_fd)
+                        opened=os.fstat(file_fd)
+                        if not stat.S_ISREG(opened.st_mode) or opened.st_dev!=info.st_dev or opened.st_ino!=info.st_ino:
+                            os.close(file_fd);raise OSError()
+                        digest=hashlib.sha256();size=0
+                        with os.fdopen(file_fd,'rb') as source:
+                            while True:
+                                chunk=source.read(65536)
+                                if not chunk:break
+                                size+=len(chunk);total+=len(chunk)
+                                if size>max_file_bytes or total>max_total_bytes:raise OverflowError()
+                                digest.update(chunk)
+                        rows.append({'source_id':source_id(relative),'source_fingerprint':digest.hexdigest(),'status':'not-checked','reason':'fingerprinted; semantic review required'})
+                    except OverflowError:
+                        rows.append({'source_id':source_id(relative),'source_fingerprint':None,'status':'excluded','reason':'bounded inventory limit exceeded'})
+                    except OSError:
+                        rows.append({'source_id':source_id(relative),'source_fingerprint':None,'status':'unavailable','reason':'file changed or unreadable'})
+            finally:os.close(directory_fd)
+    finally:
+        for directory_fd,_,_ in pending:
+            try:os.close(directory_fd)
+            except OSError:pass
+    rows.sort(key=lambda item:item['source_id'])
+    snapshot=sha(contract.encode(rows))
+    counts:dict[str,int]={}
+    for item in rows:counts[item['status']]=counts.get(item['status'],0)+1
+    return {'schema':1,'status':'complete' if not counts.get('unavailable') else 'incomplete',
+            'reason':'metadata inventory only; no import coverage claimed','sources':rows,
+            'counts':counts,'cursor':snapshot}
 
 def validate_policy(policy,grant=None):
     if not isinstance(policy,dict) or set(policy)!={'schema','adapter','kinds','ids','dependencies'} or policy['schema']!=1 or policy['adapter']!='codex':raise CacheBlocked()
@@ -159,7 +266,8 @@ class ContentAdapter:
             if previous is None or previous['state']!='conflict' or (previous['request']['params']['kind'],previous['request']['params']['id'])!=target:raise CacheBlocked()
         for key in reconciles['source_keys']:
             item=self._imports()['items'].get(key)
-            if item is None or item['status']!='conflict' or (item['source']['kind'],item['source']['id'])!=target:raise CacheBlocked()
+            if item is None or item['status'] not in ('conflict','inventoried') or (item['source']['kind'],item['source']['id'])!=target:raise CacheBlocked()
+            if item['status']=='inventoried' and not self._import_same(target[0],item['source']['record'],request['params']['record'],preserve_enabled=False):raise CacheBlocked()
         row={'schema':1,'policy_sha':self.queue_sha,'created':time.time_ns(),'request':request,'request_sha':digest,'state':'pending','response':None,'remote':None,'reconciles':reconciles,'resolution_request_id':None}
         self._save(name,row);return row
 
@@ -173,7 +281,7 @@ class ContentAdapter:
             state=self._imports()
             for key in row['reconciles']['source_keys']:
                 item=state['items'][key]
-                if item['status']=='conflict':item.update(status='reconciled',request_id=row['request']['request_id'])
+                if item['status'] in ('conflict','inventoried'):item.update(status='reconciled',request_id=row['request']['request_id'])
             self._save('imports.json',state)
 
     def _drain(self):
@@ -232,25 +340,270 @@ class ContentAdapter:
         """Explicit reviewed normalized sources only; no native/file discovery."""
         if not isinstance(plan,dict) or set(plan)!={'schema','binding','sources','coverage'} or plan['schema']!=1 or plan['binding']!=self.binding or not isinstance(plan['sources'],list) or len(plan['sources'])>256:raise CacheBlocked()
         coverage=plan['coverage']
-        if not isinstance(coverage,list) or len(coverage)>256:raise CacheBlocked()
+        if not isinstance(coverage,list) or len(coverage)>4096:raise CacheBlocked()
         for item in coverage:
-            if not isinstance(item,dict) or set(item)!={'source_id','status','reason'} or item['status'] not in ('read','excluded','unavailable','not-checked') or not all(isinstance(item[k],str) and 0<len(item[k])<=1024 for k in item):raise CacheBlocked()
+            if not isinstance(item,dict) or set(item) not in ({'source_id','status','reason'},{'source_id','source_fingerprint','status','reason'}):raise CacheBlocked()
+            if (not isinstance(item['source_id'],str) or not 0<len(item['source_id'])<=1024 or
+                    not isinstance(item['status'],str) or item['status'] not in ('read','excluded','unavailable','not-checked','duplicate','skipped','deferred','review') or
+                    not isinstance(item['reason'],str) or not 0<len(item['reason'])<=1024):raise CacheBlocked()
+            if 'source_fingerprint' in item:
+                fingerprint=item['source_fingerprint']
+                if fingerprint is None:
+                    if not item['source_id'].startswith('codex-memory:') or item['status'] not in ('excluded','unavailable'):raise CacheBlocked()
+                elif not isinstance(fingerprint,str) or not re.fullmatch(r'[a-f0-9]{64}',fingerprint):raise CacheBlocked()
         seen=set()
         for item in plan['sources']:
             self._check_source(item)
             if item['source_id'] in seen:raise CacheBlocked()
             seen.add(item['source_id'])
+        source_fingerprints={item['source_id']:item['source_fingerprint'] for item in plan['sources']}
         with locked(self.cache/'content.lock'):
             state=self._imports()
+            memory_inventory=self._load('memory-inventory.json')
+            reviews=self._load('memory-reviews.json',{'schema':1,'binding':self.binding,'items':{}})
+            if (not isinstance(reviews,dict) or set(reviews)!={'schema','binding','items'} or reviews['schema']!=1 or
+                    reviews['binding']!=self.binding or not isinstance(reviews['items'],dict) or len(reviews['items'])>1024):raise CacheBlocked()
+            for entry in coverage:
+                source_id=entry['source_id']
+                if not source_id.startswith('codex-memory:'):continue
+                fingerprint=entry.get('source_fingerprint')
+                if fingerprint is None:
+                    key=sha(contract.encode([source_id,None]))
+                else:
+                    key=sha(contract.encode([source_id,fingerprint]))
+                source=memory_inventory.get('sources',{}).get(key) if isinstance(memory_inventory,dict) else None
+                if (not isinstance(source,dict) or source.get('source_id')!=source_id or
+                        source.get('source_fingerprint')!=fingerprint):raise CacheBlocked()
+                review=reviews['items'].get(key)
+                imported=state['items'].get(key)
+                status=entry['status']
+                if review is not None and (not isinstance(review,dict) or set(review)!={'source_id','source_fingerprint','decision','reason_code'} or
+                        review['source_id']!=source_id or review['source_fingerprint']!=fingerprint or
+                        review['decision'] not in REVIEW_DECISIONS or review['reason_code'] not in REVIEW_DECISIONS[review['decision']]):raise CacheBlocked()
+                if status=='read':
+                    if (fingerprint is None or source.get('status')!='read' and imported is None or
+                            not isinstance(review,dict) or review.get('decision')!='shareable' or review.get('reason_code')!='safe-cross-project-personal-summary' or
+                            source_fingerprints.get(source_id)!=fingerprint and imported is None):raise CacheBlocked()
+                elif status=='excluded':
+                    if source.get('status')!='excluded' and not (isinstance(review,dict) and review.get('decision')=='excluded' and review.get('reason_code')=='secret-localonly-or-confidential'):raise CacheBlocked()
+                elif status in ('deferred','skipped'):
+                    if not isinstance(review,dict) or review.get('decision')!=status or review.get('reason_code') not in REVIEW_DECISIONS[status]:raise CacheBlocked()
+                elif status in ('unavailable','not-checked'):
+                    if source.get('status')!=status:raise CacheBlocked()
+                elif status=='duplicate':
+                    if not isinstance(imported,dict) or imported.get('status')!='duplicate':raise CacheBlocked()
+                else:
+                    raise CacheBlocked()
             for item in plan['sources']:
+                if item['source_id'].startswith('codex-memory:'):
+                    if (not isinstance(memory_inventory,dict) or memory_inventory.get('binding')!=self.binding or
+                            not isinstance(memory_inventory.get('sources'),dict)):
+                        raise CacheBlocked()
+                    inventory_key=sha(contract.encode([item['source_id'],item['source_fingerprint']]))
+                    source=memory_inventory['sources'].get(inventory_key)
+                    imported_key=sha(contract.encode([item['source_id'],item['source_fingerprint']]))
+                    already=state['items'].get(imported_key)
+                    if source is None or source.get('source_id')!=item['source_id'] or source.get('source_fingerprint')!=item['source_fingerprint'] or (source.get('status')!='read' and already is None):
+                        raise CacheBlocked()
+                    reviews=self._load('memory-reviews.json')
+                    review=reviews.get('items',{}).get(imported_key) if isinstance(reviews,dict) and reviews.get('binding')==self.binding else None
+                    if (not isinstance(review,dict) or review.get('decision')!='shareable' or
+                            review.get('reason_code')!='safe-cross-project-personal-summary' or
+                            review.get('source_id')!=item['source_id'] or review.get('source_fingerprint')!=item['source_fingerprint']):raise CacheBlocked()
                 key=sha(contract.encode([item['source_id'],item['source_fingerprint']]))
                 if key in state['items']:
                     if state['items'][key]['source']!=item:raise CacheBlocked()
                     continue
                 state['items'][key]={'source':item,'status':'inventoried','request_id':None,'remote':None}
             if len(state['items'])>1024:raise CacheBlocked()
-            state['coverage']=coverage;self._save('imports.json',json.loads(contract.encode(state)))
+            merged={(entry['source_id'],entry.get('source_fingerprint')):entry for entry in state['coverage']}
+            merged.update({(entry['source_id'],entry.get('source_fingerprint')):entry for entry in coverage})
+            if len(merged)>4096:raise CacheBlocked()
+            state['coverage']=sorted(merged.values(),key=lambda value:(value['source_id'],value.get('source_fingerprint','')));self._save('imports.json',json.loads(contract.encode(state)))
         return {'status':'content-sources-inventoried','sources':len(plan['sources']),'data_transferred':False,'native_changed':False}
+
+    def inventory_memory_sources(self):
+        """Persist a path-free memory inventory in the existing private cache.
+
+        This inventories only; it never creates an import plan or contacts the
+        Server. Unchanged fingerprints retain their review/import state.
+        """
+        require_platform('cache-storage',self.platform)
+        with locked(self.cache/'content.lock'):
+            fresh=inventory_codex_memories(self.native_home)
+            previous=self._load('memory-inventory.json',None)
+            if previous is not None and (not isinstance(previous,dict) or
+                    set(previous)!={'schema','binding','cursor','status','sources'} or
+                    previous['schema']!=1 or previous['binding']!=self.binding or
+                    not isinstance(previous['sources'],dict) or len(previous['sources'])>1024):
+                raise CacheBlocked()
+            old=previous['sources'] if previous else {}
+            current={}
+            seen_ids=set()
+            for row in fresh['sources']:
+                source_id=row['source_id'];fingerprint=row['source_fingerprint'];seen_ids.add(source_id)
+                inventory_key=sha(contract.encode([source_id,fingerprint]))
+                prior=old.get(inventory_key)
+                if prior and prior.get('source_fingerprint')==fingerprint:
+                    row=dict(row,status=prior['status'],reason=prior['reason'])
+                current[inventory_key]=row
+            for inventory_key,prior in old.items():
+                if inventory_key in current:continue
+                if fresh['status']=='complete':
+                    reason='source no longer present' if prior['source_id'] not in seen_ids else 'previous fingerprint superseded by a changed source'
+                    current[inventory_key]=dict(prior,status='excluded',reason=reason)
+                else:
+                    current[inventory_key]=prior
+            if len(current)>1024:raise CacheBlocked()
+            fresh=dict(fresh,sources=sorted(current.values(),key=lambda item:item['source_id']))
+            counts:dict[str,int]={}
+            for item in fresh['sources']:counts[item['status']]=counts.get(item['status'],0)+1
+            fresh['counts']=counts
+            fresh['cursor']=sha(contract.encode(fresh['sources']))
+            ledger={'schema':1,'binding':self.binding,'cursor':fresh['cursor'],
+                    'status':fresh['status'],'sources':current}
+            self._save('memory-inventory.json',ledger)
+            tracked=self._imports();sources=[]
+            review_ledger=self._load('memory-reviews.json',{'schema':1,'binding':self.binding,'items':{}})
+            if (not isinstance(review_ledger,dict) or set(review_ledger)!={'schema','binding','items'} or review_ledger['schema']!=1 or
+                    review_ledger['binding']!=self.binding or not isinstance(review_ledger['items'],dict) or len(review_ledger['items'])>1024):raise CacheBlocked()
+            for source_id,item in current.items():
+                value=dict(item);fingerprint=value['source_fingerprint']
+                if isinstance(fingerprint,str) and value['status'] not in ('excluded','unavailable'):
+                    imported=tracked['items'].get(sha(contract.encode([value['source_id'],fingerprint])))
+                    if imported is not None:value.update(status=imported['status'],reason='linked to reviewed import ledger')
+                    review=review_ledger['items'].get(sha(contract.encode([value['source_id'],fingerprint])))
+                    if review is not None:
+                        if (not isinstance(review,dict) or set(review)!={'source_id','source_fingerprint','decision','reason_code'} or
+                                review['source_id']!=value['source_id'] or review['source_fingerprint']!=fingerprint or
+                                review['decision'] not in REVIEW_DECISIONS or review['reason_code'] not in REVIEW_DECISIONS[review['decision']]):raise CacheBlocked()
+                        value.update(review_decision=review['decision'],review_reason_code=review['reason_code'])
+                sources.append(value)
+            sources.sort(key=lambda item:(item['source_id'],item['source_fingerprint'] or ''))
+            cursor=sha(contract.encode(sources));counts={}
+            for item in sources:counts[item['status']]=counts.get(item['status'],0)+1
+            return {'status':fresh['status'],'counts':counts,'cursor':cursor,
+                    'sources':sources,'reason':fresh.get('reason','metadata inventory only; no import coverage claimed'),
+                    'data_transferred':False,'account_complete':False}
+
+    def read_memory_source(self,source_id,fingerprint):
+        """Read one explicitly selected, inventoried Codex Memory file.
+
+        The text is returned only to the local MCP caller and is never written
+        into the cache or sent to AgentBrain. A bounded no-follow open and a
+        post-read digest bind it to the inventory row reviewed by the caller.
+        """
+        if not isinstance(source_id,str) or not re.fullmatch(r'codex-memory:[a-f0-9]{64}',source_id):raise CacheBlocked()
+        if not isinstance(fingerprint,str) or not re.fullmatch(r'[a-f0-9]{64}',fingerprint):raise CacheBlocked()
+        require_platform('cache-storage',self.platform)
+        with locked(self.cache/'content.lock'):
+            inventory=self._load('memory-inventory.json')
+            if (not isinstance(inventory,dict) or set(inventory)!={'schema','binding','cursor','status','sources'} or
+                    inventory['schema']!=1 or inventory['binding']!=self.binding or not isinstance(inventory['sources'],dict)):
+                raise CacheBlocked()
+            key=sha(contract.encode([source_id,fingerprint]));row=inventory['sources'].get(key)
+            if row is None or row.get('source_id')!=source_id or row.get('source_fingerprint')!=fingerprint or row.get('status') not in ('not-checked','read'):
+                raise CacheBlocked()
+            root=self.native_home/'memories';directory_flag=getattr(os,'O_DIRECTORY',0);nofollow=getattr(os,'O_NOFOLLOW',0)
+            try:root_fd=os.open(root,os.O_RDONLY|directory_flag|nofollow)
+            except OSError:raise CacheBlocked() from None
+            pending=[(root_fd,'',0)];entries_seen=0;directories_seen=0;file_fd=None;file_info=None
+            try:
+                while pending and file_fd is None:
+                    directory_fd,prefix,depth=pending.pop();directories_seen+=1
+                    if directories_seen>1024 or depth>16:
+                        os.close(directory_fd);raise CacheBlocked()
+                    try:
+                        with os.scandir(directory_fd) as scan:entries=sorted(itertools.islice(scan,1025-entries_seen),key=lambda e:e.name,reverse=True)
+                    except OSError:
+                        os.close(directory_fd);raise CacheBlocked() from None
+                    try:
+                        for entry in entries:
+                            entries_seen+=1
+                            if entries_seen>1024:raise CacheBlocked()
+                            relative=(prefix+'/'+entry.name).strip('/')
+                            try:info=entry.stat(follow_symlinks=False)
+                            except OSError:raise CacheBlocked() from None
+                            if stat.S_ISLNK(info.st_mode):continue
+                            if stat.S_ISDIR(info.st_mode):
+                                try:
+                                    child_fd=os.open(entry.name,os.O_RDONLY|directory_flag|nofollow,dir_fd=directory_fd)
+                                    if not stat.S_ISDIR(os.fstat(child_fd).st_mode):os.close(child_fd);raise OSError()
+                                    pending.append((child_fd,relative,depth+1))
+                                except OSError:raise CacheBlocked() from None
+                                continue
+                            if stat.S_ISREG(info.st_mode) and source_id=='codex-memory:'+sha(relative.encode('utf-8','surrogateescape')):
+                                if info.st_size>131072:raise CacheBlocked()
+                                try:file_fd=os.open(entry.name,os.O_RDONLY|nofollow,dir_fd=directory_fd)
+                                except OSError:raise CacheBlocked() from None
+                                file_info=os.fstat(file_fd)
+                                if not stat.S_ISREG(file_info.st_mode) or file_info.st_dev!=info.st_dev or file_info.st_ino!=info.st_ino:
+                                    os.close(file_fd);file_fd=None;raise CacheBlocked()
+                                break
+                    finally:os.close(directory_fd)
+            finally:
+                for directory_fd,_,_ in pending:
+                    try:os.close(directory_fd)
+                    except OSError:pass
+            if file_fd is None:raise CacheBlocked()
+            with os.fdopen(file_fd,'rb') as source:raw=source.read(131073)
+            if len(raw)>131072 or sha(raw)!=fingerprint:raise CacheBlocked()
+            try:body=raw.decode('utf-8','strict')
+            except UnicodeDecodeError:raise CacheBlocked() from None
+            row=dict(row,status='read',reason='selected body read locally; review and normalize before staging')
+            inventory['sources'][key]=row
+            self._save('memory-inventory.json',inventory)
+            return {'source_id':source_id,'source_fingerprint':fingerprint,'text':body,
+                    'data_transferred':False,'native_changed':False,
+                    'note':'Local-only bounded read. Review for sensitive or cross-project details before preparing an import.'}
+
+    def review_memory_source(self,source_id,fingerprint,decision,reason_code):
+        """Persist an explicit content review decision without retaining source text."""
+        decisions=REVIEW_DECISIONS
+        if (not isinstance(source_id,str) or not re.fullmatch(r'codex-memory:[a-f0-9]{64}',source_id) or
+                not isinstance(fingerprint,str) or not re.fullmatch(r'[a-f0-9]{64}',fingerprint) or
+                decision not in decisions or reason_code not in decisions[decision]):raise CacheBlocked()
+        require_platform('cache-storage',self.platform)
+        with locked(self.cache/'content.lock'):
+            inventory=self._load('memory-inventory.json');key=sha(contract.encode([source_id,fingerprint]))
+            row=inventory.get('sources',{}).get(key) if isinstance(inventory,dict) else None
+            if row is None or row.get('source_id')!=source_id or row.get('source_fingerprint')!=fingerprint or row.get('status')!='read':
+                raise CacheBlocked()
+            state=self._load('memory-reviews.json',{'schema':1,'binding':self.binding,'items':{}})
+            if (not isinstance(state,dict) or set(state)!={'schema','binding','items'} or state['schema']!=1 or
+                    state['binding']!=self.binding or not isinstance(state['items'],dict) or len(state['items'])>1024):raise CacheBlocked()
+            state['items'][key]={'source_id':source_id,'source_fingerprint':fingerprint,'decision':decision,'reason_code':reason_code}
+            if len(state['items'])>1024:raise CacheBlocked()
+            self._save('memory-reviews.json',state)
+        return {'status':'content-source-reviewed','source_id':source_id,'decision':decision,'reason_code':reason_code,
+                'text_persisted':False,'data_transferred':False}
+
+    def stage_memory_import(self,source_id,fingerprint,kind,identity,record):
+        """Stage a normalized Memory candidate only after its exact source was read."""
+        require_platform('cache-storage',self.platform)
+        with locked(self.cache/'content.lock'):
+            inventory=self._load('memory-inventory.json')
+            if (not isinstance(inventory,dict) or inventory.get('binding')!=self.binding or not isinstance(inventory.get('sources'),dict)):
+                raise CacheBlocked()
+            key=sha(contract.encode([source_id,fingerprint]));row=inventory['sources'].get(key)
+            if row is None or row.get('status')!='read' or row.get('source_id')!=source_id or row.get('source_fingerprint')!=fingerprint:
+                raise CacheBlocked()
+            reviews=self._load('memory-reviews.json')
+            review=reviews.get('items',{}).get(key) if isinstance(reviews,dict) and reviews.get('binding')==self.binding else None
+            if (not isinstance(review,dict) or review.get('decision')!='shareable' or
+                    review.get('reason_code')!='safe-cross-project-personal-summary' or
+                    review.get('source_id')!=source_id or review.get('source_fingerprint')!=fingerprint):raise CacheBlocked()
+            self._check_source({'source_id':source_id,'source_fingerprint':fingerprint,'kind':kind,'id':identity,'record':record})
+        plan={'schema':1,'binding':self.binding,'sources':[{'source_id':source_id,'source_fingerprint':fingerprint,
+              'kind':kind,'id':identity,'record':record}],
+              'coverage':[{'source_id':source_id,'source_fingerprint':fingerprint,'status':'read','reason':'selected source reviewed and normalized for import'}]}
+        result=self.stage_import(plan)
+        with locked(self.cache/'content.lock'):
+            inventory=self._load('memory-inventory.json');inventory_key=sha(contract.encode([source_id,fingerprint]))
+            row=dict(inventory['sources'][inventory_key],reason='reviewed normalized candidate staged')
+            inventory['sources'][inventory_key]=row;self._save('memory-inventory.json',inventory)
+        return dict(result,status='content-source-staged',source_id=source_id,
+                    source_key=sha(contract.encode([source_id,fingerprint])))
 
     def _check_source(self,item):
         if not isinstance(item,dict) or set(item)!={'source_id','source_fingerprint','kind','id','record'} or not isinstance(item['source_id'],str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}',item['source_id']) or not isinstance(item['source_fingerprint'],str) or not re.fullmatch(r'[a-f0-9]{64}',item['source_fingerprint']):raise CacheBlocked()
@@ -276,6 +629,10 @@ class ContentAdapter:
 
     def _import_pending(self):
         state=self._imports()
+        linked_writes={}
+        for queued in self._queued():
+            if queued['state'] not in ('pending','confirmed','conflict'):continue
+            for source_key in queued['reconciles']['source_keys']:linked_writes[source_key]=queued
         for key,item in state['items'].items():
             source=item['source'];kind,identity=source['kind'],source['id']
             if item['status']=='reconciled':continue
@@ -284,6 +641,13 @@ class ContentAdapter:
                 if row is None:raise CacheBlocked()
                 item['status']='imported' if row['state']=='confirmed' else row['state'];continue
             if item['status']!='inventoried':continue
+            linked=linked_writes.get(key)
+            if linked is not None:
+                if linked['state']=='confirmed':item.update(status='reconciled',request_id=linked['request']['request_id'])
+                elif linked['state']=='conflict':item.update(status='conflict',remote=linked['remote'])
+                # A staged-source CAS already owns this item. Let its exact
+                # request drain before scheduling an automatic import write.
+                continue
             try:remote=self._read_target(kind,identity)
             except Exception:break
             current=remote['record'];desired=source['record']
@@ -307,7 +671,20 @@ class ContentAdapter:
         state=self._imports();counts:dict[str,int]={}
         for item in state['items'].values():counts[item['status']]=counts.get(item['status'],0)+1
         conflicts=[{'source_key':key,'source_id':item['source']['source_id'],'kind':item['source']['kind'],'id':item['source']['id'],'remote_revision':(item['remote'] or {}).get('revision')} for key,item in state['items'].items() if item['status']=='conflict']
-        return {'counts':counts,'conflicts':conflicts,'coverage':state['coverage'],'account_complete':False,'inventoried_sources':len(state['items']),'scope':'explicit-reviewed-plan-only','coverage_note':'Duplicate is covered; inaccessible/not-checked sources remain gaps. Three-topic retrieval is not an import quota.'}
+        source_inventory=self._load('memory-inventory.json')
+        inventory_summary=None
+        if source_inventory is not None:
+            if not isinstance(source_inventory,dict) or set(source_inventory)!={'schema','binding','cursor','status','sources'} or source_inventory['schema']!=1 or source_inventory['binding']!=self.binding or not isinstance(source_inventory['sources'],dict) or len(source_inventory['sources'])>1024:raise CacheBlocked()
+            inventory_counts:dict[str,int]={}
+            for inventory_key,item in source_inventory['sources'].items():
+                if not isinstance(item,dict) or set(item)!={'source_id','source_fingerprint','status','reason'} or item['status'] not in ('not-checked','read','inventoried','imported','duplicate','conflict','blocked','reconciled','excluded','unavailable'):raise CacheBlocked()
+                status=item['status'];fingerprint=item['source_fingerprint']
+                if isinstance(fingerprint,str) and item['status'] not in ('excluded','unavailable'):
+                    tracked=state['items'].get(sha(contract.encode([item['source_id'],fingerprint])))
+                    if tracked is not None:status=tracked['status']
+                inventory_counts[status]=inventory_counts.get(status,0)+1
+            inventory_summary={'status':source_inventory['status'],'counts':inventory_counts,'cursor':source_inventory['cursor'],'account_complete':False}
+        return {'counts':counts,'conflicts':conflicts,'coverage':state['coverage'],'account_complete':False,'inventoried_sources':len(state['items']),'source_inventory':inventory_summary,'scope':'explicit-reviewed-plan-only','coverage_note':'Duplicate is covered; inaccessible/not-checked sources remain gaps. Three-topic retrieval is not an import quota.'}
 
     def _raw(self,name):
         path=self._path(name)
