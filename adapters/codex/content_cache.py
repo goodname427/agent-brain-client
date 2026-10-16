@@ -129,7 +129,7 @@ def inventory_codex_memories(codex_home, *, max_files=1024, max_file_bytes=13107
             except OSError:pass
     rows.sort(key=lambda item:item['source_id'])
     snapshot=sha(contract.encode(rows))
-    counts={}
+    counts:dict[str,int]={}
     for item in rows:counts[item['status']]=counts.get(item['status'],0)+1
     return {'schema':1,'status':'complete' if not counts.get('unavailable') else 'incomplete',
             'reason':'metadata inventory only; no import coverage claimed','sources':rows,
@@ -456,7 +456,7 @@ class ContentAdapter:
                     current[inventory_key]=prior
             if len(current)>1024:raise CacheBlocked()
             fresh=dict(fresh,sources=sorted(current.values(),key=lambda item:item['source_id']))
-            counts={}
+            counts:dict[str,int]={}
             for item in fresh['sources']:counts[item['status']]=counts.get(item['status'],0)+1
             fresh['counts']=counts
             fresh['cursor']=sha(contract.encode(fresh['sources']))
@@ -675,7 +675,7 @@ class ContentAdapter:
         inventory_summary=None
         if source_inventory is not None:
             if not isinstance(source_inventory,dict) or set(source_inventory)!={'schema','binding','cursor','status','sources'} or source_inventory['schema']!=1 or source_inventory['binding']!=self.binding or not isinstance(source_inventory['sources'],dict) or len(source_inventory['sources'])>1024:raise CacheBlocked()
-            inventory_counts={}
+            inventory_counts:dict[str,int]={}
             for inventory_key,item in source_inventory['sources'].items():
                 if not isinstance(item,dict) or set(item)!={'source_id','source_fingerprint','status','reason'} or item['status'] not in ('not-checked','read','inventoried','imported','duplicate','conflict','blocked','reconciled','excluded','unavailable'):raise CacheBlocked()
                 status=item['status'];fingerprint=item['source_fingerprint']
