@@ -8,7 +8,7 @@
   "core_api": 1,
   "files": {
     ".gitignore": "de55ef044a18ae9327358209cabab993cf76a66924055155bcedad2013a0ac6b",
-    "ADAPTERS.md": "cdb62c5b2a902807c4c024fb974a0559a9f63311a10165ce70810fec4f975268",
+    "ADAPTERS.md": "27471bc0557dfca413809b298ef2178892e806047586197caa60e8ddf1123417",
     "BOOTSTRAP.md": "613d7653f0e28244c73bf2f9b06e80e08229005380277e7511f35ea727407b9f",
     "PROTOCOL.md": "c3cd5a93438394525ed441c5031f67d2b2d8c1a67043cfd33bca799866efd424",
     "README.md": "cf6f76ee3a19ca4535980802a94466a99134662029bb51df6166794e80247db4",
@@ -20,7 +20,7 @@
     "adapters/codex/content_cache.py": "09ddcb0d7a599ba1bf5cac59d8b8940860ff720ed5813adaed35768c0cba2706",
     "adapters/codex/content_contract.py": "35b0899d3541d6122a548551bb26442538e71238401ad3b73ed7b6f131f83661",
     "adapters/codex/content_install.py": "25bdaaee68756e7904d5f47d1209993ebd4e5222041ada4e1f2d47b9bac94dd7",
-    "adapters/codex/content_mcp.py": "4d77601113d35bd336a08e6fd53d00ad27eaf28b80e127476bbc2dff27fefc12",
+    "adapters/codex/content_mcp.py": "6ffb6221816ab2f975138dc07a3bd27bf1c7218d2155b17aa1d14332743906ed",
     "adapters/codex/https_content.py": "ee655e6ef2b0086659158afae79ca22e03491d365b992f54aa0bf27dfab046ce",
     "adapters/codex/remote_http.py": "919244e96787b7f494295f6fbef1b389342d957e34d5b89d9f9b733865d659dc",
     "adapters/codex/remote_mcp.py": "62c0520cbd5426a25ced058ed26a8d49ad04d409f198526179b6599deb485d16",
