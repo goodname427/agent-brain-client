@@ -36,7 +36,7 @@ def _valid_job(job):
             isinstance(job["turn_id"], str) and _TURN_ID_RE.fullmatch(job["turn_id"]) and
             isinstance(job["turn_digest"], str) and _DIGEST_RE.fullmatch(job["turn_digest"]) and
             job["job_id"] == hashlib.sha256((job["thread_id"] + "\0" + job["turn_digest"]).encode()).hexdigest() and
-            job["status"] in ("pending", "processing", "done") and
+            job["status"] in ("pending", "processing", "done", "failed") and
             isinstance(job["attempts"], int) and job["attempts"] >= 0 and
             isinstance(job["created_at"], (int, float)) and math.isfinite(job["created_at"]) and
             (job["lease_until"] is None or
@@ -105,7 +105,7 @@ class NotifyCaptureQueue:
                 pass
             raise
 
-    def enqueue(self, event):
+    def _enqueue(self, event, *, supersede):
         if (not isinstance(event, dict) or event.get("type") != "agent-turn-complete" or
                 not isinstance(event.get("input-messages"), list) or not event["input-messages"] or
                 any(not isinstance(item, str) or len(item) > 65536 for item in event["input-messages"]) or
@@ -120,28 +120,44 @@ class NotifyCaptureQueue:
         job_id = hashlib.sha256((thread_id + "\0" + digest).encode()).hexdigest()
         with self._locked():
             state = self._read()
-            if any(job.get("job_id") == job_id for job in state["jobs"]):
-                return job_id
+            existing = next((job for job in state["jobs"] if job.get("job_id") == job_id), None)
+            if existing is not None:
+                return {"job_id":job_id,"created":False,"status":existing["status"]} if supersede else job_id
+            now=float(self.clock())
+            # A later stop event cannot stand in for the messages that belonged
+            # to an older digest. Expired work and unstarted older jobs are terminal.
+            if supersede:
+                for prior in state["jobs"]:
+                    if prior["status"] == "pending" or (prior["status"] == "processing" and prior["lease_until"] <= now):
+                        prior.update(status="failed",lease_until=None)
             state["jobs"].append({"job_id": job_id, "thread_id": thread_id,
                                   "turn_id": turn_id, "turn_digest": digest,
                                   "status": "pending", "attempts": 0,
-                                  "created_at": float(self.clock()), "lease_until": None})
-            done = [job for job in state["jobs"] if job["status"] == "done"]
-            while len(state["jobs"]) > self.max_jobs and done:
-                state["jobs"].remove(done.pop(0))
+                                  "created_at": now, "lease_until": None})
+            terminal = [job for job in state["jobs"] if job["status"] in ("done","failed")]
+            while len(state["jobs"]) > self.max_jobs and terminal:
+                state["jobs"].remove(terminal.pop(0))
             if len(state["jobs"]) > self.max_jobs:
                 raise OSError("notify queue is full")
             self._write(state)
-        return job_id
+        return {"job_id":job_id,"created":True,"status":"pending"} if supersede else job_id
 
-    def claim_next(self):
+    def enqueue(self, event):
+        """Persist a durable job and return its stable identifier."""
+        return self._enqueue(event,supersede=False)
+
+    def enqueue_for_dispatch(self, event):
+        """Queue a fresh stop event and make older unstarted work terminal."""
+        return self._enqueue(event,supersede=True)
+
+    def claim(self, job_id):
         now = float(self.clock())
         with self._locked():
             state = self._read()
             for job in state["jobs"]:
                 if job["status"] == "processing" and job["lease_until"] <= now:
                     job.update(status="pending", lease_until=None)
-            job = next((item for item in state["jobs"] if item["status"] == "pending"), None)
+            job = next((item for item in state["jobs"] if item["job_id"] == job_id and item["status"] == "pending"), None)
             if job is None:
                 return None
             job.update(status="processing", attempts=job["attempts"] + 1,
@@ -149,12 +165,26 @@ class NotifyCaptureQueue:
             self._write(state)
             return dict(job)
 
-    def finish(self, job_id, *, success):
+    def claim_next(self):
+        """Deprecated compatibility helper; callers should claim a specific event."""
+        now=float(self.clock())
+        with self._locked():
+            state=self._read()
+            changed=False
+            for item in state["jobs"]:
+                if item["status"]=="processing" and item["lease_until"]<=now:
+                    item.update(status="pending",lease_until=None);changed=True
+            if changed:self._write(state)
+            job=next((item for item in state["jobs"] if item["status"]=="pending"),None)
+            job_id=job["job_id"] if job is not None else None
+        return self.claim(job_id) if job_id is not None else None
+
+    def finish(self, job_id, *, success, terminal_failure=False):
         with self._locked():
             state = self._read()
             for job in state["jobs"]:
                 if job["job_id"] == job_id and job["status"] == "processing":
-                    job.update(status="done" if success else "pending", lease_until=None)
+                    job.update(status="done" if success else ("failed" if terminal_failure else "pending"), lease_until=None)
                     self._write(state)
                     return True
         return False
@@ -222,7 +252,7 @@ def dispatch_notify(argv, runner=subprocess.run):
         return 0
 
     # Preserve the pre-existing callback's exact argv. Store only IDs in the
-    # durable queue, then dispatch one oldest pending capture on each notify.
+    # durable queue, and only dispatch the event delivered by this invocation.
     callback_ok = _run_independently(commands["--callback-argv-json"], event_json, runner)
     try:
         event = json.loads(event_json)
@@ -230,8 +260,8 @@ def dispatch_notify(argv, runner=subprocess.run):
         if not queue_path:
             queue_path = str(Path.home() / ".cache" / "agent-brain-client" / "notify-capture" / "jobs.json")
         capture_queue = NotifyCaptureQueue(queue_path)
-        capture_queue.enqueue(event)
-        job = capture_queue.claim_next()
+        queued = capture_queue.enqueue_for_dispatch(event)
+        job = capture_queue.claim(queued["job_id"]) if queued["created"] else None
     except (OSError, ValueError, TypeError):
         job = None
         queue_ok = False
@@ -248,7 +278,7 @@ def dispatch_notify(argv, runner=subprocess.run):
                                separators=(",", ":"))
         capture_ok = _run_independently(commands["--capture-argv-json"], job_event, runner)
         try:
-            capture_queue.finish(job["job_id"], success=capture_ok)
+            capture_queue.finish(job["job_id"], success=capture_ok, terminal_failure=not capture_ok)
         except (OSError, ValueError, TypeError):
             capture_ok = False
     return 0 if callback_ok and queue_ok and capture_ok else 1

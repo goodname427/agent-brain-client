@@ -253,6 +253,8 @@ class ContentAdapter:
         for field,pattern in [('request_ids',r'[A-Za-z0-9_-]{16,128}'),('source_keys',r'[a-f0-9]{64}')]:
             values=reconciles[field]
             if not isinstance(values,list) or len(values)>256 or any(not isinstance(v,str) or not re.fullmatch(pattern,v) for v in values) or len(set(values))!=len(values):raise CacheBlocked()
+        # A prior idempotent outbox entry must not bypass a later review revocation.
+        self._assert_sources_shareable(reconciles['source_keys'])
         request=json.loads(contract.encode(request));digest=sha(contract.encode(request))
         name='outbox/'+request['request_id']+'.json';old=self._load(name)
         if old is not None:
@@ -270,6 +272,22 @@ class ContentAdapter:
             if item['status']=='inventoried' and not self._import_same(target[0],item['source']['record'],request['params']['record'],preserve_enabled=False):raise CacheBlocked()
         row={'schema':1,'policy_sha':self.queue_sha,'created':time.time_ns(),'request':request,'request_sha':digest,'state':'pending','response':None,'remote':None,'reconciles':reconciles,'resolution_request_id':None}
         self._save(name,row);return row
+
+    def _assert_sources_shareable(self,source_keys):
+        if not source_keys:return
+        imports=self._imports()
+        reviews=self._load('memory-reviews.json',{'schema':1,'binding':self.binding,'items':{}})
+        if not isinstance(reviews,dict) or reviews.get('binding')!=self.binding or not isinstance(reviews.get('items'),dict):raise CacheBlocked()
+        for key in source_keys:
+            item=imports['items'].get(key)
+            if item is None:raise CacheBlocked()
+            source=item['source']
+            if source['source_id'].startswith('codex-memory:'):
+                review=reviews['items'].get(key)
+                if (not isinstance(review,dict) or review.get('decision')!='shareable' or
+                        review.get('reason_code')!='safe-cross-project-personal-summary' or
+                        review.get('source_id')!=source['source_id'] or review.get('source_fingerprint')!=source['source_fingerprint']):
+                    raise CacheBlocked()
 
     def _finish_reconciliation(self,row):
         if row['state']!='confirmed':return
@@ -296,6 +314,16 @@ class ContentAdapter:
                 blocked.setdefault(target,set()).add(request['request_id']);continue
             if row['state']=='confirmed':self._finish_reconciliation(row);continue
             if row['state']!='pending' or blocked.get(target,set())-set(row['reconciles']['request_ids']):continue
+            try:self._assert_sources_shareable(row['reconciles']['source_keys'])
+            except CacheBlocked:
+                row.update(state='blocked',response={'request_id':request['request_id'],'error':{'code':'native_source_review_revoked','retryable':False},'persistence':{'durable':False}})
+                self._save('outbox/'+request['request_id']+'.json',row)
+                state=self._imports()
+                for key in row['reconciles']['source_keys']:
+                    if key in state['items'] and state['items'][key]['status'] in ('inventoried','pending'):
+                        state['items'][key].update(status='blocked',request_id=request['request_id'])
+                self._save('imports.json',state)
+                blocked.setdefault(target,set()).add(request['request_id']);continue
             try:response=self.client.request(json.loads(contract.encode(request)))
             except Exception:break
             if not isinstance(response,dict) or response.get('request_id')!=request['request_id']:break
@@ -438,6 +466,8 @@ class ContentAdapter:
                     not isinstance(previous['sources'],dict) or len(previous['sources'])>1024):
                 raise CacheBlocked()
             old=previous['sources'] if previous else {}
+            tracked=self._imports()
+            active_keys={key for key,item in tracked['items'].items() if item['status'] in ('pending','conflict')}
             current={}
             seen_ids=set()
             for row in fresh['sources']:
@@ -449,10 +479,9 @@ class ContentAdapter:
                 current[inventory_key]=row
             for inventory_key,prior in old.items():
                 if inventory_key in current:continue
-                if fresh['status']=='complete':
-                    reason='source no longer present' if prior['source_id'] not in seen_ids else 'previous fingerprint superseded by a changed source'
-                    current[inventory_key]=dict(prior,status='excluded',reason=reason)
-                else:
+                if inventory_key in active_keys:
+                    current[inventory_key]=prior
+                elif fresh['status']!='complete' and prior['source_id'] not in seen_ids:
                     current[inventory_key]=prior
             if len(current)>1024:raise CacheBlocked()
             fresh=dict(fresh,sources=sorted(current.values(),key=lambda item:item['source_id']))
@@ -463,10 +492,13 @@ class ContentAdapter:
             ledger={'schema':1,'binding':self.binding,'cursor':fresh['cursor'],
                     'status':fresh['status'],'sources':current}
             self._save('memory-inventory.json',ledger)
-            tracked=self._imports();sources=[]
+            sources=[]
             review_ledger=self._load('memory-reviews.json',{'schema':1,'binding':self.binding,'items':{}})
             if (not isinstance(review_ledger,dict) or set(review_ledger)!={'schema','binding','items'} or review_ledger['schema']!=1 or
                     review_ledger['binding']!=self.binding or not isinstance(review_ledger['items'],dict) or len(review_ledger['items'])>1024):raise CacheBlocked()
+            live_review_keys=set(current)|active_keys
+            review_ledger['items']={key:value for key,value in review_ledger['items'].items() if key in live_review_keys}
+            self._save('memory-reviews.json',review_ledger)
             for source_id,item in current.items():
                 value=dict(item);fingerprint=value['source_fingerprint']
                 if isinstance(fingerprint,str) and value['status'] not in ('excluded','unavailable'):
@@ -575,6 +607,18 @@ class ContentAdapter:
             state['items'][key]={'source_id':source_id,'source_fingerprint':fingerprint,'decision':decision,'reason_code':reason_code}
             if len(state['items'])>1024:raise CacheBlocked()
             self._save('memory-reviews.json',state)
+            imports=self._imports();item=imports['items'].get(key)
+            if decision=='shareable' and item is not None and item['status']=='blocked':
+                item.update(status='inventoried',request_id=None,remote=None)
+                self._save('imports.json',imports)
+            if decision!='shareable':
+                if item is not None and item['status'] in ('inventoried','pending'):
+                    item.update(status='blocked',request_id=None if item['status']=='inventoried' else item['request_id'])
+                    self._save('imports.json',imports)
+                for queued in self._queued():
+                    if queued['state']=='pending' and key in queued['reconciles']['source_keys']:
+                        queued.update(state='blocked',response={'request_id':queued['request']['request_id'],'error':{'code':'native_source_review_revoked','retryable':False},'persistence':{'durable':False}})
+                        self._save('outbox/'+queued['request']['request_id']+'.json',queued)
         return {'status':'content-source-reviewed','source_id':source_id,'decision':decision,'reason_code':reason_code,
                 'text_persisted':False,'data_transferred':False}
 
@@ -641,6 +685,10 @@ class ContentAdapter:
                 if row is None:raise CacheBlocked()
                 item['status']='imported' if row['state']=='confirmed' else row['state'];continue
             if item['status']!='inventoried':continue
+            # Native Memory staging is local review state; only a caller's explicit
+            # content_put carrying this source_key may cross the Server boundary.
+            if source['source_id'].startswith('codex-memory:'):
+                continue
             linked=linked_writes.get(key)
             if linked is not None:
                 if linked['state']=='confirmed':item.update(status='reconciled',request_id=linked['request']['request_id'])
