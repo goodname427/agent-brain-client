@@ -310,6 +310,13 @@ class CodexMemoryInventory(unittest.TestCase):
         merged={'title':'Synthetic experience and concurrent update','description':'Merged local and remote evidence',
                 'body':'The normalized local experience is retained together with the concurrent remote update.',
                 'type':'feedback'}
+        omitted_source=server.invoke('content_put',{'kind':'memory','id':'synthetic-topic','record':merged,
+            'expected_revision':read['structuredContent']['result']['revision'],
+            'request_id':'synthetic_native_request_only_001',
+            'reconciles':{'request_ids':[first_request['request_id']],'source_keys':[]}})
+        self.assertTrue(omitted_source['isError'],omitted_source)
+        self.assertEqual(helper.adapter._imports()['items'][source_key]['status'],'conflict')
+        self.assertEqual(helper.adapter._load('outbox/'+first_request['request_id']+'.json')['state'],'conflict')
         saved=server.invoke('content_put',{'kind':'memory','id':'synthetic-topic','record':merged,
             'expected_revision':read['structuredContent']['result']['revision'],
             'request_id':'synthetic_native_merged_save_001',
