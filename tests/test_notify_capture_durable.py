@@ -110,17 +110,19 @@ class NotifyCaptureDurableTests(unittest.TestCase):
         self.assertEqual(len(queue.snapshot()), 2)
         self.assertEqual(job["status"], "processing")
 
-    def test_real_capture_callback_reports_missing_cli_as_failure(self):
+    def test_deferred_entrypoint_is_noop_even_when_cli_is_missing(self):
         event = json.dumps(self.event())
         with patch.dict(os.environ, {"CODEX_CLI": "/missing/synthetic-codex"}):
-            self.assertEqual(codex_notify_main([event], runner=Mock(side_effect=OSError())), 1)
+            runner = Mock(side_effect=OSError())
+            self.assertEqual(codex_notify_main([event], runner=runner), 0)
+            runner.assert_not_called()
 
-    def test_real_capture_callback_reports_success_only_after_queue_accepts(self):
+    def test_deferred_entrypoint_does_not_launch_codex_even_for_valid_event(self):
         event = json.dumps(self.event())
         with patch.dict(os.environ, {"CODEX_CLI": "/mock/synthetic-codex"}):
             runner = Mock(return_value=subprocess.CompletedProcess([], 0))
             self.assertEqual(codex_notify_main([event], runner=runner), 0)
-            self.assertEqual(runner.call_count, 1)
+            runner.assert_not_called()
 
 
 if __name__ == "__main__":
