@@ -64,6 +64,10 @@ class ClientExport(unittest.TestCase):
         output = self.base / 'stable-https-030'
         generated = build_client_export.release(ROOT, output, '0.3.0', 'personal-content-https')
         self.assertEqual(generated, manifest)
+        committed_bytes = (ROOT / 'releases/manifest.json').read_bytes()
+        generated_bytes = (output / 'releases/manifest.json').read_bytes()
+        self.assertEqual(generated_bytes, committed_bytes)
+        self.assertEqual(hashlib.sha256(generated_bytes).digest(), hashlib.sha256(committed_bytes).digest())
 
     def test_registration_is_idempotent_and_service_drift_is_preserved(self):
         home = self.base / 'client-home';token = self.base / 'client.token'
