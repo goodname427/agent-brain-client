@@ -114,6 +114,63 @@ class CodexMemoryInventory(unittest.TestCase):
         self.assertIn('not-checked',{item['status'] for item in changed})
         with self.assertRaises(CacheBlocked):helper.adapter.stage_memory_import(row['source_id'],row['source_fingerprint'],'memory','synthetic-topic',record)
 
+    def test_stage_tool_contract_covers_ordinary_progress_and_local_plan_order(self):
+        helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        helper.setUp();self.addCleanup(helper.doCleanups)
+        server=ContentServer(helper.adapter)
+        server.handle({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'synthetic-test','version':'1'}}})
+        server.handle({'jsonrpc':'2.0','method':'notifications/initialized'})
+        tools=server.handle({'jsonrpc':'2.0','id':1,'method':'tools/list'})['tools']
+        by_name={tool['name']:tool for tool in tools}
+        stage=by_name['content_sources_stage']['description']
+        review=by_name['content_sources_review']['description']
+        self.assertNotIn('Only use for user-provided durable facts',stage)
+        for phrase in ('all authorized shareable sources','ordinary user experiences, events, decisions, corrections and short-term progress',
+                       'do not filter by importance or long-term durability','content_read for the target',
+                       'deduplication, merging and corrections','same source fingerprint is immutable',
+                       'local import-plan entry only','content_put','CAS revision','persistence receipt'):
+            self.assertIn(phrase,stage)
+        self.assertIn('no-durable-user-fact reason is not a durability or importance threshold',review)
+
+    def test_final_experience_candidate_stages_locally_then_saves_with_cas_receipt(self):
+        helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        helper.setUp();self.addCleanup(helper.doCleanups)
+        memory_root=helper.home/'.codex/memories';memory_root.mkdir(parents=True)
+        source_file=memory_root/'progress.md'
+        source_file.write_text('The visitor test exposed a sign confusion; this week I moved the sign and checked the new queue.')
+        server=ContentServer(helper.adapter)
+
+        target=server.invoke('content_read',{'kind':'memory','id':'synthetic-topic'})
+        self.assertFalse(target['isError'],target)
+        self.assertIsNone(target['structuredContent']['result']['record'])
+        self.assertEqual(helper.cloud.calls[-1]['method'],'content_read')
+        row=helper.adapter.inventory_memory_sources()['sources'][0]
+        source=server.invoke('content_sources_read',{'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint']})
+        self.assertIn('checked the new queue',source['structuredContent']['text'])
+        server.invoke('content_sources_review',{'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint'],
+                                                'decision':'shareable','reason_code':'safe-cross-project-personal-summary'})
+        final={'title':'Exhibit visitor progress','description':'Recent visitor test improvement',
+               'body':'During this week’s visitor test, I corrected a confusing sign and checked that the new placement shortened the queue.',
+               'type':'feedback'}
+        staged=server.invoke('content_sources_stage',{'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint'],
+                                                      'id':'synthetic-topic','record':final})
+        self.assertFalse(staged['isError'],staged)
+        self.assertFalse(staged['structuredContent']['data_transferred'])
+        self.assertFalse(any(call['method']=='content_put' for call in helper.cloud.calls))
+        self.assertEqual(helper.adapter.queue_status()['pending'],0)
+
+        altered=dict(final,body=final['body']+' Later change.')
+        with self.assertRaises(CacheBlocked):
+            helper.adapter.stage_memory_import(row['source_id'],row['source_fingerprint'],'memory','synthetic-topic',altered)
+
+        helper.adapter.refresh()
+        puts=[call for call in helper.cloud.calls if call['method']=='content_put']
+        self.assertEqual(len(puts),1)
+        self.assertEqual(puts[0]['params']['expected_revision'],'missing')
+        self.assertEqual(helper.cloud.records[('memory','synthetic-topic')],final)
+        self.assertEqual(helper.adapter.queue_status()['confirmed'],1)
+        self.assertEqual(helper.adapter.import_status()['counts'],{'imported':1})
+
     def test_inventory_alone_cannot_be_reviewed_or_staged(self):
         helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
         helper.setUp();self.addCleanup(helper.doCleanups)
