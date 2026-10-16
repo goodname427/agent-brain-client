@@ -266,6 +266,7 @@ class ContentAdapter:
         for rid in reconciles['request_ids']:
             previous=next((r for r in rows if r['request']['request_id']==rid),None)
             if previous is None or previous['state']!='conflict' or (previous['request']['params']['kind'],previous['request']['params']['id'])!=target:raise CacheBlocked()
+            if set(previous['reconciles']['source_keys'])-set(reconciles['source_keys']):raise CacheBlocked()
         for key in reconciles['source_keys']:
             item=self._imports()['items'].get(key)
             if item is None or item['status'] not in ('conflict','inventoried') or (item['source']['kind'],item['source']['id'])!=target:raise CacheBlocked()
@@ -688,14 +689,15 @@ class ContentAdapter:
                 if row['state']=='confirmed':
                     item['status']='reconciled' if source['source_id'].startswith('codex-memory:') else 'imported'
                 else:item['status']=row['state']
-                if row['state'] in ('conflict','blocked'):item['remote']=row['remote']
+                if row['state'] in ('conflict','blocked') and row['remote'] is not None:item['remote']=row['remote']
                 continue
             if item['status']!='inventoried':continue
             linked=linked_writes.get(key)
             if linked is not None:
                 if linked['state']=='confirmed':item.update(status='reconciled',request_id=linked['request']['request_id'])
                 elif linked['state'] in ('pending','conflict','blocked'):
-                    item.update(status=linked['state'],request_id=linked['request']['request_id'],remote=linked['remote'])
+                    item.update(status=linked['state'],request_id=linked['request']['request_id'])
+                    if linked['remote'] is not None:item['remote']=linked['remote']
                 # An explicit source-linked CAS owns this item. Reflect its
                 # lifecycle before deciding whether an automatic import applies.
                 continue
