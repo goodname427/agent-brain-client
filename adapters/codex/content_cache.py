@@ -629,6 +629,10 @@ class ContentAdapter:
 
     def _import_pending(self):
         state=self._imports()
+        linked_writes={}
+        for queued in self._queued():
+            if queued['state'] not in ('pending','confirmed','conflict'):continue
+            for source_key in queued['reconciles']['source_keys']:linked_writes[source_key]=queued
         for key,item in state['items'].items():
             source=item['source'];kind,identity=source['kind'],source['id']
             if item['status']=='reconciled':continue
@@ -637,6 +641,13 @@ class ContentAdapter:
                 if row is None:raise CacheBlocked()
                 item['status']='imported' if row['state']=='confirmed' else row['state'];continue
             if item['status']!='inventoried':continue
+            linked=linked_writes.get(key)
+            if linked is not None:
+                if linked['state']=='confirmed':item.update(status='reconciled',request_id=linked['request']['request_id'])
+                elif linked['state']=='conflict':item.update(status='conflict',remote=linked['remote'])
+                # A staged-source CAS already owns this item. Let its exact
+                # request drain before scheduling an automatic import write.
+                continue
             try:remote=self._read_target(kind,identity)
             except Exception:break
             current=remote['record'];desired=source['record']

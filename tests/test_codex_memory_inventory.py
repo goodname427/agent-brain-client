@@ -223,6 +223,40 @@ class CodexMemoryInventory(unittest.TestCase):
                 finally:
                     helper.doCleanups()
 
+    def test_staged_direct_cas_offline_replay_precedes_automatic_import(self):
+        helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        helper.setUp()
+        try:
+            memory_root=helper.home/'.codex/memories';memory_root.mkdir(parents=True)
+            source_file=memory_root/'progress.md';source_file.write_text('Synthetic short-term progress')
+            server=ContentServer(helper.adapter)
+            target=server.invoke('content_read',{'kind':'memory','id':'synthetic-topic'})
+            revision=target['structuredContent']['result']['revision']
+            row=helper.adapter.inventory_memory_sources()['sources'][0]
+            server.invoke('content_sources_read',{'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint']})
+            server.invoke('content_sources_review',{'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint'],
+                                                    'decision':'shareable','reason_code':'safe-cross-project-personal-summary'})
+            record={'title':'Synthetic recent progress','description':'Synthetic offline retry candidate',
+                    'body':'Synthetic short-term progress','type':'feedback'}
+            staged=server.invoke('content_sources_stage',{'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint'],
+                                                          'id':'synthetic-topic','record':record})
+            source_key=staged['structuredContent']['source_key']
+            helper.cloud.offline=True
+            queued=server.invoke('content_put',{'kind':'memory','id':'synthetic-topic','record':record,
+                                                'expected_revision':revision,'request_id':'synthetic_offline_direct_001',
+                                                'reconciles':{'request_ids':[],'source_keys':[source_key]}})
+            self.assertEqual(queued['structuredContent']['local_queue']['state'],'pending')
+            self.assertFalse(queued['structuredContent']['persistence']['durable'])
+            self.assertEqual(helper.adapter.import_status()['counts'],{'inventoried':1})
+            helper.cloud.offline=False
+            helper.adapter.refresh()
+            self.assertEqual(helper.adapter.import_status()['counts'],{'reconciled':1})
+            self.assertEqual(helper.adapter.queue_status(),{'pending':0,'confirmed':1,'conflict':0,'blocked':0,'reconciled':0})
+            requests=[call['request_id'] for call in helper.cloud.calls if call['method']=='content_put']
+            self.assertEqual(requests,['synthetic_offline_direct_001','synthetic_offline_direct_001'])
+        finally:
+            helper.doCleanups()
+
     def test_inventory_alone_cannot_be_reviewed_or_staged(self):
         helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
         helper.setUp();self.addCleanup(helper.doCleanups)
