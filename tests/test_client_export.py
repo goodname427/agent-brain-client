@@ -54,6 +54,17 @@ class ClientExport(unittest.TestCase):
         self.assertFalse(manifest['production_release_policy_compatible'])
         self.assertIn('production_release_policy_compatibility_reason', manifest)
 
+    def test_committed_030_release_manifest_matches_existing_https_build_flow(self):
+        manifest = json.loads((ROOT / 'releases/manifest.json').read_text())
+        self.assertEqual(manifest['version'], '0.3.0')
+        self.assertNotIn('commit', manifest)
+        self.assertEqual(set(manifest['files']), set(build_client_export.HTTPS_CONTENT_CLIENT_FILES))
+        for name, expected in manifest['files'].items():
+            self.assertEqual(expected, hashlib.sha256((ROOT / name).read_bytes()).hexdigest(), name)
+        output = self.base / 'stable-https-030'
+        generated = build_client_export.release(ROOT, output, '0.3.0', 'personal-content-https')
+        self.assertEqual(generated, manifest)
+
     def test_registration_is_idempotent_and_service_drift_is_preserved(self):
         home = self.base / 'client-home';token = self.base / 'client.token'
         with patch.object(connector, 'RemoteClient', FakeClient):
