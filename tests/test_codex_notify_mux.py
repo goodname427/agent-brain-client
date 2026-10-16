@@ -81,7 +81,7 @@ class CodexNotifyMuxTests(unittest.TestCase):
         self.assertEqual(dispatch_notify(self.argv, runner), 1)
         self.assertEqual(runner.call_count, 2)
 
-    def test_failed_capture_is_retried_from_durable_queue_on_next_notify(self):
+    def test_failed_capture_is_not_replayed_against_a_later_turn(self):
         failed = Mock(side_effect=[SimpleNamespace(returncode=0),
                                    SimpleNamespace(returncode=2)])
         self.assertEqual(dispatch_notify(self.argv, failed), 1)
@@ -93,10 +93,10 @@ class CodexNotifyMuxTests(unittest.TestCase):
         succeeded = Mock(return_value=SimpleNamespace(returncode=0))
         self.assertEqual(dispatch_notify(retry_argv, succeeded), 0)
         retried_capture = json.loads(succeeded.call_args_list[1].args[0][-1])
-        self.assertEqual(retried_capture["turn-id"], "synthetic-turn")
+        self.assertEqual(retried_capture["turn-id"], "next-turn")
         jobs = NotifyCaptureQueue(os.environ["AGENTBRAIN_NOTIFY_QUEUE_PATH"]).snapshot()
-        self.assertEqual([job["status"] for job in jobs], ["done", "pending"])
-        self.assertEqual(jobs[0]["attempts"], 2)
+        self.assertEqual([job["status"] for job in jobs], ["failed", "done"])
+        self.assertEqual(jobs[0]["attempts"], 1)
 
     def test_invalid_event_or_command_configuration_runs_neither_callback(self):
         runner = Mock()
