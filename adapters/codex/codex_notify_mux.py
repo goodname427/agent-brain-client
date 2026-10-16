@@ -1,9 +1,9 @@
-"""Dispatch one Codex notify event to independent, configured callbacks.
+"""Dispatch the original callback while keeping deferred capture disabled.
 
 Codex appends its event as one JSON argv to the configured notify command.
 Each configured command is itself encoded as a JSON array of argv strings.
-The original callback gets the event unchanged; capture receives a reconstructed
-event containing only validated thread/turn identifiers and no message text.
+The original callback gets the event unchanged. Capture arguments are validated
+for compatibility but never enqueued or launched in the 0.3.0 release scope.
 """
 
 import json
@@ -219,7 +219,7 @@ def _run_independently(command, event_json, runner):
 
 
 def dispatch_notify(argv, runner=subprocess.run):
-    """Dispatch to both commands; return nonzero if either callback fails.
+    """Dispatch only the original callback; deferred capture is fail-closed.
 
     ``argv`` excludes the executable name and must end in Codex's event JSON.
     The preceding arguments must contain exactly one ``--callback-argv-json``
@@ -251,37 +251,10 @@ def dispatch_notify(argv, runner=subprocess.run):
     if set(commands) != {"--callback-argv-json", "--capture-argv-json"}:
         return 0
 
-    # Preserve the pre-existing callback's exact argv. Store only IDs in the
-    # durable queue, and only dispatch the event delivered by this invocation.
+    # Keep legacy two-command configurations compatible without allowing an
+    # already-installed user-level hook to resume automatic capture.
     callback_ok = _run_independently(commands["--callback-argv-json"], event_json, runner)
-    try:
-        event = json.loads(event_json)
-        queue_path = os.environ.get("AGENTBRAIN_NOTIFY_QUEUE_PATH")
-        if not queue_path:
-            queue_path = str(Path.home() / ".cache" / "agent-brain-client" / "notify-capture" / "jobs.json")
-        capture_queue = NotifyCaptureQueue(queue_path)
-        queued = capture_queue.enqueue_for_dispatch(event)
-        job = capture_queue.claim(queued["job_id"]) if queued["created"] else None
-    except (OSError, ValueError, TypeError):
-        job = None
-        queue_ok = False
-    else:
-        queue_ok = True
-    capture_ok = True
-    if job is not None:
-        # Reconstruct only non-sensitive eligibility metadata. The original
-        # messages are intentionally not persisted or replayed to the worker.
-        job_event = json.dumps({"type": "agent-turn-complete",
-                                "thread-id": job["thread_id"],
-                                "turn-id": job["turn_id"],
-                                "input-messages": ["validated notify input"]},
-                               separators=(",", ":"))
-        capture_ok = _run_independently(commands["--capture-argv-json"], job_event, runner)
-        try:
-            capture_queue.finish(job["job_id"], success=capture_ok, terminal_failure=not capture_ok)
-        except (OSError, ValueError, TypeError):
-            capture_ok = False
-    return 0 if callback_ok and queue_ok and capture_ok else 1
+    return 0 if callback_ok else 1
 
 
 def main(argv=None):

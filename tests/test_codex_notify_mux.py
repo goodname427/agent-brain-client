@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "adapters/codex"))
-from codex_notify_mux import NotifyCaptureQueue, dispatch_notify
+from codex_notify_mux import dispatch_notify
 
 
 class CodexNotifyMuxTests(unittest.TestCase):
@@ -42,61 +42,42 @@ class CodexNotifyMuxTests(unittest.TestCase):
         else:
             os.environ["AGENTBRAIN_NOTIFY_QUEUE_PATH"] = self.old_queue_path
 
-    def test_both_callbacks_get_the_exact_original_event_after_their_fixed_args(self):
+    def test_legacy_hook_preserves_callback_but_never_launches_deferred_capture(self):
         runner = Mock(return_value=SimpleNamespace(returncode=0))
         self.assertEqual(dispatch_notify(self.argv, runner), 0)
-        self.assertEqual(runner.call_count, 2)
-        first = runner.call_args_list[0]
-        second = runner.call_args_list[1]
-        self.assertEqual(first.args[0], self.old_callback + [self.event])
-        self.assertEqual(second.args[0][:-1], self.agentbrain)
-        capture_event = json.loads(second.args[0][-1])
-        self.assertEqual(capture_event["thread-id"], "synthetic-thread")
-        self.assertEqual(capture_event["turn-id"], "synthetic-turn")
-        self.assertEqual(capture_event["input-messages"], ["validated notify input"])
-        for call in (first, second):
-            self.assertEqual(call.kwargs["stdin"], subprocess.DEVNULL)
-            self.assertEqual(call.kwargs["stdout"], subprocess.DEVNULL)
-            self.assertEqual(call.kwargs["stderr"], subprocess.DEVNULL)
-            self.assertEqual(call.kwargs["timeout"], 8)
-            self.assertFalse(call.kwargs["check"])
+        self.assertEqual(runner.call_count, 1)
+        call = runner.call_args_list[0]
+        self.assertEqual(call.args[0], self.old_callback + [self.event])
+        self.assertEqual(call.kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(call.kwargs["stdout"], subprocess.DEVNULL)
+        self.assertEqual(call.kwargs["stderr"], subprocess.DEVNULL)
+        self.assertEqual(call.kwargs["timeout"], 8)
+        self.assertFalse(call.kwargs["check"])
+        self.assertFalse(Path(os.environ["AGENTBRAIN_NOTIFY_QUEUE_PATH"]).exists())
 
-    def test_original_callback_failure_does_not_suppress_agentbrain(self):
-        runner = Mock(side_effect=[OSError("synthetic launch failure"),
-                                  SimpleNamespace(returncode=0)])
+    def test_original_callback_failure_is_reported(self):
+        runner = Mock(side_effect=OSError("synthetic launch failure"))
         self.assertEqual(dispatch_notify(self.argv, runner), 1)
-        self.assertEqual(runner.call_count, 2)
-        self.assertEqual(runner.call_args_list[1].args[0][:-1], self.agentbrain)
+        self.assertEqual(runner.call_count, 1)
 
-    def test_agentbrain_failure_does_not_suppress_original_callback(self):
-        runner = Mock(side_effect=[SimpleNamespace(returncode=0),
-                                  subprocess.TimeoutExpired("mock", 8)])
+    def test_nonzero_original_callback_is_reported_without_capture_call(self):
+        runner = Mock(return_value=SimpleNamespace(returncode=3))
         self.assertEqual(dispatch_notify(self.argv, runner), 1)
-        self.assertEqual(runner.call_count, 2)
+        self.assertEqual(runner.call_count, 1)
         self.assertEqual(runner.call_args_list[0].args[0], self.old_callback + [self.event])
 
-    def test_nonzero_from_either_is_reported_after_both_callbacks_run(self):
-        runner = Mock(side_effect=[SimpleNamespace(returncode=3),
-                                  SimpleNamespace(returncode=0)])
-        self.assertEqual(dispatch_notify(self.argv, runner), 1)
-        self.assertEqual(runner.call_count, 2)
-
-    def test_failed_capture_is_not_replayed_against_a_later_turn(self):
-        failed = Mock(side_effect=[SimpleNamespace(returncode=0),
-                                   SimpleNamespace(returncode=2)])
-        self.assertEqual(dispatch_notify(self.argv, failed), 1)
+    def test_existing_legacy_hook_never_queues_capture_for_any_turn(self):
+        runner = Mock(return_value=SimpleNamespace(returncode=0))
+        self.assertEqual(dispatch_notify(self.argv, runner), 0)
         second_event = json.dumps({"type": "agent-turn-complete",
                                    "thread-id": "synthetic-thread",
                                    "turn-id": "next-turn",
                                    "input-messages": ["another synthetic message"]})
         retry_argv = self.argv[:-1] + [second_event]
-        succeeded = Mock(return_value=SimpleNamespace(returncode=0))
-        self.assertEqual(dispatch_notify(retry_argv, succeeded), 0)
-        retried_capture = json.loads(succeeded.call_args_list[1].args[0][-1])
-        self.assertEqual(retried_capture["turn-id"], "next-turn")
-        jobs = NotifyCaptureQueue(os.environ["AGENTBRAIN_NOTIFY_QUEUE_PATH"]).snapshot()
-        self.assertEqual([job["status"] for job in jobs], ["failed", "done"])
-        self.assertEqual(jobs[0]["attempts"], 1)
+        self.assertEqual(dispatch_notify(retry_argv, runner), 0)
+        self.assertEqual(runner.call_count, 2)
+        self.assertEqual(runner.call_args_list[1].args[0], self.old_callback + [second_event])
+        self.assertFalse(Path(os.environ["AGENTBRAIN_NOTIFY_QUEUE_PATH"]).exists())
 
     def test_invalid_event_or_command_configuration_runs_neither_callback(self):
         runner = Mock()
