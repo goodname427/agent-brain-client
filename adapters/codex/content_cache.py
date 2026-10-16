@@ -468,6 +468,8 @@ class ContentAdapter:
             old=previous['sources'] if previous else {}
             tracked=self._imports()
             active_keys={key for key,item in tracked['items'].items() if item['status'] in ('pending','conflict')}
+            active_keys.update(key for row in self._queued() if row['state'] in ('pending','conflict')
+                               for key in row['reconciles']['source_keys'])
             current={}
             seen_ids=set()
             for row in fresh['sources']:
@@ -683,18 +685,23 @@ class ContentAdapter:
             if item['request_id']:
                 row=self._load('outbox/'+item['request_id']+'.json')
                 if row is None:raise CacheBlocked()
-                item['status']='imported' if row['state']=='confirmed' else row['state'];continue
-            if item['status']!='inventoried':continue
-            # Native Memory staging is local review state; only a caller's explicit
-            # content_put carrying this source_key may cross the Server boundary.
-            if source['source_id'].startswith('codex-memory:'):
+                if row['state']=='confirmed':
+                    item['status']='reconciled' if source['source_id'].startswith('codex-memory:') else 'imported'
+                else:item['status']=row['state']
+                if row['state'] in ('conflict','blocked'):item['remote']=row['remote']
                 continue
+            if item['status']!='inventoried':continue
             linked=linked_writes.get(key)
             if linked is not None:
                 if linked['state']=='confirmed':item.update(status='reconciled',request_id=linked['request']['request_id'])
-                elif linked['state']=='conflict':item.update(status='conflict',remote=linked['remote'])
-                # A staged-source CAS already owns this item. Let its exact
-                # request drain before scheduling an automatic import write.
+                elif linked['state'] in ('pending','conflict','blocked'):
+                    item.update(status=linked['state'],request_id=linked['request']['request_id'],remote=linked['remote'])
+                # An explicit source-linked CAS owns this item. Reflect its
+                # lifecycle before deciding whether an automatic import applies.
+                continue
+            # Native Memory staging is local review state; only a caller's explicit
+            # content_put carrying this source_key may cross the Server boundary.
+            if source['source_id'].startswith('codex-memory:'):
                 continue
             try:remote=self._read_target(kind,identity)
             except Exception:break

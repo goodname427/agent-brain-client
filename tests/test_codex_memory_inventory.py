@@ -259,6 +259,69 @@ class CodexMemoryInventory(unittest.TestCase):
             server.invoke('content_sources_inventory',{})
         self.assertFalse((helper.cache/'memory-inventory.json').exists())
 
+    def test_native_memory_tools_require_memory_grant_even_when_policy_allows_it(self):
+        helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        helper.setUp();self.addCleanup(helper.doCleanups)
+        helper.cloud.grant['artifact_types']=['rule','skill']
+        server=ContentServer(helper.adapter)
+        server.handle({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'synthetic-test','version':'1'}}})
+        server.handle({'jsonrpc':'2.0','method':'notifications/initialized'})
+        names={tool['name'] for tool in server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})['tools']}
+        self.assertFalse(names & {'content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'})
+        with self.assertRaises(ContentParameterError):server.invoke('content_sources_inventory',{})
+        self.assertFalse((helper.cache/'memory-inventory.json').exists())
+
+    def test_native_offline_save_conflict_merge_and_durable_reconcile(self):
+        helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        helper.setUp();self.addCleanup(helper.doCleanups)
+        memories=helper.home/'.codex/memories';memories.mkdir(parents=True)
+        source_file=memories/'experience.md';source_file.write_text('Synthetic local experience version one')
+        row=helper.adapter.inventory_memory_sources()['sources'][0]
+        helper.adapter.read_memory_source(row['source_id'],row['source_fingerprint'])
+        helper.adapter.review_memory_source(row['source_id'],row['source_fingerprint'],'shareable','safe-cross-project-personal-summary')
+        original={'title':'Synthetic experience','description':'Original normalized candidate',
+                  'body':'A synthetic user experience was normalized locally.','type':'feedback'}
+        staged=helper.adapter.stage_memory_import(row['source_id'],row['source_fingerprint'],'memory','synthetic-topic',original)
+        source_key=staged['source_key']
+        first_request={'request_id':'synthetic_native_offline_save_001','method':'content_put','params':{
+            'kind':'memory','id':'synthetic-topic','record':original,'expected_revision':'missing'}}
+
+        helper.cloud.offline=True
+        queued=helper.adapter.invoke(first_request,reconciles={'request_ids':[],'source_keys':[source_key]})
+        self.assertEqual(queued['local_queue']['state'],'pending')
+        source_file.write_text('Synthetic local experience version two')
+        helper.adapter.inventory_memory_sources()
+        self.assertIn(source_key,helper.adapter._load('memory-reviews.json')['items'])
+
+        remote={'title':'Synthetic concurrent edit','description':'Remote-only detail',
+                'body':'A synthetic remote update landed before the offline save replayed.','type':'feedback'}
+        helper.cloud.records[('memory','synthetic-topic')]=remote
+        helper.cloud.offline=False
+        helper.adapter.refresh()
+        item=helper.adapter._imports()['items'][source_key]
+        self.assertEqual(item['status'],'conflict')
+        self.assertEqual(item['request_id'],first_request['request_id'])
+        self.assertEqual(item['remote']['record'],remote)
+
+        server=ContentServer(helper.adapter)
+        read=server.invoke('content_read',{'kind':'memory','id':'synthetic-topic'})
+        self.assertFalse(read['isError'],read)
+        self.assertEqual(read['structuredContent']['result']['record'],remote)
+        merged={'title':'Synthetic experience and concurrent update','description':'Merged local and remote evidence',
+                'body':'The normalized local experience is retained together with the concurrent remote update.',
+                'type':'feedback'}
+        saved=server.invoke('content_put',{'kind':'memory','id':'synthetic-topic','record':merged,
+            'expected_revision':read['structuredContent']['result']['revision'],
+            'request_id':'synthetic_native_merged_save_001',
+            'reconciles':{'request_ids':[first_request['request_id']],'source_keys':[source_key]}})
+        self.assertFalse(saved['isError'],saved)
+        self.assertTrue(saved['structuredContent']['persistence']['durable'])
+        self.assertEqual(helper.cloud.records[('memory','synthetic-topic')],merged)
+        self.assertEqual(helper.adapter._imports()['items'][source_key]['status'],'reconciled')
+        self.assertEqual(helper.adapter._load('outbox/'+first_request['request_id']+'.json')['state'],'reconciled')
+        self.assertEqual(helper.adapter.queue_status()['confirmed'],1)
+        self.assertEqual(helper.adapter.queue_status()['reconciled'],1)
+
     def test_superseded_fingerprints_are_pruned_from_inventory_and_reviews(self):
         helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
         helper.setUp();self.addCleanup(helper.doCleanups)
