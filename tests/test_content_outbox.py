@@ -153,6 +153,21 @@ class Outbox(unittest.TestCase):
         self.assertTrue(self.cloud.records[('skill','synthetic-skill')]['enabled']);self.assertTrue(self.cloud.records[('rule','synthetic-rule')]['enabled'])
         changed=dict(RULE,body='Changed source rule');self.adapter.stage_import(self.plan([('rule','synthetic-rule',changed)],'b'*64));self.adapter.refresh();self.assertEqual(self.cloud.records[('rule','synthetic-rule')],dict(changed,enabled=True))
 
+    def test_nonretryable_automatic_rule_and_skill_imports_keep_remote_snapshot(self):
+        self.adapter.stage_import(self.plan([('rule','synthetic-rule',RULE),('skill','synthetic-skill',SKILL)]))
+        original=self.cloud.request
+        def reject_rule_write(request):
+            if request['method']=='content_put' and request['params']['kind'] in ('rule','skill'):
+                return {'request_id':request['request_id'],'error':{'code':'invalid_request','retryable':False},'persistence':{'durable':False}}
+            return original(request)
+        self.cloud.request=reject_rule_write
+        self.adapter.refresh()
+        for item in self.adapter._imports()['items'].values():
+            with self.subTest(kind=item['source']['kind']):
+                self.assertEqual(item['status'],'blocked')
+                self.assertEqual(item['remote']['revision'],'missing')
+                self.assertIsNone(self.adapter._load('outbox/'+item['request_id']+'.json')['remote'])
+
     def test_first_import_never_restores_forgotten_server_memory(self):
         original=self.cloud.request
         def tombstone(request):

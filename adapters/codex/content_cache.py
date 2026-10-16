@@ -687,8 +687,19 @@ class ContentAdapter:
                 if row is None:raise CacheBlocked()
                 if row['state']=='confirmed':
                     item['status']='reconciled' if source['source_id'].startswith('codex-memory:') else 'imported'
+                elif row['state']=='reconciled':
+                    # A resolver that acknowledges only the old request ID does
+                    # not prove that this source was included in the merged
+                    # record. Promote the source only when the confirmed
+                    # resolution explicitly names its source key.
+                    resolution_id=row['resolution_request_id']
+                    resolution=self._load('outbox/'+resolution_id+'.json') if resolution_id else None
+                    if (resolution is not None and resolution['state']=='confirmed' and
+                            key in resolution['reconciles']['source_keys']):
+                        item.update(status='reconciled',request_id=resolution_id)
+                    else:continue
                 else:item['status']=row['state']
-                if row['state'] in ('conflict','blocked'):item['remote']=row['remote']
+                if row['state'] in ('conflict','blocked') and row['remote'] is not None:item['remote']=row['remote']
                 continue
             if item['status']!='inventoried':continue
             linked=linked_writes.get(key)
