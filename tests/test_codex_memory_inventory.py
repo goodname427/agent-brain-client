@@ -307,19 +307,36 @@ class CodexMemoryInventory(unittest.TestCase):
         read=server.invoke('content_read',{'kind':'memory','id':'synthetic-topic'})
         self.assertFalse(read['isError'],read)
         self.assertEqual(read['structuredContent']['result']['record'],remote)
-        merged={'title':'Synthetic experience and concurrent update','description':'Merged local and remote evidence',
+        merged_without_source_key={'title':'Synthetic experience and concurrent update','description':'Merged local and remote evidence',
                 'body':'The normalized local experience is retained together with the concurrent remote update.',
                 'type':'feedback'}
-        saved=server.invoke('content_put',{'kind':'memory','id':'synthetic-topic','record':merged,
+        saved=server.invoke('content_put',{'kind':'memory','id':'synthetic-topic','record':merged_without_source_key,
             'expected_revision':read['structuredContent']['result']['revision'],
             'request_id':'synthetic_native_merged_save_001',
-            'reconciles':{'request_ids':[first_request['request_id']],'source_keys':[source_key]}})
+            'reconciles':{'request_ids':[first_request['request_id']],'source_keys':[]}})
+        self.assertFalse(saved['isError'],saved)
+        self.assertTrue(saved['structuredContent']['persistence']['durable'])
+        self.assertEqual(helper.cloud.records[('memory','synthetic-topic')],merged_without_source_key)
+        # Resolving the old outbox request alone is not evidence that its native
+        # source was included in the merged record.
+        helper.adapter._import_pending()
+        self.assertEqual(helper.adapter._imports()['items'][source_key]['status'],'conflict')
+
+        current=server.invoke('content_read',{'kind':'memory','id':'synthetic-topic'})
+        merged={'title':'Synthetic experience and concurrent update','description':'Merged local and remote evidence',
+                'body':'The explicitly reviewed source and concurrent remote update are both retained.',
+                'type':'feedback'}
+        saved=server.invoke('content_put',{'kind':'memory','id':'synthetic-topic','record':merged,
+            'expected_revision':current['structuredContent']['result']['revision'],
+            'request_id':'synthetic_native_source_merge_001',
+            'reconciles':{'request_ids':[],'source_keys':[source_key]}})
         self.assertFalse(saved['isError'],saved)
         self.assertTrue(saved['structuredContent']['persistence']['durable'])
         self.assertEqual(helper.cloud.records[('memory','synthetic-topic')],merged)
         self.assertEqual(helper.adapter._imports()['items'][source_key]['status'],'reconciled')
+        self.assertEqual(helper.adapter._imports()['items'][source_key]['request_id'],'synthetic_native_source_merge_001')
         self.assertEqual(helper.adapter._load('outbox/'+first_request['request_id']+'.json')['state'],'reconciled')
-        self.assertEqual(helper.adapter.queue_status()['confirmed'],1)
+        self.assertEqual(helper.adapter.queue_status()['confirmed'],2)
         self.assertEqual(helper.adapter.queue_status()['reconciled'],1)
 
     def test_superseded_fingerprints_are_pruned_from_inventory_and_reviews(self):
