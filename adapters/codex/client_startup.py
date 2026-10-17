@@ -86,6 +86,20 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
         if not active:return {'status':'client-bootstrap-review-required','served':False,'native_changed':False}
         return {'status':'client-bootstrap-verified','active_package_version':active['version'],
                 'native_changed':False,'network_used':False,'device_credentials_accessed':False}
+    # During the exact 0.3.0-to-0.3.1 bridge, the new command becomes visible
+    # before its transaction's second postcheck. A concurrently launched worker
+    # must not run normal update and advance the package pointer in that window;
+    # the updater removes this marker only after both offline checks succeed.
+    legacy_030_policy=getattr(getattr(getattr(releases,'engine',None),'adapter',None),
+                              'legacy_030_https_policy',False)
+    runtime=releases.policy.get('runtime') if isinstance(releases.policy,dict) else None
+    device_home=runtime.get('device_home') if isinstance(runtime,dict) else None
+    if legacy_030_policy and isinstance(device_home,str) and device_home:
+        handover=Path(device_home)/'.config/agent-brain-client/bootstrap-handover-plan.json'
+        if handover.exists() or handover.is_symlink():
+            return {'status':'client-bootstrap-handover-in-progress','served':False,
+                    'native_changed':False,
+                    'next_action':'A verified bootstrap handover is in progress. Retry after the official update command completes; do not replace or remove its recovery plan.'}
     result=releases.update()
     if result.get('diagnostic') and not check_only:
         print(json.dumps(result['diagnostic']),file=sys.stderr)

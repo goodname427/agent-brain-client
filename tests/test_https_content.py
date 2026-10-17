@@ -317,6 +317,12 @@ class HTTPSContent(unittest.TestCase):
                     self.assertEqual(channel.verified_active()['version'],'0.3.0')
                     self.assertFalse(value['mcp']['enabled'])
                     self.assertEqual(Path(value['mcp']['args'][2]),Path(value['package'])/'adapters/codex/client_startup.py')
+                    if len(bridge_checks)==1:
+                        import client_startup
+                        concurrent=client_startup.startup(path,policy_sha)
+                        self.assertEqual(concurrent['status'],'client-bootstrap-handover-in-progress',concurrent)
+                        self.assertFalse(concurrent['served'])
+                        self.assertEqual(channel.verified_active()['version'],'0.3.0')
                     check(value)
                     bridge_checks.append(value['package'])
                 return original_apply(plan,approved_digest,check=verify)

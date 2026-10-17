@@ -14,7 +14,7 @@
     "README.md": "29ca7d913c5fd2ce8231290b28521c39a5327b57caab2a3afc13114d66f6cde9",
     "adapters/codex/client_pairing.py": "dc547ec3454b2f5f399c4a7437292fefc52408d57a9b71194d8f26fa91252047",
     "adapters/codex/client_release.py": "a8b77c31c2c7ec4516954a3293743950fbc100cb1b22535d19b41949dc6c13ad",
-    "adapters/codex/client_startup.py": "d1db10d62adfac83617900f1ab11a7b198406f97c0bdae4a6bbfa992dab84381",
+    "adapters/codex/client_startup.py": "3f1c29bd23059abd3aafbd406bd70d2602fe78fd85106b3abac6c42039cca1e6",
     "adapters/codex/codex_connect.py": "6cd82f8511fad779bf6ffe11e3c7ca61bc12e899d4d55331ce0226e5d63ba8ed",
     "adapters/codex/content_cache.py": "09ddcb0d7a599ba1bf5cac59d8b8940860ff720ed5813adaed35768c0cba2706",
     "adapters/codex/content_contract.py": "35b0899d3541d6122a548551bb26442538e71238401ad3b73ed7b6f131f83661",
