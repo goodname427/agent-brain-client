@@ -22,7 +22,8 @@ from brain_lock import locked,require_platform,platform_paths,WINDOWS_PLATFORMS,
 CLIENT_FILES = ('README.md', 'BOOTSTRAP.md', 'PROTOCOL.md', 'ADAPTERS.md', '.gitignore',
                 'connect.py', 'adapters/codex/remote_http.py', 'adapters/codex/remote_mcp.py',
                 'adapters/codex/codex_connect.py', 'adapters/codex/client_release.py',
-                'adapters/codex/client_startup.py', 'scripts/brain_release.py', 'scripts/brain_lock.py')
+                'adapters/codex/client_startup.py', 'adapters/codex/codex_notify_mux.py',
+                'scripts/brain_release.py', 'scripts/brain_lock.py')
 CAPABILITIES = ['codex-stdio-mcp', 'synthetic-only']
 PERSONAL_CAPABILITIES=['codex-stdio-mcp','personal-memory-explicit']
 CONTENT_CLIENT_FILES=CLIENT_FILES+('adapters/codex/client_pairing.py','native/DeviceComponent.swift',
@@ -211,7 +212,7 @@ class ClientReleases:
         except PlatformUnsupported as error:return error.result(active=None)
         except (UpdateBlocked,LockTimeout,OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired) as error:
             # Never echo upstream paths, credentials, raw stderr or exception values.
-            # A lock timeout can overlap activation before its health check.
+            # A lock timeout can overlap an activation before its health check.
             # Do not read the live pointer; fail closed until the owner completes.
             if isinstance(error,LockTimeout):
                 active=None
