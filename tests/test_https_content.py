@@ -230,6 +230,7 @@ class HTTPSContent(unittest.TestCase):
         import client_release as releases
         import content_install
         import mac_first_install as installer
+        import tomllib
         from build_client import release as build_release
         f=fixtures.Releases('test_orphan_allowlist_discovery_install_upgrade_and_current');f.setUp();self.addCleanup(f.doCleanups)
         legacy_files=list(releases.LEGACY_030_HTTPS_CONTENT_CLIENT_FILES)
@@ -288,12 +289,142 @@ class HTTPSContent(unittest.TestCase):
             checked=installer.manage_update(self.home,'check-update',channel_factory=lambda *_:channel)
             self.assertEqual(checked['status'],'client-update-available',checked)
             self.assertEqual(channel.verified_active()['version'],'0.3.0')
-            updated=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
+            original_apply=content_install.apply;bridge_checks=[]
+            config_before_bridge=config.read_bytes();registration_before_bridge=registration.read_bytes()
+            def fail_second_bridge_check(plan,approved_digest,check=None):
+                checks=0;verify=check
+                def fail_after_check(value):
+                    nonlocal checks
+                    checks+=1
+                    self.assertEqual(channel.verified_active()['version'],'0.3.0')
+                    verify(value)
+                    if checks==2:raise ValueError('Synthetic bootstrap handover postcheck failure')
+                return original_apply(plan,approved_digest,check=fail_after_check)
+            with patch.object(content_install,'apply',side_effect=fail_second_bridge_check):
+                failed=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
+            self.assertEqual(failed['status'],'client-update-review-required',failed)
+            self.assertEqual(channel.verified_active()['version'],'0.3.0')
+            self.assertEqual(config.read_bytes(),config_before_bridge)
+            self.assertEqual(registration.read_bytes(),registration_before_bridge)
+            self.assertTrue(content_install.inspect(self.home)['registration_verified'])
+            paused=tomllib.loads(config.read_text())['mcp_servers'][content_install.NAME]
+            paused['enabled']=False
+            config.write_bytes(content_install.render(config.read_bytes(),paused,True));config.chmod(0o600)
+            self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
+            pre_bridge_state={p:p.read_bytes() for p in (config,registration,state/'content-install-receipt.json',cache/'active.json')}
+            def apply_bridge_with_bootstrap_check(plan,approved_digest,check=None):
+                def verify(value):
+                    self.assertEqual(channel.verified_active()['version'],'0.3.0')
+                    self.assertFalse(value['mcp']['enabled'])
+                    self.assertEqual(Path(value['mcp']['args'][2]),Path(value['package'])/'adapters/codex/client_startup.py')
+                    if len(bridge_checks)==1:
+                        import client_startup
+                        concurrent=client_startup.startup(path,policy_sha)
+                        self.assertEqual(concurrent['status'],'client-bootstrap-handover-in-progress',concurrent)
+                        self.assertFalse(concurrent['served'])
+                        self.assertEqual(channel.verified_active()['version'],'0.3.0')
+                    check(value)
+                    bridge_checks.append(value['package'])
+                return original_apply(plan,approved_digest,check=verify)
+            with patch.object(content_install,'apply',side_effect=apply_bridge_with_bootstrap_check):
+                updated=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
         self.assertEqual(updated['status'],'client-update-updated',updated)
         self.assertEqual(updated['active_package_version'],'0.3.1')
+        self.assertEqual(len(bridge_checks),2)
         new_active=channel.verified_active();new_manifest=json.loads((Path(new_active['package'])/'verified.json').read_text())['manifest']
         self.assertNotIn('adapters/codex/codex_notify_mux.py',new_manifest['files'])
         self.assertEqual(path.read_bytes(),policy_before)
+        registered=tomllib.loads(config.read_text())['mcp_servers'][content_install.NAME]
+        self.assertEqual(registered['args'][2],str(Path(new_active['package'])/'adapters/codex/client_startup.py'))
+        self.assertFalse(registered['enabled'])
+        self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
+
+        import client_startup
+        with patch('sys.platform','darwin'),patch('platform.machine',return_value='arm64'):
+            startup=client_startup.startup(path,policy_sha,check_only=True)
+        self.assertEqual(startup['active']['version'],'0.3.1',startup)
+        # If channel activation raises after the handover transaction commits,
+        # report the native registration change to the caller.
+        for target,data in pre_bridge_state.items():
+            target.write_bytes(data);target.chmod(0o600)
+        with patch.object(channel,'update',side_effect=RuntimeError('Synthetic activation failure')):
+            failed_activation=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
+        self.assertEqual(failed_activation['status'],'client-update-review-required',failed_activation)
+        self.assertTrue(failed_activation['native_changed'],failed_activation)
+        self.assertEqual(channel.verified_active()['version'],'0.3.0')
+        self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
+        for target,data in pre_bridge_state.items():
+            target.write_bytes(data);target.chmod(0o600)
+        plan_path=state/'bootstrap-handover-plan.json';receipt_path=state/'content-install-receipt.json'
+        original_save=content_install.save
+        def interrupt_after_journal(target,value):
+            original_save(target,value)
+            if target==receipt_path and value.get('phase')=='applying':raise KeyboardInterrupt()
+        with patch.object(content_install,'save',side_effect=interrupt_after_journal):
+            with self.assertRaises(KeyboardInterrupt):
+                installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
+        self.assertTrue(plan_path.is_file())
+        self.assertEqual(content_install.private_json(receipt_path)['phase'],'applying')
+        self.assertEqual(config.read_bytes(),pre_bridge_state[config])
+        resumed=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
+        self.assertEqual(resumed['status'],'client-update-updated',resumed)
+        self.assertEqual(resumed['active_package_version'],'0.3.1')
+        self.assertFalse(plan_path.exists())
+        self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
+        for target,data in pre_bridge_state.items():
+            target.write_bytes(data);target.chmod(0o600)
+        original_unlink=Path.unlink
+        def interrupt_plan_cleanup(target,*args,**kwargs):
+            if target==plan_path:raise KeyboardInterrupt()
+            return original_unlink(target,*args,**kwargs)
+        with patch.object(Path,'unlink',new=interrupt_plan_cleanup):
+            with self.assertRaises(KeyboardInterrupt):
+                installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
+        self.assertTrue(plan_path.is_file())
+        self.assertEqual(content_install.private_json(receipt_path)['phase'],'complete')
+        self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
+        activated_by_new_bootstrap=channel.update()
+        self.assertEqual(activated_by_new_bootstrap['status'],'updated',activated_by_new_bootstrap)
+        self.assertEqual(channel.verified_active()['version'],'0.3.1')
+        resumed_after_commit=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
+        self.assertEqual(resumed_after_commit['status'],'client-update-current',resumed_after_commit)
+        self.assertEqual(resumed_after_commit['active_package_version'],'0.3.1')
+        self.assertFalse(plan_path.exists())
+        self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
+
+    def test_interrupted_handover_reexecs_the_registered_dependency_python(self):
+        import mac_first_install as installer
+        import client_release
+        import content_install
+        state=self.home/'.config/agent-brain-client';state.mkdir(parents=True,mode=0o700)
+        policy_path=state/'release-policy.json';policy_path.write_text('{}');policy_path.chmod(0o600)
+        pinned=self.home/'pinned-python';pinned.write_text('synthetic executable');pinned.chmod(0o700)
+        dependency_path=state/'dependencies.json';dependency_path.write_text(json.dumps({'python':str(pinned)}));dependency_path.chmod(0o600)
+        metadata={'content_candidate':True,'release_policy':str(policy_path),'release_policy_sha256':'a'*64}
+        registration=state/'codex-mcp.json';registration.write_bytes(canonical(metadata));registration.chmod(0o600)
+        handover_path=state/'bootstrap-handover-plan.json'
+        plan={'schema':1,'platform':'darwin-arm64','device_home':str(self.home.resolve()),
+              'codex_home':str(self.home/'codex'),'release_policy':str(policy_path),
+              'release_policy_sha256':'a'*64,'package':str(self.home/'candidate'),
+              'mcp':{'command':str(pinned)}}
+        handover_path.write_bytes(canonical(plan));handover_path.chmod(0o600)
+        digest=content_install.sha(content_install.contract.encode(plan))
+        receipt=state/'content-install-receipt.json'
+        receipt.write_bytes(canonical({'phase':'applying','plan_sha256':digest}));receipt.chmod(0o600)
+        policy={'runtime':{'dependency_policy':str(dependency_path),'dependency_policy_sha256':'b'*64}}
+        captured=[]
+        def runner(argv,**kwargs):
+            captured.append((argv,kwargs));return type('Reply',(),{'returncode':0})()
+        with patch.object(content_install,'inspect',return_value={'registration_verified':False}), \
+                patch.object(content_install,'validate_install_scope'), \
+                patch.object(client_release,'policy_file',return_value=policy), \
+                patch.object(installer,'dependency_environment',return_value={'PATH':'/synthetic/bin'}), \
+                patch.object(sys,'executable','/synthetic/maintenance-python'):
+            result=installer.reexec_update_runtime(self.home,'update',runner=runner)
+        self.assertEqual(result,0)
+        self.assertEqual(captured[0][0][:3],[str(pinned),'-I','-B'])
+        self.assertEqual(captured[0][1]['env']['PATH'],'/synthetic/bin')
+        self.assertEqual(captured[0][1]['env']['CODEX_HOME'],plan['codex_home'])
 
     def test_pairing_transport_terminal_redacts_error_and_does_not_follow_redirect(self):
         transport=PairingHTTPS('https://synthetic.invalid');token='SYNTHETIC_DEVICE_TOKEN_1234567890123456'
