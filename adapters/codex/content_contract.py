@@ -11,36 +11,88 @@ import re
 
 TYPES={'memory','rule','skill'}
 FIELDS={'memory_query':{'kind','query','since','until','limit'},'content_read':{'kind','id'},'content_catalog':{'kinds'},
+        'memory_event_submit':{'kind','id','event'},
         'content_put':{'kind','id','record','expected_revision'},
         'content_remove':{'kind','id','expected_revision'}}
-WRITES={'content_put','content_remove'}
+WRITES={'content_put','content_remove','memory_event_submit'}
+HOOK_METHODS={'memory_event_submit'}
 SCOPES={'read','put','write','remove'}
 
 def normalized_scopes(scopes):return {'put' if scope=='write' else scope for scope in scopes}
 
 def permits_scope(scopes,method):
-    if method=='content_put':return 'put' in normalized_scopes(scopes)
+    if method in ('content_put','memory_event_submit'):return 'put' in normalized_scopes(scopes)
     if method=='content_remove':return 'remove' in scopes
     return 'read' in scopes
 
 def methods(scopes):return {name for name in FIELDS if permits_scope(scopes,name)}
+def mcp_methods(scopes):return methods(scopes)-HOOK_METHODS
 
 def encode(value):return json.dumps(value,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()
 
 def validate(method,params):
-    if method not in FIELDS or not isinstance(params,dict) or set(params)!=FIELDS[method]:raise ValueError('Invalid content request')
+    if method not in FIELDS or not isinstance(params,dict) or set(params) not in (FIELDS[method],FIELDS[method]|{'context'} if method=='memory_query' else FIELDS[method]):raise ValueError('Invalid content request')
     if method=='memory_query':
         if params['kind']!='memory' or not isinstance(params['query'],str) or len(params['query'])>1024 or type(params['limit']) is not int or not 1<=params['limit']<=3:raise ValueError('Bounded Memory query required')
         since,until=query_time(params['since']),query_time(params['until'])
         if since is not None and until is not None and since>until:raise ValueError('Ordered query range required')
+        if 'context' in params:
+            context=params['context']
+            if not isinstance(context,dict) or set(context)!={'project_id','session_id','cross_session'} or context['cross_session'] is not True:raise ValueError('Explicit cross-session recall required')
+            for field in ('project_id','session_id'):event_identifier(context[field])
+            if not params['query'].strip() or since is not None or until is not None:raise ValueError('Core recall requires text and no legacy time range')
         return
     if method=='content_catalog':
         kinds=params['kinds']
         if not isinstance(kinds,list) or not kinds or any(not isinstance(k,str) or k not in TYPES for k in kinds) or len(set(kinds))!=len(kinds):raise ValueError('Unsupported kinds')
         return
     if not isinstance(params['kind'],str) or params['kind'] not in TYPES or not isinstance(params['id'],str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}',params['id']):raise ValueError('Unsupported content identity')
-    if method in WRITES and (not isinstance(params['expected_revision'],str) or not re.fullmatch(r'missing|[a-f0-9]{64}',params['expected_revision'])):raise ValueError('Read revision required')
+    if method=='memory_event_submit':
+        if params['kind']!='memory':raise ValueError('Memory event required')
+        event(params['event'])
+        if params['id']!=params['event']['event_id']:raise ValueError('Event identity mismatch')
+    if method in ('content_put','content_remove') and (not isinstance(params['expected_revision'],str) or not re.fullmatch(r'missing|[a-f0-9]{64}',params['expected_revision'])):raise ValueError('Read revision required')
     if method=='content_put':record(params['kind'],params['record'],params['id'])
+
+def event_identifier(value):
+    if not isinstance(value,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}',value):raise ValueError('Bounded event identity required')
+
+def event(value):
+    if not isinstance(value,dict) or set(value)!={'contract','event_id','project_id','session_id','occurred_at','messages'} or value['contract']!='agentbrain.event.v1':raise ValueError('Exact event required')
+    for name in ('event_id','project_id','session_id'):event_identifier(value[name])
+    stamp=value['occurred_at']
+    if not isinstance(stamp,str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z',stamp):raise ValueError('UTC event time required')
+    query_time(stamp)
+    messages=value['messages']
+    if not isinstance(messages,list) or not 1<=len(messages)<=100:raise ValueError('Bounded event messages required')
+    for message in messages:
+        if not isinstance(message,dict) or set(message)!={'role','content'} or message['role'] not in ('user','assistant'):raise ValueError('Event message required')
+        text(message['content'],32768)
+        if len(message['content'].encode('utf-16-le'))//2>8192:raise ValueError('Event message exceeds bound')
+    if len(encode(value))>120000:raise ValueError('Event exceeds bound')
+
+def core_receipt(response,request):
+    """Acceptance and a durable receipt ledger are not Core/Git durability."""
+    if not isinstance(response,dict) or set(response)!={'request_id','result','persistence'} or response.get('request_id')!=request['request_id']:return False
+    receipt=response.get('persistence');value=response.get('result')
+    if not isinstance(receipt,dict) or set(receipt)!={'state','durable','github_confirmed','receipt_ledger_durable'} or receipt!={'state':'core-accepted','durable':False,'github_confirmed':False,'receipt_ledger_durable':True}:return False
+    if any(type(receipt[name]) is not bool for name in ('durable','github_confirmed','receipt_ledger_durable')):return False
+    fields={'event_id','state','message_ids','core_acceptance','ledger_sync','pipeline_state','model_extraction_verified'}
+    if not isinstance(value,dict) or set(value) not in (fields,fields|{'replayed'}):return False
+    if 'replayed' in value and type(value['replayed']) is not bool:return False
+    ids=value['message_ids']
+    return (value['event_id']==request['params']['id'] and value['state']=='committed' and
+            value['core_acceptance']=='acknowledged-not-durability-proof' and value['ledger_sync']=='sqlite-wal-full' and
+            value['pipeline_state']=='unverified' and value['model_extraction_verified'] is False and isinstance(ids,list) and
+            len(ids)==len(request['params']['event']['messages']) and all(isinstance(mid,str) and 0<len(mid)<=256 for mid in ids) and len(set(ids))==len(ids))
+
+def core_recall(value,context):
+    if not isinstance(value,dict) or set(value)!={'content_api_version','method','source','scope','recall'} or value['content_api_version']!=1 or value['method']!='core-recall' or value['source']!='core' or value['scope']!=context:raise ValueError('Unverified Core recall scope')
+    recall=value['recall']
+    if not isinstance(recall,dict) or set(recall)!={'L0','L1','L2','L3','cross_session','model_extraction_verified'} or recall['cross_session'] is not True or recall['model_extraction_verified'] is not False or len(encode(recall))>240000:raise ValueError('Bounded Core recall required')
+    for name in ('L0','L1','L2'):
+        if not isinstance(recall[name],list) or len(recall[name])>20 or any(not isinstance(row,dict) or not isinstance(row.get('provenance'),dict) for row in recall[name]):raise ValueError('Bounded sourced Core rows required')
+    if not isinstance(recall['L3'],dict) or not isinstance(recall['L3'].get('provenance'),dict) or recall['L3'].get('content') is not None and not isinstance(recall['L3'].get('content'),str):raise ValueError('Sourced Core profile required')
 
 OWNER_SCOPE='personal-owner'
 

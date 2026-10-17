@@ -16,7 +16,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 from remote_mcp import Server,ProtocolError,keys,pairs,MAX_MESSAGE
 from content_cache import CacheBlocked,ContentAdapter,contract,validate_policy,ROOT as CLIENT_ROOT
 from client_pairing import ComponentClient
-from brain_lock import PlatformUnsupported,require_platform,private_mode
+from brain_lock import PlatformUnsupported,require_platform,private_mode,locked
 from remote_http import RequestControl,RequestStopped
 from client_release import UPDATE_GUIDANCE
 
@@ -39,18 +39,32 @@ def worker_commit(client_version):
         return commit
     except Exception:return None
 
+def content_tool_names(methods,policy=None,grant=None):
+    """Advertised MCP directory; native enabled_tools remains a separate allowlist.
+
+    These local helpers already ship with the content server. Listing them does
+    not grant a remote method, enable a native tool or authorize a hook.
+    """
+    names=set(methods)-contract.HOOK_METHODS
+    names.add('content_request_id')
+    if (policy is None and grant is None or
+            'memory' in (policy or {}).get('kinds',[]) and
+            (grant is None or 'memory' in grant.get('artifact_types',[]))):
+        names.update({'content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'})
+    return names
+
+
 class ContentServer(Server):
     def __init__(self,adapter,client_version='0.2.0'):
         super().__init__(None,client_version);self.adapter=adapter
         self.client_runtime={'running_worker_version':client_version,'running_worker_commit':worker_commit(client_version)}
 
+    def tool_names(self):
+        return content_tool_names(self.adapter.methods(),getattr(self.adapter,'policy',None),
+                                  getattr(getattr(self.adapter,'client',None),'grant',None))
+
     def _memory_source_tools_authorized(self):
-        policy=getattr(self.adapter,'policy',None)
-        client=getattr(self.adapter,'client',None)
-        grant=getattr(client,'grant',None)
-        if policy is None and grant is None:return True  # isolated protocol self-check adapter
-        return ('memory' in (policy or {}).get('kinds',[]) and
-                (grant is None or 'memory' in grant.get('artifact_types',[])))
+        return 'content_sources_inventory' in self.tool_names()
 
     def invoke(self,name,arguments):
         try:
@@ -92,7 +106,7 @@ class ContentServer(Server):
                 if not isinstance(arguments,dict) or set(arguments)!=expected:raise ContentParameterError('Stage requires one locally read source and a normalized AgentBrain Memory record.')
                 result=self.adapter.stage_memory_import(arguments['source_id'],arguments['source_fingerprint'],'memory',arguments['id'],arguments['record'])
                 return {'isError':False,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
-            if name not in self.adapter.methods():raise ContentParameterError('Unknown or unavailable content tool; inspect tools/list.')
+            if name=='memory_event_submit' or name not in self.adapter.methods():raise ContentParameterError('Unknown or unavailable content tool; inspect tools/list.')
             if not isinstance(arguments,dict):raise ContentParameterError('Content tool arguments must be an object.')
             if name=='content_catalog' and set(arguments)&{'query','since','until','limit'}:
                 if arguments.get('kinds')!=['memory']:raise ContentParameterError('Catalog query options are a Memory-only retrieval alias. For complete coverage pass kinds only.')
@@ -101,7 +115,7 @@ class ContentServer(Server):
                 arguments={key:value for key,value in arguments.items() if key!='kinds'};name='memory_query'
             if name=='memory_query':arguments=dict({'kind':'memory','query':'','since':None,'until':None,'limit':3},**arguments)
             required=contract.FIELDS[name]|({'request_id'} if name in contract.WRITES else set())
-            allowed=contract.FIELDS[name]|{'request_id'}|({'reconciles'} if name=='content_put' else set())
+            allowed=contract.FIELDS[name]|{'request_id'}|({'reconciles'} if name=='content_put' else set())|({'context'} if name=='memory_query' else set())
             if set(arguments)-allowed or required-set(arguments):raise ValueError()
             params=dict(arguments);reconciles=params.pop('reconciles',None);rid=params.pop('request_id',uuid.uuid4().hex);contract.validate(name,params)
             if not isinstance(rid,str) or not 16<=len(rid)<=128 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in rid):raise ValueError()
@@ -130,10 +144,10 @@ class ContentServer(Server):
                 params={key:value for key,value in params.items() if key!='_meta'}
             keys(params,('cursor',))
             if params.get('cursor') not in (None,''):raise ProtocolError(-32602,'Unknown cursor.')
-            tools=[]
+            tools=[];names=self.tool_names()
             kinds=getattr(self.adapter,'policy',{}).get('kinds',['memory','rule','skill'])
             for name,fields in contract.FIELDS.items():
-                if name not in self.adapter.methods():continue
+                if name not in names:continue
                 properties:dict[str,Any]={field:{'type':'string'} for field in fields}
                 if 'kinds' in fields:properties['kinds']={'type':'array','items':{'type':'string','enum':kinds},'minItems':1,'uniqueItems':True}
                 if 'kind' in fields:properties['kind']['enum']=kinds
@@ -146,6 +160,7 @@ class ContentServer(Server):
                 if name=='memory_query':
                     properties.update(query={'type':'string','default':''},since={'type':['string','null'],'default':None,'description':'Inclusive memory update time, ISO8601 with offset; not event occurrence time.'},until={'type':['string','null'],'default':None},limit={'type':'integer','minimum':1,'maximum':3,'default':3})
                     properties['kind']={'type':'string','enum':['memory'],'default':'memory'}
+                    properties['context']={'type':'object','properties':{'project_id':{'type':'string'},'session_id':{'type':'string'},'cross_session':{'const':True}},'required':['project_id','session_id','cross_session'],'additionalProperties':False,'description':'Explicit authorized project/session for Core recall across sessions. Omit for legacy Memory query.'}
                 if name=='content_catalog':
                     properties.update(query={'type':'string','description':'Optional Memory-only retrieval alias; not full inventory. Prefer memory_query for retrieval.'},since={'type':['string','null']},until={'type':['string','null']},limit={'type':'integer','minimum':1,'maximum':3,'description':'Memory retrieval alias only; not pagination. Omit query/since/until/limit for complete AgentBrain target inventory; Harness-native sources are not listed.'})
                 required=[] if name=='memory_query' else list(sorted(fields))
@@ -178,6 +193,86 @@ def pinned(path,digest):
     if hashlib.sha256(raw).hexdigest()!=digest:raise ValueError()
     return json.loads(raw,object_pairs_hook=pairs)
 
+
+def validate_hook_policy(value,*,profile_sha256,content_policy_sha256):
+    """Private exact pin, finite sessions; this does not enroll native threads."""
+    fields={'schema','enabled','profile_sha256','content_policy_sha256','off_file','scopes'}
+    if not isinstance(value,dict) or set(value)!=fields or value['schema']!=1 or type(value['enabled']) is not bool:raise ValueError('Exact hook policy required')
+    if value['profile_sha256']!=profile_sha256 or value['content_policy_sha256']!=content_policy_sha256:raise ValueError('Hook destination policy changed')
+    off=Path(value['off_file'])
+    if not off.is_absolute() or '..' in off.parts or off.is_symlink() or off.parent.resolve()!=off.parent:raise ValueError('Private absolute off switch required')
+    private_mode(off.parent,directory=True,owner=True)
+    scopes=value['scopes']
+    if not isinstance(scopes,list) or len(scopes)>16 or value['enabled'] and not scopes:raise ValueError('Finite hook scopes required')
+    seen=set()
+    for scope in scopes:
+        if not isinstance(scope,dict) or set(scope)!={'cwd','project_id','session_id'}:raise ValueError('Exact hook scope required')
+        for field in ('project_id','session_id'):contract.event_identifier(scope[field])
+        path=Path(scope['cwd'])
+        if not path.is_absolute() or path.is_symlink() or str(path.resolve())!=scope['cwd'] or scope['session_id'] in seen:raise ValueError('Canonical unique project/session required')
+        seen.add(scope['session_id'])
+    return value
+
+
+def hook_enabled(policy):
+    # Existence includes symlinks: every off marker fails closed, before stdin.
+    off=Path(policy['off_file'])
+    return policy['enabled'] is True and not off.exists() and not off.is_symlink()
+
+
+def native_hook_fields(policy,payload):
+    """Validate text and finite metadata before credential activation."""
+    if not isinstance(payload,dict) or payload.get('hook_event_name') not in ('UserPromptSubmit','Stop'):raise ValueError('Unsupported native hook')
+    session=payload.get('session_id');turn=payload.get('turn_id')
+    contract.event_identifier(session);contract.event_identifier(turn)
+    scope=next((scope for scope in policy['scopes'] if scope['session_id']==session and payload.get('cwd')==scope['cwd']),None)
+    if scope is None:raise ValueError('Unregistered native scope')
+    kind=payload['hook_event_name']
+    if kind=='Stop' and payload.get('stop_hook_active') is not False:raise ValueError('Recursive or unspecified Stop rejected')
+    content=payload.get('prompt' if kind=='UserPromptSubmit' else 'last_assistant_message')
+    contract.text(content,32768)
+    if len(content.encode('utf-16-le'))//2>8192:raise ValueError('Native text exceeds bound')
+    key=hashlib.sha256(contract.encode([scope,turn])).hexdigest()
+    return scope,turn,kind,content,key
+
+
+def run_event_hook(adapter,policy,payload,*,clock=None):
+    """One native hook through the official Client outbox; no history reads.
+
+    The caller validates the pinned policy before reading stdin and activating
+    the credential store. Tests inject only the ordinary public Client classes.
+    """
+    from datetime import datetime,timezone
+    if not hook_enabled(policy):return {'status':'disabled','data_transferred':False}
+    if getattr(adapter.client,'profile_sha',policy['profile_sha256'])!=policy['profile_sha256']:raise ValueError('Hook Client destination changed')
+    scope,turn,kind,content,key=native_hook_fields(policy,payload)
+    session=scope['session_id']
+    name='hook-turns/'+key+'.json'
+    with locked(adapter.cache/'event-hook.lock'):
+        if not hook_enabled(policy):return {'status':'disabled','data_transferred':False}
+        row=adapter._load(name)
+        if kind=='UserPromptSubmit':
+            if row is not None:
+                if row['scope']!=scope or row['turn_id']!=turn or row['prompt']!=content:raise ValueError('Native turn changed; preserve evidence')
+                return {'status':'staged','data_transferred':False}
+            directory=adapter.cache/'hook-turns';adapter._safe(directory,adapter.cache)
+            if directory.exists() and len(list(directory.iterdir()))>=1024:raise ValueError('Hook staging capacity reached')
+            now=clock() if clock else datetime.now(timezone.utc)
+            stamp=now.isoformat(timespec='milliseconds').replace('+00:00','Z')
+            row={'schema':1,'scope':scope,'turn_id':turn,'prompt':content,'occurred_at':stamp,'final':None}
+            adapter._save(name,row)
+            return {'status':'staged','data_transferred':False}
+        if row is None:return {'status':'skipped-no-prompt','data_transferred':False}
+        if set(row)!={'schema','scope','turn_id','prompt','occurred_at','final'} or row['schema']!=1 or row['scope']!=scope or row['turn_id']!=turn or row['final'] not in (None,content):raise ValueError('Native staging changed')
+        row['final']=content;adapter._save(name,row)
+        event={'contract':'agentbrain.event.v1','event_id':'evt-'+key[:56],
+               'project_id':scope['project_id'],'session_id':session,'occurred_at':row['occurred_at'],
+               'messages':[{'role':'user','content':row['prompt']},{'role':'assistant','content':content}]}
+        request={'request_id':'agentbrain_event_'+key,'method':'memory_event_submit',
+                 'params':{'kind':'memory','id':event['event_id'],'event':event}}
+        if not hook_enabled(policy):return {'status':'disabled','data_transferred':False}
+        return adapter.invoke(request,event_gate=lambda:hook_enabled(policy))
+
 def self_check():
     class Adapter:
         def refresh(self):return {'status':'not-wired','native_changed':False}
@@ -187,7 +282,7 @@ def self_check():
     server.handle({'jsonrpc':'2.0','method':'notifications/initialized'})
     names=[t['name'] for t in server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})['tools']]
     assert len(names)==len(set(names))
-    assert set(names)==set(contract.FIELDS)|{'content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'}
+    assert set(names)==(set(contract.FIELDS)-contract.HOOK_METHODS)|{'content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'}
     assert not any(m in sys.modules for m in ('brain_core','brain_runtime','brain_cli'))
     return {'content_mcp_self_check':'passed','core_imported':False,'native_changed':False,'keychain_accessed':False,'network_used':False}
 
@@ -277,9 +372,9 @@ def installation_check(client,policy,client_version='0.2.0'):
     """Fixed read-only MCP/auth check. No content cache/native mapping is created."""
     validate_policy(policy,client.grant)
     class Adapter:
-        def __init__(self):self.policy=policy
+        def __init__(self):self.policy=policy;self.client=client
         def refresh(self):return {'status':'protocol-only','native_changed':False}
-        def methods(self):return contract.methods(client.grant['scopes'])-{'memory_query'}
+        def methods(self):return contract.mcp_methods(client.grant['scopes'])-{'memory_query'}
         def invoke(self,request):
             if request['method']!='content_catalog':raise ValueError('Read-only check')
             return client.request(request)
@@ -289,8 +384,7 @@ def installation_check(client,policy,client_version='0.2.0'):
     tools=server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})
     result=server.handle({'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':'content_catalog','arguments':{'kinds':policy['kinds']}}})
     tool_names=[tool['name'] for tool in tools['tools']]
-    source_tools={'content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'} if server._memory_source_tools_authorized() else set()
-    expected_tools=adapter.methods()|{'content_request_id'}|source_tools
+    expected_tools=server.tool_names()
     if first['serverInfo']['name']!='agent-brain-content-codex-candidate' or len(tool_names)!=len(set(tool_names)) or set(tool_names)!=expected_tools or result['isError']:raise ValueError('Content protocol check failed')
     catalog=result['structuredContent']['result']
     import re
@@ -403,6 +497,14 @@ _STARTUP_STAGE='arguments'
 def main():
     global _STARTUP_STAGE
     _STARTUP_STAGE='arguments'
+    if sys.argv[1:2]==['--event-hook-off']:
+        if len(sys.argv)!=3:raise ValueError('Exact off marker required')
+        target=Path(sys.argv[2])
+        if not target.is_absolute() or target.is_symlink() or target.parent.resolve()!=target.parent or not target.parent.is_dir():raise ValueError('Existing private off directory required')
+        private_mode(target.parent,directory=True,owner=True)
+        from codex_connect import atomic
+        atomic(target,b'capture disabled\n',0o600)
+        print('{}');return
     if sys.argv[1:2]==['--codex-notify']:
         raise SystemExit(codex_notify_main())
     if sys.argv[1:]==['--self-check']:print(json.dumps(self_check()));return
@@ -411,6 +513,8 @@ def main():
     for name in ('device-plan','device-plan-sha256','signing-policy','signing-policy-sha256','ssh-profile','ssh-profile-sha256','https-profile','https-profile-sha256','credential-source-sha256'):parser.add_argument('--'+name)
     parser.add_argument('--codex-home',help='Approved actual Codex home; otherwise honor CODEX_HOME and preserve device-level skills.')
     parser.add_argument('--installation-check',action='store_true',help='Fixed read-only protocol/auth check; does not write cache or native files.')
+    parser.add_argument('--event-hook',action='store_true',help='One finite authorized native event; no refresh, inventory or installer.')
+    parser.add_argument('--event-hook-policy');parser.add_argument('--event-hook-policy-sha256')
     parser.add_argument('--import-plan',help='Explicit reviewed private normalized source plan; no native discovery.')
     parser.add_argument('--import-plan-sha256',help='Exact reviewed source-plan digest, required with --import-plan.')
     parser.add_argument('--component-source-sha256',help='Release policy pin for the separately approved signed component source.')
@@ -420,6 +524,16 @@ def main():
     if args.component_source_sha256 and hashlib.sha256((CLIENT_ROOT/'native/DeviceComponent.swift').read_bytes()).hexdigest()!=args.component_source_sha256:raise ValueError('Native source review required')
     _STARTUP_STAGE='content-policy-validation'
     policy=pinned(args.content_policy,args.content_policy_sha256)
+    hook_policy=None;hook_payload=None
+    if args.event_hook:
+        if args.installation_check or args.import_plan or not args.https_profile:raise ValueError('Distinct HTTPS native hook invocation required')
+        hook_policy=validate_hook_policy(pinned(args.event_hook_policy,args.event_hook_policy_sha256),profile_sha256=args.https_profile_sha256,content_policy_sha256=args.content_policy_sha256)
+        if not hook_enabled(hook_policy):print('{}');return
+        raw=sys.stdin.buffer.read(1048577)
+        if len(raw)>1048576:raise ValueError('Hook input exceeds bound')
+        hook_payload=json.loads(raw,object_pairs_hook=pairs)
+        native_hook_fields(hook_policy,hook_payload)
+    elif args.event_hook_policy or args.event_hook_policy_sha256:raise ValueError('Explicit hook mode required')
     if args.https_profile:
         _STARTUP_STAGE='https-profile-load'
         if any((args.device_plan,args.device_plan_sha256,args.signing_policy,args.signing_policy_sha256,args.component_source_sha256,args.ssh_profile,args.ssh_profile_sha256)):raise ValueError('Distinct transport policies required')
@@ -452,6 +566,11 @@ def main():
         print(json.dumps(installation_check(client,policy,args.client_version)));return
     _STARTUP_STAGE='content-adapter-start'
     adapter=ContentAdapter(args.device_home,args.cache,policy,client,codex_home=args.codex_home)
+    if args.event_hook:
+        run_event_hook(adapter,hook_policy,hook_payload)
+        # Hook output is protocol only; never inject captured text or continue a
+        # completed turn. Receipt and pending evidence stay in the normal outbox.
+        print('{}');return
     if args.import_plan:
         _STARTUP_STAGE='import-plan-validation'
         path=Path(args.import_plan)
@@ -465,5 +584,11 @@ def main():
 
 if __name__=='__main__':
     try:main()
-    except PlatformUnsupported as error:print(json.dumps(error.result(served=False,native_changed=False)),file=sys.stderr);sys.exit(2)
-    except Exception as error:sys.exit(emit_startup_failure(_STARTUP_STAGE,error))
+    except PlatformUnsupported as error:
+        if '--event-hook' in sys.argv:
+            print('{}');print('AgentBrain hook capture skipped; local evidence preserved.',file=sys.stderr);sys.exit(0)
+        print(json.dumps(error.result(served=False,native_changed=False)),file=sys.stderr);sys.exit(2)
+    except Exception as error:
+        if '--event-hook' in sys.argv:
+            print('{}');print('AgentBrain hook capture skipped; local evidence preserved.',file=sys.stderr);sys.exit(0)
+        sys.exit(emit_startup_failure(_STARTUP_STAGE,error))

@@ -79,7 +79,7 @@ def serve_content(command,active,policy,status):
                 'next_action':'Preserve the content cache and its persistent lease; inspect ownership or access before serving.'}
 
 
-def startup(policy_path, policy_sha256, check_only=False, installation_check=False, bootstrap_check=False):
+def startup(policy_path, policy_sha256, check_only=False, installation_check=False, bootstrap_check=False,event_hook=None):
     releases=ClientReleases(policy_path,policy_sha256)
     if bootstrap_check:
         active=releases.verified_active()
@@ -100,7 +100,14 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
             return {'status':'client-bootstrap-handover-in-progress','served':False,
                     'native_changed':False,
                     'next_action':'A verified bootstrap handover is in progress. Retry after the official update command completes; do not replace or remove its recovery plan.'}
-    result=releases.update()
+    if event_hook or installation_check:
+        # Installation preflight and per-turn capture must never activate a release.
+        # Per-turn capture must never install, refresh or move an active release.
+        # Constructor and verified_active retain the normal release trust chain.
+        if event_hook and (check_only or installation_check or bootstrap_check):raise ValueError('Distinct hook mode required')
+        active=releases.verified_active()
+        result={'status':'current','active':active}
+    else:result=releases.update()
     if result.get('diagnostic') and not check_only:
         print(json.dumps(result['diagnostic']),file=sys.stderr)
     active=result.get('active')
@@ -120,6 +127,9 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
         for name,value in runtime.items():
             if name not in LEGACY_PRESERVATION|DEPENDENCY_RUNTIME:command.extend(['--'+name.replace('_','-').replace('content-cache','cache'),value])
         if installation_check:command.append('--installation-check')
+        if event_hook:
+            if releases.policy['capabilities']!=HTTPS_CONTENT_CAPABILITIES:raise ValueError('Existing HTTPS device runtime required')
+            command.extend(['--event-hook','--event-hook-policy',str(event_hook[0]),'--event-hook-policy-sha256',event_hook[1]])
         if installation_check:return {'status':result['status'],'served':True,'exit_code':subprocess.run(command).returncode}
         return serve_content(command,active,releases.policy,result['status'])
     if installation_check:return {'status':'content-runtime-review-required','served':False}
@@ -139,13 +149,22 @@ def main():
     parser.add_argument('--check-only',action='store_true')
     parser.add_argument('--installation-check',action='store_true',help='Read-only content protocol/authentication check; no native mapping.')
     parser.add_argument('--bootstrap-check',action='store_true',help='Offline check of this launcher and the active verified package; no activation or credential access.')
+    parser.add_argument('--event-hook',action='store_true')
+    parser.add_argument('--event-hook-policy',type=Path);parser.add_argument('--event-hook-policy-sha256')
     args=parser.parse_args()
-    try:result=startup(args.policy_file,args.policy_sha256,args.check_only,args.installation_check,args.bootstrap_check)
+    try:
+        if bool(args.event_hook_policy)!=bool(args.event_hook_policy_sha256) or args.event_hook!=bool(args.event_hook_policy):raise ValueError('Exact finite hook policy required')
+        result=startup(args.policy_file,args.policy_sha256,args.check_only,args.installation_check,args.bootstrap_check,(args.event_hook_policy,args.event_hook_policy_sha256) if args.event_hook else None)
     except PlatformUnsupported as error:result=error.result(served=False,native_changed=False)
     except Exception:
         result={'status':'startup-review-required','served':False,'next_action':'Inspect the approved fixed bootstrap, policy digest and isolated client paths; preserve existing packages.'}
     if args.check_only or args.bootstrap_check:print(json.dumps(result))
     elif not result.get('served'):print(json.dumps(result),file=sys.stderr)
+    if args.event_hook:
+        # A capture failure must not block UserPromptSubmit or force another
+        # model continuation. Keep failure/pending evidence, return no context.
+        if not result.get('served'):print('{}')
+        return 0
     checked=args.check_only and result['status'] in ('current','updated','offline') and bool(result.get('active'))
     bootstrap_checked=args.bootstrap_check and result['status']=='client-bootstrap-verified'
     return result.get('exit_code',0 if checked or bootstrap_checked else 2)
