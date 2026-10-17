@@ -79,8 +79,27 @@ def serve_content(command,active,policy,status):
                 'next_action':'Preserve the content cache and its persistent lease; inspect ownership or access before serving.'}
 
 
-def startup(policy_path, policy_sha256, check_only=False, installation_check=False):
+def startup(policy_path, policy_sha256, check_only=False, installation_check=False, bootstrap_check=False):
     releases=ClientReleases(policy_path,policy_sha256)
+    if bootstrap_check:
+        active=releases.verified_active()
+        if not active:return {'status':'client-bootstrap-review-required','served':False,'native_changed':False}
+        return {'status':'client-bootstrap-verified','active_package_version':active['version'],
+                'native_changed':False,'network_used':False,'device_credentials_accessed':False}
+    # During the exact 0.3.0-to-0.3.1 bridge, the new command becomes visible
+    # before its transaction's second postcheck. A concurrently launched worker
+    # must not run normal update and advance the package pointer in that window;
+    # the updater removes this marker only after both offline checks succeed.
+    legacy_030_policy=getattr(getattr(getattr(releases,'engine',None),'adapter',None),
+                              'legacy_030_https_policy',False)
+    runtime=releases.policy.get('runtime') if isinstance(releases.policy,dict) else None
+    device_home=runtime.get('device_home') if isinstance(runtime,dict) else None
+    if legacy_030_policy and isinstance(device_home,str) and device_home:
+        handover=Path(device_home)/'.config/agent-brain-client/bootstrap-handover-plan.json'
+        if handover.exists() or handover.is_symlink():
+            return {'status':'client-bootstrap-handover-in-progress','served':False,
+                    'native_changed':False,
+                    'next_action':'A verified bootstrap handover is in progress. Retry after the official update command completes; do not replace or remove its recovery plan.'}
     result=releases.update()
     if result.get('diagnostic') and not check_only:
         print(json.dumps(result['diagnostic']),file=sys.stderr)
@@ -119,15 +138,17 @@ def main():
     parser.add_argument('--policy-sha256',required=True)
     parser.add_argument('--check-only',action='store_true')
     parser.add_argument('--installation-check',action='store_true',help='Read-only content protocol/authentication check; no native mapping.')
+    parser.add_argument('--bootstrap-check',action='store_true',help='Offline check of this launcher and the active verified package; no activation or credential access.')
     args=parser.parse_args()
-    try:result=startup(args.policy_file,args.policy_sha256,args.check_only,args.installation_check)
+    try:result=startup(args.policy_file,args.policy_sha256,args.check_only,args.installation_check,args.bootstrap_check)
     except PlatformUnsupported as error:result=error.result(served=False,native_changed=False)
     except Exception:
         result={'status':'startup-review-required','served':False,'next_action':'Inspect the approved fixed bootstrap, policy digest and isolated client paths; preserve existing packages.'}
-    if args.check_only:print(json.dumps(result))
+    if args.check_only or args.bootstrap_check:print(json.dumps(result))
     elif not result.get('served'):print(json.dumps(result),file=sys.stderr)
     checked=args.check_only and result['status'] in ('current','updated','offline') and bool(result.get('active'))
-    return result.get('exit_code',0 if checked else 2)
+    bootstrap_checked=args.bootstrap_check and result['status']=='client-bootstrap-verified'
+    return result.get('exit_code',0 if checked or bootstrap_checked else 2)
 
 
 if __name__=='__main__':sys.exit(main())
