@@ -134,8 +134,23 @@ class ContentInstall(unittest.TestCase):
                 outer.assertEqual(request['method'],'content_catalog');return {'request_id':request['request_id'],'result':{'content_api_version':1,'commit':'a'*40,'artifacts':[]},'persistence':{'state':'read-only'}}
         before=self.native_files();result=installation_check(Client(),self.content_value);self.assertTrue(result['authentication_checked']);self.assertEqual(set(result['tools']),{'content_catalog','content_read','content_put','content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'});self.assertFalse(result['native_changed']);self.assertEqual(self.native_files(),before)
 
+    def test_installation_protocol_check_accepts_rule_skill_only_read_grant(self):
+        class Client:
+            grant={'actor':'synthetic-owner','scopes':['read'],'artifact_types':['rule','skill'],
+                   'ids':{'rule':['synthetic-rule'],'skill':['synthetic-skill']}}
+            def request(client,request):
+                self.assertEqual(request['method'],'content_catalog')
+                return {'request_id':request['request_id'],'result':{'content_api_version':1,'commit':'b'*40,'artifacts':[]},'persistence':{'state':'read-only'}}
+        policy={'schema':1,'adapter':'codex','kinds':['rule','skill'],
+                'ids':{'rule':['synthetic-rule'],'skill':['synthetic-skill']},
+                'dependencies':{'commands':[],'python_modules':[]}}
+        before=self.native_files();result=installation_check(Client(),policy)
+        self.assertTrue(result['authentication_checked'])
+        self.assertEqual(set(result['tools']),{'content_catalog','content_read','content_request_id'})
+        self.assertFalse(result['native_changed']);self.assertEqual(self.native_files(),before)
+
     def test_content_release_discovery_update_failure_offline_and_startup_wiring(self):
-        report=self.channel.discover('codex','darwin-arm64','0.1.0');self.assertEqual(report['status'],'compatible-update');self.assertEqual(len(report['releases'][0]['manifest']['files']),20)
+        report=self.channel.discover('codex','darwin-arm64','0.1.0');self.assertEqual(report['status'],'compatible-update');self.assertEqual(len(report['releases'][0]['manifest']['files']),19)
         old=self.channel.engine.active();self.publish('0.2.1');self.assertEqual(self.channel.update()['status'],'updated');self.assertEqual(install.apply(self.plan(),self.digest(self.plan()),lambda p:None)['installed'],True);self.assertEqual(install.inspect(self.home)['installed_version'],'0.2.1')
         def bad(manifest,out):
             p=out/'adapters/codex/content_mcp.py';p.write_text('BAD PYTHON (');manifest['files']['adapters/codex/content_mcp.py']=install.sha(p.read_bytes())

@@ -289,14 +289,16 @@ def installation_check(client,policy,client_version='0.2.0'):
     tools=server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})
     result=server.handle({'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':'content_catalog','arguments':{'kinds':policy['kinds']}}})
     tool_names=[tool['name'] for tool in tools['tools']]
-    if first['serverInfo']['name']!='agent-brain-content-codex-candidate' or len(tool_names)!=len(set(tool_names)) or set(tool_names)!=adapter.methods()|{'content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'} or result['isError']:raise ValueError('Content protocol check failed')
+    source_tools={'content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'} if server._memory_source_tools_authorized() else set()
+    expected_tools=adapter.methods()|{'content_request_id'}|source_tools
+    if first['serverInfo']['name']!='agent-brain-content-codex-candidate' or len(tool_names)!=len(set(tool_names)) or set(tool_names)!=expected_tools or result['isError']:raise ValueError('Content protocol check failed')
     catalog=result['structuredContent']['result']
     import re
     if catalog.get('content_api_version')!=1 or not re.fullmatch(r'[a-f0-9]{40}',catalog.get('commit','')) or not isinstance(catalog.get('artifacts'),list) or len(catalog['artifacts'])>256:raise ValueError('Unconfirmed content catalog')
     for item in catalog['artifacts']:
         contract.validate('content_read',{'kind':item['kind'],'id':item['id']})
         if item['kind'] not in policy['kinds'] or not re.fullmatch(r'[a-f0-9]{64}',item.get('revision','')):raise ValueError('Invalid content catalog')
-    return {'status':'content-native-protocol-checked','protocol_checked':True,'authentication_checked':True,'tools':sorted(adapter.methods()|{'content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'}),'native_changed':False,'model_loaded':'unknown'}
+    return {'status':'content-native-protocol-checked','protocol_checked':True,'authentication_checked':True,'tools':sorted(expected_tools),'native_changed':False,'model_loaded':'unknown'}
 
 
 def serve(server, source, output, *, request_timeout=90, max_pending=256):
