@@ -115,6 +115,31 @@ sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action update
 
 check-update 成功返回 client-update-available/current 与 channel_checked:true；update 成功返回 client-update-updated/current。网络不可达、健康失败或信任/范围审核受阻均退出非零并保留恢复材料；不要把旧活动包版本称为已确认最新版，不通过改摘要或信任锚跳过审核。status 不访问渠道。
 
+#### 0.3.0 到 0.3.1 的 HTTPS 更新
+
+0.3.0 的已发布 updater 固定要求 22 个 HTTPS 文件，其中包含 `adapters/codex/codex_notify_mux.py`；0.2.14 固定要求的则是不同的 21 文件集合。0.3.0 自带 updater 会拒绝 21 文件补丁，因此这一个旧版本不能使用其活动包内的自动更新路径。不要改写本机 release policy，也不要把 mux 加回 0.3.1 包。
+
+0.3.0 的 checkout 尚没有 `bootstrap_main.py`，所以这一步必须从官方 HTTPS 仓库取得当前 main 源码；它只准备维护工具源码，不安装或改写 Client。先创建独立 checkout，并确认来源、分支与工作树：
+
+```sh
+MAIN_CHECKOUT=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/agentbrain-main.XXXXXX")
+/usr/bin/git clone --depth 1 --single-branch --branch main --no-tags -- \
+  https://github.com/goodname427/agent-brain-client.git "$MAIN_CHECKOUT"
+test "$(/usr/bin/git -C "$MAIN_CHECKOUT" remote get-url origin)" = \
+  https://github.com/goodname427/agent-brain-client.git
+test "$(/usr/bin/git -C "$MAIN_CHECKOUT" branch --show-current)" = main
+test -z "$(/usr/bin/git -C "$MAIN_CHECKOUT" status --porcelain --untracked-files=all)"
+```
+
+然后从该独立 checkout 调用已有更新入口：
+
+```sh
+sh "$MAIN_CHECKOUT/tools/install-mac.sh" --action check-update
+sh "$MAIN_CHECKOUT/tools/install-mac.sh" --action update
+```
+
+新 checkout 的 updater 只接受精确已知的 0.3.0 历史策略或 0.2.14 当前策略，并仍要求候选包恰好匹配当前 21 文件清单。它复用原登记、原策略字节、原信任锚和原固定依赖；不重新配对、不改 allowlist、不访问设备凭据。`check-update` 不激活；`update` 使用既有健康检查及回滚。网络或策略校验失败时保留原 0.3.0 活动包。0.2.14 的 21 文件 updater 可按原有直接更新入口使用。更新成功后仍须按上文正常重载并确认新 worker 版本。
+
 三个版本分别核查：active_package_version 是本地活动包，latest_channel_version 是本次成功渠道检查的候选，client_runtime.running_worker_version 是 MCP 调用所用 worker。CLI 无法观测 worker，其字段为 null；reload_required:true 表示活动包已变化，需要宿主正常新 worker，null 表示当前 worker 状态未知。通过宿主正常重载本服务，不杀进程；确认新 MCP 返回版本与渠道候选一致后再进行本轮 Onboard。即使更新回报 current，也不能据此断言旧 worker 已重载。main、tags、旧回执和映射数量都不能替代此核验。
 
 完整当前授权目录使用 `content_catalog({"kinds":["memory"]})`（范围内也可加入 rule/skill），省略 query/since/until/limit。目录没有分页 limit；Memory-only query 别名和 memory_query 的 limit=1..3 只是检索，不证明全量。limit=100 在参数阶段拒绝，不发 HTTP。目录后按实际条目读取，记录每次结果、stage/HTTP 状态、取消/超时及重试，不把旧轮次 5 成功/18 超时或旧 3 次重试复制成本轮结果。尚未读完就报告实际剩余，不宣称已完成。
