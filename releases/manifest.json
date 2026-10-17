@@ -16,10 +16,10 @@
     "adapters/codex/client_release.py": "a8b77c31c2c7ec4516954a3293743950fbc100cb1b22535d19b41949dc6c13ad",
     "adapters/codex/client_startup.py": "d7646bd439226378d8befd099b4e838a9731485925b9ced5e108caa13d3d046d",
     "adapters/codex/codex_connect.py": "6cd82f8511fad779bf6ffe11e3c7ca61bc12e899d4d55331ce0226e5d63ba8ed",
-    "adapters/codex/content_cache.py": "237c89abe172d448c2b134de0db77388f6773fc4a50d47db54204af7ed33c6c7",
+    "adapters/codex/content_cache.py": "b0186e6cd6577d32906bb11e6d0c9a87bc220a0c35490b95f1987dd0f5e5c431",
     "adapters/codex/content_contract.py": "564943dc44342814898c48b0791a89224cd15101b17a5485862d84de2b5e0298",
     "adapters/codex/content_install.py": "ef96229e450df15615a3cbb5357b2d478ecd7effce510911b46bdaa89d7492fd",
-    "adapters/codex/content_mcp.py": "f9ac06755c86611675fea4a35f006023cf19d2da79475ad99d2ce3912b09edb1",
+    "adapters/codex/content_mcp.py": "92a34807cdc1d55216fd54ce4bb208631cfcf3778aaf11b8a51a13908e0d239a",
     "adapters/codex/https_content.py": "c4969482a4edd946d9c5d31476d366d4f411833cbc529284c41ec7066cbbc77b",
     "adapters/codex/remote_http.py": "5a3ad5b7b445f66ea23909c0eb44d583c8d88188a03b0e33537eccb146d6afdc",
     "adapters/codex/remote_mcp.py": "62c0520cbd5426a25ced058ed26a8d49ad04d409f198526179b6599deb485d16",
@@ -33,5 +33,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.4.0"
+  "version": "0.4.1"
 }

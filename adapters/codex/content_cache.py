@@ -247,6 +247,14 @@ class ContentAdapter:
         return sorted(rows,key=lambda row:(row['created'],row['request']['request_id']))
 
     def _enqueue(self,request,reconciles=None):
+        # Serialize atomic appends separately from the content transaction,
+        # which may wait on remote I/O. Native events can become durable pending
+        # rows before that wait; existing rows are only checked, never rewritten.
+        path=self.cache/'outbox-enqueue.lock';self._safe(path,self.cache)
+        with locked(path):
+            return self._enqueue_locked(request,reconciles)
+
+    def _enqueue_locked(self,request,reconciles=None):
         self._check_write(request)
         if reconciles is None:reconciles={'request_ids':[],'source_keys':[]}
         if not isinstance(reconciles,dict) or set(reconciles)!={'request_ids','source_keys'}:raise CacheBlocked()

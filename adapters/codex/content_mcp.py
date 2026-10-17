@@ -271,6 +271,11 @@ def run_event_hook(adapter,policy,payload,*,clock=None):
         request={'request_id':'agentbrain_event_'+key,'method':'memory_event_submit',
                  'params':{'kind':'memory','id':event['event_id'],'event':event}}
         if not hook_enabled(policy):return {'status':'disabled','data_transferred':False}
+        # Refresh/write transport can hold content.lock beyond the hook wait.
+        # Persist this exact event first under the short append lock. Automatic
+        # drains skip it; invoke still owns content.lock before any transfer and
+        # rechecks the same immutable request plus the current off gate.
+        adapter._enqueue(request)
         return adapter.invoke(request,event_gate=lambda:hook_enabled(policy))
 
 def self_check():
