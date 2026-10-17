@@ -230,6 +230,7 @@ class HTTPSContent(unittest.TestCase):
         import client_release as releases
         import content_install
         import mac_first_install as installer
+        import tomllib
         from build_client import release as build_release
         f=fixtures.Releases('test_orphan_allowlist_discovery_install_upgrade_and_current');f.setUp();self.addCleanup(f.doCleanups)
         legacy_files=list(releases.LEGACY_030_HTTPS_CONTENT_CLIENT_FILES)
@@ -306,9 +307,14 @@ class HTTPSContent(unittest.TestCase):
             self.assertEqual(config.read_bytes(),config_before_bridge)
             self.assertEqual(registration.read_bytes(),registration_before_bridge)
             self.assertTrue(content_install.inspect(self.home)['registration_verified'])
+            paused=tomllib.loads(config.read_text())['mcp_servers'][content_install.NAME]
+            paused['enabled']=False
+            config.write_bytes(content_install.render(config.read_bytes(),paused,True));config.chmod(0o600)
+            self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
             def apply_bridge_with_bootstrap_check(plan,approved_digest,check=None):
                 def verify(value):
                     self.assertEqual(channel.verified_active()['version'],'0.3.0')
+                    self.assertFalse(value['mcp']['enabled'])
                     self.assertEqual(Path(value['mcp']['args'][2]),Path(value['package'])/'adapters/codex/client_startup.py')
                     check(value)
                     bridge_checks.append(value['package'])
@@ -321,9 +327,10 @@ class HTTPSContent(unittest.TestCase):
         new_active=channel.verified_active();new_manifest=json.loads((Path(new_active['package'])/'verified.json').read_text())['manifest']
         self.assertNotIn('adapters/codex/codex_notify_mux.py',new_manifest['files'])
         self.assertEqual(path.read_bytes(),policy_before)
-        import tomllib
         registered=tomllib.loads(config.read_text())['mcp_servers'][content_install.NAME]
         self.assertEqual(registered['args'][2],str(Path(new_active['package'])/'adapters/codex/client_startup.py'))
+        self.assertFalse(registered['enabled'])
+        self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
         import client_startup
         with patch('sys.platform','darwin'),patch('platform.machine',return_value='arm64'):
             startup=client_startup.startup(path,policy_sha,check_only=True)

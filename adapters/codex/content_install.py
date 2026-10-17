@@ -170,7 +170,8 @@ def prepare(home,package,policy_path,policy_sha,replace_existing=False):
         metadata=private_json(registration)
         if metadata.get('schema')!=1 or metadata.get('native_mcp_name')!=NAME:raise InstallBlocked('Unknown existing registration')
         if 'mcp_sha256' in metadata:
-            if sha(json.dumps(old,sort_keys=True).encode())!=metadata['mcp_sha256']:raise InstallBlocked('Existing MCP drift')
+            if registered_mcp_digest(old)!=metadata['mcp_sha256']:raise InstallBlocked('Existing MCP drift')
+            if old.get('enabled') is False:mcp['enabled']=False
         else:
             receipt=private_json(metadata['migration_receipt'])
             if receipt.get('installation_complete') is not True or receipt.get('native_registered') is not True or receipt.get('new_registration_path')!=str(registration) or receipt.get('after',{}).get(str(config))!=sha(before) or receipt.get('after',{}).get(str(registration))!=sha(registered):raise InstallBlocked('Existing migration receipt drift')
@@ -290,7 +291,7 @@ def apply(plan,approved_digest,check=probe):
         config_raw=raw(config);desired=render(config_raw,plan['mcp'],config_raw is not None and NAME in tomllib.loads(config_raw.decode()).get('mcp_servers',{}))
         if sha(desired)!=plan['config_after_sha256']:raise InstallBlocked('Config rendering differs from approved plan')
         metadata={'schema':1,'native_mcp_name':NAME,'content_candidate':True,'data_mode':'personal-explicit','installation_complete':True,'protocol_checked':True,'model_loaded':'unknown','platform':plan['platform'],
-                  'mcp_sha256':sha(json.dumps(plan['mcp'],sort_keys=True).encode()),'release_policy':plan['release_policy'],'release_policy_sha256':plan['release_policy_sha256'],'package':plan['package'],'package_sha256':plan['package_sha256'],'plan_sha256':approved_digest}
+                  'mcp_sha256':registered_mcp_digest(plan['mcp']),'release_policy':plan['release_policy'],'release_policy_sha256':plan['release_policy_sha256'],'package':plan['package'],'package_sha256':plan['package_sha256'],'plan_sha256':approved_digest}
         payload={config:desired,registration:contract.encode(metadata)}
         if plan['legacy_agents']:
             agents=native/'AGENTS.md';cleaned=BLOCK.sub('',raw(agents).decode()).encode()
