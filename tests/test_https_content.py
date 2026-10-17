@@ -346,6 +346,24 @@ class HTTPSContent(unittest.TestCase):
         self.assertTrue(failed_activation['native_changed'],failed_activation)
         self.assertEqual(channel.verified_active()['version'],'0.3.0')
         self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
+        for target,data in pre_bridge_state.items():
+            target.write_bytes(data);target.chmod(0o600)
+        plan_path=state/'bootstrap-handover-plan.json';receipt_path=state/'content-install-receipt.json'
+        original_save=content_install.save
+        def interrupt_after_journal(target,value):
+            original_save(target,value)
+            if target==receipt_path and value.get('phase')=='applying':raise KeyboardInterrupt()
+        with patch.object(content_install,'save',side_effect=interrupt_after_journal):
+            with self.assertRaises(KeyboardInterrupt):
+                installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
+        self.assertTrue(plan_path.is_file())
+        self.assertEqual(content_install.private_json(receipt_path)['phase'],'applying')
+        self.assertEqual(config.read_bytes(),pre_bridge_state[config])
+        resumed=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
+        self.assertEqual(resumed['status'],'client-update-updated',resumed)
+        self.assertEqual(resumed['active_package_version'],'0.3.1')
+        self.assertFalse(plan_path.exists())
+        self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
 
     def test_pairing_transport_terminal_redacts_error_and_does_not_follow_redirect(self):
         transport=PairingHTTPS('https://synthetic.invalid');token='SYNTHETIC_DEVICE_TOKEN_1234567890123456'

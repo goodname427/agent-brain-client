@@ -707,6 +707,7 @@ def manage_update(home, action, *, channel_factory=None):
     Discovery may cache verified candidates, but never changes the active pointer.
     The CLI cannot observe host worker versions. MCP responses report their own.
     """
+    import content_install
     from content_install import inspect, registered_context
     result = {
         'operation': action, 'status': 'client-update-review-required',
@@ -722,6 +723,43 @@ def manage_update(home, action, *, channel_factory=None):
     try:
         if action not in ('check-update', 'update'):
             raise ValueError('Known maintenance action required')
+        handover_path = safe(Path(home)/'.config/agent-brain-client/bootstrap-handover-plan.json')
+        if handover_path.exists():
+            if action != 'update':
+                return dict(result, reason='bootstrap-handover-recovery-required', native_changed=None)
+            # The transaction journal may be applying, which makes inspect()
+            # intentionally fail closed. Resume from the exact private plan
+            # saved before the first transaction attempt.
+            plan = content_install.private_json(handover_path)
+            plan_digest = content_install.sha(content_install.contract.encode(plan))
+            metadata = private_json(safe(Path(home)/'.config/agent-brain-client/codex-mcp.json'))
+            if (metadata.get('content_candidate') is not True
+                    or plan.get('device_home') != str(Path(home).resolve())
+                    or plan.get('release_policy') != metadata.get('release_policy')
+                    or plan.get('release_policy_sha256') != metadata.get('release_policy_sha256')
+                    or plan.get('replace_existing') is not True):
+                return dict(result, reason='bootstrap-handover-recovery-binding-required', native_changed=None)
+            recovery_channel = (channel_factory or ClientReleases)(
+                metadata['release_policy'], metadata['release_policy_sha256'])
+            active = recovery_channel.verified_active()
+            package_root = safe(Path(recovery_channel.engine.local)/'packages')
+            candidate = safe(plan['package'])
+            if (active is None or active.get('version') != '0.3.0'
+                    or not recovery_channel.engine.adapter.legacy_030_https_policy
+                    or candidate.parent != package_root or not candidate.is_dir()):
+                return dict(result, reason='bootstrap-handover-recovery-checkpoint-required', native_changed=None)
+            content_install.package_check(candidate, recovery_channel.engine.policy)
+            recovered = content_install.apply(plan, plan_digest, check=content_install.probe_bootstrap)
+            if recovered.get('status') != 'content-native-client-installed' or not recovered.get('installed'):
+                return dict(result, reason='bootstrap-handover-recovery-incomplete',
+                            native_changed=recovered.get('native_changed'))
+            bootstrap_migrated = True
+            result['native_changed'] = True
+            if not content_install.inspect(home).get('registration_verified'):
+                return dict(result, reason='bootstrap-handover-recovery-verification-failed', native_changed=True)
+            if content_install.sha(handover_path.read_bytes()) != plan_digest:
+                return dict(result, reason='bootstrap-handover-plan-changed-after-recovery', native_changed=None)
+            handover_path.unlink()
         state = inspect(home)
         if not state.get('registration_verified') or state.get('installation_state') not in ('verified', 'verified-disabled'):
             return dict(result, reason=state.get('reason', 'verified-installation-required'))
@@ -757,7 +795,7 @@ def manage_update(home, action, *, channel_factory=None):
                               next_action=('Run '+UPDATE_COMMAND+' to apply this trusted candidate. ' if available else 'The local active package matches the trusted channel. ')+
                                           'The CLI cannot observe the running worker. Confirm MCP client_runtime; a normal host reload starts a new worker when needed.')
                 return result
-            if (before['version'] == '0.3.0'
+            if (not bootstrap_migrated and before['version'] == '0.3.0'
                     and channel.engine.adapter.legacy_030_https_policy):
                 # Switch the owned MCP command to the verified candidate
                 # bootstrap while the old 0.3.0 package is still active. The
@@ -770,14 +808,19 @@ def manage_update(home, action, *, channel_factory=None):
                                 reason='bootstrap-bridge-candidate-unconfirmed')
                 row = rows[0]
                 candidate = channel.engine.local/'packages'/(row['manifest']['version']+'-'+row['commit'])
-                import content_install
                 bridge_plan = content_install.prepare(
                     home, candidate, meta['release_policy'], meta['release_policy_sha256'],
                     replace_existing=True)
+                handover_path = safe(Path(home)/'.config/agent-brain-client/bootstrap-handover-plan.json')
+                if handover_path.exists():
+                    return dict(result, reason='bootstrap-handover-plan-already-present')
+                content_install.save(handover_path, bridge_plan)
                 bridge = content_install.apply(
                     bridge_plan, sha(content_install.contract.encode(bridge_plan)),
                     check=content_install.probe_bootstrap)
                 if bridge.get('status') != 'content-native-client-installed' or not bridge.get('installed'):
+                    if bridge.get('status') == 'content-install-rolled-back':
+                        handover_path.unlink(missing_ok=True)
                     return dict(result, status='client-update-review-required',
                                 reason='bootstrap-bridge-transaction-failed',
                                 native_changed=bridge.get('native_changed'))
@@ -788,6 +831,9 @@ def manage_update(home, action, *, channel_factory=None):
                 if not content_install.inspect(home).get('registration_verified'):
                     return dict(result, status='client-update-review-required',
                                 reason='bootstrap-bridge-verification-failed', native_changed=True)
+                if content_install.sha(handover_path.read_bytes()) != content_install.sha(content_install.contract.encode(bridge_plan)):
+                    return dict(result, reason='bootstrap-handover-plan-changed-after-transaction', native_changed=None)
+                handover_path.unlink()
             updated = channel.update()
             after = channel.verified_active()
             if updated.get('status') not in ('current', 'updated') or after is None:
