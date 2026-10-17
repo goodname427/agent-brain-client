@@ -783,17 +783,26 @@ def manage_update(home, action, *, channel_factory=None):
             active = recovery_channel.verified_active()
             package_root = safe(Path(recovery_channel.engine.local)/'packages')
             candidate = safe(plan['package'])
-            if (active is None or active.get('version') != '0.3.0'
-                    or not recovery_channel.engine.adapter.legacy_030_https_policy
+            if (active is None or not recovery_channel.engine.adapter.legacy_030_https_policy
                     or candidate.parent != package_root or not candidate.is_dir()):
                 return dict(result, reason='bootstrap-handover-recovery-checkpoint-required', native_changed=None)
             content_install.package_check(candidate, recovery_channel.engine.policy)
             receipt_path = safe(Path(home)/'.config/agent-brain-client/content-install-receipt.json')
             receipt = content_install.private_json(receipt_path)
             if receipt.get('phase') == 'complete' and receipt.get('plan_sha256') == plan_digest:
+                verified = json.loads((candidate/'verified.json').read_text())
+                candidate_manifest = verified['manifest']
+                candidate_is_active = (
+                    active.get('version') == candidate_manifest.get('version')
+                    and active.get('commit') == verified.get('commit')
+                    and active.get('package') == str(candidate.resolve()))
+                if active.get('version') != '0.3.0' and not candidate_is_active:
+                    return dict(result, reason='bootstrap-handover-recovery-checkpoint-required', native_changed=None)
                 # apply()'s completed-plan fast path defines installed as
                 # enabled. A paused registration is still a valid completed
-                # handover and can safely continue to release activation.
+                # handover and can safely continue to release activation. If
+                # the host already started the new bootstrap, accept only this
+                # exact verified candidate as the advanced active package.
                 recovered_state = content_install.inspect(home)
                 recovered = ({'status':'content-native-client-installed','installed':True,
                               'native_changed':False}
@@ -801,6 +810,8 @@ def manage_update(home, action, *, channel_factory=None):
                              and recovered_state.get('installation_state') in ('verified','verified-disabled')
                              else {})
             else:
+                if active.get('version') != '0.3.0':
+                    return dict(result, reason='bootstrap-handover-recovery-checkpoint-required', native_changed=None)
                 recovered = content_install.apply(plan, plan_digest, check=content_install.probe_bootstrap)
             if recovered.get('status') != 'content-native-client-installed' or not recovered.get('installed'):
                 return dict(result, reason='bootstrap-handover-recovery-incomplete',
