@@ -311,6 +311,7 @@ class HTTPSContent(unittest.TestCase):
             paused['enabled']=False
             config.write_bytes(content_install.render(config.read_bytes(),paused,True));config.chmod(0o600)
             self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
+            pre_bridge_state={p:p.read_bytes() for p in (config,registration,state/'content-install-receipt.json',cache/'active.json')}
             def apply_bridge_with_bootstrap_check(plan,approved_digest,check=None):
                 def verify(value):
                     self.assertEqual(channel.verified_active()['version'],'0.3.0')
@@ -335,6 +336,16 @@ class HTTPSContent(unittest.TestCase):
         with patch('sys.platform','darwin'),patch('platform.machine',return_value='arm64'):
             startup=client_startup.startup(path,policy_sha,check_only=True)
         self.assertEqual(startup['active']['version'],'0.3.1',startup)
+        # If channel activation raises after the handover transaction commits,
+        # report the native registration change to the caller.
+        for target,data in pre_bridge_state.items():
+            target.write_bytes(data);target.chmod(0o600)
+        with patch.object(channel,'update',side_effect=RuntimeError('Synthetic activation failure')):
+            failed_activation=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
+        self.assertEqual(failed_activation['status'],'client-update-review-required',failed_activation)
+        self.assertTrue(failed_activation['native_changed'],failed_activation)
+        self.assertEqual(channel.verified_active()['version'],'0.3.0')
+        self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
 
     def test_pairing_transport_terminal_redacts_error_and_does_not_follow_redirect(self):
         transport=PairingHTTPS('https://synthetic.invalid');token='SYNTHETIC_DEVICE_TOKEN_1234567890123456'

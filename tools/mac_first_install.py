@@ -718,6 +718,7 @@ def manage_update(home, action, *, channel_factory=None):
         'native_changed': False, 'device_credentials_accessed': False,
         'next_action': 'Preserve the existing installation. Verify its registration, policy and bootstrap; do not replace trust metadata or re-pair.',
     }
+    bootstrap_migrated = False
     try:
         if action not in ('check-update', 'update'):
             raise ValueError('Known maintenance action required')
@@ -756,7 +757,6 @@ def manage_update(home, action, *, channel_factory=None):
                               next_action=('Run '+UPDATE_COMMAND+' to apply this trusted candidate. ' if available else 'The local active package matches the trusted channel. ')+
                                           'The CLI cannot observe the running worker. Confirm MCP client_runtime; a normal host reload starts a new worker when needed.')
                 return result
-            bootstrap_migrated = False
             if (before['version'] == '0.3.0'
                     and channel.engine.adapter.legacy_030_https_policy):
                 # Switch the owned MCP command to the verified candidate
@@ -781,10 +781,13 @@ def manage_update(home, action, *, channel_factory=None):
                     return dict(result, status='client-update-review-required',
                                 reason='bootstrap-bridge-transaction-failed',
                                 native_changed=bridge.get('native_changed'))
+                # The install transaction has changed the MCP registration even
+                # if later channel activation or verification raises.
+                bootstrap_migrated = True
+                result['native_changed'] = True
                 if not content_install.inspect(home).get('registration_verified'):
                     return dict(result, status='client-update-review-required',
                                 reason='bootstrap-bridge-verification-failed', native_changed=True)
-                bootstrap_migrated = True
             updated = channel.update()
             after = channel.verified_active()
             if updated.get('status') not in ('current', 'updated') or after is None:
@@ -813,7 +816,7 @@ def manage_update(home, action, *, channel_factory=None):
             os.environ.clear()
             os.environ.update(previous)
     except Exception:
-        return result
+        return dict(result, native_changed=bootstrap_migrated)
 
 
 def lifecycle_exit(action, value):
