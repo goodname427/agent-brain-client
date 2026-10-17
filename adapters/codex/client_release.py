@@ -22,7 +22,7 @@ from brain_lock import locked,require_platform,platform_paths,WINDOWS_PLATFORMS,
 CLIENT_FILES = ('README.md', 'BOOTSTRAP.md', 'PROTOCOL.md', 'ADAPTERS.md', '.gitignore',
                 'connect.py', 'adapters/codex/remote_http.py', 'adapters/codex/remote_mcp.py',
                 'adapters/codex/codex_connect.py', 'adapters/codex/client_release.py',
-                'adapters/codex/client_startup.py', 'adapters/codex/codex_notify_mux.py',
+                'adapters/codex/client_startup.py',
                 'scripts/brain_release.py', 'scripts/brain_lock.py')
 CAPABILITIES = ['codex-stdio-mcp', 'synthetic-only']
 PERSONAL_CAPABILITIES=['codex-stdio-mcp','personal-memory-explicit']
@@ -32,6 +32,12 @@ CONTENT_CAPABILITIES=['codex-stdio-mcp','personal-content-explicit','signed-devi
 SSH_CONTENT_CLIENT_FILES=tuple(n for n in CONTENT_CLIENT_FILES if n!='native/DeviceComponent.swift')+('adapters/codex/ssh_content.py',)
 SSH_CONTENT_CAPABILITIES=['codex-stdio-mcp','personal-content-explicit','ssh-server-credential-proxy']
 HTTPS_CONTENT_CLIENT_FILES=tuple(n for n in CONTENT_CLIENT_FILES if n!='native/DeviceComponent.swift')+('adapters/codex/https_content.py','adapters/codex/system_credentials.py','native/CredentialStore.swift')
+# 0.3.0 shipped a frozen 22-file HTTPS policy that also included the deferred
+# notify mux. Recognize that exact historical policy for the explicit main
+# checkout update bridge; the current candidate remains the 21-file set above.
+LEGACY_030_HTTPS_CONTENT_CLIENT_FILES=tuple(
+    HTTPS_CONTENT_CLIENT_FILES[:11]+('adapters/codex/codex_notify_mux.py',)+HTTPS_CONTENT_CLIENT_FILES[11:]
+)
 HTTPS_CONTENT_CAPABILITIES=['codex-stdio-mcp','personal-content-explicit','https-system-credential']
 CHECK_UPDATE_COMMAND='sh tools/install-mac.sh --action check-update'
 UPDATE_COMMAND='sh tools/install-mac.sh --action update'
@@ -86,7 +92,10 @@ def validate_release_policy(policy):
     content=policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES)
     ssh=policy['capabilities']==SSH_CONTENT_CAPABILITIES
     https=policy['capabilities']==HTTPS_CONTENT_CAPABILITIES
-    if policy['channel']!='stable' or policy['file_prefixes']!=list(HTTPS_CONTENT_CLIENT_FILES if https else SSH_CONTENT_CLIENT_FILES if ssh else CONTENT_CLIENT_FILES if content else CLIENT_FILES):
+    files=HTTPS_CONTENT_CLIENT_FILES if https else SSH_CONTENT_CLIENT_FILES if ssh else CONTENT_CLIENT_FILES if content else CLIENT_FILES
+    allowed_file_policies=[list(files)]
+    if https:allowed_file_policies.append(list(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES))
+    if policy['channel']!='stable' or policy['file_prefixes'] not in allowed_file_policies:
         raise UpdateBlocked('Client release file scope changed')
     origin=policy['origin'];parsed=urlsplit(origin)
     if parsed.scheme:
@@ -131,17 +140,23 @@ class ClientPackage:
         self.ssh=bool(policy and policy['capabilities']==SSH_CONTENT_CAPABILITIES)
         self.https=bool(policy and policy['capabilities']==HTTPS_CONTENT_CAPABILITIES)
         self.files=HTTPS_CONTENT_CLIENT_FILES if self.https else SSH_CONTENT_CLIENT_FILES if self.ssh else CONTENT_CLIENT_FILES if self.content else CLIENT_FILES
+        self.legacy_030_https_policy=bool(self.https and policy and policy['file_prefixes']==list(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES))
         self.component_source_sha=policy['runtime']['component_source_sha256'] if self.content and not self.ssh and not self.https else None
 
         if self.https:require_platform('credential-store',policy.get('platform'))
         self.credential_source_sha=policy['runtime']['credential_source_sha256'] if self.https else None
 
-    def preflight(self, package, manifest):
-        if set(manifest['files'])!=set(self.files) or manifest['migrations']:
+    def preflight(self, package, manifest, *, allow_legacy_030_active=False):
+        files=self.files
+        if (allow_legacy_030_active and self.legacy_030_https_policy
+                and manifest.get('version')=='0.3.0'
+                and set(manifest.get('files',{}))==set(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES)):
+            files=LEGACY_030_HTTPS_CONTENT_CLIENT_FILES
+        if set(manifest['files'])!=set(files) or manifest['migrations']:
             raise UpdateBlocked('Client file membership/migration change requires review')
         if self.https and manifest['files'].get('native/CredentialStore.swift')!=self.credential_source_sha:raise UpdateBlocked('Credential helper source changed; helper/profile review required')
         if self.content and not self.ssh and not self.https and manifest['files'].get('native/DeviceComponent.swift')!=self.component_source_sha:raise UpdateBlocked('Native component source changed; signed component/plan review required')
-        for name in self.files:
+        for name in files:
             path=package/name
             if path.is_symlink() or not path.is_file():raise UpdateBlocked('Incomplete client package')
             if name.endswith('.py'):
@@ -175,7 +190,7 @@ class ClientReleases:
         active=self.engine.active()
         if active and self.policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES):
             receipt=json.loads((Path(active['package'])/'verified.json').read_text())
-            self.engine.adapter.preflight(Path(active['package']),receipt['manifest'])
+            self.engine.adapter.preflight(Path(active['package']),receipt['manifest'],allow_legacy_030_active=True)
         return active
 
     def discover(self, adapter, platform, installed_version):

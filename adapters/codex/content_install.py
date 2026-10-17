@@ -14,7 +14,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from client_release import policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,HTTPS_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases,dependency_environment
+from client_release import policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,HTTPS_CONTENT_CLIENT_FILES,LEGACY_030_HTTPS_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases,dependency_environment
 from content_mcp import pinned,pairs
 from content_cache import validate_policy,sha,contract
 from client_pairing import ComponentClient
@@ -43,19 +43,25 @@ def private_json(path):
     private_mode(path,blocked=InstallBlocked)
     return json.loads(raw(path,1048576),object_pairs_hook=pairs)
 
-def package_check(package,policy):
+def package_check(package,policy,*,allow_legacy_030_active=False):
     package=safe(package)
     if (package/'verified.json').exists():
         receipt=json.loads(raw(package/'verified.json'));manifest=receipt['manifest']
         ReleaseEngine(policy['cache'],policy,None,ClientPackage(policy),{}).validate(manifest,None)
     else:manifest=json.loads(raw(package/'export-manifest.json'))
-    if set(manifest['files'])!=set(HTTPS_CONTENT_CLIENT_FILES if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES else SSH_CONTENT_CLIENT_FILES if policy['capabilities']==SSH_CONTENT_CAPABILITIES else CONTENT_CLIENT_FILES):raise InstallBlocked('Candidate package membership changed')
+    files=HTTPS_CONTENT_CLIENT_FILES if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES else SSH_CONTENT_CLIENT_FILES if policy['capabilities']==SSH_CONTENT_CAPABILITIES else CONTENT_CLIENT_FILES
+    legacy_030_active=(allow_legacy_030_active and policy['capabilities']==HTTPS_CONTENT_CAPABILITIES
+                       and policy['file_prefixes']==list(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES)
+                       and manifest.get('version')=='0.3.0'
+                       and set(manifest['files'])==set(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES))
+    if legacy_030_active:files=LEGACY_030_HTTPS_CONTENT_CLIENT_FILES
+    if set(manifest['files'])!=set(files):raise InstallBlocked('Candidate package membership changed')
     for name,digest in manifest['files'].items():
         if sha(raw(package/name))!=digest:raise InstallBlocked('Candidate package changed')
-    ClientPackage(policy).preflight(package,{'files':manifest['files'],'migrations':[]})
+    ClientPackage(policy).preflight(package,{'version':manifest.get('version'),'files':manifest['files'],'migrations':[]},allow_legacy_030_active=legacy_030_active)
     return sha(contract.encode(manifest['files']))
 
-def context(home,package,policy_path,policy_sha,*,inspection=False):
+def context(home,package,policy_path,policy_sha,*,inspection=False,allow_legacy_030_active=False):
     require_platform('native-install')
     home=safe(home);policy_path=safe(policy_path);policy=policy_file(policy_path,policy_sha,runtime_check=not inspection)
     if policy['capabilities'] not in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES) or policy['platform']!=native_platform():raise InstallBlocked('Content release scope/platform required')
@@ -86,7 +92,7 @@ def context(home,package,policy_path,policy_sha,*,inspection=False):
     if client.data_mode!='personal':raise InstallBlocked('Personal content profile required')
     validate_policy(content,client.grant)
     methods=sorted(contract.methods(client.grant['scopes'])-{'memory_query'})
-    package_sha=package_check(package,policy)
+    package_sha=package_check(package,policy,allow_legacy_030_active=allow_legacy_030_active)
     mcp={'command':str(Path(sys.executable).resolve()),'args':['-I','-B',str(safe(package)/'adapters/codex/client_startup.py'),'--policy-file',str(policy_path),'--policy-sha256',policy_sha],
          'startup_timeout_sec':60,'tool_timeout_sec':120,'enabled':True,'enabled_tools':methods,'default_tools_approval_mode':'writes'}
     environment=dependency_environment(policy,runtime_check=not inspection)
@@ -118,7 +124,7 @@ def registered_context(home,metadata,config_image=None):
     changing command/args/env never becomes acceptable by running another Python.
     config_image is only an uninstall journal's validated original config image.
     """
-    policy,mcp,package_sha,native=context(home,metadata['package'],metadata['release_policy'],metadata['release_policy_sha256'],inspection=True)
+    policy,mcp,package_sha,native=context(home,metadata['package'],metadata['release_policy'],metadata['release_policy_sha256'],inspection=True,allow_legacy_030_active=True)
     recorded=tomllib.loads((raw(native/'config.toml') if config_image is None else config_image).decode()).get('mcp_servers',{}).get(NAME)
     if not isinstance(recorded,dict) or registered_mcp_digest(recorded)!=metadata.get('mcp_sha256'):
         raise InstallBlocked('Installed MCP binding drift')
@@ -164,7 +170,8 @@ def prepare(home,package,policy_path,policy_sha,replace_existing=False):
         metadata=private_json(registration)
         if metadata.get('schema')!=1 or metadata.get('native_mcp_name')!=NAME:raise InstallBlocked('Unknown existing registration')
         if 'mcp_sha256' in metadata:
-            if sha(json.dumps(old,sort_keys=True).encode())!=metadata['mcp_sha256']:raise InstallBlocked('Existing MCP drift')
+            if registered_mcp_digest(old)!=metadata['mcp_sha256']:raise InstallBlocked('Existing MCP drift')
+            if old.get('enabled') is False:mcp['enabled']=False
         else:
             receipt=private_json(metadata['migration_receipt'])
             if receipt.get('installation_complete') is not True or receipt.get('native_registered') is not True or receipt.get('new_registration_path')!=str(registration) or receipt.get('after',{}).get(str(config))!=sha(before) or receipt.get('after',{}).get(str(registration))!=sha(registered):raise InstallBlocked('Existing migration receipt drift')
@@ -188,6 +195,22 @@ def probe(plan):
     if run.returncode or len(run.stdout)>16384:raise InstallBlocked('Protocol/authentication unconfirmed')
     value=json.loads(run.stdout)
     if value.get('status')!='content-native-protocol-checked' or value.get('protocol_checked') is not True or value.get('authentication_checked') is not True or value.get('native_changed') is not False or value.get('tools')!=plan['mcp']['enabled_tools']:raise InstallBlocked('Unexpected installation protocol check')
+
+
+def probe_bootstrap(plan):
+    """Verify a candidate launcher against the still-active package offline."""
+    environment=None
+    if 'env' in plan['mcp']:environment=dict(plan['mcp']['env'],HOME=plan['device_home'],LANG='en_US.UTF-8')
+    command=[plan['mcp']['command'],*plan['mcp']['args'],'--bootstrap-check']
+    run=subprocess.run(command,capture_output=True,stdin=subprocess.DEVNULL,timeout=30,env=environment)
+    if run.returncode or len(run.stdout)>16384:raise InstallBlocked('Bootstrap handover check failed')
+    value=json.loads(run.stdout)
+    if (value.get('status')!='client-bootstrap-verified'
+            or value.get('active_package_version')!='0.3.0'
+            or value.get('native_changed') is not False
+            or value.get('network_used') is not False
+            or value.get('device_credentials_accessed') is not False):
+        raise InstallBlocked('Unexpected bootstrap handover check')
 
 def validate_install_scope(plan):
     keys={'schema','adapter','platform','device_home','codex_home','package','package_sha256','release_policy','release_policy_sha256','replace_existing','mcp','before','config_after_sha256','legacy_agents'}
@@ -268,7 +291,7 @@ def apply(plan,approved_digest,check=probe):
         config_raw=raw(config);desired=render(config_raw,plan['mcp'],config_raw is not None and NAME in tomllib.loads(config_raw.decode()).get('mcp_servers',{}))
         if sha(desired)!=plan['config_after_sha256']:raise InstallBlocked('Config rendering differs from approved plan')
         metadata={'schema':1,'native_mcp_name':NAME,'content_candidate':True,'data_mode':'personal-explicit','installation_complete':True,'protocol_checked':True,'model_loaded':'unknown','platform':plan['platform'],
-                  'mcp_sha256':sha(json.dumps(plan['mcp'],sort_keys=True).encode()),'release_policy':plan['release_policy'],'release_policy_sha256':plan['release_policy_sha256'],'package':plan['package'],'package_sha256':plan['package_sha256'],'plan_sha256':approved_digest}
+                  'mcp_sha256':registered_mcp_digest(plan['mcp']),'release_policy':plan['release_policy'],'release_policy_sha256':plan['release_policy_sha256'],'package':plan['package'],'package_sha256':plan['package_sha256'],'plan_sha256':approved_digest}
         payload={config:desired,registration:contract.encode(metadata)}
         if plan['legacy_agents']:
             agents=native/'AGENTS.md';cleaned=BLOCK.sub('',raw(agents).decode()).encode()
