@@ -288,12 +288,46 @@ class HTTPSContent(unittest.TestCase):
             checked=installer.manage_update(self.home,'check-update',channel_factory=lambda *_:channel)
             self.assertEqual(checked['status'],'client-update-available',checked)
             self.assertEqual(channel.verified_active()['version'],'0.3.0')
-            updated=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
+            original_apply=content_install.apply;bridge_checks=[]
+            config_before_bridge=config.read_bytes();registration_before_bridge=registration.read_bytes()
+            def fail_second_bridge_check(plan,approved_digest,check=None):
+                checks=0;verify=check
+                def fail_after_check(value):
+                    nonlocal checks
+                    checks+=1
+                    self.assertEqual(channel.verified_active()['version'],'0.3.0')
+                    verify(value)
+                    if checks==2:raise ValueError('Synthetic bootstrap handover postcheck failure')
+                return original_apply(plan,approved_digest,check=fail_after_check)
+            with patch.object(content_install,'apply',side_effect=fail_second_bridge_check):
+                failed=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
+            self.assertEqual(failed['status'],'client-update-review-required',failed)
+            self.assertEqual(channel.verified_active()['version'],'0.3.0')
+            self.assertEqual(config.read_bytes(),config_before_bridge)
+            self.assertEqual(registration.read_bytes(),registration_before_bridge)
+            self.assertTrue(content_install.inspect(self.home)['registration_verified'])
+            def apply_bridge_with_bootstrap_check(plan,approved_digest,check=None):
+                def verify(value):
+                    self.assertEqual(channel.verified_active()['version'],'0.3.0')
+                    self.assertEqual(Path(value['mcp']['args'][2]),Path(value['package'])/'adapters/codex/client_startup.py')
+                    check(value)
+                    bridge_checks.append(value['package'])
+                return original_apply(plan,approved_digest,check=verify)
+            with patch.object(content_install,'apply',side_effect=apply_bridge_with_bootstrap_check):
+                updated=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
         self.assertEqual(updated['status'],'client-update-updated',updated)
         self.assertEqual(updated['active_package_version'],'0.3.1')
+        self.assertEqual(len(bridge_checks),2)
         new_active=channel.verified_active();new_manifest=json.loads((Path(new_active['package'])/'verified.json').read_text())['manifest']
         self.assertNotIn('adapters/codex/codex_notify_mux.py',new_manifest['files'])
         self.assertEqual(path.read_bytes(),policy_before)
+        import tomllib
+        registered=tomllib.loads(config.read_text())['mcp_servers'][content_install.NAME]
+        self.assertEqual(registered['args'][2],str(Path(new_active['package'])/'adapters/codex/client_startup.py'))
+        import client_startup
+        with patch('sys.platform','darwin'),patch('platform.machine',return_value='arm64'):
+            startup=client_startup.startup(path,policy_sha,check_only=True)
+        self.assertEqual(startup['active']['version'],'0.3.1',startup)
 
     def test_pairing_transport_terminal_redacts_error_and_does_not_follow_redirect(self):
         transport=PairingHTTPS('https://synthetic.invalid');token='SYNTHETIC_DEVICE_TOKEN_1234567890123456'

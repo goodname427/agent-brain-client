@@ -195,6 +195,22 @@ def probe(plan):
     value=json.loads(run.stdout)
     if value.get('status')!='content-native-protocol-checked' or value.get('protocol_checked') is not True or value.get('authentication_checked') is not True or value.get('native_changed') is not False or value.get('tools')!=plan['mcp']['enabled_tools']:raise InstallBlocked('Unexpected installation protocol check')
 
+
+def probe_bootstrap(plan):
+    """Verify a candidate launcher against the still-active package offline."""
+    environment=None
+    if 'env' in plan['mcp']:environment=dict(plan['mcp']['env'],HOME=plan['device_home'],LANG='en_US.UTF-8')
+    command=[plan['mcp']['command'],*plan['mcp']['args'],'--bootstrap-check']
+    run=subprocess.run(command,capture_output=True,stdin=subprocess.DEVNULL,timeout=30,env=environment)
+    if run.returncode or len(run.stdout)>16384:raise InstallBlocked('Bootstrap handover check failed')
+    value=json.loads(run.stdout)
+    if (value.get('status')!='client-bootstrap-verified'
+            or value.get('active_package_version')!='0.3.0'
+            or value.get('native_changed') is not False
+            or value.get('network_used') is not False
+            or value.get('device_credentials_accessed') is not False):
+        raise InstallBlocked('Unexpected bootstrap handover check')
+
 def validate_install_scope(plan):
     keys={'schema','adapter','platform','device_home','codex_home','package','package_sha256','release_policy','release_policy_sha256','replace_existing','mcp','before','config_after_sha256','legacy_agents'}
     if not isinstance(plan,dict) or set(plan)!=keys or plan['schema']!=1 or plan['adapter']!='codex' or type(plan['replace_existing'])!=bool:raise InstallBlocked('Unsupported install plan')

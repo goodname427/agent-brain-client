@@ -702,7 +702,7 @@ def reexec_update_runtime(home, action, *, runner=subprocess.run):
 
 
 def manage_update(home, action, *, channel_factory=None):
-    """Reuse the registered updater; no pairing, native rewrite or worker restart.
+    """Reuse the registered updater; no pairing or worker restart.
 
     Discovery may cache verified candidates, but never changes the active pointer.
     The CLI cannot observe host worker versions. MCP responses report their own.
@@ -756,6 +756,35 @@ def manage_update(home, action, *, channel_factory=None):
                               next_action=('Run '+UPDATE_COMMAND+' to apply this trusted candidate. ' if available else 'The local active package matches the trusted channel. ')+
                                           'The CLI cannot observe the running worker. Confirm MCP client_runtime; a normal host reload starts a new worker when needed.')
                 return result
+            bootstrap_migrated = False
+            if (before['version'] == '0.3.0'
+                    and channel.engine.adapter.legacy_030_https_policy):
+                # Switch the owned MCP command to the verified candidate
+                # bootstrap while the old 0.3.0 package is still active. The
+                # new bootstrap accepts that exact historical active package,
+                # so an interruption before activation remains serviceable.
+                discovered = channel.discover('codex', policy['platform'], before['version'])
+                rows = discovered.get('releases', [])
+                if discovered.get('status') != 'compatible-update' or len(rows) != 1:
+                    return dict(result, status='client-update-review-required',
+                                reason='bootstrap-bridge-candidate-unconfirmed')
+                row = rows[0]
+                candidate = channel.engine.local/'packages'/(row['manifest']['version']+'-'+row['commit'])
+                import content_install
+                bridge_plan = content_install.prepare(
+                    home, candidate, meta['release_policy'], meta['release_policy_sha256'],
+                    replace_existing=True)
+                bridge = content_install.apply(
+                    bridge_plan, sha(content_install.contract.encode(bridge_plan)),
+                    check=content_install.probe_bootstrap)
+                if bridge.get('status') != 'content-native-client-installed' or not bridge.get('installed'):
+                    return dict(result, status='client-update-review-required',
+                                reason='bootstrap-bridge-transaction-failed',
+                                native_changed=bridge.get('native_changed'))
+                if not content_install.inspect(home).get('registration_verified'):
+                    return dict(result, status='client-update-review-required',
+                                reason='bootstrap-bridge-verification-failed', native_changed=True)
+                bootstrap_migrated = True
             updated = channel.update()
             after = channel.verified_active()
             if updated.get('status') not in ('current', 'updated') or after is None:
@@ -767,13 +796,16 @@ def manage_update(home, action, *, channel_factory=None):
                     result.update(active_package_version=None, active_package_commit=None,
                                   active_package_changed=None, reload_required=None)
                 return dict(result, status='client-update-unavailable' if updated.get('status') == 'offline' else 'client-update-review-required',
+                            native_changed=bootstrap_migrated,
                             next_action='Update was not confirmed. '+('A verified active package is retained or restored. ' if after is not None else 'No active package was verified; preserve recovery material. ')+
+                                        ('The compatible bootstrap handover is complete and the prior 0.3.0 package remains active. ' if bootstrap_migrated and after is not None and after['version']=='0.3.0' else '')+
                                         'Retry the same public update entry after reviewing the installation/channel state. Do not repeat pairing or import.')
             changed = after != before
             result.update(status='client-update-updated' if changed else 'client-update-current',
                           active_package_version=after['version'], active_package_commit=after.get('commit'),
                           latest_channel_version=after['version'], latest_channel_commit=after.get('commit'),
                           update_available=False, channel_checked=True, active_package_changed=changed,
+                          native_changed=bootstrap_migrated,
                           reload_required=True if changed else None,
                           next_action='The verified local package is ready. Normally reload only Agent Brain through the host so a new MCP worker loads it; do not kill in-flight work. Confirm client_runtime.running_worker_version matches latest_channel_version, then continue Onboard with fresh results. This command does not import real memories.')
             return result

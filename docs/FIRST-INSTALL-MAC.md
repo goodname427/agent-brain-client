@@ -111,7 +111,7 @@ sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action check-update
 sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action update
 ```
 
-不传新 connection 或邀请。两项动作复用已验证登记中的原 policy、渠道、信任锚和固定依赖，不重新配对、不访问设备凭据、不改原生 MCP 设置。check-update 可以下载并校验候选缓存，但不激活、不运行候选健康检查；update 使用既有健康检查及回滚机制切换活动包。维护所需工具/解释器缺失或漂移时停止审核，不重新准备或改写其绑定。重复 install 的已安装分支只核验登记，不检查或应用软件更新，输出会指向上述入口。
+不传新 connection 或邀请。两项动作复用已验证登记中的原 policy、渠道、信任锚和固定依赖，不重新配对或访问设备凭据。普通更新不改原生 MCP 设置；0.3.0 的一次性兼容桥接例外见下文。check-update 可以下载并校验候选缓存，但不激活、不运行候选健康检查；update 使用既有健康检查及回滚机制切换活动包。维护所需工具/解释器缺失或漂移时停止审核，不重新准备或改写其绑定。重复 install 的已安装分支只核验登记，不检查或应用软件更新，输出会指向上述入口。
 
 check-update 成功返回 client-update-available/current 与 channel_checked:true；update 成功返回 client-update-updated/current。网络不可达、健康失败或信任/范围审核受阻均退出非零并保留恢复材料；不要把旧活动包版本称为已确认最新版，不通过改摘要或信任锚跳过审核。status 不访问渠道。
 
@@ -138,7 +138,11 @@ sh "$MAIN_CHECKOUT/tools/install-mac.sh" --action check-update
 sh "$MAIN_CHECKOUT/tools/install-mac.sh" --action update
 ```
 
-新 checkout 的 updater 只接受精确已知的 0.3.0 历史策略或 0.2.14 当前策略，并仍要求候选包恰好匹配当前 21 文件清单。它复用原登记、原策略字节、原信任锚和原固定依赖；不重新配对、不改 allowlist、不访问设备凭据。`check-update` 不激活；`update` 使用既有健康检查及回滚。网络或策略校验失败时保留原 0.3.0 活动包。0.2.14 的 21 文件 updater 可按原有直接更新入口使用。更新成功后仍须按上文正常重载并确认新 worker 版本。
+新 checkout 的 updater 只接受精确已知的 0.3.0 历史策略或 0.2.14 当前策略，并仍要求候选包恰好匹配当前 21 文件清单。它复用原 release policy 字节、信任锚和固定依赖；不重新配对、不改 allowlist、不访问设备凭据。
+
+0.3.0 的 `client_startup.py` 固定在旧 22 文件包内，无法读取 21 文件候选。`update` 会先下载并校验候选，再用离线检查确认候选启动器可验证仍活动的 0.3.0 包；随后通过既有安装 journal/回滚事务，只更新 Agent Brain 拥有的 MCP 命令，使它指向缓存中的候选启动器。其他 TOML 设置保持原样。完成此启动器交接后才切换活动包指针。若事务检查失败，原 MCP 配置、登记和 0.3.0 活动包保持不变；若后续渠道更新失败，新启动器仍能运行已验证的 0.3.0 包，之后可重试。这个交接不读取设备凭据、不重新配对，也不改写 release policy。
+
+0.2.14 的 21 文件 updater 可按原有直接更新入口使用，无需启动器交接。两条路径更新成功后仍须按上文正常重载并确认新 worker 版本。
 
 三个版本分别核查：active_package_version 是本地活动包，latest_channel_version 是本次成功渠道检查的候选，client_runtime.running_worker_version 是 MCP 调用所用 worker。CLI 无法观测 worker，其字段为 null；reload_required:true 表示活动包已变化，需要宿主正常新 worker，null 表示当前 worker 状态未知。通过宿主正常重载本服务，不杀进程；确认新 MCP 返回版本与渠道候选一致后再进行本轮 Onboard。即使更新回报 current，也不能据此断言旧 worker 已重载。main、tags、旧回执和映射数量都不能替代此核验。
 
