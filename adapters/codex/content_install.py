@@ -14,7 +14,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from client_release import policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,HTTPS_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases,dependency_environment
+from client_release import policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,HTTPS_CONTENT_CLIENT_FILES,LEGACY_030_HTTPS_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases,dependency_environment
 from content_mcp import pinned,pairs
 from content_cache import validate_policy,sha,contract
 from client_pairing import ComponentClient
@@ -43,19 +43,25 @@ def private_json(path):
     private_mode(path,blocked=InstallBlocked)
     return json.loads(raw(path,1048576),object_pairs_hook=pairs)
 
-def package_check(package,policy):
+def package_check(package,policy,*,allow_legacy_030_active=False):
     package=safe(package)
     if (package/'verified.json').exists():
         receipt=json.loads(raw(package/'verified.json'));manifest=receipt['manifest']
         ReleaseEngine(policy['cache'],policy,None,ClientPackage(policy),{}).validate(manifest,None)
     else:manifest=json.loads(raw(package/'export-manifest.json'))
-    if set(manifest['files'])!=set(HTTPS_CONTENT_CLIENT_FILES if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES else SSH_CONTENT_CLIENT_FILES if policy['capabilities']==SSH_CONTENT_CAPABILITIES else CONTENT_CLIENT_FILES):raise InstallBlocked('Candidate package membership changed')
+    files=HTTPS_CONTENT_CLIENT_FILES if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES else SSH_CONTENT_CLIENT_FILES if policy['capabilities']==SSH_CONTENT_CAPABILITIES else CONTENT_CLIENT_FILES
+    legacy_030_active=(allow_legacy_030_active and policy['capabilities']==HTTPS_CONTENT_CAPABILITIES
+                       and policy['file_prefixes']==list(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES)
+                       and manifest.get('version')=='0.3.0'
+                       and set(manifest['files'])==set(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES))
+    if legacy_030_active:files=LEGACY_030_HTTPS_CONTENT_CLIENT_FILES
+    if set(manifest['files'])!=set(files):raise InstallBlocked('Candidate package membership changed')
     for name,digest in manifest['files'].items():
         if sha(raw(package/name))!=digest:raise InstallBlocked('Candidate package changed')
-    ClientPackage(policy).preflight(package,{'files':manifest['files'],'migrations':[]})
+    ClientPackage(policy).preflight(package,{'version':manifest.get('version'),'files':manifest['files'],'migrations':[]},allow_legacy_030_active=legacy_030_active)
     return sha(contract.encode(manifest['files']))
 
-def context(home,package,policy_path,policy_sha,*,inspection=False):
+def context(home,package,policy_path,policy_sha,*,inspection=False,allow_legacy_030_active=False):
     require_platform('native-install')
     home=safe(home);policy_path=safe(policy_path);policy=policy_file(policy_path,policy_sha,runtime_check=not inspection)
     if policy['capabilities'] not in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES) or policy['platform']!=native_platform():raise InstallBlocked('Content release scope/platform required')
@@ -86,7 +92,7 @@ def context(home,package,policy_path,policy_sha,*,inspection=False):
     if client.data_mode!='personal':raise InstallBlocked('Personal content profile required')
     validate_policy(content,client.grant)
     methods=sorted(contract.methods(client.grant['scopes'])-{'memory_query'})
-    package_sha=package_check(package,policy)
+    package_sha=package_check(package,policy,allow_legacy_030_active=allow_legacy_030_active)
     mcp={'command':str(Path(sys.executable).resolve()),'args':['-I','-B',str(safe(package)/'adapters/codex/client_startup.py'),'--policy-file',str(policy_path),'--policy-sha256',policy_sha],
          'startup_timeout_sec':60,'tool_timeout_sec':120,'enabled':True,'enabled_tools':methods,'default_tools_approval_mode':'writes'}
     environment=dependency_environment(policy,runtime_check=not inspection)
@@ -118,7 +124,7 @@ def registered_context(home,metadata,config_image=None):
     changing command/args/env never becomes acceptable by running another Python.
     config_image is only an uninstall journal's validated original config image.
     """
-    policy,mcp,package_sha,native=context(home,metadata['package'],metadata['release_policy'],metadata['release_policy_sha256'],inspection=True)
+    policy,mcp,package_sha,native=context(home,metadata['package'],metadata['release_policy'],metadata['release_policy_sha256'],inspection=True,allow_legacy_030_active=True)
     recorded=tomllib.loads((raw(native/'config.toml') if config_image is None else config_image).decode()).get('mcp_servers',{}).get(NAME)
     if not isinstance(recorded,dict) or registered_mcp_digest(recorded)!=metadata.get('mcp_sha256'):
         raise InstallBlocked('Installed MCP binding drift')

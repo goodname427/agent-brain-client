@@ -265,13 +265,26 @@ class HTTPSContent(unittest.TestCase):
             destination=f.publisher/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(out/name,destination)
         f.git(f.publisher,'add','--',*releases.HTTPS_CONTENT_CLIENT_FILES,'releases/manifest.json');f.git(f.publisher,'commit','-m','synthetic 0.3.1 legacy-policy bridge');f.git(f.publisher,'push','origin','releases/stable')
 
-        from unittest.mock import patch
-        registration= self.home/'.config/agent-brain-client/codex-mcp.json';registration.parent.mkdir(parents=True,mode=0o700);registration.write_bytes(canonical({'release_policy':str(path),'release_policy_sha256':policy_sha}));registration.chmod(0o600)
-        context=(old_policy,{'command':'/synthetic/pinned-python'},None,self.home/'codex')
-        with patch.object(content_install,'inspect',return_value={'registration_verified':True,'installation_state':'verified'}), \
-             patch.object(content_install,'registered_context',return_value=context), \
-             patch.object(installer,'dependency_environment',return_value=None), \
-             patch('sys.platform','darwin'),patch('platform.machine',return_value='arm64'):
+        # Build the same private registration/receipt shape that inspect() reads,
+        # without mocking inspect(), registered_context(), or package_check().
+        native=self.home/'codex';native.mkdir(mode=0o700)
+        config=native/'config.toml';config.write_text('model="synthetic"\n');config.chmod(0o600)
+        policy_value,mcp,package_sha,validated_native=content_install.context(
+            self.home,old_package.resolve(),path,policy_sha,inspection=True,allow_legacy_030_active=True)
+        self.assertEqual(validated_native,native)
+        config.write_bytes(content_install.render(config.read_bytes(),mcp,False));config.chmod(0o600)
+        state=self.home/'.config/agent-brain-client';registration=state/'codex-mcp.json';state.mkdir(parents=True,mode=0o700)
+        metadata={'schema':1,'native_mcp_name':content_install.NAME,'content_candidate':True,'data_mode':'personal-explicit',
+                  'installation_complete':True,'protocol_checked':True,'model_loaded':'unknown','platform':GRANT['platform'],
+                  'mcp_sha256':content_install.sha(json.dumps(mcp,sort_keys=True).encode()),'release_policy':str(path),
+                  'release_policy_sha256':policy_sha,'package':str(old_package.resolve()),'package_sha256':package_sha,
+                  'plan_sha256':'f'*64,'owned_install_paths':sorted([str(config),str(registration)])}
+        content_install.save(registration,metadata)
+        after={str(config):content_install.sha(config.read_bytes()),str(registration):content_install.sha(registration.read_bytes())}
+        content_install.save(state/'content-install-receipt.json',{'schema':1,'phase':'complete','plan_sha256':'f'*64,'after':after})
+        with patch('sys.platform','darwin'),patch('platform.machine',return_value='arm64'):
+            inspected=content_install.inspect(self.home)
+            self.assertTrue(inspected['registration_verified'],inspected)
             checked=installer.manage_update(self.home,'check-update',channel_factory=lambda *_:channel)
             self.assertEqual(checked['status'],'client-update-available',checked)
             self.assertEqual(channel.verified_active()['version'],'0.3.0')
