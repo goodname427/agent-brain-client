@@ -749,7 +749,20 @@ def manage_update(home, action, *, channel_factory=None):
                     or candidate.parent != package_root or not candidate.is_dir()):
                 return dict(result, reason='bootstrap-handover-recovery-checkpoint-required', native_changed=None)
             content_install.package_check(candidate, recovery_channel.engine.policy)
-            recovered = content_install.apply(plan, plan_digest, check=content_install.probe_bootstrap)
+            receipt_path = safe(Path(home)/'.config/agent-brain-client/content-install-receipt.json')
+            receipt = content_install.private_json(receipt_path)
+            if receipt.get('phase') == 'complete' and receipt.get('plan_sha256') == plan_digest:
+                # apply()'s completed-plan fast path defines installed as
+                # enabled. A paused registration is still a valid completed
+                # handover and can safely continue to release activation.
+                recovered_state = content_install.inspect(home)
+                recovered = ({'status':'content-native-client-installed','installed':True,
+                              'native_changed':False}
+                             if recovered_state.get('registration_verified')
+                             and recovered_state.get('installation_state') in ('verified','verified-disabled')
+                             else {})
+            else:
+                recovered = content_install.apply(plan, plan_digest, check=content_install.probe_bootstrap)
             if recovered.get('status') != 'content-native-client-installed' or not recovered.get('installed'):
                 return dict(result, reason='bootstrap-handover-recovery-incomplete',
                             native_changed=recovered.get('native_changed'))

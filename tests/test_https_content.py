@@ -364,6 +364,23 @@ class HTTPSContent(unittest.TestCase):
         self.assertEqual(resumed['active_package_version'],'0.3.1')
         self.assertFalse(plan_path.exists())
         self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
+        for target,data in pre_bridge_state.items():
+            target.write_bytes(data);target.chmod(0o600)
+        original_unlink=Path.unlink
+        def interrupt_plan_cleanup(target,*args,**kwargs):
+            if target==plan_path:raise KeyboardInterrupt()
+            return original_unlink(target,*args,**kwargs)
+        with patch.object(Path,'unlink',new=interrupt_plan_cleanup):
+            with self.assertRaises(KeyboardInterrupt):
+                installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
+        self.assertTrue(plan_path.is_file())
+        self.assertEqual(content_install.private_json(receipt_path)['phase'],'complete')
+        self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
+        resumed_after_commit=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
+        self.assertEqual(resumed_after_commit['status'],'client-update-updated',resumed_after_commit)
+        self.assertEqual(resumed_after_commit['active_package_version'],'0.3.1')
+        self.assertFalse(plan_path.exists())
+        self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
 
     def test_pairing_transport_terminal_redacts_error_and_does_not_follow_redirect(self):
         transport=PairingHTTPS('https://synthetic.invalid');token='SYNTHETIC_DEVICE_TOKEN_1234567890123456'
