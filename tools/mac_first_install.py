@@ -688,7 +688,45 @@ def reexec_update_runtime(home, action, *, runner=subprocess.run):
     """Use the originally pinned Python/Git without changing their binding."""
     from content_install import inspect, registered_context
     if not inspect(home).get('registration_verified'):
-        return None
+        if action != 'update':
+            return None
+        import content_install
+        handover = safe(Path(home)/'.config/agent-brain-client/bootstrap-handover-plan.json')
+        if not handover.exists():
+            return None
+        try:
+            plan = content_install.private_json(handover)
+            plan_digest = content_install.sha(content_install.contract.encode(plan))
+            content_install.validate_install_scope(plan)
+            state = Path(home)/'.config/agent-brain-client'
+            receipt = content_install.private_json(safe(state/'content-install-receipt.json'))
+            if receipt.get('phase') == 'applying' and receipt.get('plan_sha256') != plan_digest:
+                return None
+            meta = private_json(safe(state/'codex-mcp.json'))
+            if (meta.get('content_candidate') is not True
+                    or plan.get('device_home') != str(Path(home).resolve())
+                    or plan.get('release_policy') != meta.get('release_policy')
+                    or plan.get('release_policy_sha256') != meta.get('release_policy_sha256')):
+                return None
+            from client_release import policy_file
+            policy = policy_file(meta['release_policy'],meta['release_policy_sha256'],runtime_check=False)
+            if not DEPENDENCY_RUNTIME <= set(policy['runtime']):
+                return None
+            environment = dependency_environment(policy,runtime_check=False)
+            dependencies = content_install.private_json(safe(policy['runtime']['dependency_policy']))
+            python = str(Path(dependencies['python']).resolve())
+            if plan.get('mcp',{}).get('command') != python:
+                return None
+            executable = safe(Path(python))
+            if not executable.is_file() or not os.access(executable,os.X_OK):
+                return None
+            if executable.resolve() == Path(sys.executable).resolve():
+                return None
+            environment = dict(environment,HOME=str(home),CODEX_HOME=plan['codex_home'],LANG='en_US.UTF-8')
+            return runner([python,'-I','-B',str(ROOT/'tools/mac_first_install.py'),
+                           '--action',action],env=environment,stdin=subprocess.DEVNULL).returncode
+        except Exception:
+            return None
     meta = private_json(safe(Path(home) / '.config/agent-brain-client/codex-mcp.json'))
     policy, mcp, _, native = registered_context(home, meta)
     if not DEPENDENCY_RUNTIME <= set(policy['runtime']):
@@ -739,8 +777,9 @@ def manage_update(home, action, *, channel_factory=None):
                     or plan.get('release_policy_sha256') != metadata.get('release_policy_sha256')
                     or plan.get('replace_existing') is not True):
                 return dict(result, reason='bootstrap-handover-recovery-binding-required', native_changed=None)
-            recovery_channel = (channel_factory or ClientReleases)(
-                metadata['release_policy'], metadata['release_policy_sha256'])
+            recovery_channel = (channel_factory(metadata['release_policy'],metadata['release_policy_sha256'])
+                                if channel_factory else
+                                ClientReleases(metadata['release_policy'],metadata['release_policy_sha256'],inspection=True))
             active = recovery_channel.verified_active()
             package_root = safe(Path(recovery_channel.engine.local)/'packages')
             candidate = safe(plan['package'])

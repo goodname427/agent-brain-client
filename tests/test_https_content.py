@@ -332,6 +332,7 @@ class HTTPSContent(unittest.TestCase):
         self.assertEqual(registered['args'][2],str(Path(new_active['package'])/'adapters/codex/client_startup.py'))
         self.assertFalse(registered['enabled'])
         self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
+
         import client_startup
         with patch('sys.platform','darwin'),patch('platform.machine',return_value='arm64'):
             startup=client_startup.startup(path,policy_sha,check_only=True)
@@ -381,6 +382,40 @@ class HTTPSContent(unittest.TestCase):
         self.assertEqual(resumed_after_commit['active_package_version'],'0.3.1')
         self.assertFalse(plan_path.exists())
         self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
+
+    def test_interrupted_handover_reexecs_the_registered_dependency_python(self):
+        import mac_first_install as installer
+        import client_release
+        import content_install
+        state=self.home/'.config/agent-brain-client';state.mkdir(parents=True,mode=0o700)
+        policy_path=state/'release-policy.json';policy_path.write_text('{}');policy_path.chmod(0o600)
+        pinned=self.home/'pinned-python';pinned.write_text('synthetic executable');pinned.chmod(0o700)
+        dependency_path=state/'dependencies.json';dependency_path.write_text(json.dumps({'python':str(pinned)}));dependency_path.chmod(0o600)
+        metadata={'content_candidate':True,'release_policy':str(policy_path),'release_policy_sha256':'a'*64}
+        registration=state/'codex-mcp.json';registration.write_bytes(canonical(metadata));registration.chmod(0o600)
+        handover_path=state/'bootstrap-handover-plan.json'
+        plan={'schema':1,'platform':'darwin-arm64','device_home':str(self.home.resolve()),
+              'codex_home':str(self.home/'codex'),'release_policy':str(policy_path),
+              'release_policy_sha256':'a'*64,'package':str(self.home/'candidate'),
+              'mcp':{'command':str(pinned)}}
+        handover_path.write_bytes(canonical(plan));handover_path.chmod(0o600)
+        digest=content_install.sha(content_install.contract.encode(plan))
+        receipt=state/'content-install-receipt.json'
+        receipt.write_bytes(canonical({'phase':'applying','plan_sha256':digest}));receipt.chmod(0o600)
+        policy={'runtime':{'dependency_policy':str(dependency_path),'dependency_policy_sha256':'b'*64}}
+        captured=[]
+        def runner(argv,**kwargs):
+            captured.append((argv,kwargs));return type('Reply',(),{'returncode':0})()
+        with patch.object(content_install,'inspect',return_value={'registration_verified':False}), \
+                patch.object(content_install,'validate_install_scope'), \
+                patch.object(client_release,'policy_file',return_value=policy), \
+                patch.object(installer,'dependency_environment',return_value={'PATH':'/synthetic/bin'}), \
+                patch.object(sys,'executable','/synthetic/maintenance-python'):
+            result=installer.reexec_update_runtime(self.home,'update',runner=runner)
+        self.assertEqual(result,0)
+        self.assertEqual(captured[0][0][:3],[str(pinned),'-I','-B'])
+        self.assertEqual(captured[0][1]['env']['PATH'],'/synthetic/bin')
+        self.assertEqual(captured[0][1]['env']['CODEX_HOME'],plan['codex_home'])
 
     def test_pairing_transport_terminal_redacts_error_and_does_not_follow_redirect(self):
         transport=PairingHTTPS('https://synthetic.invalid');token='SYNTHETIC_DEVICE_TOKEN_1234567890123456'
