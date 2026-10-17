@@ -24,6 +24,12 @@ from client_release import HTTPS_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES
 ROOT=Path(__file__).resolve().parents[1]
 GRANT={'actor':'owner-adapter','scopes':['read','put'],'artifact_types':['memory','rule','skill'],
        'ids':{'memory':['synthetic-memory']+['synthetic-memory-'+str(i) for i in range(28)],'rule':['synthetic-rule'],'skill':['synthetic-skill']},'adapter':'codex','platform':'darwin-'+platform.machine().lower()}
+FROZEN_0214_HTTPS_FILES={'.gitignore','ADAPTERS.md','BOOTSTRAP.md','PROTOCOL.md','README.md',
+    'adapters/codex/client_pairing.py','adapters/codex/client_release.py','adapters/codex/client_startup.py',
+    'adapters/codex/codex_connect.py','adapters/codex/content_cache.py','adapters/codex/content_contract.py',
+    'adapters/codex/content_install.py','adapters/codex/content_mcp.py','adapters/codex/https_content.py',
+    'adapters/codex/remote_http.py','adapters/codex/remote_mcp.py','adapters/codex/system_credentials.py',
+    'connect.py','native/CredentialStore.swift','scripts/brain_lock.py','scripts/brain_release.py'}
 
 class Backend:
     def __init__(self):self.record=None;self.fail=False
@@ -190,6 +196,33 @@ class HTTPSContent(unittest.TestCase):
             self.assertTrue(client_startup.startup(path,digest,installation_check=True)['served'])
         self.assertIn('--https-profile-sha256',commands[0]);self.assertIn('--credential-source-sha256',commands[0]);self.assertNotIn('--token-file',commands[0])
 
+    def test_frozen_0214_https_allowlist_updates_to_031_with_real_updater(self):
+        import shutil
+        import test_client_lifecycle as fixtures
+        from build_client import release as build_release
+        import client_release as releases
+        f=fixtures.Releases('test_orphan_allowlist_discovery_install_upgrade_and_current');f.setUp();self.addCleanup(f.doCleanups)
+        frozen_files=list(releases.HTTPS_CONTENT_CLIENT_FILES)
+        self.assertEqual(len(frozen_files),21)
+        self.assertEqual(set(frozen_files),FROZEN_0214_HTTPS_FILES)
+        self.assertNotIn('adapters/codex/codex_notify_mux.py',frozen_files)
+        content=self.base/'frozen-policy-content.json';content.write_bytes(canonical({'schema':1,'adapter':'codex','kinds':GRANT['artifact_types'],'ids':GRANT['ids'],'dependencies':{'commands':[],'python_modules':[]}}));content.chmod(0o600)
+        runtime={'https_profile':str(self.profile_path),'https_profile_sha256':self.digest,'credential_source_sha256':self.profile['credential_source_sha256'],'content_policy':str(content),'content_policy_sha256':hashlib.sha256(content.read_bytes()).hexdigest(),'device_home':str(self.home),'codex_home':str(self.home/'codex'),'content_cache':str(self.base/'frozen-content-cache')}
+        old_policy=copy.deepcopy(f.policy);old_policy.update(capabilities=releases.HTTPS_CONTENT_CAPABILITIES,file_prefixes=frozen_files,runtime=runtime)
+        path=self.base/'unchanged-0214-policy.json';path.write_bytes(canonical(old_policy));path.chmod(0o600);digest=hashlib.sha256(path.read_bytes()).hexdigest()
+        policy_before=path.read_bytes()
+        channel=releases.ClientReleases(path,digest)
+        def publish(version):
+            output=self.base/('frozen-policy-'+version);manifest=build_release(ROOT,output,version,'personal-content-https')
+            self.assertEqual(set(manifest['files']),set(frozen_files))
+            for name in [*frozen_files,'releases/manifest.json']:
+                destination=f.publisher/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(output/name,destination)
+            f.git(f.publisher,'add','--',*frozen_files,'releases/manifest.json');f.git(f.publisher,'commit','-m','synthetic frozen-policy HTTPS '+version);f.git(f.publisher,'push','origin','releases/stable')
+        publish('0.2.14');old=channel.update();self.assertEqual(old['status'],'updated',old);self.assertEqual(old['active']['version'],'0.2.14')
+        publish('0.3.1');updated=channel.update();self.assertEqual(updated['status'],'updated',updated);self.assertEqual(updated['active']['version'],'0.3.1')
+        self.assertEqual(channel.verified_active()['version'],'0.3.1')
+        self.assertEqual(path.read_bytes(),policy_before)
+
     def test_pairing_transport_terminal_redacts_error_and_does_not_follow_redirect(self):
         transport=PairingHTTPS('https://synthetic.invalid');token='SYNTHETIC_DEVICE_TOKEN_1234567890123456'
         class Fail:
@@ -219,7 +252,7 @@ class HTTPSContent(unittest.TestCase):
 
     def test_https_export_separate_allowlist_no_server_signed_component_or_stable_manifest(self):
         out=self.base/'export';manifest=export(ROOT,out,https_content_candidate=True)
-        self.assertEqual(set(manifest['files']),set(HTTPS_CONTENT_CLIENT_FILES));self.assertEqual(len(manifest['files']),22);self.assertFalse(manifest['keychain_accessed']);self.assertFalse((out/'releases').exists());self.assertFalse((out/'native/DeviceComponent.swift').exists());self.assertFalse(any('brain_server' in path for path in manifest['files']))
+        self.assertEqual(set(manifest['files']),set(HTTPS_CONTENT_CLIENT_FILES));self.assertEqual(len(manifest['files']),21);self.assertFalse(manifest['keychain_accessed']);self.assertFalse((out/'releases').exists());self.assertFalse((out/'native/DeviceComponent.swift').exists());self.assertFalse(any('brain_server' in path for path in manifest['files']))
         with self.assertRaises(ValueError):export(ROOT,self.base/'mixed',ssh_content_candidate=True,https_content_candidate=True)
 
     def install_fixture(self):

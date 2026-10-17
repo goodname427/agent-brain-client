@@ -42,27 +42,26 @@ class ClientExport(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(json.loads(result.stdout)['status'], 'server-authorization-required')
 
-    def test_notify_mux_is_in_candidate_manifest_and_hash_matches_file(self):
+    def test_deferred_notify_mux_is_not_in_candidate_manifest(self):
         output = self.base / 'notify-client'
         manifest = build_client_export.export(ROOT, output, ssh_content_candidate=True)
         relative = 'adapters/codex/codex_notify_mux.py'
-        self.assertIn(relative, manifest['files'])
-        self.assertEqual(manifest['files'][relative], hashlib.sha256((output / relative).read_bytes()).hexdigest())
-        self.assertEqual((output / relative).read_bytes(), (ROOT / relative).read_bytes())
-        self.assertEqual(manifest['release_policy_scope_delta'], {'added': [relative], 'removed': []})
-        self.assertEqual(manifest['production_release_policy_scope_compatibility'], 'not-checked-by-build')
+        self.assertNotIn(relative, manifest['files'])
+        self.assertFalse((output / relative).exists())
+        self.assertEqual(manifest['release_policy_scope_delta'], {'added': [], 'removed': []})
+        self.assertEqual(manifest['production_release_policy_scope_compatibility'], 'unchanged-approved-file-scope')
         self.assertFalse(manifest['production_release_policy_compatible'])
         self.assertIn('production_release_policy_compatibility_reason', manifest)
 
-    def test_committed_030_release_manifest_matches_existing_https_build_flow(self):
+    def test_committed_031_release_manifest_matches_existing_https_build_flow(self):
         manifest = json.loads((ROOT / 'releases/manifest.json').read_text())
-        self.assertEqual(manifest['version'], '0.3.0')
+        self.assertEqual(manifest['version'], '0.3.1')
         self.assertNotIn('commit', manifest)
         self.assertEqual(set(manifest['files']), set(build_client_export.HTTPS_CONTENT_CLIENT_FILES))
         for name, expected in manifest['files'].items():
             self.assertEqual(expected, hashlib.sha256((ROOT / name).read_bytes()).hexdigest(), name)
-        output = self.base / 'stable-https-030'
-        generated = build_client_export.release(ROOT, output, '0.3.0', 'personal-content-https')
+        output = self.base / 'stable-https-031'
+        generated = build_client_export.release(ROOT, output, '0.3.1', 'personal-content-https')
         self.assertEqual(generated, manifest)
         committed_bytes = (ROOT / 'releases/manifest.json').read_bytes()
         generated_bytes = (output / 'releases/manifest.json').read_bytes()

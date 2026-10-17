@@ -22,7 +22,7 @@ from brain_lock import locked,require_platform,platform_paths,WINDOWS_PLATFORMS,
 CLIENT_FILES = ('README.md', 'BOOTSTRAP.md', 'PROTOCOL.md', 'ADAPTERS.md', '.gitignore',
                 'connect.py', 'adapters/codex/remote_http.py', 'adapters/codex/remote_mcp.py',
                 'adapters/codex/codex_connect.py', 'adapters/codex/client_release.py',
-                'adapters/codex/client_startup.py', 'adapters/codex/codex_notify_mux.py',
+                'adapters/codex/client_startup.py',
                 'scripts/brain_release.py', 'scripts/brain_lock.py')
 CAPABILITIES = ['codex-stdio-mcp', 'synthetic-only']
 PERSONAL_CAPABILITIES=['codex-stdio-mcp','personal-memory-explicit']
