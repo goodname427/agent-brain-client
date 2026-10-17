@@ -132,3 +132,9 @@ component_source_sha256 固定已批准的签名组件源码关联。候选源�
 `brain_activation_plan.py` 在私有 Core 中生成分阶段参数计划；`brain_credential_delivery.py` 只在服务账户、私密预建目录和精确部署计划 SHA 下生成/复用 authority key并内部交付设备记录。不设置管理员 issuer，不需要把原值发给用户／Mac。文件不覆盖未知记录，确认响应丢失从 pending 恢复；缺失/漂移或不可确认返回 review-required，保留状态，不自动重配。未知客户端仍 adapter-review-required。
 
 `brain_content_migration.py` 仅根据已批准 repository inventory 的名称、触发、依赖、资源和哈希准备迁移提案，不读正文、不上传、不执行 Skill。每个 Rule 保留 enabled/trigger，Skill 源启用状态未知时默认 disabled；已有本地 Core CLI/相对 wrapper 的 Brain Skills 须先改为服务流程，Core 仓库维护保留 repository scope。原生 Skill 目录冲突、UE 编辑器 prerequisites、正文转换/request SHA 与真实目标 revision 尚须具体处理；清单非空不表示迁移完成。合成验证用同样的 IDs/资源结构和改写后的合成正文，不能替代真实 Skill 适配。
+
+## Codex notify 自动捕获（延期，不属于 0.3.0）
+
+0.3.0 只涵盖获授权的来源迁移、显式保存与跨会话召回。自动 Notify 捕获尚未完成安全隔离和实时验收，不属于本版本提供、安装或验收的能力。请勿在用户级 Codex `config.toml` 中登记或启用捕获 hook；该配置会影响其他项目。安装器不会修改用户级配置。`codex_notify_mux.py` 虽随源码包包含，但在 0.3.0 中未启用、未批准且不受支持；即使用户级配置遗留旧的双回调命令，此版本也只调用原有回调，不排队或启动捕获任务。遗留的直接 `content_mcp.py --codex-notify` 入口同样保留为不执行捕获的兼容空操作。
+
+此候选尚缺事件 `cwd` 精确 allowlist（缺失时 fail closed）、隔离合成测试上下文及测试 Memories/MCP 来源，也未完成本机 app 的实时 notify 和真实模型验收。因此不能声称完整 Memories 覆盖、自动触发或生产数据已处理。历史会话、sessions、数据库和 `transcript_path` 不属于已批准的来源范围。
