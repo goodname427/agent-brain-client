@@ -19,7 +19,7 @@ from system_credentials import CredentialStore,NativeKeychain,canonical
 from content_cache import ContentAdapter,CacheBlocked
 from remote_http import RemoteClient,NoRedirect
 from build_client import export
-from client_release import HTTPS_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES
+from client_release import HTTPS_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,LEGACY_030_HTTPS_CONTENT_CLIENT_FILES
 
 ROOT=Path(__file__).resolve().parents[1]
 GRANT={'actor':'owner-adapter','scopes':['read','put'],'artifact_types':['memory','rule','skill'],
@@ -30,6 +30,7 @@ FROZEN_0214_HTTPS_FILES={'.gitignore','ADAPTERS.md','BOOTSTRAP.md','PROTOCOL.md'
     'adapters/codex/content_install.py','adapters/codex/content_mcp.py','adapters/codex/https_content.py',
     'adapters/codex/remote_http.py','adapters/codex/remote_mcp.py','adapters/codex/system_credentials.py',
     'connect.py','native/CredentialStore.swift','scripts/brain_lock.py','scripts/brain_release.py'}
+FROZEN_030_HTTPS_FILES=FROZEN_0214_HTTPS_FILES|{'adapters/codex/codex_notify_mux.py'}
 
 class Backend:
     def __init__(self):self.record=None;self.fail=False
@@ -221,6 +222,77 @@ class HTTPSContent(unittest.TestCase):
         publish('0.2.14');old=channel.update();self.assertEqual(old['status'],'updated',old);self.assertEqual(old['active']['version'],'0.2.14')
         publish('0.3.1');updated=channel.update();self.assertEqual(updated['status'],'updated',updated);self.assertEqual(updated['active']['version'],'0.3.1')
         self.assertEqual(channel.verified_active()['version'],'0.3.1')
+        self.assertEqual(path.read_bytes(),policy_before)
+
+    def test_frozen_030_policy_uses_official_update_entry_to_migrate_to_031(self):
+        import shutil
+        import test_client_lifecycle as fixtures
+        import client_release as releases
+        import content_install
+        import mac_first_install as installer
+        from build_client import release as build_release
+        f=fixtures.Releases('test_orphan_allowlist_discovery_install_upgrade_and_current');f.setUp();self.addCleanup(f.doCleanups)
+        legacy_files=list(releases.LEGACY_030_HTTPS_CONTENT_CLIENT_FILES)
+        self.assertEqual(len(legacy_files),22)
+        self.assertEqual(set(legacy_files),FROZEN_030_HTTPS_FILES)
+        self.assertEqual(set(legacy_files)-set(releases.HTTPS_CONTENT_CLIENT_FILES),{'adapters/codex/codex_notify_mux.py'})
+        content=self.base/'legacy-030-policy-content.json';content.write_bytes(canonical({'schema':1,'adapter':'codex','kinds':GRANT['artifact_types'],'ids':GRANT['ids'],'dependencies':{'commands':[],'python_modules':[]}}));content.chmod(0o600)
+        runtime={'https_profile':str(self.profile_path),'https_profile_sha256':self.digest,'credential_source_sha256':self.profile['credential_source_sha256'],'content_policy':str(content),'content_policy_sha256':hashlib.sha256(content.read_bytes()).hexdigest(),'device_home':str(self.home),'codex_home':str(self.home/'codex'),'content_cache':str(self.base/'legacy-030-content-cache')}
+        old_policy=copy.deepcopy(f.policy);old_policy.update(capabilities=releases.HTTPS_CONTENT_CAPABILITIES,file_prefixes=legacy_files,runtime=runtime)
+        path=self.base/'unchanged-030-policy.json';path.write_bytes(canonical(old_policy));path.chmod(0o600);policy_sha=hashlib.sha256(path.read_bytes()).hexdigest();policy_before=path.read_bytes()
+        widened=copy.deepcopy(old_policy);widened['file_prefixes'].append('adapters/codex/unapproved.py')
+        widened_path=self.base/'widened-030-policy.json';widened_path.write_bytes(canonical(widened));widened_path.chmod(0o600)
+        with self.assertRaises(releases.UpdateBlocked):releases.policy_file(widened_path,hashlib.sha256(widened_path.read_bytes()).hexdigest())
+        channel=releases.ClientReleases(path,policy_sha)
+
+        # Model the already verified package installed by the historical 0.3.0 updater.
+        old_out=self.base/'synthetic-installed-030';old_manifest=build_release(ROOT,old_out,'0.3.0','personal-content-https')
+        mux=old_out/'adapters/codex/codex_notify_mux.py';mux.parent.mkdir(parents=True,exist_ok=True);mux.write_text('# Synthetic historical manifest member; never executed by this test.\n')
+        old_manifest['files']['adapters/codex/codex_notify_mux.py']=hashlib.sha256(mux.read_bytes()).hexdigest()
+        old_commit='a'*40;old_package=Path(old_policy['cache'])/'packages'/('0.3.0-'+old_commit);old_package.mkdir(parents=True)
+        for name in old_manifest['files']:
+            destination=old_package/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(old_out/name,destination)
+        (old_package/'verified.json').write_bytes(canonical({'commit':old_commit,'manifest':old_manifest}))
+        cache=Path(old_policy['cache']);cache.mkdir(parents=True,exist_ok=True)
+        (cache/'active.json').write_bytes(canonical({'commit':old_commit,'version':'0.3.0','package':str(old_package.resolve()),'manifest_sha256':releases.digest(json.dumps(old_manifest,sort_keys=True).encode())}))
+        with self.assertRaises(releases.UpdateBlocked):channel.engine.adapter.preflight(old_package,old_manifest)
+        self.assertEqual(channel.verified_active()['version'],'0.3.0')
+
+        out=self.base/'synthetic-release-031';manifest=build_release(ROOT,out,'0.3.1','personal-content-https')
+        self.assertEqual(set(manifest['files']),set(releases.HTTPS_CONTENT_CLIENT_FILES))
+        (out/'releases/manifest.json').write_bytes(canonical(manifest))
+        for name in [*releases.HTTPS_CONTENT_CLIENT_FILES,'releases/manifest.json']:
+            destination=f.publisher/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(out/name,destination)
+        f.git(f.publisher,'add','--',*releases.HTTPS_CONTENT_CLIENT_FILES,'releases/manifest.json');f.git(f.publisher,'commit','-m','synthetic 0.3.1 legacy-policy bridge');f.git(f.publisher,'push','origin','releases/stable')
+
+        # Build the same private registration/receipt shape that inspect() reads,
+        # without mocking inspect(), registered_context(), or package_check().
+        native=self.home/'codex';native.mkdir(mode=0o700)
+        config=native/'config.toml';config.write_text('model="synthetic"\n');config.chmod(0o600)
+        policy_value,mcp,package_sha,validated_native=content_install.context(
+            self.home,old_package.resolve(),path,policy_sha,inspection=True,allow_legacy_030_active=True)
+        self.assertEqual(validated_native,native)
+        config.write_bytes(content_install.render(config.read_bytes(),mcp,False));config.chmod(0o600)
+        state=self.home/'.config/agent-brain-client';registration=state/'codex-mcp.json';state.mkdir(parents=True,mode=0o700)
+        metadata={'schema':1,'native_mcp_name':content_install.NAME,'content_candidate':True,'data_mode':'personal-explicit',
+                  'installation_complete':True,'protocol_checked':True,'model_loaded':'unknown','platform':GRANT['platform'],
+                  'mcp_sha256':content_install.sha(json.dumps(mcp,sort_keys=True).encode()),'release_policy':str(path),
+                  'release_policy_sha256':policy_sha,'package':str(old_package.resolve()),'package_sha256':package_sha,
+                  'plan_sha256':'f'*64,'owned_install_paths':sorted([str(config),str(registration)])}
+        content_install.save(registration,metadata)
+        after={str(config):content_install.sha(config.read_bytes()),str(registration):content_install.sha(registration.read_bytes())}
+        content_install.save(state/'content-install-receipt.json',{'schema':1,'phase':'complete','plan_sha256':'f'*64,'after':after})
+        with patch('sys.platform','darwin'),patch('platform.machine',return_value='arm64'):
+            inspected=content_install.inspect(self.home)
+            self.assertTrue(inspected['registration_verified'],inspected)
+            checked=installer.manage_update(self.home,'check-update',channel_factory=lambda *_:channel)
+            self.assertEqual(checked['status'],'client-update-available',checked)
+            self.assertEqual(channel.verified_active()['version'],'0.3.0')
+            updated=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
+        self.assertEqual(updated['status'],'client-update-updated',updated)
+        self.assertEqual(updated['active_package_version'],'0.3.1')
+        new_active=channel.verified_active();new_manifest=json.loads((Path(new_active['package'])/'verified.json').read_text())['manifest']
+        self.assertNotIn('adapters/codex/codex_notify_mux.py',new_manifest['files'])
         self.assertEqual(path.read_bytes(),policy_before)
 
     def test_pairing_transport_terminal_redacts_error_and_does_not_follow_redirect(self):
