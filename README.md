@@ -30,7 +30,7 @@ Mac arm64 的唯一用户操作说明见 [安装、使用、卸载与再次安�
 
 日常记忆行为由当前加载的 `agent-brain-memory` 与 `agent-brain-onboard` Skills 定义；[MEMORY-BEHAVIOR.md](docs/MEMORY-BEHAVIOR.md) 仅记录 Client 工具、范围和回执语义，不复制记忆政策。`tools/memory_review.py` 只离线审阅明确提供的元数据，不采集或上传。辅助 `memory_query` 只读当前有效 Memory，最多 3 条；既有 `content_catalog` 的 Memory-only 查询别名复用同一接口。这些源码检查与合入不代表已发布、已部署或模型实测。
 
-0.3.0 范围限定为获授权的来源迁移、显式保存与跨会话召回；自动 Notify 捕获延期，不作为 0.3.0 提供或验收的能力。此版本不安装或启用用户级 Notify hook，也不改用户全局配置。
+0.3.1 是 0.3.0 的前向修复版本，范围仍限定为获授权的来源迁移、显式保存与跨会话召回；自动 Notify 捕获延期，不作为 0.3.x 提供或验收的能力。此版本不安装或启用用户级 Notify hook，也不改用户全局配置。
 
 安装/重装成功明确交接 `onboard_check:coverage-check-required`，由 Agent 用既有 Onboard 流程核对当前来源；旧身份和旧完成标记不能证明全量，检查不触发重新配对或自动全量上传。无法观测的模型加载状态使用 `model_loaded:"unknown"`，映射数量与模型是否采用指令分开。卸载后 status 只读核验真实事务后像及登记残留，漂移明确报告 review-required。安装入口源码与运行期活动包分别交付，运行期指引和回执变化未发布前不宣称影响现有 worker。
 
