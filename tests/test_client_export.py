@@ -53,20 +53,31 @@ class ClientExport(unittest.TestCase):
         self.assertFalse(manifest['production_release_policy_compatible'])
         self.assertIn('production_release_policy_compatibility_reason', manifest)
 
-    def test_committed_031_release_manifest_matches_existing_https_build_flow(self):
-        manifest = json.loads((ROOT / 'releases/manifest.json').read_text())
+    def test_committed_031_release_manifest_remains_frozen_during_source_development(self):
+        committed_bytes = (ROOT / 'releases/manifest.json').read_bytes()
+        # Published 0.3.1 remains immutable while unreleased source advances.
+        # Refreshing its hashes would silently replace an existing version.
+        self.assertEqual(hashlib.sha256(committed_bytes).hexdigest(),
+                         'ecc2058e14aea2b9b1ddc0c7df185778c8bba0525596c7f96b2b07eee0de8106')
+        manifest = json.loads(committed_bytes)
         self.assertEqual(manifest['version'], '0.3.1')
         self.assertNotIn('commit', manifest)
         self.assertEqual(set(manifest['files']), set(build_client_export.HTTPS_CONTENT_CLIENT_FILES))
-        for name, expected in manifest['files'].items():
-            self.assertEqual(expected, hashlib.sha256((ROOT / name).read_bytes()).hexdigest(), name)
-        output = self.base / 'stable-https-031'
-        generated = build_client_export.release(ROOT, output, '0.3.1', 'personal-content-https')
-        self.assertEqual(generated, manifest)
-        committed_bytes = (ROOT / 'releases/manifest.json').read_bytes()
-        generated_bytes = (output / 'releases/manifest.json').read_bytes()
-        self.assertEqual(generated_bytes, committed_bytes)
-        self.assertEqual(hashlib.sha256(generated_bytes).digest(), hashlib.sha256(committed_bytes).digest())
+
+    def test_unpublished_https_export_matches_current_source_without_relabeling_release(self):
+        frozen = (ROOT / 'releases/manifest.json').read_bytes()
+        output = self.base / 'unpublished-https-source'
+        generated = build_client_export.export(ROOT, output, https_content_candidate=True)
+        self.assertEqual(generated['review_status'], 'unpublished-candidate')
+        self.assertFalse(generated['production_release_policy_compatible'])
+        self.assertFalse(generated['native_install_wired'])
+        self.assertNotIn('version', generated)
+        self.assertEqual(set(generated['files']), set(build_client_export.HTTPS_CONTENT_CLIENT_FILES))
+        for name, digest in generated['files'].items():
+            self.assertEqual(digest, hashlib.sha256((ROOT / name).read_bytes()).hexdigest(), name)
+            self.assertEqual((output / name).read_bytes(), (ROOT / name).read_bytes(), name)
+        self.assertFalse((output / 'releases/manifest.json').exists())
+        self.assertEqual((ROOT / 'releases/manifest.json').read_bytes(), frozen)
 
     def test_registration_is_idempotent_and_service_drift_is_preserved(self):
         home = self.base / 'client-home';token = self.base / 'client.token'
