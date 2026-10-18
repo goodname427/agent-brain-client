@@ -221,9 +221,9 @@ class HTTPSContentClient:
     def request(self,request):
         try:
             method=request['method'];params=request['params']
-            if method not in ('memory_query','content_catalog','content_read','content_put','client_updates'):raise ValueError('Device-only methods required')
+            if method not in ('memory_query','memory_event_submit','content_catalog','content_read','content_put','client_updates'):raise ValueError('Device-only methods required')
             if method=='memory_query' and 'memory' not in self.grant['artifact_types']:raise ValueError('Memory read grant required')
-            if method in ('content_read','content_put') and not allowed_id(self.grant['ids'],params['kind'],params['id']):raise ValueError('Unreviewed content ID')
+            if method in ('content_read','content_put','memory_event_submit') and not allowed_id(self.grant['ids'],params['kind'],params['id']):raise ValueError('Unreviewed content ID')
             return self.transport.request(request)
         except RequestStopped:raise
         except Exception:

@@ -273,3 +273,30 @@ The header changes neither authorization, CAS nor the request digest.
 Memory behavior and source-coverage decisions belong to the currently loaded `agent-brain-memory` and `agent-brain-onboard` Skills. This protocol defines content method schemas, field and authorization constraints, CAS and receipt semantics only; it does not set daily memory candidate thresholds or onboarding/source-import policy. If a relevant Skill is unavailable, report that gap. `content_catalog` reports AgentBrain destination contents, not Harness-native source inventory. `memory_query` limits each retrieval to at most three results; that query bound does not define source-review or import coverage.
 
 memory_query is an additive read-only typed method: kind=memory, query string (empty for recent), since/until nullable offset-aware ISO8601, limit 1..3. It returns current authorized topic previews/revisions and server memory updated_at, never event occurrence time or historical erased preferences. Existing content_catalog may carry Memory-only query options at the MCP layer and delegates to this method, retaining the original installed tool whitelist; normal catalog calls and v1 record/envelope shapes remain unchanged. Query does not refresh/drain unrelated blocked writes; unavailable/offline query stays an error. No new credential/scope/SQL migration, background collector or raw-session access.
+
+## Explicit native event source support
+
+The source supports an explicitly invoked HTTPS `--event-hook` worker with an
+exact pinned hook policy, profile and content policy. This does not register a
+handler, trust a definition, enable capture, enroll a device or publish a release.
+Normal MCP, notify, installation, update and legacy Memory query paths retain
+their existing behavior. The internal `memory_event_submit` method is excluded
+from MCP tools and the native installation allowlist.
+
+The hook policy selects at most sixteen exact canonical cwd/project/session
+bindings and an existing private directory for its off marker. Disabled policies
+or any off marker stop processing before stdin and identity activation. Payloads
+require a turn ID and either UserPromptSubmit prompt text or a nonrecursive Stop
+final message. Text is bounded to 8192 UTF-16 units per message; the worker never
+opens a supplied transcript path or scans history. Prompt stages locally; Stop
+enqueues the same immutable two-message event before waiting on the content lock.
+Only an explicit matching Stop retries that event under the current off gate;
+normal refresh does not drain pending events. Event submission uses the existing
+HTTPS device credential and endpoint. No extraction or model task is invoked.
+
+An exact `core-accepted` receipt confirms acceptance and its receipt ledger only:
+it retains durable=false, github_confirmed=false and model_extraction_verified=false.
+Missing, ambiguous or malformed receipts retain the original pending request.
+Hook output is protocol-only, exits successfully on capture exceptions and does
+not request a model continuation. Exit 0 does not prove capture or staging. Any
+real native verification requires a separately authorized current execution window.

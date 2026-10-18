@@ -196,7 +196,7 @@ class ContentAdapter:
     def methods(self):
         grant=getattr(self.client,'grant',{'scopes':['read','write'],'artifact_types':self.policy['kinds']})
         methods=contract.methods(grant['scopes']) if set(self.policy['kinds'])<=set(grant['artifact_types']) else set()
-        return methods if 'memory' in self.policy['kinds'] else methods-{'memory_query'}
+        return methods if 'memory' in self.policy['kinds'] else methods-{'memory_query','memory_event_submit'}
 
     def _load(self,name,default=None):
         require_platform('cache-storage',self.platform)
@@ -247,6 +247,14 @@ class ContentAdapter:
         return sorted(rows,key=lambda row:(row['created'],row['request']['request_id']))
 
     def _enqueue(self,request,reconciles=None):
+        # Serialize atomic appends separately from the content transaction,
+        # which may wait on remote I/O. Native events can become durable pending
+        # rows before that wait; existing rows are only checked, never rewritten.
+        path=self.cache/'outbox-enqueue.lock';self._safe(path,self.cache)
+        with locked(path):
+            return self._enqueue_locked(request,reconciles)
+
+    def _enqueue_locked(self,request,reconciles=None):
         self._check_write(request)
         if reconciles is None:reconciles={'request_ids':[],'source_keys':[]}
         if not isinstance(reconciles,dict) or set(reconciles)!={'request_ids','source_keys'}:raise CacheBlocked()
@@ -302,10 +310,19 @@ class ContentAdapter:
                 if item['status'] in ('conflict','inventoried'):item.update(status='reconciled',request_id=row['request']['request_id'])
             self._save('imports.json',state)
 
-    def _drain(self):
+    @staticmethod
+    def _event_allowed(request,event_gate):
+        if request['method']!='memory_event_submit' or event_gate is None:return True
+        try:return event_gate() is True
+        except Exception:return False
+
+    def _drain(self,event_request_id=None,event_gate=None):
         blocked:dict[tuple[str,str],set[str]]={}
         for row in self._queued():
             request=row['request'];params=request['params'];target=(params['kind'],params['id'])
+            # Automatic legacy refresh never uploads captured text. An exact
+            # Stop retry must pass the current finite hook policy again.
+            if request['method']=='memory_event_submit' and request['request_id']!=event_request_id:continue
             if row['state'] in ('conflict','blocked'):
                 if row['state']=='conflict' and row['remote'] is None:
                     try:
@@ -324,6 +341,7 @@ class ContentAdapter:
                         state['items'][key].update(status='blocked',request_id=request['request_id'])
                 self._save('imports.json',state)
                 blocked.setdefault(target,set()).add(request['request_id']);continue
+            if not self._event_allowed(request,event_gate):break
             try:response=self.client.request(json.loads(contract.encode(request)))
             except Exception:break
             if not isinstance(response,dict) or response.get('request_id')!=request['request_id']:break
@@ -350,6 +368,7 @@ class ContentAdapter:
     def _server_saved(self,response,request):
         if not isinstance(response,dict) or response.get('request_id')!=request['request_id'] or 'error' in response:return False
         receipt=response.get('persistence');value=response.get('result');params=request['params']
+        if request['method']=='memory_event_submit':return contract.core_receipt(response,request)
         if not isinstance(receipt,dict) or not isinstance(value,dict) or not isinstance(receipt.get('commit'),str) or not re.fullmatch(r'[a-f0-9]{40}',receipt['commit']):return False
         remote=receipt.get('state')=='remote-confirmed' and receipt.get('durable') is True and receipt.get('github_confirmed',True) is True and receipt.get('local_durable',True) is True
         local=receipt.get('state')=='local-confirmed' and receipt.get('durable') is False and receipt.get('local_durable') is True and receipt.get('github_confirmed') is False
@@ -985,7 +1004,7 @@ class ContentAdapter:
             except Exception:uncertain=True
             return {'status':'content-recovery-review-required' if uncertain else 'content-refresh-blocked','native_changed':None if uncertain else False,'model_loaded':'unknown','next_action':'Preserve local files and prior snapshots. Review transport, contract, content scope, dependencies, owned-file drift or interrupted recovery.'}
 
-    def invoke(self,request,reconciles=None):
+    def invoke(self,request,reconciles=None,*,event_gate=None):
         check_request()
         require_platform('cache-storage',self.platform)
         method=request.get('method');params=request.get('params');contract.validate(method,params)
@@ -1010,10 +1029,12 @@ class ContentAdapter:
         if method in contract.WRITES:
             with locked(self.cache/'content.lock'):
                 row=self._enqueue(request,reconciles)  # Precedes every transport/mapping operation.
+                if not self._event_allowed(request,event_gate):
+                    return dict(self._queue_result(row),local_refresh={'status':'event-disabled','native_changed':False,'model_loaded':'unknown'})
                 if row['state']=='blocked':
                     # Only an explicit identical call retries a blocked request.
                     # Startup/refresh never discard or automatically replay it.
-                    try:response=self.client.request(request)
+                    try:response=self.client.request(request) if self._event_allowed(request,event_gate) else None
                     except Exception:response=None
                     if self._server_saved(response,request):
                         row.update(state='confirmed',response=response)
@@ -1031,7 +1052,7 @@ class ContentAdapter:
                         if self._server_saved(response,request):
                             row['response']=response;self._save('outbox/'+request['request_id']+'.json',row)
                     except Exception:pass
-                self._drain();result=self._queue_result(self._load('outbox/'+request['request_id']+'.json'))
+                self._drain(request['request_id'] if method=='memory_event_submit' else None,event_gate=event_gate);result=self._queue_result(self._load('outbox/'+request['request_id']+'.json'))
         else:
             # A live read already goes through the authenticated Server. Mapping
             # every artifact twice here turned a batch into quadratic transport.
@@ -1055,5 +1076,5 @@ class ContentAdapter:
         if method not in contract.WRITES:
             refresh={'status':'read-only','native_changed':False,'model_loaded':'unknown','next_action':'Mappings refresh at MCP startup and after confirmed writes; this read does not refresh native mappings.'}
         else:
-            refresh=self.refresh() if result.get('local_queue',{}).get('state')=='confirmed' else {'status':'content-local-changes-retained','native_changed':False,'model_loaded':'unknown','queue':self.queue_status()}
+            refresh=({'status':'event-only','native_changed':False,'model_loaded':'unknown'} if method=='memory_event_submit' else self.refresh()) if result.get('local_queue',{}).get('state')=='confirmed' else {'status':'content-local-changes-retained','native_changed':False,'model_loaded':'unknown','queue':self.queue_status()}
         return dict(result,local_refresh=refresh)

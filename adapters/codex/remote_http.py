@@ -4,6 +4,7 @@ import argparse
 from contextlib import contextmanager
 import http.client
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -295,7 +296,22 @@ class RemoteClient:
         if self.data_mode=='personal':req.add_header('X-Agent-Brain-Data-Mode','personal')
         if self.write_receipt is not None and request.get('method') in ('remember','forget','content_put','content_remove'):
             req.add_header('X-Agent-Brain-Write-Receipt',self.write_receipt)
-        write=request.get('method') in ('remember','forget','content_put','content_remove')
+        write=request.get('method') in ('remember','forget','content_put','content_remove','memory_event_submit')
+        core=request.get('method')=='memory_event_submit'
+        def response_json(raw):
+            if not core:return json.loads(raw)
+            def unique(items):
+                value={}
+                for key,item in items:
+                    if key in value:raise ValueError('Duplicate Core response field')
+                    value[key]=item
+                return value
+            def reject_constant(value):raise ValueError('Nonfinite Core response number')
+            def finite_float(value):
+                number=float(value)
+                if not math.isfinite(number):raise ValueError('Nonfinite Core response number')
+                return number
+            return json.loads(raw,object_pairs_hook=unique,parse_constant=reject_constant,parse_float=finite_float)
         def failed(code,stage,retryable=False,**metadata):
             return {'request_id':rid,'error':{'code':code,'retryable':retryable,'stage':stage,**metadata},'persistence':{'durable':False}}
         try:
@@ -305,7 +321,7 @@ class RemoteClient:
             check_request()
             if len(value) > 262144:
                 return failed('response_too_large','response-parse',write)
-            try:result = json.loads(value)
+            try:result = response_json(value)
             except (ValueError,UnicodeError):return failed('invalid_response_json','response-parse',write)
             if not isinstance(result, dict):return failed('invalid_response_shape','response-validation',write)
             if result.get('request_id') != rid:return failed('response_id_mismatch','response-validation',write)
@@ -316,6 +332,9 @@ class RemoteClient:
                 metadata={'http_status':status} if type(status) is int else {}
                 return failed(error['code'],'http',error['retryable'],**metadata)
             if write and 'error' not in result:
+                if request.get('method')=='memory_event_submit':
+                    from content_contract import core_receipt
+                    return result if core_receipt(result,request) else failed('invalid_write_receipt','response-validation',True)
                 receipt=result.get('persistence',{})
                 local=(self.write_receipt=='local-durable-v1' and isinstance(receipt,dict)
                        and receipt.get('state')=='local-confirmed' and receipt.get('durable') is False
@@ -329,7 +348,12 @@ class RemoteClient:
             # Redirects are never followed with the bearer credential.
             status=error.code
             try:
-                result = json.loads(error.read(262144))
+                raw=error.read(262145 if core else 262144)
+                if core and len(raw)>262144:return failed('response_too_large','response-parse',write,http_status=status)
+                try:result=response_json(raw)
+                except (ValueError,UnicodeError):
+                    if core:return failed('invalid_response_json','response-parse',write,http_status=status)
+                    raise
                 if isinstance(result, dict) and result.get('request_id') in (None, rid) and isinstance(result.get('error'), dict):
                     error=result['error'];code=error.get('code')
                     if isinstance(code,str) and re.fullmatch(r'[a-z][a-z0-9_]{0,63}',code) and type(error.get('retryable'))==bool:
