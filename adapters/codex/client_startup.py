@@ -163,6 +163,12 @@ def main():
         # A capture failure must not block UserPromptSubmit or force another
         # model continuation. Keep failure/pending evidence, return no context.
         if not result.get('served'):print('{}')
+        elif result.get('exit_code',0)!=0:
+            # The host sees success by design. Preserve a bounded indication
+            # that dispatch reached this launcher but its worker failed, even
+            # when that worker could not emit its own startup diagnostic.
+            print(json.dumps({'stage':'event-hook-worker',
+                              'error_code':'hook_worker_failed'}),file=sys.stderr)
         return 0
     checked=args.check_only and result['status'] in ('current','updated','offline') and bool(result.get('active'))
     bootstrap_checked=args.bootstrap_check and result['status']=='client-bootstrap-verified'

@@ -113,6 +113,40 @@ class EventHook(unittest.TestCase):
         self.assertEqual(self.stop()['status'],'disabled');self.assertEqual(self.sent,[])
         self.assertEqual(Path(self.policy['off_file']).stat().st_mode&0o777,0o600)
 
+    def test_hook_failures_identify_policy_input_and_payload_before_identity(self):
+        argv=['content_mcp','--content-policy','synthetic-content','--content-policy-sha256','b'*64,
+              '--device-home',str(self.fixture.home),'--cache',str(self.fixture.cache),
+              '--https-profile','synthetic-profile','--https-profile-sha256','a'*64,
+              '--event-hook','--event-hook-policy','synthetic-hook','--event-hook-policy-sha256','c'*64]
+        cases=[('event-hook-policy-validation',dict(self.policy,scopes=[]),b'{}'),
+               ('event-hook-input-read',self.policy,b'x'*1048577),
+               ('event-hook-payload-validation',self.policy,b'{SYNTHETIC_SECRET'),
+               ('event-hook-payload-validation',self.policy,json.dumps(dict(self.payload,session_id='synthetic-other')).encode())]
+        for stage,policy,raw in cases:
+            with self.subTest(stage=stage,policy_invalid=not policy['scopes']):
+                source=SimpleNamespace(buffer=io.BytesIO(raw));diagnostic=io.StringIO();output=io.StringIO()
+                with patch.object(sys,'argv',argv),patch.object(sys,'stdin',source),patch.object(sys,'stderr',diagnostic),patch.object(sys,'stdout',output),patch.object(content_mcp,'pinned',side_effect=[fixture.POLICY,policy]),patch('https_content.HTTPSContentClient',side_effect=AssertionError('No identity access')) as construct:
+                    self.assertEqual(content_mcp.cli(),0)
+                self.assertEqual(output.getvalue(),'{}\n')
+                self.assertEqual(json.loads(diagnostic.getvalue())['stage'],stage)
+                self.assertNotIn('SYNTHETIC_SECRET',diagnostic.getvalue())
+                construct.assert_not_called()
+                self.assertFalse((self.fixture.cache/'hook-turns').exists())
+                self.assertEqual(self.sent,[])
+
+    def test_bootstrap_worker_failure_is_visible_without_blocking_prompt(self):
+        argv=['client_startup','--policy-file','synthetic-release','--policy-sha256','a'*64,
+              '--event-hook','--event-hook-policy','synthetic-hook','--event-hook-policy-sha256','b'*64]
+        for code in (0,1,-9):
+            with self.subTest(worker_exit=code):
+                output=io.StringIO();diagnostic=io.StringIO()
+                with patch.object(sys,'argv',argv),patch.object(sys,'stdout',output),patch.object(sys,'stderr',diagnostic),patch.object(client_startup,'startup',return_value={'status':'current','served':True,'exit_code':code}):
+                    self.assertEqual(client_startup.main(),0)
+                self.assertEqual(output.getvalue(),'')
+                if code:
+                    self.assertEqual(json.loads(diagnostic.getvalue()),{'stage':'event-hook-worker','error_code':'hook_worker_failed'})
+                else:self.assertEqual(diagnostic.getvalue(),'')
+
     def test_off_while_Stop_waits_for_content_lock_retains_pending_without_upload(self):
         self.prompt();waiting=threading.Event();results=[];errors=[]
         actual_locked=content_cache.locked

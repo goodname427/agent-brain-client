@@ -280,7 +280,9 @@ STARTUP_STAGES={
     'https-profile-load','credential-source-validation','device-binding-validation',
     'identity-activation','ssh-profile-load','signing-policy-validation',
     'device-component-load','transport-policy-validation','installation-check',
-    'content-adapter-start','import-plan-validation','mcp-serve'
+    'content-adapter-start','import-plan-validation','mcp-serve',
+    'event-hook-policy-validation','event-hook-input-read',
+    'event-hook-payload-validation','event-hook-run'
 }
 def emit_startup_failure(stage,error,stream=None):
     """Emit a bounded diagnostic; exception values and tracebacks are never serialized."""
@@ -516,11 +518,14 @@ def main():
     policy=pinned(args.content_policy,args.content_policy_sha256)
     hook_policy=None;hook_payload=None
     if args.event_hook:
+        _STARTUP_STAGE='event-hook-policy-validation'
         if args.installation_check or args.import_plan or not args.https_profile:raise ValueError('Distinct HTTPS native hook invocation required')
         hook_policy=validate_hook_policy(pinned(args.event_hook_policy,args.event_hook_policy_sha256),profile_sha256=args.https_profile_sha256,content_policy_sha256=args.content_policy_sha256)
         if not hook_enabled(hook_policy):print('{}');return
+        _STARTUP_STAGE='event-hook-input-read'
         raw=sys.stdin.buffer.read(1048577)
         if len(raw)>1048576:raise ValueError('Hook input exceeds bound')
+        _STARTUP_STAGE='event-hook-payload-validation'
         hook_payload=json.loads(raw,object_pairs_hook=pairs)
         native_hook_fields(hook_policy,hook_payload)
     elif args.event_hook_policy or args.event_hook_policy_sha256:raise ValueError('Explicit hook mode required')
@@ -557,6 +562,7 @@ def main():
     _STARTUP_STAGE='content-adapter-start'
     adapter=ContentAdapter(args.device_home,args.cache,policy,client,codex_home=args.codex_home)
     if args.event_hook:
+        _STARTUP_STAGE='event-hook-run'
         run_event_hook(adapter,hook_policy,hook_payload)
         # Hook output is protocol only; never inject captured text or continue a
         # completed turn. Receipt and pending evidence stay in the normal outbox.
@@ -572,13 +578,19 @@ def main():
     _STARTUP_STAGE='mcp-serve'
     serve(ContentServer(adapter,args.client_version),sys.stdin.buffer,sys.stdout)
 
-if __name__=='__main__':
+def cli():
     try:main()
     except PlatformUnsupported as error:
         if '--event-hook' in sys.argv:
-            print('{}');print('AgentBrain hook capture skipped; local evidence preserved.',file=sys.stderr);sys.exit(0)
-        print(json.dumps(error.result(served=False,native_changed=False)),file=sys.stderr);sys.exit(2)
+            print('{}');emit_startup_failure(_STARTUP_STAGE,error);return 0
+        print(json.dumps(error.result(served=False,native_changed=False)),file=sys.stderr);return 2
     except Exception as error:
         if '--event-hook' in sys.argv:
-            print('{}');print('AgentBrain hook capture skipped; local evidence preserved.',file=sys.stderr);sys.exit(0)
-        sys.exit(emit_startup_failure(_STARTUP_STAGE,error))
+            # Some failures happen before staging exists. Report only the
+            # bounded stage/category; never claim that local evidence was saved.
+            print('{}');emit_startup_failure(_STARTUP_STAGE,error);return 0
+        return emit_startup_failure(_STARTUP_STAGE,error)
+    return 0
+
+
+if __name__=='__main__':sys.exit(cli())
