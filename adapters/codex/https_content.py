@@ -270,6 +270,7 @@ class PinnedRecallPolicy:
         raw=owned(self.path).read_bytes()
         if len(raw)>16384 or hashlib.sha256(raw).hexdigest()!=self.digest:raise ValueError('Recall policy drift')
         p=json.loads(raw,object_pairs_hook=unique)
+        if isinstance(p,dict) and p.get('schema')==2:return self.daily(p)
         fields={'schema','enabled','not_before','expires_at','actor','device_id','endpoint','profile_sha256','project_id','source_sessions','recall_sessions','max_results','off_file'}
         if (not isinstance(p,dict) or set(p)!=fields or type(p['schema']) is not int or p['schema']!=1
                 or type(p['enabled']) is not bool or type(p['not_before']) is not int or type(p['expires_at']) is not int
@@ -288,17 +289,48 @@ class PinnedRecallPolicy:
         if not off.is_absolute() or '..' in off.parts or any(q.is_symlink() for q in (off.parent,*off.parent.parents)):raise ValueError('Canonical recall off marker required')
         return p
 
+    def daily(self,p):
+        fields={'schema','enabled','lifecycle','actor','device_id','endpoint','profile_sha256','project_id','source_mode','source_session_id','recall_session_id','source_device_id','max_results','off_file'}
+        from content_contract import event_identifier
+        if (set(p)!=fields or p['lifecycle']!='until-disabled' or type(p['enabled']) is not bool
+                or p['source_mode'] not in ('codex-project','operator-notes') or p['actor']!=self.profile['grant']['actor']
+                or p['endpoint']!=self.profile['endpoint'] or p['profile_sha256']!=self.profile_sha
+                or not isinstance(p['device_id'],str) or not re.fullmatch(r'[a-f0-9]{32}',p['device_id'])
+                or type(p['max_results']) is not int or not 1<=p['max_results']<=3):raise ValueError('Persistent project recall policy required')
+        for k in ('project_id','source_session_id','recall_session_id','source_device_id'):event_identifier(p[k])
+        if p['source_session_id']==p['recall_session_id']:raise ValueError('Distinct logical streams required')
+        off=Path(p['off_file'])
+        if not off.is_absolute() or '..' in off.parts or any(q.is_symlink() for q in (off.parent,*off.parent.parents)):raise ValueError('Canonical source switch required')
+        return p
+
     def check(self,request,device_id):
         p=self.load();off=Path(p['off_file'])
+        if p.get('schema')==2:return self.check_daily(request,device_id)
         from content_contract import validate,personal_owner
         if (p!=self.value or not p['enabled'] or not p['not_before']<=self.clock()<p['expires_at']
                 or off.exists() or off.is_symlink() or device_id!=p['device_id']
                 or self.profile['grant']['scopes']!=['read','put'] or not personal_owner(self.profile['grant']['ids'])
                 or not isinstance(request,dict) or set(request)!={'request_id','method','params'} or request['method']!='memory_query'):raise ValueError('Outside scoped recall consent')
+        if p.get('schema')==2:
+            return self.check_daily(request,device_id)
         q=request['params'];validate('memory_query',q)
         if (set(q)!={'kind','query','since','until','limit','context','source_sessions'}
                 or q['source_sessions']!=p['source_sessions'] or q['limit']>p['max_results']
                 or q['context']['project_id']!=p['project_id'] or q['context']['session_id'] not in p['recall_sessions']):raise ValueError('Recall scope changed')
+
+    def check_daily(self,request,device_id):
+        p=self.load()
+        from content_contract import validate,personal_owner
+        if (p!=self.value or not p['enabled'] or device_id!=p['device_id']
+                or self.profile['grant']['scopes']!=['read','put'] or not personal_owner(self.profile['grant']['ids'])
+                or not isinstance(request,dict) or set(request)!={'request_id','method','params'} or request['method']!='memory_query'):
+            raise ValueError('Persistent recall grant denied')
+        q=request['params'];validate('memory_query',q)
+        if (set(q)!={'kind','query','since','until','limit','context','source_scope'} or q['source_scope']!='approved-project'
+                or q['limit']>p['max_results'] or q['context']['project_id']!=p['project_id']
+                or p['source_mode']=='operator-notes' and q['context']['session_id']!=p['recall_session_id']):
+            raise ValueError('Persistent recall scope changed')
+
 
 
 class HTTPSContentClient:
@@ -333,7 +365,11 @@ class HTTPSContentClient:
             elif method=='memory_extract' or method=='memory_query' and (self.device_task is not None or 'context' in params or 'selection' in params):
                 if self.device_task is None:raise ValueError('Explicit finite task required')
                 self.device_task.check(request,self.device_id)
-            elif method not in ('memory_query','memory_event_submit','content_catalog','content_read','content_put','client_updates'):raise ValueError('Device-only methods required')
+            elif method not in ('memory_query','memory_event_submit','memory_status','memory_resume','memory_stop','memory_revoke','memory_sync','content_catalog','content_read','content_put','client_updates'):raise ValueError('Device-only methods required')
+            if method in ('memory_status','memory_resume','memory_stop','memory_revoke','memory_sync'):
+                from content_contract import validate
+                validate(method,params)
+                if 'memory' not in self.grant['artifact_types']:raise ValueError('Memory grant required')
             if method=='memory_query' and 'memory' not in self.grant['artifact_types']:raise ValueError('Memory read grant required')
             if method in ('content_read','content_put','memory_event_submit') and not allowed_id(self.grant['ids'],params['kind'],params['id']):raise ValueError('Unreviewed content ID')
             result=self.transport.request(request)
@@ -352,8 +388,8 @@ class HTTPSContentClient:
                             proof=row.get('provenance',{});sources=proof.get('sources',[])
                             if (proof.get('status')!='verified-native-generation-graph' or not proof.get('generation_ids') or not sources
                                     or set(proof.get('event_ids',[]))!={s.get('event_id') for s in sources}
-                                    or any(s.get('state')!='committed' or s.get('identity',{}).get('session_id') not in self.recall_policy.value['source_sessions']
-                                           or s.get('identity',{}).get('device_id')!=self.device_id or s.get('identity',{}).get('project_id')!=params['context']['project_id'] for s in sources)):
+                                    or any(s.get('state')!='committed' or (self.recall_policy.value['schema']==1 and s.get('identity',{}).get('session_id') not in self.recall_policy.value['source_sessions'])
+                                           or s.get('identity',{}).get('device_id')!=(self.recall_policy.value.get('source_device_id',self.device_id)) or s.get('identity',{}).get('project_id')!=params['context']['project_id'] for s in sources)):
                                 raise ValueError('Recall source evidence changed')
                     if count>params['limit']:raise ValueError('Recall response exceeds requested bound')
                 if 'selection' in params:
