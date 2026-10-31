@@ -1,50 +1,63 @@
-# 项目记忆入口
+# 日常项目记忆
 
-已有 Client HTTPS 安装和 read/put Memory 授权可直接复用，不需要新的 key。所有命令都在这个 Client 源码目录执行，复用安装时准备的 Python；入口不会安装解释器。项目配置和代码摘要保存在用户私有配置目录。
+日常配置使用 `until-disabled` 生命周期：来源持续到关闭或撤销，模型请求在累计额度耗尽、价格无法核对或结果不确定时暂停。不会按日清零，也没有 15 分钟或 1 小时使用期限。来源和费用需一次明确授权；默认不会把已关闭的旧测试授权转成日常授权。
 
-## 先使用已有 Memory
+一次配置后，从 Client 源码目录使用：
 
 ```sh
-sh tools/memory.sh enable --project-root /absolute/project
 sh tools/memory.sh status --project-root /absolute/project
 ```
 
-`enable` 只登记该项目的 SessionStart 召回。它不会采集聊天、开启提取或调用模型；默认取最近更新的最多三条已授权 Memory，可用 `setup --query` 指定固定检索词。支持官方 Hooks 的 Codex 宿主在正常信任该项目 Hook 后，新会话将收到有大小上限的历史记忆上下文。安装命令不会修改宿主信任，也不能证明当前宿主已触发 Hook。
+它只显示本地状态、项目 ID 和私有笔记目录，不读取记忆或凭据。
 
-若宿主没有这些 Hook，固定使用以下命令，把返回的 `additionalContext` 交给当前会话即可：
+## A：项目中的 Codex 原生对话
+
+仅在所选项目根目录启动的、支持官方 Hooks 的宿主中使用。正常信任该项目 Hook 后，UserPromptSubmit/Stop 按同 turn 配对，SessionStart 召回已有派生记忆并同步获准队列。不读原生历史目录、数据库或 transcript_path。不支持这些事件、缺 turn 或缺结束文本时不会伪造采集；改用 B。
+
+服务端根据已认证的 owner/设备和所选项目正式登记今后的会话；这些登记不是原生 startup attestation。Hook 定义已登记不证明宿主实际触发，软件状态始终区分两者。
+
+## B：主动提交一份笔记
+
+不需要 GUI 或原生 Hook。在 `status` 显示的私有 `notes_directory` 内写一份 UTF-8 `.txt`、`.md` 或 `.json` 文件，权限为 0600，然后执行：
 
 ```sh
+sh tools/memory.sh record --project-root /absolute/project --input /private/configured-notes/today.txt
 sh tools/memory.sh recall --project-root /absolute/project
 ```
 
-服务不可达时仅使用现有 Client 验证通过的缓存快照，查询结果标记 `cached_snapshot`；没有获准快照、身份/权限变更或协议错误时停止。缓存检索不保证联网查询的更新顺序。它不会从聊天历史补数据。
+普通文本作为一条真实用户笔记提交，不构造助手消息。JSON 可用 `{"text":"要记住的内容"}`，或明确提供 `user`/`assistant` 文本对；可附稳定 `id`。相同内容/ID 的重试保留原事件及请求，不能改写原操作。每条文本最多 8192 UTF-16 单元。Server 接收和提取是不同状态，空事实不会冒称提取成功。
+
+`recall` 返回 `additionalContext`，可直接交给当前任意 Harness 会话；支持的 Codex 宿主会在 SessionStart 注入。只返回来源校验通过的派生内容，不返回聊天 L0；没有派生内容时仍可召回既有获准 Data Memory，不将二者冒称已自动转换。离线结果标为缓存、未获远端确认。
+
+## 关闭、恢复与离线队列
 
 ```sh
+sh tools/memory.sh server-status --project-root /absolute/project
 sh tools/memory.sh stop --project-root /absolute/project
+sh tools/memory.sh resume --project-root /absolute/project
+sh tools/memory.sh flush --project-root /absolute/project
 ```
 
-`stop` 停止本项目此入口的召回和采集。再次显式 `enable` 恢复本地入口，但不能续期来源/费用窗口。软件源码更新后，重新 `enable` 更新摘要和自身 Hook 定义；其他 Hook 被保留。
+`stop` 先停止本地自动入口，再请求 Server 停止该来源；断网时明确报告远端停止尚未确认。已发出的模型请求不能撤销，原预留保留。`resume` 恢复同一配置，并只处理明确尚未发送模型的暂停任务；未知结果不会自动重试。`flush` 只重放本来源已排队的原请求，不给它们换 ID。`revoke` 撤销来源，随后需要新的明确来源授权才能配置恢复。
 
-## 从聊天提取，再在独立会话召回
+识别到的凭据模式和 `[LocalOnly]`、`[no-memory]`、`[private]` 标记会被排除。它不是通用保密分类器，应选择适合共享的项目或明确笔记；Server 还会执行其既有敏感内容拦截。
 
-Server 的 `setup_automatic_memory.py` 根据一份集中批准的 recipe，生成完整 Server/Client 策略和摘要。recipe 绑定来源项目、真实且仍有效的 source/recall 会话、原接收端和设备、用途、有效窗口、既有账本及费用授权。它不会猜测或伪造会话绑定，也不会清零旧额度。
+## 已授权设备间召回
 
-把编译输出的三个 `client-*.json` 文件及 `activation.json` 以私有文件方式带到客户端，使用编译输出的真实摘要：
+主设备导出不含正文/凭据的私有项目连接文件：
 
 ```sh
-sh tools/memory.sh import-bundle --activation /private/bundle/activation.json --activation-sha256 REVIEWED_SHA256
-sh tools/memory.sh enable --project-root /absolute/project --server-bundle /private/client-policies/client-bundle.json --server-bundle-sha256 REVIEWED_BUNDLE_SHA256
+sh tools/memory.sh project-link --project-root /absolute/project --output /private/project-link.json
 ```
 
-`import-bundle` 输出实际 bundle 路径和摘要；不需要手改策略文件。如果该项目已有只读配置，使用 `setup --project-root ... --output /private/new-settings.json --server-bundle ... --server-bundle-sha256 ...` 后，按输出的 `next_command` 安装，保留旧配置。
+把文件交给同 owner 已安装、已授权的另一设备，在该设备执行 `connect-project --project-root /absolute/local-project --input /private/project-link.json`。复用该设备原 profile 和凭据，只连接召回，不增加采集或来源控制权限。
 
-两种实际入口：
+## 一次配置入口
 
-- `codex-hooks`：支持宿主按原生 UserPromptSubmit/Stop 的同 turn 文本配对采集，复用官方 Client outbox 和 Server committed 事件触发提取。只接收策略中指定的会话，缺 turn、缺 assistant 输出、递归 Stop 或范围不符时停止，不读取 transcript、数据库或会话目录。
-- `operator-notes`：宿主不能提供 Hook 时，由用户把本次要记住的一对文本放入私有 JSON，字段为 `session_id`、`turn_id`、`user`、`assistant`。执行 `sh tools/memory.sh record --settings SETTINGS --settings-sha256 SHA --input /private/note.json`。这是显式提供笔记并触发同一提取链，不声称是原生采集。同一 turn 的重试保留原事件和请求 ID，内容改变时停止。
+Server 的 `setup_daily_memory.py` 根据明确批准的来源和累计额度生成完整策略包。Client 使用：
 
-随后在已绑定的独立 recall 会话自动 SessionStart 读取，或执行 `recall --settings SETTINGS --settings-sha256 SHA --session-id RECALL_SESSION`。此路径只返回获准来源、有 generation 和 committed receipt 的 L1/L2/L3 派生内容，不返回 L0；不要求恰好两批。模型提取可能没有耐久事实，不制造空事实，也不自动重试未确认模型调用。
+```sh
+sh tools/memory.sh activate-bundle --project-root /absolute/project --activation /private/bundle/activation.json --activation-sha256 REVIEWED_SHA256
+```
 
-这套有限来源配置最多一小时、16 个来源和 16 个独立召回会话，受已批准预算进一步限制；不是“所有今后聊天”授权。普通 Data Memory 可在已授权设备间共享；这个有限来源工具的派生召回绑定指定设备和会话，不代表自动开放所有设备。派生内容不会自动变成 Data Memory 条目。
-
-当前源码提供上述入口；真实 Hook 交付、模型效果及正在运行的旧 MCP worker 是否加载新版，均不能由静态构建结果推断。
+它验证原 owner、profile 和目标 Server，导入策略、保留旧设置并安装本项目 Hook，无需用户手改会话或拼策略。软件更新后 `enable --project-root ...` 刷新代码摘要。软件包已更新、来源已启用、实际宿主事件已交付是三个不同状态。
