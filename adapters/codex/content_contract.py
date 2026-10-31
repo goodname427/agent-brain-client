@@ -32,11 +32,19 @@ def mcp_methods(scopes):return methods(scopes)-HOOK_METHODS
 def encode(value):return json.dumps(value,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()
 
 def validate(method,params):
-    if method not in FIELDS or not isinstance(params,dict) or set(params)!=FIELDS[method]:raise ValueError('Invalid content request')
+    if method not in FIELDS or not isinstance(params,dict) or set(params) not in (FIELDS[method],FIELDS[method]|{'context'} if method=='memory_query' else FIELDS[method],FIELDS[method]|{'context','selection'} if method=='memory_query' else FIELDS[method]):raise ValueError('Invalid content request')
     if method=='memory_query':
         if params['kind']!='memory' or not isinstance(params['query'],str) or len(params['query'])>1024 or type(params['limit']) is not int or not 1<=params['limit']<=3:raise ValueError('Bounded Memory query required')
         since,until=query_time(params['since']),query_time(params['until'])
         if since is not None and until is not None and since>until:raise ValueError('Ordered query range required')
+        if 'context' in params:
+            context=params['context']
+            if not isinstance(context,dict) or set(context)!={'project_id','session_id','cross_session'} or context['cross_session'] is not True:raise ValueError('Explicit cross-session recall required')
+            for field in ('project_id','session_id'):event_identifier(context[field])
+            if not params['query'].strip() or since is not None or until is not None:raise ValueError('Core recall requires text and no legacy time range')
+        if 'selection' in params:
+            validate_capture_selection(params['selection'])
+            if params['limit']!=3 or params['query']!='capture-batches-exact-v1' or params['context']['session_id']==params['selection']['source_session_id']:raise ValueError('Separate exact three-layer recall required')
         return
     if method=='content_catalog':
         kinds=params['kinds']
@@ -259,3 +267,51 @@ def review_memory_sources(sources,candidates,mode="daily"):
         coverage.append(dict(source,reviewed_candidates=actual,fully_reviewed=source['authorized'] and source['status']=='read' and expected is not None and actual==expected))
     totals={name:sum(r['decision']==name for r in rows) for name in ('candidate','duplicate','skipped','excluded','deferred','review')}
     return {'mode':mode,'sources':coverage,'candidates':rows,'counts':totals,'accessible_review_complete':all(r['fully_reviewed'] for r in coverage if r['authorized'] and r['status']=='read'),'coverage_gaps':sum(r['status'] in ('unavailable','not-checked') or r['authorized'] and r['status']=='read' and not r['fully_reviewed'] for r in coverage),'account_complete':False,'data_transferred':False,'permissions_granted':False}
+
+
+def core_recall(value,context):
+    if not isinstance(value,dict) or set(value)!={'content_api_version','method','source','scope','recall'} or value['content_api_version']!=1 or value['method']!='core-recall' or value['source']!='core' or value['scope']!=context:raise ValueError('Unverified Core recall scope')
+    recall=value['recall']
+    if not isinstance(recall,dict) or set(recall)!={'L0','L1','L2','L3','cross_session','model_extraction_verified'} or recall['cross_session'] is not True or recall['model_extraction_verified'] is not False or len(encode(recall))>240000:raise ValueError('Bounded Core recall required')
+    for name in ('L0','L1','L2'):
+        if not isinstance(recall[name],list) or len(recall[name])>20 or any(not isinstance(row,dict) or not isinstance(row.get('provenance'),dict) for row in recall[name]):raise ValueError('Bounded sourced Core rows required')
+    if not isinstance(recall['L3'],dict) or not isinstance(recall['L3'].get('provenance'),dict) or recall['L3'].get('content') is not None and not isinstance(recall['L3'].get('content'),str):raise ValueError('Sourced Core profile required')
+
+
+def validate_capture_selection(value):
+    """Exact two committed capture batches, filled from runtime receipts only."""
+    if not isinstance(value,dict) or set(value)!={'source_session_id','batches'}:raise ValueError('Exact capture selection required')
+    identifier=value['source_session_id']
+    if not isinstance(identifier,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}',identifier):raise ValueError('Source session required')
+    batches=value['batches']
+    if not isinstance(batches,list) or len(batches)!=2:raise ValueError('Exactly two receipted batches required')
+    mids=[];events=[];keys=[]
+    for batch in batches:
+        if not isinstance(batch,dict) or set(batch)!={'batch_key','event_id','payload_sha256','message_ids','messages_sha256'}:raise ValueError('Exact batch receipt required')
+        for field in ('batch_key','payload_sha256','messages_sha256'):
+            if not isinstance(batch[field],str) or not re.fullmatch(r'[a-f0-9]{64}',batch[field]):raise ValueError('Runtime digest required')
+        event=batch['event_id'];ids=batch['message_ids']
+        if not isinstance(event,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}',event):raise ValueError('Runtime event required')
+        if not isinstance(ids,list) or len(ids)!=2 or any(not isinstance(i,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}',i) for i in ids):raise ValueError('Two runtime message IDs required')
+        mids+=ids;events.append(event);keys.append(batch['batch_key'])
+    if len(set(mids))!=4 or len(set(events))!=2 or len(set(keys))!=2:raise ValueError('Distinct incremental batches required')
+    return value
+
+
+def exact_capture_response(recall,params,device_id):
+    selection=params['selection'];events={b['event_id']:b['payload_sha256'] for b in selection['batches']}
+    selection_sha=hashlib.sha256(encode(selection)).hexdigest()
+    if recall['L0'] or len(recall['L1'])!=1 or len(recall['L2'])!=1:raise ValueError('Exactly one row per layer required')
+    for layer,row in [('L1',recall['L1'][0]),('L2',recall['L2'][0]),('L3',recall['L3'])]:
+        p=row['provenance'];sources=p.get('sources',[]);ids=p.get('event_ids',[]);content=row.get('content')
+        if (not isinstance(content,str) or not content or p.get('selection_sha256')!=selection_sha
+                or p.get('content_sha256')!=hashlib.sha256(content.encode()).hexdigest()
+                or p.get('status')!='verified-native-generation-graph' or p.get('model_output_truth_verified') is not False
+                or not p.get('generation_ids') or not ids or not set(ids)<=set(events)
+                or len(sources)!=len(set(ids)) or {s.get('event_id') for s in sources}!=set(ids)
+                or any(s.get('state')!='committed' or s.get('payload_sha256')!=events.get(s.get('event_id'))
+                    or s.get('identity',{}).get('device_id')!=device_id
+                    or s.get('identity',{}).get('project_id')!=params['context']['project_id']
+                    or s.get('identity',{}).get('session_id')!=selection['source_session_id'] for s in sources)
+                or layer=='L3' and set(ids)!=set(events)):
+            raise ValueError('Unverified exact capture response')

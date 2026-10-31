@@ -296,8 +296,9 @@ class RemoteClient:
         if self.data_mode=='personal':req.add_header('X-Agent-Brain-Data-Mode','personal')
         if self.write_receipt is not None and request.get('method') in ('remember','forget','content_put','content_remove'):
             req.add_header('X-Agent-Brain-Write-Receipt',self.write_receipt)
-        write=request.get('method') in ('remember','forget','content_put','content_remove','memory_event_submit')
-        core=request.get('method')=='memory_event_submit'
+        write=request.get('method') in ('remember','forget','content_put','content_remove','memory_event_submit','memory_extract')
+        core=(request.get('method') in ('memory_event_submit','memory_extract') or request.get('method')=='memory_query'
+              and isinstance(request.get('params'),dict) and 'context' in request['params'])
         def response_json(raw):
             if not core:return json.loads(raw)
             def unique(items):
@@ -332,6 +333,13 @@ class RemoteClient:
                 metadata={'http_status':status} if type(status) is int else {}
                 return failed(error['code'],'http',error['retryable'],**metadata)
             if write and 'error' not in result:
+                if request.get('method')=='memory_extract':
+                    p=result.get('persistence',{});r=result.get('result',{})
+                    valid=(isinstance(p,dict) and p.get('state')=='core-extracted' and p.get('durable') is False
+                           and p.get('receipt_ledger_durable') is True and p.get('preimage_retained') is True
+                           and isinstance(r,dict) and r.get('state')=='succeeded' and r.get('stages')==['L1','L2','L3']
+                           and type(r.get('http_requests')) is int and r['http_requests']==3 and isinstance(r.get('job_id'),str) and re.fullmatch(r'abj-[a-f0-9]{64}',r['job_id']))
+                    return result if valid else failed('invalid_extraction_receipt','response-validation',False)
                 if request.get('method')=='memory_event_submit':
                     from content_contract import core_receipt
                     return result if core_receipt(result,request) else failed('invalid_write_receipt','response-validation',True)
