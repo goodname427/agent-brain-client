@@ -300,3 +300,18 @@ Missing, ambiguous or malformed receipts retain the original pending request.
 Hook output is protocol-only, exits successfully on capture exceptions and does
 not request a model continuation. Exit 0 does not prove capture or staging. Any
 real native verification requires a separately authorized current execution window.
+
+## 0.4 bounded device task extension (unpublished source)
+
+Explicit owner tasks may use memory_extract(project_id,session_id) and a scoped
+memory_query with context. They require a pinned finite device policy binding the
+original profile, actor, device, endpoint and exact request IDs/parameters. A
+read-only task has extract_request=null and a two-batch selection; it cannot
+extract. These operations are not added to ordinary MCP methods or enrollment
+grants. Client and Server both reject changed scope/selection and ambiguous
+responses. Extraction accepts only a strict core-extracted receipt with integer
+HTTP count and the three succeeded stages; Core/Git durability is not inferred.
+Exact recall validates L0 empty, one L1/L2/L3, selection/content digests and
+committed source provenance. It does not assert model output truth. No implicit
+retry, new credential, background upload, capture registration or model call is
+introduced by installing the source.
