@@ -285,7 +285,7 @@ class HTTPSContentClient:
     def request(self,request):
         try:
             method=request['method'];params=request['params']
-            if method=='memory_extract' or method=='memory_query' and (self.device_task is not None or 'selection' in params):
+            if method=='memory_extract' or method=='memory_query' and (self.device_task is not None or 'context' in params or 'selection' in params):
                 if self.device_task is None:raise ValueError('Explicit finite task required')
                 self.device_task.check(request,self.device_id)
             elif method not in ('memory_query','memory_event_submit','content_catalog','content_read','content_put','client_updates'):raise ValueError('Device-only methods required')

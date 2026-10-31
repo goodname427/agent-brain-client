@@ -20,7 +20,7 @@
     "adapters/codex/content_contract.py": "e0fd02a731c3e04f45156905151505b5904ec007b6757784c894cf925d7d44e0",
     "adapters/codex/content_install.py": "16465ab754da247bb932aa9201405c3f1de9f7f855963c9b4568e5813a76f00e",
     "adapters/codex/content_mcp.py": "b3a118d846042d2c5f6b5a073f819e2c88a480c8f30d081e2064c851e8e3a4e5",
-    "adapters/codex/https_content.py": "a71f0d1554c294f1539be07044b5944850720223ff238083799ba922dea87d76",
+    "adapters/codex/https_content.py": "c6a5ab2ddd6d694a4438da9ac9f63ef22106c95836dfaf03376896f41a2b3ba3",
     "adapters/codex/remote_http.py": "494b47213f1da701cc8f6db597212fa42df36528fdf3f0e4ad66b34d01f48b64",
     "adapters/codex/remote_mcp.py": "62c0520cbd5426a25ced058ed26a8d49ad04d409f198526179b6599deb485d16",
     "adapters/codex/system_credentials.py": "841b70b3a3f9db998ec8692aeb61a79670320aa9e131ccad600dcc326a151102",
