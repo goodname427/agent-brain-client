@@ -32,7 +32,7 @@ def mcp_methods(scopes):return methods(scopes)-HOOK_METHODS
 def encode(value):return json.dumps(value,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()
 
 def validate(method,params):
-    if method not in FIELDS or not isinstance(params,dict) or set(params) not in (FIELDS[method],FIELDS[method]|{'context'} if method=='memory_query' else FIELDS[method],FIELDS[method]|{'context','selection'} if method=='memory_query' else FIELDS[method]):raise ValueError('Invalid content request')
+    if method not in FIELDS or not isinstance(params,dict) or set(params) not in (FIELDS[method],FIELDS[method]|{'context'} if method=='memory_query' else FIELDS[method],FIELDS[method]|{'context','selection'} if method=='memory_query' else FIELDS[method],FIELDS[method]|{'context','source_sessions'} if method=='memory_query' else FIELDS[method]):raise ValueError('Invalid content request')
     if method=='memory_query':
         if params['kind']!='memory' or not isinstance(params['query'],str) or len(params['query'])>1024 or type(params['limit']) is not int or not 1<=params['limit']<=3:raise ValueError('Bounded Memory query required')
         since,until=query_time(params['since']),query_time(params['until'])
@@ -45,6 +45,10 @@ def validate(method,params):
         if 'selection' in params:
             validate_capture_selection(params['selection'])
             if params['limit']!=3 or params['query']!='capture-batches-exact-v1' or params['context']['session_id']==params['selection']['source_session_id']:raise ValueError('Separate exact three-layer recall required')
+        if 'source_sessions' in params:
+            sources=params['source_sessions']
+            if not isinstance(sources,list) or not 1<=len(sources)<=16 or any(not isinstance(s,str) for s in sources) or len(set(sources))!=len(sources) or params['context']['session_id'] in sources:raise ValueError('Distinct finite recall sources required')
+            for source in sources:event_identifier(source)
         return
     if method=='content_catalog':
         kinds=params['kinds']
