@@ -222,6 +222,12 @@ class PinnedDeviceTask:
                 or not re.fullmatch(r'[a-f0-9]{32}',value['device_id'])):
             raise ValueError('Finite pinned device task required')
         extract,recall=value['extract_request'],value['recall_request']
+        if extract is None:
+            from content_contract import validate
+            if not isinstance(recall,dict) or set(recall)!={'request_id','method','params'} or recall['method']!='memory_query' or not re.fullmatch(r'[A-Za-z0-9_-]{16,128}',recall['request_id']):raise ValueError('Exact read-only task required')
+            validate('memory_query',recall['params'])
+            if 'selection' not in recall['params']:raise ValueError('Exact read selection required')
+            return value
         for request,method in ((extract,'memory_extract'),(recall,'memory_query')):
             if (not isinstance(request,dict) or set(request)!={'request_id','method','params'}
                     or request['method']!=method or not isinstance(request['request_id'],str)
@@ -279,7 +285,7 @@ class HTTPSContentClient:
     def request(self,request):
         try:
             method=request['method'];params=request['params']
-            if method=='memory_extract' or method=='memory_query' and self.device_task is not None:
+            if method=='memory_extract' or method=='memory_query' and (self.device_task is not None or 'context' in params or 'selection' in params):
                 if self.device_task is None:raise ValueError('Explicit finite task required')
                 self.device_task.check(request,self.device_id)
             elif method not in ('memory_query','memory_event_submit','content_catalog','content_read','content_put','client_updates'):raise ValueError('Device-only methods required')
@@ -289,6 +295,9 @@ class HTTPSContentClient:
             if method=='memory_query' and self.device_task is not None and 'error' not in result:
                 from content_contract import core_recall
                 core_recall(result['result'],params['context'])
+                if 'selection' in params:
+                    from content_contract import exact_capture_response
+                    exact_capture_response(result['result']['recall'],params,self.device_task.value['device_id'])
             return result
         except RequestStopped:raise
         except Exception:

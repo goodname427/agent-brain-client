@@ -1011,22 +1011,11 @@ class ContentAdapter:
         if method not in self.methods():raise CacheBlocked()
         if method=='memory_query':
             if 'memory' not in self.policy['kinds'] or 'memory' not in self.client.grant['artifact_types']:raise CacheBlocked()
-            if 'context' in params:
-                # Core returns project-scoped layers rather than the legacy
-                # topic IDs filtered below. A finite legacy ID grant cannot
-                # authorize the whole Core result and must fail before transport.
-                for ids in (self.policy['ids'],self.client.grant.get('ids',{})):
-                    if ids.get('memory')!='*' and not contract.personal_owner(ids):raise CacheBlocked()
             try:response=self.client.request(request)
             except OSError:response={'request_id':request['request_id'],'error':{'code':'memory_query_unavailable','retryable':True},'persistence':{'durable':False}}
             if not isinstance(response,dict) or response.get('request_id')!=request['request_id']:raise CacheBlocked()
             if 'error' in response:return response
             value=response.get('result')
-            if 'context' in params:
-                try:contract.core_recall(value,params['context'])
-                except Exception:raise CacheBlocked()
-                if response.get('persistence')!={'state':'read-only','durable':False}:raise CacheBlocked()
-                return dict(response,local_refresh={'status':'query-only','native_changed':False,'model_loaded':'unknown'})
             if not isinstance(value,dict) or set(value)!={'content_api_version','commit','method','time_basis','topics'} or value['content_api_version']!=1 or value['time_basis']!='memory_updated_at' or value['method'] not in ('lexical','recent-updates') or not isinstance(value['commit'],str) or not re.fullmatch(r'[a-f0-9]{40}',value['commit']) or not isinstance(value['topics'],list) or len(value['topics'])>params['limit']:raise CacheBlocked()
             seen=set()
             for topic in value['topics']:
