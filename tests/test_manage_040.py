@@ -20,17 +20,17 @@ class Management(unittest.TestCase):
   self.assertEqual(code,0);self.assertFalse(value['published']);self.assertFalse(value['installed'])
   self.assertEqual(json.loads((target/'releases/manifest.json').read_text())['version'],'0.4.4')
   self.assertEqual(before,(ROOT/'releases/manifest.json').read_bytes())
- def test_apply_validates_then_loads_actual_plan_not_inspection_summary(self):
+ def test_apply_loads_pinned_plan_and_delegates_recovery_before_preimages(self):
   plan={'schema':1,'fixture':'synthetic'};calls=[]
-  with patch('content_install.inspect_plan',side_effect=lambda *a:calls.append('inspect') or {'status':'ready'}),patch('content_mcp.pinned',return_value=plan),patch('content_install.apply',side_effect=lambda p,d:calls.append(p) or {'installed':True}):
+  with patch('content_install.inspect_plan',side_effect=AssertionError('Recovery must run first')) as inspect,patch('content_mcp.pinned',return_value=plan),patch('content_install.apply',side_effect=lambda p,d:calls.append(p) or {'installed':True}):
    code,value=self.run_entry(['apply','--plan-file','synthetic-plan','--plan-sha256','a'*64])
-  self.assertEqual(code,0);self.assertEqual(calls,['inspect',plan])
+  self.assertEqual(code,0);self.assertEqual(calls,[plan]);inspect.assert_not_called()
  def test_drift_before_apply_never_runs_mutator(self):
-  with patch('content_install.inspect_plan',side_effect=ValueError()),patch('content_install.apply') as apply:
+  with patch('content_mcp.pinned',side_effect=ValueError()),patch('content_install.apply') as apply:
    code,value=self.run_entry(['apply','--plan-file','synthetic-plan','--plan-sha256','a'*64])
   apply.assert_not_called();self.assertEqual(code,2);self.assertEqual(value['native_state'],'unconfirmed-review-required')
  def test_partial_apply_error_does_not_claim_rollback_or_unchanged_state(self):
-  with patch('content_install.inspect_plan'),patch('content_mcp.pinned',return_value={}),patch('content_install.apply',side_effect=OSError()):
+  with patch('content_mcp.pinned',return_value={}),patch('content_install.apply',side_effect=OSError()):
    code,value=self.run_entry(['apply','--plan-file','synthetic-plan','--plan-sha256','a'*64])
   self.assertEqual(code,2);self.assertNotIn('native_state_preserved',value)
  def test_update_uses_existing_manager_and_original_failure_exit(self):

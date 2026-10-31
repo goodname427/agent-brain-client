@@ -26,9 +26,8 @@ def dispatch(args):
         save(path,value)
         return {'status':'install-plan-prepared','plan':str(path),'plan_sha256':hashlib.sha256(content_contract.encode(value)).hexdigest(),'installed':False,'native_changed':False}
     if args.action=='apply':
-        from content_install import apply,inspect_plan
+        from content_install import apply
         from content_mcp import pinned
-        inspect_plan(args.plan_file,args.plan_sha256)
         return apply(pinned(args.plan_file,args.plan_sha256),args.plan_sha256)
     if args.action=='status':
         from content_install import inspect
