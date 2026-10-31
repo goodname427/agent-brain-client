@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tomllib
 from client_release import policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,HTTPS_CONTENT_CLIENT_FILES,LEGACY_030_HTTPS_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases,dependency_environment
-from content_mcp import pinned,pairs,content_tool_names
+from content_mcp import pinned,pairs
 from content_cache import validate_policy,sha,contract
 from client_pairing import ComponentClient
 from codex_connect import atomic,NAME,BEGIN,END,BLOCK
@@ -183,11 +183,8 @@ def prepare(home,package,policy_path,policy_sha,replace_existing=False):
                 legacy_agents={'path':str(agents),'before_sha256':sha(agents_raw),'after_sha256':sha(after)}
     elif registered is not None:raise InstallBlocked('Orphan registration preserved')
     desired=render(before,mcp,bool(old))
-    # Full protocol directory is reviewed without expanding the native allowlist.
-    content=pinned(policy['runtime']['content_policy'],policy['runtime']['content_policy_sha256'])
-    protocol_tools=sorted(content_tool_names(mcp['enabled_tools'],content))
     plan={'schema':1,'adapter':'codex','platform':policy['platform'],'device_home':str(home),'codex_home':str(native),'package':str(package),'package_sha256':package_sha,
-          'release_policy':str(policy_path),'release_policy_sha256':policy_sha,'replace_existing':replace_existing,'mcp':mcp,'protocol_tools':protocol_tools,'before':{str(config):digest_or_none(before),str(registration):digest_or_none(registered)},'config_after_sha256':sha(desired),'legacy_agents':legacy_agents}
+          'release_policy':str(policy_path),'release_policy_sha256':policy_sha,'replace_existing':replace_existing,'mcp':mcp,'before':{str(config):digest_or_none(before),str(registration):digest_or_none(registered)},'config_after_sha256':sha(desired),'legacy_agents':legacy_agents}
     if legacy_agents:plan['before'][legacy_agents['path']]=legacy_agents['before_sha256']
     return plan
 
@@ -197,7 +194,7 @@ def probe(plan):
     run=subprocess.run([plan['mcp']['command'],*plan['mcp']['args'],'--installation-check'],capture_output=True,stdin=subprocess.DEVNULL,timeout=60,env=environment)
     if run.returncode or len(run.stdout)>16384:raise InstallBlocked('Protocol/authentication unconfirmed')
     value=json.loads(run.stdout)
-    if value.get('status')!='content-native-protocol-checked' or value.get('protocol_checked') is not True or value.get('authentication_checked') is not True or value.get('native_changed') is not False or value.get('tools')!=plan['protocol_tools']:raise InstallBlocked('Unexpected installation protocol check')
+    if value.get('status')!='content-native-protocol-checked' or value.get('protocol_checked') is not True or value.get('authentication_checked') is not True or value.get('native_changed') is not False or value.get('tools')!=plan['mcp']['enabled_tools']:raise InstallBlocked('Unexpected installation protocol check')
 
 
 def probe_bootstrap(plan):
@@ -217,9 +214,7 @@ def probe_bootstrap(plan):
 
 def validate_install_scope(plan):
     keys={'schema','adapter','platform','device_home','codex_home','package','package_sha256','release_policy','release_policy_sha256','replace_existing','mcp','before','config_after_sha256','legacy_agents'}
-    # Old plan shape remains readable for exact interrupted-transaction recovery.
-    # Fresh apply/inspection must equal prepare(), including the protocol directory.
-    if not isinstance(plan,dict) or set(plan) not in (keys,keys|{'protocol_tools'}) or plan['schema']!=1 or plan['adapter']!='codex' or type(plan['replace_existing'])!=bool:raise InstallBlocked('Unsupported install plan')
+    if not isinstance(plan,dict) or set(plan)!=keys or plan['schema']!=1 or plan['adapter']!='codex' or type(plan['replace_existing'])!=bool:raise InstallBlocked('Unsupported install plan')
     path_type=platform_paths(plan['platform'])
     home,native=path_type(plan['device_home']),path_type(plan['codex_home'])
     if any(not p.is_absolute() or '..' in p.parts for p in (home,native)):raise InstallBlocked('Absolute native paths required')

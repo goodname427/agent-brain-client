@@ -338,7 +338,7 @@ class RemoteClient:
                     valid=(isinstance(p,dict) and p.get('state')=='core-extracted' and p.get('durable') is False
                            and p.get('receipt_ledger_durable') is True and p.get('preimage_retained') is True
                            and isinstance(r,dict) and r.get('state')=='succeeded' and r.get('stages')==['L1','L2','L3']
-                           and r.get('http_requests')==3 and isinstance(r.get('job_id'),str) and re.fullmatch(r'abj-[a-f0-9]{64}',r['job_id']))
+                           and type(r.get('http_requests')) is int and r['http_requests']==3 and isinstance(r.get('job_id'),str) and re.fullmatch(r'abj-[a-f0-9]{64}',r['job_id']))
                     return result if valid else failed('invalid_extraction_receipt','response-validation',False)
                 if request.get('method')=='memory_event_submit':
                     from content_contract import core_receipt

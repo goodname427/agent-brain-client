@@ -39,32 +39,18 @@ def worker_commit(client_version):
         return commit
     except Exception:return None
 
-def content_tool_names(methods,policy=None,grant=None):
-    """Advertised MCP directory; native enabled_tools remains a separate allowlist.
-
-    These local helpers already ship with the content server. Listing them does
-    not grant a remote method, enable a native tool or authorize a hook.
-    """
-    names=set(methods)-contract.HOOK_METHODS
-    names.add('content_request_id')
-    if (policy is None and grant is None or
-            'memory' in (policy or {}).get('kinds',[]) and
-            (grant is None or 'memory' in grant.get('artifact_types',[]))):
-        names.update({'content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'})
-    return names
-
-
 class ContentServer(Server):
     def __init__(self,adapter,client_version='0.2.0'):
         super().__init__(None,client_version);self.adapter=adapter
         self.client_runtime={'running_worker_version':client_version,'running_worker_commit':worker_commit(client_version)}
 
-    def tool_names(self):
-        return content_tool_names(self.adapter.methods(),getattr(self.adapter,'policy',None),
-                                  getattr(getattr(self.adapter,'client',None),'grant',None))
-
     def _memory_source_tools_authorized(self):
-        return 'content_sources_inventory' in self.tool_names()
+        policy=getattr(self.adapter,'policy',None)
+        client=getattr(self.adapter,'client',None)
+        grant=getattr(client,'grant',None)
+        if policy is None and grant is None:return True  # isolated protocol self-check adapter
+        return ('memory' in (policy or {}).get('kinds',[]) and
+                (grant is None or 'memory' in grant.get('artifact_types',[])))
 
     def invoke(self,name,arguments):
         try:
@@ -106,7 +92,7 @@ class ContentServer(Server):
                 if not isinstance(arguments,dict) or set(arguments)!=expected:raise ContentParameterError('Stage requires one locally read source and a normalized AgentBrain Memory record.')
                 result=self.adapter.stage_memory_import(arguments['source_id'],arguments['source_fingerprint'],'memory',arguments['id'],arguments['record'])
                 return {'isError':False,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
-            if name=='memory_event_submit' or name not in self.adapter.methods():raise ContentParameterError('Unknown or unavailable content tool; inspect tools/list.')
+            if name in contract.HOOK_METHODS or name not in self.adapter.methods():raise ContentParameterError('Unknown or unavailable content tool; inspect tools/list.')
             if not isinstance(arguments,dict):raise ContentParameterError('Content tool arguments must be an object.')
             if name=='content_catalog' and set(arguments)&{'query','since','until','limit'}:
                 if arguments.get('kinds')!=['memory']:raise ContentParameterError('Catalog query options are a Memory-only retrieval alias. For complete coverage pass kinds only.')
@@ -115,7 +101,7 @@ class ContentServer(Server):
                 arguments={key:value for key,value in arguments.items() if key!='kinds'};name='memory_query'
             if name=='memory_query':arguments=dict({'kind':'memory','query':'','since':None,'until':None,'limit':3},**arguments)
             required=contract.FIELDS[name]|({'request_id'} if name in contract.WRITES else set())
-            allowed=contract.FIELDS[name]|{'request_id'}|({'reconciles'} if name=='content_put' else set())|({'context'} if name=='memory_query' else set())
+            allowed=contract.FIELDS[name]|{'request_id'}|({'reconciles'} if name=='content_put' else set())
             if set(arguments)-allowed or required-set(arguments):raise ValueError()
             params=dict(arguments);reconciles=params.pop('reconciles',None);rid=params.pop('request_id',uuid.uuid4().hex);contract.validate(name,params)
             if not isinstance(rid,str) or not 16<=len(rid)<=128 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in rid):raise ValueError()
@@ -144,10 +130,10 @@ class ContentServer(Server):
                 params={key:value for key,value in params.items() if key!='_meta'}
             keys(params,('cursor',))
             if params.get('cursor') not in (None,''):raise ProtocolError(-32602,'Unknown cursor.')
-            tools=[];names=self.tool_names()
+            tools=[]
             kinds=getattr(self.adapter,'policy',{}).get('kinds',['memory','rule','skill'])
             for name,fields in contract.FIELDS.items():
-                if name not in names:continue
+                if name in contract.HOOK_METHODS or name not in self.adapter.methods():continue
                 properties:dict[str,Any]={field:{'type':'string'} for field in fields}
                 if 'kinds' in fields:properties['kinds']={'type':'array','items':{'type':'string','enum':kinds},'minItems':1,'uniqueItems':True}
                 if 'kind' in fields:properties['kind']['enum']=kinds
@@ -160,7 +146,6 @@ class ContentServer(Server):
                 if name=='memory_query':
                     properties.update(query={'type':'string','default':''},since={'type':['string','null'],'default':None,'description':'Inclusive memory update time, ISO8601 with offset; not event occurrence time.'},until={'type':['string','null'],'default':None},limit={'type':'integer','minimum':1,'maximum':3,'default':3})
                     properties['kind']={'type':'string','enum':['memory'],'default':'memory'}
-                    properties['context']={'type':'object','properties':{'project_id':{'type':'string'},'session_id':{'type':'string'},'cross_session':{'const':True}},'required':['project_id','session_id','cross_session'],'additionalProperties':False,'description':'Explicit authorized project/session for Core recall across sessions. Omit for legacy Memory query.'}
                 if name=='content_catalog':
                     properties.update(query={'type':'string','description':'Optional Memory-only retrieval alias; not full inventory. Prefer memory_query for retrieval.'},since={'type':['string','null']},until={'type':['string','null']},limit={'type':'integer','minimum':1,'maximum':3,'description':'Memory retrieval alias only; not pagination. Omit query/since/until/limit for complete AgentBrain target inventory; Harness-native sources are not listed.'})
                 required=[] if name=='memory_query' else list(sorted(fields))
@@ -192,7 +177,6 @@ def pinned(path,digest):
     raw=path.read_bytes()
     if hashlib.sha256(raw).hexdigest()!=digest:raise ValueError()
     return json.loads(raw,object_pairs_hook=pairs)
-
 
 def validate_hook_policy(value,*,profile_sha256,content_policy_sha256):
     """Private exact pin, finite sessions; this does not enroll native threads."""
@@ -296,7 +280,9 @@ STARTUP_STAGES={
     'https-profile-load','credential-source-validation','device-binding-validation',
     'identity-activation','ssh-profile-load','signing-policy-validation',
     'device-component-load','transport-policy-validation','installation-check',
-    'content-adapter-start','import-plan-validation','mcp-serve'
+    'content-adapter-start','import-plan-validation','mcp-serve',
+    'event-hook-policy-validation','event-hook-input-read',
+    'event-hook-payload-validation','event-hook-run'
 }
 def emit_startup_failure(stage,error,stream=None):
     """Emit a bounded diagnostic; exception values and tracebacks are never serialized."""
@@ -377,7 +363,7 @@ def installation_check(client,policy,client_version='0.2.0'):
     """Fixed read-only MCP/auth check. No content cache/native mapping is created."""
     validate_policy(policy,client.grant)
     class Adapter:
-        def __init__(self):self.policy=policy;self.client=client
+        def __init__(self):self.policy=policy
         def refresh(self):return {'status':'protocol-only','native_changed':False}
         def methods(self):return contract.mcp_methods(client.grant['scopes'])-{'memory_query'}
         def invoke(self,request):
@@ -389,7 +375,8 @@ def installation_check(client,policy,client_version='0.2.0'):
     tools=server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})
     result=server.handle({'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':'content_catalog','arguments':{'kinds':policy['kinds']}}})
     tool_names=[tool['name'] for tool in tools['tools']]
-    expected_tools=server.tool_names()
+    source_tools={'content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'} if server._memory_source_tools_authorized() else set()
+    expected_tools=adapter.methods()|{'content_request_id'}|source_tools
     if first['serverInfo']['name']!='agent-brain-content-codex-candidate' or len(tool_names)!=len(set(tool_names)) or set(tool_names)!=expected_tools or result['isError']:raise ValueError('Content protocol check failed')
     catalog=result['structuredContent']['result']
     import re
@@ -531,11 +518,14 @@ def main():
     policy=pinned(args.content_policy,args.content_policy_sha256)
     hook_policy=None;hook_payload=None
     if args.event_hook:
+        _STARTUP_STAGE='event-hook-policy-validation'
         if args.installation_check or args.import_plan or not args.https_profile:raise ValueError('Distinct HTTPS native hook invocation required')
         hook_policy=validate_hook_policy(pinned(args.event_hook_policy,args.event_hook_policy_sha256),profile_sha256=args.https_profile_sha256,content_policy_sha256=args.content_policy_sha256)
         if not hook_enabled(hook_policy):print('{}');return
+        _STARTUP_STAGE='event-hook-input-read'
         raw=sys.stdin.buffer.read(1048577)
         if len(raw)>1048576:raise ValueError('Hook input exceeds bound')
+        _STARTUP_STAGE='event-hook-payload-validation'
         hook_payload=json.loads(raw,object_pairs_hook=pairs)
         native_hook_fields(hook_policy,hook_payload)
     elif args.event_hook_policy or args.event_hook_policy_sha256:raise ValueError('Explicit hook mode required')
@@ -572,6 +562,7 @@ def main():
     _STARTUP_STAGE='content-adapter-start'
     adapter=ContentAdapter(args.device_home,args.cache,policy,client,codex_home=args.codex_home)
     if args.event_hook:
+        _STARTUP_STAGE='event-hook-run'
         run_event_hook(adapter,hook_policy,hook_payload)
         # Hook output is protocol only; never inject captured text or continue a
         # completed turn. Receipt and pending evidence stay in the normal outbox.
@@ -587,13 +578,19 @@ def main():
     _STARTUP_STAGE='mcp-serve'
     serve(ContentServer(adapter,args.client_version),sys.stdin.buffer,sys.stdout)
 
-if __name__=='__main__':
+def cli():
     try:main()
     except PlatformUnsupported as error:
         if '--event-hook' in sys.argv:
-            print('{}');print('AgentBrain hook capture skipped; local evidence preserved.',file=sys.stderr);sys.exit(0)
-        print(json.dumps(error.result(served=False,native_changed=False)),file=sys.stderr);sys.exit(2)
+            print('{}');emit_startup_failure(_STARTUP_STAGE,error);return 0
+        print(json.dumps(error.result(served=False,native_changed=False)),file=sys.stderr);return 2
     except Exception as error:
         if '--event-hook' in sys.argv:
-            print('{}');print('AgentBrain hook capture skipped; local evidence preserved.',file=sys.stderr);sys.exit(0)
-        sys.exit(emit_startup_failure(_STARTUP_STAGE,error))
+            # Some failures happen before staging exists. Report only the
+            # bounded stage/category; never claim that local evidence was saved.
+            print('{}');emit_startup_failure(_STARTUP_STAGE,error);return 0
+        return emit_startup_failure(_STARTUP_STAGE,error)
+    return 0
+
+
+if __name__=='__main__':sys.exit(cli())
