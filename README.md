@@ -53,3 +53,5 @@ sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action update
 分别报告 `active_package_version`（本地已验证活动包）、`latest_channel_version`（此次成功检查的渠道候选）与 MCP 返回的 `client_runtime.running_worker_version`（实际服务此调用的 worker）。CLI 无法观察 worker，相关字段为 null；更新活动包后正常重载本服务，确认新 worker 版本再继续 Onboard。渠道检查失败时“最新版”未知；不拿本地版本、main 或 tags 推断。worker 仅在正常启动时自动检查，没有周期后台更新或热切换。
 
 完整 Onboard 目录用 `content_catalog` 的 `kinds` 参数，省略 query/since/until/limit；目录没有分页 limit。Memory-only 查询别名和 `memory_query` 最多返回 3 条检索结果，不能证明全量覆盖。参数失败在本地返回 -32602；HTTP、传输、响应解析及校验失败有独立 stage，读取错误不提示写入参数。验收必须记录本轮版本、目录/读取实际次数与结果，历史超时记录单列，见 [验收记录模板](docs/MAC-FIRST-INSTALL-ACCEPTANCE.md)。
+
+项目记忆配置、启用和固定步骤见 [AUTOMATIC_MEMORY.md](AUTOMATIC_MEMORY.md)。

@@ -181,7 +181,8 @@ def pinned(path,digest):
 def validate_hook_policy(value,*,profile_sha256,content_policy_sha256):
     """Private exact pin, finite sessions; this does not enroll native threads."""
     fields={'schema','enabled','profile_sha256','content_policy_sha256','off_file','scopes'}
-    if not isinstance(value,dict) or set(value)!=fields or value['schema']!=1 or type(value['enabled']) is not bool:raise ValueError('Exact hook policy required')
+    if not isinstance(value,dict) or set(value) not in (fields,fields|{'not_before','expires_at'}) or value['schema']!=1 or type(value['enabled']) is not bool:raise ValueError('Exact hook policy required')
+    if 'not_before' in value and (type(value['not_before']) is not int or type(value['expires_at']) is not int or not 0<value['expires_at']-value['not_before']<=3600):raise ValueError('Finite source window required')
     if value['profile_sha256']!=profile_sha256 or value['content_policy_sha256']!=content_policy_sha256:raise ValueError('Hook destination policy changed')
     off=Path(value['off_file'])
     if not off.is_absolute() or '..' in off.parts or off.is_symlink() or off.parent.resolve()!=off.parent:raise ValueError('Private absolute off switch required')
@@ -201,7 +202,9 @@ def validate_hook_policy(value,*,profile_sha256,content_policy_sha256):
 def hook_enabled(policy):
     # Existence includes symlinks: every off marker fails closed, before stdin.
     off=Path(policy['off_file'])
-    return policy['enabled'] is True and not off.exists() and not off.is_symlink()
+    import time
+    window='not_before' not in policy or policy['not_before']<=time.time()<policy['expires_at']
+    return policy['enabled'] is True and window and not off.exists() and not off.is_symlink()
 
 
 def native_hook_fields(policy,payload):
