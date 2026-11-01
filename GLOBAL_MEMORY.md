@@ -1,7 +1,7 @@
 # Global automatic memory
 
 The user-level entry supports local Codex workflows that deliver the official
-SessionStart, UserPromptSubmit and Stop events. Cloud-orchestrated threads do not
+UserPromptSubmit and Stop events. Cloud-orchestrated threads do not
 run local command Hooks. Installing this entry does not prove native delivery;
 new definitions use the host's normal Hook review/trust flow.
 
@@ -13,9 +13,7 @@ sh tools/memory.sh global-status
 ```
 
 Installation is repeatable and owns only a marked inline Hook block in the user
-Codex config. Other Hooks, MCP tables and legacy hooks.json stay intact. Existing
-project collectors retain their original code and definitions. The global entry
-does not capture their events again. Without expanded source approval the entry
+Codex config. Other Hooks, MCP tables and legacy hooks.json stay intact. Existing project definitions are preserved. After explicit unified-source approval, their future collection is stopped and handed to the shared router; their old data and outbox are retained without import or replay. Without expanded source approval the entry
 returns before reading Hook stdin or accessing credentials. No new directory or
 non-project conversation is collected merely because the entry was installed.
 
@@ -50,9 +48,9 @@ unlimited allowance. Existing usage is never reset; no billing top-up occurs.
 Changing a source policy first fences collection. An unconfirmed operator result
 leaves the fence in place and must be inspected before another apply.
 
-Existing project collectors remain project-isolated. Their SessionStart Hook
-continues supplying their own memory; the global Hook supplies approved personal
-memory separately. No historical memory is imported or silently promoted.
+The default is unified cross-project retrieval for approved future sources. Users do not mark each memory global. Retrieval uses the actual UserPromptSubmit question and verified source context; other-project conventions remain historical reference and never become current project rules. Explicit project-only/no-share markers exclude the turn from upload. No historical memory is imported or silently promoted.
+
+For an owner who explicitly approves all local future conversations with no directory exclusions, configure `--include-root / --non-project-root /`. Directory approval is separate from per-memory relevance or applicability.
 
 ## Use/control
 

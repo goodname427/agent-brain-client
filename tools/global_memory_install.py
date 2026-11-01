@@ -49,7 +49,7 @@ def block(value):
     lines = [BEGIN]
     for event in ('SessionStart', 'UserPromptSubmit', 'Stop'):
         lines += ['[[hooks.' + event + ']]', '[[hooks.' + event + '.hooks]]', 'type = "command"',
-                  'command = ' + json.dumps(command), 'timeout = ' + ('120' if event in ('SessionStart', 'Stop') else '40'),
+                  'command = ' + json.dumps(command), 'timeout = ' + '120',
                   'statusMessage = ' + json.dumps(MARKER)]
         if event == 'Stop': lines += ['async = true']
     return '\n'.join(lines) + '\n' + END + '\n'
@@ -116,7 +116,7 @@ def install(args):
                 pin = old.digest(candidate.read_bytes()); source = old.load(candidate, pin)
                 if source['source_mode'] != 'codex-project': continue
                 recall = old.private_json(source['recall_policy'], source['recall_policy_sha256'])
-                routes[source['project_root']] = {'root': source['project_root'], 'settings': str(candidate), 'settings_sha256': pin, 'project_id': recall['project_id']}
+                routes[source['project_root']] = {**routes.get(source['project_root'], {}), 'root': source['project_root'], 'settings': str(candidate), 'settings_sha256': pin, 'project_id': recall['project_id']}
             except (ValueError, OSError): continue
     value['legacy_projects'] = list(routes.values())
     value['code_sha256'] = {n: old.digest((ROOT / n).read_bytes()) for n in FILES}
