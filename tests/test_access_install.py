@@ -44,6 +44,15 @@ CONNECTION = {
 
 class AddressInstall(unittest.TestCase):
     def setUp(self):
+        from brain_lock import native_platform
+
+        self.target = native_platform()
+        self.connection = copy.deepcopy(CONNECTION)
+        self.connection["grant"]["platform"] = self.target
+        if self.target.startswith("win32-"):
+            self.connection["release"]["ref"] = (
+                "refs/heads/releases/personal-https-windows-stable"
+            )
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name).resolve() / "home"
@@ -58,7 +67,7 @@ class AddressInstall(unittest.TestCase):
             lease=nullcontext,
         )
         self.peer = SimpleNamespace(
-            bootstrap=Mock(return_value=copy.deepcopy(CONNECTION))
+            bootstrap=Mock(return_value=copy.deepcopy(self.connection))
         )
         self.install = Mock(
             return_value={
@@ -68,12 +77,12 @@ class AddressInstall(unittest.TestCase):
         )
         self.prompts = Mock(return_value=KEY)
         self.platform = patch.object(
-            access, "native_platform", return_value="darwin-arm64"
+            access, "native_platform", return_value=self.target
         )
         self.platform.start()
         self.addCleanup(self.platform.stop)
         self.grant_platform = patch(
-            "brain_lock.native_platform", return_value="darwin-arm64"
+            "brain_lock.native_platform", return_value=self.target
         )
         self.grant_platform.start()
         self.addCleanup(self.grant_platform.stop)
@@ -94,7 +103,7 @@ class AddressInstall(unittest.TestCase):
         self.prompts.assert_called_once()
         self.assertEqual(self.backend.record["key"], KEY)
         self.assertTrue(self.install.call_args.kwargs["access_mode"])
-        self.assertEqual(self.peer.bootstrap.call_args.args, (KEY, "darwin-arm64"))
+        self.assertEqual(self.peer.bootstrap.call_args.args, (KEY, self.target))
         self.assertNotIn(
             KEY.encode(),
             b"".join(p.read_bytes() for p in self.home.rglob("*") if p.is_file()),
@@ -132,7 +141,7 @@ class AddressInstall(unittest.TestCase):
             self.run_install("https://other.synthetic.invalid")["installed"]
         )
         self.prompts.assert_not_called()
-        other = copy.deepcopy(CONNECTION)
+        other = copy.deepcopy(self.connection)
         other["endpoint"] = "https://other.synthetic.invalid"
         self.peer.bootstrap.return_value = other
         self.assertFalse(self.run_install()["installed"])
@@ -144,8 +153,8 @@ class AddressInstall(unittest.TestCase):
 
     def test_bootstrap_precedes_install_and_no_install_after_bad_metadata(self):
         self.peer.bootstrap.return_value = dict(
-            CONNECTION,
-            grant=dict(CONNECTION["grant"], scopes=["read", "put", "remove"]),
+            self.connection,
+            grant=dict(self.connection["grant"], scopes=["read", "put", "remove"]),
         )
         self.assertFalse(self.run_install()["installed"])
         self.install.assert_not_called()
