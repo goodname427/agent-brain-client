@@ -15,6 +15,7 @@ import client_release as releases
 import client_startup
 import content_install as install
 from content_mcp import installation_check
+import content_mcp
 import connect as remote_connect
 
 class ContentInstall(unittest.TestCase):
@@ -132,7 +133,7 @@ class ContentInstall(unittest.TestCase):
             grant=outer.grant
             def request(c,request):
                 outer.assertEqual(request['method'],'content_catalog');return {'request_id':request['request_id'],'result':{'content_api_version':1,'commit':'a'*40,'artifacts':[]},'persistence':{'state':'read-only'}}
-        before=self.native_files();result=installation_check(Client(),self.content_value);self.assertTrue(result['authentication_checked']);self.assertEqual(set(result['tools']),{'content_catalog','content_read','content_put','content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'});self.assertFalse(result['native_changed']);self.assertEqual(self.native_files(),before)
+        before=self.native_files();result=installation_check(Client(),self.content_value);self.assertTrue(result['authentication_checked']);self.assertEqual(set(result['tools']),{'memory_query','content_catalog','content_read','content_put','content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'});self.assertFalse(result['native_changed']);self.assertEqual(self.native_files(),before)
 
     def test_installation_protocol_check_accepts_rule_skill_only_read_grant(self):
         class Client:
@@ -148,6 +149,73 @@ class ContentInstall(unittest.TestCase):
         self.assertTrue(result['authentication_checked'])
         self.assertEqual(set(result['tools']),{'content_catalog','content_read','content_request_id'})
         self.assertFalse(result['native_changed']);self.assertEqual(self.native_files(),before)
+
+    def test_declared_local_tool_flows_to_plan_running_service_and_protocol_check(self):
+        original = content_mcp.local_tools
+        def declared(kinds, memory_sources):
+            tools = original(kinds, memory_sources)
+            if memory_sources:
+                tools.append({'name': 'content_sources_synthetic_review',
+                    'description': 'Synthetic contract evolution; never invoked.',
+                    'inputSchema': {'type': 'object', 'properties': {}}})
+            return tools
+        class Client:
+            grant = self.grant
+            def request(client, request):
+                return {'request_id': request['request_id'], 'result': {
+                    'content_api_version': 1, 'commit': 'c' * 40, 'artifacts': []}}
+        with patch.object(content_mcp, 'local_tools', side_effect=declared):
+            plan = self.plan()
+            result = installation_check(Client(), self.content_value)
+            self.assertEqual(plan['mcp']['enabled_tools'], result['tools'])
+            self.assertIn('content_sources_synthetic_review', result['tools'])
+            self.assertEqual(content_mcp.self_check()['content_mcp_self_check'], 'passed')
+            self.assertEqual(plan['tool_contract_version'], result['tool_contract_version'])
+
+    def test_existing_authenticated_legacy_whitelist_is_inspected_without_enabling_tools(self):
+        from pending_install_recovery import legacy_plan
+        plan = legacy_plan(self.plan())
+        with patch.object(install, 'prepare', return_value=plan):
+            self.assertTrue(install.apply(plan, self.digest(plan), lambda p: None)['installed'])
+        before = self.native_files()
+        self.assertTrue(install.inspect(self.home)['installed'])
+        self.assertEqual(self.native_files(), before)
+        self.assertEqual(install.tomllib.loads(self.config.read_text())['mcp_servers'][install.NAME]['enabled_tools'],
+                         ['content_catalog', 'content_put', 'content_read'])
+
+    def test_three_tool_plan_migration_recovers_each_write_and_rejects_scope_drift(self):
+        import pending_install_recovery as recovery
+        state = self.home / '.config/agent-brain-client/first-install'
+        state.mkdir(parents=True, mode=0o700)
+        path, attempt, journal = (state / name for name in
+            ('install-plan.json', 'pairing-attempt.json', 'tools-recovery.json'))
+        current = self.plan()
+        old = recovery.legacy_plan(current)
+        before = self.config.read_bytes()
+        save = recovery.save
+        for failure in range(1, 5):
+            with self.subTest(write=failure):
+                journal.unlink(missing_ok=True)
+                save(path, old)
+                save(attempt, {'schema': 1, 'plan_sha256': self.digest(old)})
+                writes = []
+                def interrupt(p, value):
+                    save(p, value)
+                    writes.append(p)
+                    if len(writes) == failure:raise OSError('Synthetic interrupted migration')
+                with patch.object(recovery, 'save', side_effect=interrupt):
+                    with self.assertRaises(OSError):recovery.refresh_plan(path, lambda: self.fail('No release replacement'))
+                result = recovery.refresh_plan(path, lambda: self.fail('No release replacement'))
+                self.assertEqual(result, current)
+                self.assertEqual(install.private_json(attempt)['plan_sha256'], self.digest(current))
+                self.assertEqual(install.private_json(journal)['before'], old)
+                self.assertEqual(self.config.read_bytes(), before)
+        changed = install.private_json(journal)
+        changed['after']['mcp']['enabled_tools'].append('content_remove')
+        save(journal, changed)
+        with self.assertRaises(ValueError):recovery.refresh_plan(path, lambda: self.fail('No release replacement'))
+        self.assertEqual(install.private_json(path), current)
+        self.assertEqual(self.config.read_bytes(), before)
 
     def test_content_release_discovery_update_failure_offline_and_startup_wiring(self):
         report=self.channel.discover('codex','darwin-arm64','0.1.0');self.assertEqual(report['status'],'compatible-update');self.assertEqual(len(report['releases'][0]['manifest']['files']),19)

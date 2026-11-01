@@ -10,7 +10,8 @@ from pathlib import Path
 from brain_lock import WINDOWS_PLATFORMS, native_platform
 from client_release import ClientReleases, dependency_environment, version
 from content_contract import encode
-from content_install import inspect_plan, prepare, private_json, raw, safe, save, sha
+from content_install import prepare, private_json, raw, safe, save, sha, render
+from content_mcp import LOCAL_TOOLS
 
 # Exact pre-fix platform detector shipped by runtime 0.5.0 / installer 0.5.2.
 LEGACY_DETECTOR = '60a0b040b70216684c752ee7a49374a0c122dbf16f0af8e5bb74b9dea923a6f2'
@@ -109,7 +110,7 @@ def repair_crlf_preparation(home, native):
         save(journal_path, dict(journal, phase='complete'))
 
 
-def refresh_plan(path, update):
+def _refresh_platform_plan(path, update):
     path = safe(path)
     plan = private_json(path)
     if plan['platform'] not in WINDOWS_PLATFORMS:
@@ -133,7 +134,7 @@ def refresh_plan(path, update):
         old, new, attempt = journal['before'], journal['after'], journal['attempt']
     else:
         old = plan
-        inspect_plan(path, sha(encode(old)))  # Exact original package/policy/native preimage.
+        verified_pending(old)  # Exact original package/policy/native preimage.
         attempt_path = path.parent / 'pairing-attempt.json'
         attempt = private_json(attempt_path) if attempt_path.exists() else None
         if attempt is not None and attempt != {'schema': 1, 'plan_sha256': sha(encode(old))}:
@@ -147,6 +148,8 @@ def refresh_plan(path, update):
         if sha(raw(candidate / 'scripts/brain_lock.py')) == LEGACY_DETECTOR:
             raise ValueError('Fixed platform detector required')
         new = prepare(old['device_home'], candidate, old['release_policy'], old['release_policy_sha256'], old['replace_existing'])
+        if old != verified_pending(old):
+            new = legacy_plan(new)
         journal = {'schema': 1, 'phase': 'prepared', 'before': old, 'after': new, 'attempt': attempt}
         validate_change(old, new)
         save(journal_path, journal)  # Write-ahead record precedes either local pin update.
@@ -154,8 +157,7 @@ def refresh_plan(path, update):
     # Revalidate both immutable trees, policy, dependencies and native preimages
     # on every retry, including an interruption between the two atomic writes.
     for item in (old, new):
-        if prepare(item['device_home'], item['package'], item['release_policy'], item['release_policy_sha256'], item['replace_existing']) != item:
-            raise ValueError('Pending platform recovery inputs changed')
+        verified_pending(item)
     releases = ClientReleases(new['release_policy'], new['release_policy_sha256'])
     active = releases.verified_active()
     bootstrap_version = json.loads(raw(Path(new['package']) / 'verified.json'))['manifest']['version']
@@ -165,6 +167,8 @@ def refresh_plan(path, update):
     # The immutable bootstrap stays pinned by the plan. Its independently
     # verified runtime pointer may advance through the same original policy
     # between retries; that does not replace the bootstrap or device profile.
+    if attempt is not None and attempt != {'schema': 1, 'plan_sha256': sha(encode(old))}:
+        raise ValueError('Original pairing attempt changed')
     attempt_path = path.parent / 'pairing-attempt.json'
     current_attempt = private_json(attempt_path) if attempt_path.exists() else None
     after_attempt = {'schema': 1, 'plan_sha256': sha(encode(new))} if attempt is not None else None
@@ -187,3 +191,68 @@ def validate_change(old, new):
     expected['config_after_sha256'] = new['config_after_sha256']
     if expected != new or old['replace_existing'] or old['legacy_agents'] is not None:
         raise ValueError('Pending installation scope changed')
+
+
+def legacy_plan(current):
+    """Reconstruct only the exact historical server-method-only plan bytes."""
+    old = copy.deepcopy(current)
+    old.pop('tool_contract_version', None)
+    old['mcp']['enabled_tools'] = sorted(set(current['mcp']['enabled_tools']) - LOCAL_TOOLS - {'memory_query'})
+    config = raw(Path(current['codex_home']) / 'config.toml')
+    old['config_after_sha256'] = sha(render(config, old['mcp'], False))
+    return old
+
+
+def verified_pending(plan):
+    current = prepare(plan['device_home'], plan['package'], plan['release_policy'],
+                      plan['release_policy_sha256'], plan['replace_existing'])
+    if plan != current and (plan['replace_existing'] or plan['legacy_agents'] is not None
+                            or plan != legacy_plan(current)):
+        raise ValueError('Pending installation inputs changed')
+    return current
+
+
+def refresh_plan(path, update):
+    path = safe(path)
+    journal_path = path.parent / 'tools-recovery.json'
+    if not journal_path.exists():
+        _refresh_platform_plan(path, update)
+    plan = private_json(path)
+    journal = private_json(journal_path) if journal_path.exists() else None
+    current = verified_pending(plan)
+    if journal is None and current == plan:
+        return plan
+    state = Path(plan['device_home']) / '.config/agent-brain-client'
+    if any((state / name).exists() or (state / name).is_symlink() for name in
+           ('codex-mcp.json', 'content-install-receipt.json', 'uninstall-receipt.json')):
+        raise ValueError('Native transaction requires its original recovery')
+    if journal:
+        if (set(journal) != {'schema', 'phase', 'before', 'after', 'attempt'}
+                or journal['schema'] != 1 or journal['phase'] not in ('prepared', 'complete')
+                or plan not in (journal['before'], journal['after'])):
+            raise ValueError('Pending tool recovery changed')
+        old, new, attempt = journal['before'], journal['after'], journal['attempt']
+        if verified_pending(old) != new or verified_pending(new) != new or legacy_plan(new) != old:
+            raise ValueError('Pending tool recovery scope changed')
+    else:
+        old, new = plan, current
+        if old['replace_existing'] or old['legacy_agents'] is not None or legacy_plan(new) != old:
+            raise ValueError('Pending tool recovery scope changed')
+        attempt_path = path.parent / 'pairing-attempt.json'
+        attempt = private_json(attempt_path) if attempt_path.exists() else None
+        if attempt is not None and attempt != {'schema': 1, 'plan_sha256': sha(encode(old))}:
+            raise ValueError('Original pairing attempt changed')
+        journal = {'schema': 1, 'phase': 'prepared', 'before': old, 'after': new, 'attempt': attempt}
+        save(journal_path, journal)
+    if attempt is not None and attempt != {'schema': 1, 'plan_sha256': sha(encode(old))}:
+        raise ValueError('Original pairing attempt changed')
+    attempt_path = path.parent / 'pairing-attempt.json'
+    current_attempt = private_json(attempt_path) if attempt_path.exists() else None
+    after_attempt = {'schema': 1, 'plan_sha256': sha(encode(new))} if attempt is not None else None
+    if current_attempt not in (attempt, after_attempt) or current_attempt is None and attempt is not None:
+        raise ValueError('Pairing attempt changed during tool recovery')
+    save(path, new)
+    if after_attempt is not None:
+        save(attempt_path, after_attempt)
+    save(journal_path, dict(journal, phase='complete'))
+    return new
