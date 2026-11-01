@@ -3,20 +3,20 @@ import argparse,hashlib,json,shutil,sys
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'adapters/codex'));sys.path.insert(0,str(ROOT/'scripts'))
-from client_release import CLIENT_FILES,CONTENT_CLIENT_FILES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CLIENT_FILES,CAPABILITIES,PERSONAL_CAPABILITIES,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES
+from client_release import WINDOWS_HTTPS_CONTENT_CLIENT_FILES,CLIENT_FILES,CONTENT_CLIENT_FILES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CLIENT_FILES,CAPABILITIES,PERSONAL_CAPABILITIES,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES
 from brain_release import version as validate_version
 from publication_check import require_publishable
 FILES={n:n for n in CLIENT_FILES}
 PAIRING_FILES={n:n for n in ('adapters/codex/client_pairing.py','native/DeviceComponent.swift')}
 CONTENT_FILES={n:n for n in CONTENT_CLIENT_FILES if n not in CLIENT_FILES and n not in PAIRING_FILES}
 
-def export(source,output,pairing_candidate=False,content_candidate=False,ssh_content_candidate=False,https_content_candidate=False):
+def export(source,output,pairing_candidate=False,content_candidate=False,ssh_content_candidate=False,https_content_candidate=False,target_platform=None):
     if Path(source).resolve()!=ROOT:raise ValueError('Build only the independent Client repository; external source prohibited')
     output=Path(output).resolve()
     if output.exists():raise ValueError('Existing artifact preserved')
     if https_content_candidate and any((pairing_candidate,content_candidate,ssh_content_candidate)):raise ValueError('Separate HTTPS capability candidate required')
     if ssh_content_candidate and any((pairing_candidate,content_candidate)):raise ValueError('Separate reviewed transport capability required')
-    names=HTTPS_CONTENT_CLIENT_FILES if https_content_candidate else SSH_CONTENT_CLIENT_FILES if ssh_content_candidate else CONTENT_CLIENT_FILES if content_candidate else CLIENT_FILES+('adapters/codex/client_pairing.py','native/DeviceComponent.swift') if pairing_candidate else CLIENT_FILES
+    names=(WINDOWS_HTTPS_CONTENT_CLIENT_FILES if target_platform and target_platform.startswith('win32-') else HTTPS_CONTENT_CLIENT_FILES) if https_content_candidate else SSH_CONTENT_CLIENT_FILES if ssh_content_candidate else CONTENT_CLIENT_FILES if content_candidate else CLIENT_FILES+('adapters/codex/client_pairing.py','native/DeviceComponent.swift') if pairing_candidate else CLIENT_FILES
     payload={}
     for name in names:
         p=ROOT/name
@@ -33,20 +33,20 @@ def export(source,output,pairing_candidate=False,content_candidate=False,ssh_con
     (output/'export-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     return manifest
 
-def release(source,output,version,data_mode='synthetic'):
+def release(source,output,version,data_mode='synthetic',target_platform=None):
     modes={'synthetic':CAPABILITIES,'personal':PERSONAL_CAPABILITIES,'personal-content':CONTENT_CAPABILITIES,'personal-content-ssh':SSH_CONTENT_CAPABILITIES,'personal-content-https':HTTPS_CONTENT_CAPABILITIES}
     if data_mode not in modes:raise ValueError('Unknown reviewed data mode')
     validate_version(version)
-    built=export(source,output,content_candidate=data_mode=='personal-content',ssh_content_candidate=data_mode=='personal-content-ssh',https_content_candidate=data_mode=='personal-content-https')
+    built=export(source,output,content_candidate=data_mode=='personal-content',ssh_content_candidate=data_mode=='personal-content-ssh',https_content_candidate=data_mode=='personal-content-https',target_platform=target_platform)
     manifest={'schema':1,'version':version,'channel':'stable','core_api':1,'state_schema':1,'python_min':'3.11','capabilities':modes[data_mode],'files':built['files'],'migrations':[]}
     p=Path(output)/'releases/manifest.json';p.parent.mkdir();p.write_text(json.dumps(manifest,sort_keys=True,indent=2)+'\n');return manifest
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',type=Path);parser.add_argument('--version');parser.add_argument('--mode',choices=['synthetic','personal','personal-content','personal-content-ssh','personal-content-https'],default='personal-content-https');parser.add_argument('--scan',action='store_true')
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',type=Path);parser.add_argument('--version');parser.add_argument('--mode',choices=['synthetic','personal','personal-content','personal-content-ssh','personal-content-https'],default='personal-content-https');parser.add_argument('--platform',choices=['darwin-arm64','darwin-x86_64','win32-amd64','win32-arm64']);parser.add_argument('--scan',action='store_true')
     a=parser.parse_args()
     if a.scan:
         payload={p.relative_to(ROOT).as_posix():p.read_bytes() for p in ROOT.rglob('*') if p.is_file() and not any(part in ('.git','.local','__pycache__') for part in p.relative_to(ROOT).parts)}
         print(json.dumps(require_publishable(payload)));return
     if a.output is None:parser.error('--output is required for a build')
-    print(json.dumps(release(ROOT,a.output,a.version,a.mode) if a.version else export(ROOT,a.output,content_candidate=a.mode=='personal-content',ssh_content_candidate=a.mode=='personal-content-ssh',https_content_candidate=a.mode=='personal-content-https')))
+    print(json.dumps(release(ROOT,a.output,a.version,a.mode,a.platform) if a.version else export(ROOT,a.output,content_candidate=a.mode=='personal-content',ssh_content_candidate=a.mode=='personal-content-ssh',https_content_candidate=a.mode=='personal-content-https',target_platform=a.platform)))
 if __name__=='__main__':main()

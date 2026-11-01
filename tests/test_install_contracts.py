@@ -1,4 +1,4 @@
-"""Portable paths and pairing seams; synthetic Windows is not device support."""
+"""Portable metadata and native platform separation; no real devices."""
 
 from contextlib import nullcontext
 import copy
@@ -107,10 +107,11 @@ class Contracts(unittest.TestCase):
         self.assertEqual(transport.seen[0], transport.seen[1])
         self.assertNotIn("code", store.record)
         # A synthetic injectable contract does not grant Windows production use.
-        with self.assertRaises(ValueError):
-            grant_check(grant)
-        with patch("sys.platform", "win32"):
+        if sys.platform != "win32":
             with self.assertRaises(ValueError):
+                grant_check(grant)
+        with patch("sys.platform", "win32"):
+            with self.assertRaises((ValueError, KeyError)):
                 native_store(
                     {
                         "credential_helper": "synthetic.exe",
@@ -126,7 +127,7 @@ class PlatformMainContracts(unittest.TestCase):
         from https_content import profile_metadata
         from client_release import (
             HTTPS_CONTENT_CAPABILITIES,
-            HTTPS_CONTENT_CLIENT_FILES,
+            WINDOWS_HTTPS_CONTENT_CLIENT_FILES,
         )
 
         grant = {
@@ -141,7 +142,7 @@ class PlatformMainContracts(unittest.TestCase):
         profile = profile_metadata(
             "https://synthetic.invalid",
             grant,
-            {"kind": "unsupported", "platform": "win32-amd64"},
+            {"kind": "windows-credential-manager", "source_sha256": "f" * 64},
             home + r"\state",
         )
         runtime = {
@@ -149,6 +150,7 @@ class PlatformMainContracts(unittest.TestCase):
             "https_profile_sha256": "a" * 64,
             "content_policy": home + r"\content.json",
             "content_policy_sha256": "b" * 64,
+            "credential_source_sha256": "f" * 64,
             "device_home": home,
             "codex_home": home + r"\codex",
             "content_cache": home + r"\content-cache",
@@ -164,7 +166,7 @@ class PlatformMainContracts(unittest.TestCase):
             "core_api": 1,
             "state_schema": 1,
             "capabilities": HTTPS_CONTENT_CAPABILITIES,
-            "file_prefixes": list(HTTPS_CONTENT_CLIENT_FILES),
+            "file_prefixes": list(WINDOWS_HTTPS_CONTENT_CLIENT_FILES),
             "repository": home + r"\repository",
             "cache": home + r"\releases",
             "runtime": runtime,
@@ -214,7 +216,7 @@ class PlatformMainContracts(unittest.TestCase):
         )
         self.assertEqual(validate_release_policy(policy), policy)
         self.assertNotIn("credential_helper", profile)
-        self.assertNotIn("credential_source_sha256", policy["runtime"])
+        self.assertEqual(policy["runtime"]["credential_source_sha256"], "f" * 64)
         home, native, paths = validate_install_scope(plan)
         self.assertEqual(str(home), plan["device_home"])
         self.assertEqual(len(paths), 2)
@@ -228,7 +230,7 @@ class PlatformMainContracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_profile_metadata(bad)
         bad = copy.deepcopy(policy)
-        bad["runtime"]["credential_source_sha256"] = "f" * 64
+        bad["runtime"]["credential_source_sha256"] = "invalid"
         with self.assertRaises(UpdateBlocked):
             validate_release_policy(bad)
         bad = copy.deepcopy(plan)
@@ -307,6 +309,7 @@ class PlatformMainContracts(unittest.TestCase):
             with self.assertRaises(UpdateBlocked):
                 engine.validate(bad, {"version": "0.2.5"})
 
+    @unittest.skipIf(sys.platform == "win32", "Foreign-platform rejection; native Windows has separate integration coverage")
     def test_update_and_discovery_reject_before_fetch_activation_or_recovery(self):
         from brain_lock import PlatformUnsupported
         from client_release import ClientReleases
@@ -325,6 +328,7 @@ class PlatformMainContracts(unittest.TestCase):
             channel.verified_active()
         self.assertFalse(channel.engine.mock_calls)
 
+    @unittest.skipIf(sys.platform == "win32", "Foreign-platform rejection; native Windows has separate integration coverage")
     def test_windows_install_and_recovery_never_mutate_existing_images(self):
         from brain_lock import PlatformUnsupported
         from content_install import apply, restore, inspect
@@ -350,6 +354,7 @@ class PlatformMainContracts(unittest.TestCase):
                 )
         self.assertFalse(check.called)
 
+    @unittest.skipIf(sys.platform == "win32", "Foreign-platform rejection; native Windows has separate integration coverage")
     def test_windows_permissions_cache_recovery_credentials_and_workers_fail_before_posix(
         self,
     ):

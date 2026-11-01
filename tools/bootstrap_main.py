@@ -46,12 +46,13 @@ def verified_one_shot(root, *, runner=subprocess.run, git='git'):
     marker = git_dir / ONE_SHOT
     if not git_dir.is_dir() or not record.is_file() or not marker.is_file():
         return False
-    commit = record.read_text().strip()
-    if not re.fullmatch(r'[a-f0-9]{40}', commit) or marker.read_text().strip() != commit:
+    commit = record.read_text(encoding='utf-8').strip()
+    if not re.fullmatch(r'[a-f0-9]{40}', commit) or marker.read_text(encoding='utf-8').strip() != commit:
         return False
-    env = {'PATH': '/usr/bin:/bin', 'HOME': os.environ.get('HOME', ''),
+    env = {'PATH': os.environ.get('PATH', '') if os.name == 'nt' else '/usr/bin:/bin', 'HOME': os.environ.get('HOME', ''),
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull,
            'GIT_TERMINAL_PROMPT': '0'}
+    if os.name == 'nt': env.update(SystemRoot=os.environ['SystemRoot'], USERPROFILE=os.environ['USERPROFILE'])
     head = _run([git, '-C', str(root), 'rev-parse', 'HEAD'], runner=runner, env=env)
     branch = _run([git, '-C', str(root), 'branch', '--show-current'], runner=runner, env=env)
     origin = _run([git, '-C', str(root), 'remote', 'get-url', 'origin'], runner=runner, env=env)
@@ -69,17 +70,23 @@ def verified_one_shot(root, *, runner=subprocess.run, git='git'):
 
 
 def fresh_checkout(home, *, runner=subprocess.run, git='git', root=None):
-    base = Path(root) if root is not None else Path(home) / 'Library/Application Support/AgentBrain/installer-checkouts'
+    base = Path(root) if root is not None else Path(home) / ('.config/agent-brain-client/installer-checkouts' if os.name == 'nt' else 'Library/Application Support/AgentBrain/installer-checkouts')
     if any(path.is_symlink() for path in (base, *base.parents)):
         raise ValueError('Canonical private checkout directory required')
-    base.mkdir(parents=True, exist_ok=True, mode=0o700)
-    st = base.stat()
-    if st.st_uid != os.getuid() or st.st_mode & 0o077:
-        raise ValueError('Private owned checkout directory required')
+    if os.name == 'nt':
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+        from brain_lock import private_directory
+        private_directory(base)
+    else:
+        base.mkdir(parents=True, exist_ok=True, mode=0o700)
+        st = base.stat()
+        if st.st_uid != os.getuid() or st.st_mode & 0o077:
+            raise ValueError('Private owned checkout directory required')
     checkout = Path(tempfile.mkdtemp(prefix='main-', dir=base))
-    env = {'PATH': '/usr/bin:/bin', 'HOME': str(home),
+    env = {'PATH': os.environ.get('PATH', '') if os.name == 'nt' else '/usr/bin:/bin', 'HOME': str(home),
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull,
            'GIT_TERMINAL_PROMPT': '0'}
+    if os.name == 'nt': env.update(SystemRoot=os.environ['SystemRoot'], USERPROFILE=str(home))
     cloned = _run([git, 'clone', '--depth', '1', '--single-branch', '--branch', BRANCH,
                    '--no-tags', '--', ORIGIN, str(checkout)], runner=runner, env=env)
     if cloned.returncode:

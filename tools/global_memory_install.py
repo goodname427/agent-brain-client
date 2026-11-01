@@ -3,7 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shlex
+from brain_lock import file_mode,atomic_replace,sync_directory,command_line,private_directory,private_mode
 import tempfile
 import tomllib
 import uuid
@@ -19,11 +19,9 @@ def atomic(file, raw, mode):
     fd, pending = tempfile.mkstemp(prefix='.global-memory-', dir=file.parent)
     try:
         with os.fdopen(fd, 'wb') as f:
-            os.fchmod(f.fileno(), mode); f.write(raw); f.flush(); os.fsync(f.fileno())
-        os.replace(pending, file)
-        directory = os.open(file.parent, os.O_RDONLY)
-        try: os.fsync(directory)
-        finally: os.close(directory)
+            file_mode(f.fileno(), mode); f.write(raw); f.flush(); os.fsync(f.fileno())
+        atomic_replace(pending, file)
+        sync_directory(file.parent)
     finally:
         if os.path.exists(pending): os.unlink(pending)
 
@@ -45,12 +43,13 @@ def block(value):
              + '; assert all(hashlib.sha256((r/n).read_bytes()).hexdigest()==h for n,h in p.items()); '
              + 'sys.path.insert(0,str(r/"tools")); sys.argv=[str(r/"tools/global_memory.py"),"global-hook","--device-home",'
              + repr(value['device_home']) + ']; runpy.run_path(sys.argv[0],run_name="__main__")')
-    command = shlex.join([os.path.realpath(os.sys.executable), '-I', '-B', '-c', guard])
+    command = command_line([os.path.realpath(os.sys.executable), '-I', '-B', '-c', guard])
     lines = [BEGIN]
     for event in ('SessionStart', 'UserPromptSubmit', 'Stop'):
         lines += ['[[hooks.' + event + ']]', '[[hooks.' + event + '.hooks]]', 'type = "command"',
                   'command = ' + json.dumps(command), 'timeout = ' + '120',
                   'statusMessage = ' + json.dumps(MARKER)]
+        if os.name=='nt': lines += ['commandWindows = ' + json.dumps(command)]
         if event == 'Stop': lines += ['async = true']
     return '\n'.join(lines) + '\n' + END + '\n'
 
@@ -58,7 +57,8 @@ def block(value):
 def transact(native, directory, owned, *, remove=False):
     from brain_lock import locked
     file = old.canonical(native / 'config.toml', existing=True)
-    if file.stat().st_uid != os.getuid() or file.stat().st_mode & 0o022: raise ValueError('Owned native configuration required')
+    if os.name=='nt': private_mode(file,owner=True)
+    elif file.stat().st_uid != os.getuid() or file.stat().st_mode & 0o022: raise ValueError('Owned native configuration required')
     receipt = directory / 'hook-install.json'
     with locked(directory / 'hook-install.lock'):
         before = file.read_bytes(); outside, previous = split_owned(before)
@@ -98,8 +98,8 @@ def install(args):
     old.imports()
     home = old.canonical(args.device_home, existing=True)
     _, registered = old.registration(home); native = Path(registered['runtime']['codex_home'])
-    file = settings_path(home); file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if file.parent.stat().st_uid!=os.getuid() or file.parent.stat().st_mode&0o077:raise ValueError('Private global state directory required')
+    file = settings_path(home); private_directory(file.parent)
+    private_mode(file.parent,directory=True,owner=True)
     if file.exists():
         value = old.private_json(file); validate(value['scope'])
         if value['device_home'] != str(home): raise ValueError('Existing global identity preserved')
@@ -108,6 +108,12 @@ def install(args):
                  'scope': {'schema': 1, 'profile_id': uuid.uuid4().hex, 'include_roots': [], 'exclude_roots': [], 'non_project_roots': [], 'recall_personal': True},
                  'approved_scope_sha256': None, 'server_scope_sha256': None, 'legacy_projects': [],
                  'operator': None, 'operator_sha256': None}
+    profile_id = getattr(args, 'profile_id', None)
+    if profile_id:
+        import re
+        if not re.fullmatch('[a-f0-9]{32}', profile_id): raise ValueError('Exact existing personal pool identity required')
+        if file.exists() and value['scope']['profile_id'] != profile_id: raise ValueError('Existing source identity preserved')
+        value['scope']['profile_id'] = profile_id
     routes = {row['root']: row for row in value['legacy_projects']}
     base = home / '.config/agent-brain-client/project-memory'
     if base.exists():

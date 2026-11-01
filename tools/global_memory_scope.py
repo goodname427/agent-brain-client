@@ -1,7 +1,7 @@
 """Credential-free source routing contract, shared as independently shipped code."""
 import hashlib
 import json
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
 import re
 import unicodedata
 
@@ -11,9 +11,19 @@ def digest(value):
 
 
 def path(value):
-    if not isinstance(value, str) or not value.startswith('/') or '\x00' in value or '..' in PurePosixPath(value).parts:
+    if not isinstance(value,str) or any(c in value for c in ('\x00','\r','\n')):
         raise ValueError('Absolute source metadata required')
-    return str(PurePosixPath(unicodedata.normalize('NFC', value)))
+    value=unicodedata.normalize('NFC',value)
+    windows=PureWindowsPath(value)
+    if windows.drive:
+        # Local absolute drive paths only: no UNC, device namespace, ADS or
+        # drive-relative syntax. A Windows drive cannot match a POSIX root.
+        if not re.match(r'^[A-Za-z]:[\\/]',value) or not windows.is_absolute() or '..' in windows.parts or any(':' in p for p in windows.parts[1:]):
+            raise ValueError('Absolute local Windows source required')
+        return windows.as_posix().casefold()
+    if not value.startswith('/') or value.startswith('//') or '\\' in value or '..' in PurePosixPath(value).parts:
+        raise ValueError('Absolute source metadata required')
+    return str(PurePosixPath(value))
 
 
 def within(value, root):
@@ -60,7 +70,7 @@ def origin(value):
 
 def select(scope, value):
     validate(scope); origin(value)
-    paths = [p for p in value.values() if isinstance(p, str) and p.startswith('/')]
+    paths = [value[k] for k in ('cwd','project_root','repository_root') if value[k] is not None]
     if any(within(p, denied) for p in paths for denied in scope['exclude_roots']):
         return None
     if value['kind'] == 'non-project':

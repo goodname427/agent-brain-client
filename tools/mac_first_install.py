@@ -1,4 +1,4 @@
-"""Mac arm64 repository installer using the existing pairing/install transaction.
+"""Shared Mac/Windows repository installer using the existing pairing/install transaction.
 
 Connection files carry no credential. Native files change only through the
 existing pinned installation transaction, after explicit server/scope review.
@@ -9,7 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import platform
+import platform as platform  # Kept as the historical installer inspection seam.
 import re
 import subprocess
 import sys
@@ -19,11 +19,11 @@ import secrets
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT
 sys.path[:0] = [str(SOURCE / name) for name in ("adapters/codex", "scripts", "tools")]
-from brain_lock import locked
+from brain_lock import file_mode,locked,native_platform,require_platform,private_directory,WINDOWS_PLATFORMS
 from client_release import (
     ClientReleases,
     HTTPS_CONTENT_CAPABILITIES,
-    HTTPS_CONTENT_CLIENT_FILES,
+    https_files,
     dependency_environment,
     CHECK_UPDATE_COMMAND,
     UPDATE_COMMAND,
@@ -78,14 +78,14 @@ def connection_value(value):
         raise ValueError("Credential-free connection scope required")
     endpoint_check(value["endpoint"])
     grant_check(value["grant"])
-    if value["grant"]["platform"] != "darwin-arm64":
-        raise ValueError("Mac arm64 grant required")
+    if value["grant"]["platform"] != native_platform():
+        raise ValueError("Actual device platform grant required")
     release = value["release"]
     if (
         not isinstance(release, dict)
         or set(release) != {"origin", "ref", "anchor_commit"}
         or release["origin"] != OFFICIAL_ORIGIN
-        or release["ref"] != OFFICIAL_REF
+        or release["ref"] != ("refs/heads/releases/personal-https-windows-stable" if value["grant"]["platform"] in WINDOWS_PLATFORMS else OFFICIAL_REF)
         or not re.fullmatch(r"[a-f0-9]{40}", release["anchor_commit"])
     ):
         raise ValueError("Existing official release authority required")
@@ -184,12 +184,15 @@ def resolve_connection(home, native, path=None, expected=None):
 
 def private_lease(state):
     state = safe(state)
-    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    private_directory(state)
     owned(state, directory=True)
     path = safe(state / "first-install.lock")
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        os.close(fd)
+        try:
+            file_mode(fd,0o600)
+        finally:
+            os.close(fd)
     except FileExistsError:
         pass
     owned(path)
@@ -216,8 +219,7 @@ def retire_ready(state):
 
 def prepare_dependencies(home, *, runner=subprocess.run, helper_builder=build_helper):
     """Use checked local tools; compile the original helper once at a stable path."""
-    if sys.platform != "darwin" or platform.machine().lower() != "arm64":
-        raise ValueError("Reviewed Mac arm64 backend required")
+    require_platform('first-install')
     if sys.version_info < (3, 11) or not ssl.create_default_context().get_ca_certs():
         raise ValueError("Python 3.11+ and normal TLS roots required")
     python = Path(sys.executable).resolve()
@@ -225,17 +227,24 @@ def prepare_dependencies(home, *, runner=subprocess.run, helper_builder=build_he
     if git_found is None:
         raise ValueError("Git required; rerun the repository bootstrap")
     git = Path(git_found).resolve()
-    env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "LANG": "en_US.UTF-8",
+    env = {"PATH": os.environ.get('PATH','') if os.name=='nt' else "/usr/bin:/bin", "HOME": str(home), "LANG": "en_US.UTF-8",
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
            "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "0"}
+    if os.name=='nt':
+        env.update(SystemRoot=os.environ['SystemRoot'],USERPROFILE=str(home))
     runner([str(git), "--version"], capture_output=True, timeout=30, env=env, check=True)
     core = Path(runner([str(git), "--exec-path"], capture_output=True,
                        timeout=30, env=env, check=True).stdout.decode().strip()).resolve()
-    if not core.is_dir() or not (core / "git-remote-https").is_file():
+    if not core.is_dir() or not any((core / n).is_file() for n in ('git-remote-https','git-remote-https.exe')):
         raise ValueError("Git HTTPS transport required")
     state = safe(Path(home) / ".config/agent-brain-client/first-install")
-    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    private_directory(state)
     owned(state, directory=True)
+    if os.name=='nt':
+        deps = {"schema":2,"python":str(python),"git":str(git),"git_exec_path":str(core),
+                "python_sha256":sha(python.read_bytes()),"git_sha256":sha(git.read_bytes())}
+        same_private(state/"dependencies.json",deps)
+        return {'source_sha256':sha((SOURCE/'scripts/brain_windows.py').read_bytes()),'dependencies':deps}
     helper = state / "credential-helper"
     pin = state / "helper.json"
     if helper.exists() or pin.exists():
@@ -307,7 +316,7 @@ def prepare_materials(
         or prior_receipt.is_symlink()
     ) and not (state / "connection.json").exists():
         raise ValueError("Existing installation preserved")
-    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    private_directory(state)
     binding["installation_id"] = installation_id(state)
     binding_path = state / "binding.json"
     if binding_path.exists() and "installation_id" not in private_json(binding_path):
@@ -320,12 +329,14 @@ def prepare_materials(
     same_private(binding_path, binding)
     same_private(state / "connection.json", connection)
     deps_sha = same_private(state / "dependencies.json", materials["dependencies"])
-    helper = Path(materials["credential_helper"])
-    profile = profile_metadata(connection["endpoint"], connection["grant"],
-                               {"kind": "mac-login-keychain", "helper": str(helper),
-                                "helper_sha256": materials["helper_sha256"],
-                                "source_sha256": materials["source_sha256"]},
-                               str(home / ".config/agent-brain-client/https"))
+    if os.name=='nt':
+        descriptor={'kind':'windows-credential-manager','source_sha256':materials['source_sha256']}
+    else:
+        helper = Path(materials["credential_helper"])
+        descriptor={"kind":"mac-login-keychain","helper":str(helper),
+                    "helper_sha256":materials["helper_sha256"],"source_sha256":materials["source_sha256"]}
+    profile = profile_metadata(connection["endpoint"],connection["grant"],descriptor,
+                               str(home/".config/agent-brain-client/https"))
     profile_sha = same_private(state / "https-profile.json", profile)
     content = {
         "schema": 1,
@@ -350,13 +361,13 @@ def prepare_materials(
     policy = {
         "schema": 1,
         "adapter": "codex",
-        "platform": "darwin-arm64",
+        "platform": connection["grant"]["platform"],
         **connection["release"],
         "channel": "stable",
         "core_api": 1,
         "state_schema": 1,
         "capabilities": HTTPS_CONTENT_CAPABILITIES,
-        "file_prefixes": list(HTTPS_CONTENT_CLIENT_FILES),
+        "file_prefixes": list(https_files(connection["grant"]["platform"])),
         "repository": str(state / "repository"),
         "cache": str(state / "releases"),
         "runtime": runtime,
@@ -365,15 +376,16 @@ def prepare_materials(
     environment = dependency_environment(policy)
     environment.update(HOME=str(home), LANG="en_US.UTF-8")
     # No credential access in dependency/helper preflight.
-    checked = runner(
-        [str(helper), "--self-check"], capture_output=True, timeout=30, env=environment
-    )
-    if checked.returncode or json.loads(checked.stdout) != {
-        "credential_helper_self_check": "passed",
-        "keychain_accessed": False,
-        "ui_opened": False,
-    }:
-        raise ValueError("Helper health unconfirmed")
+    if os.name!='nt':
+        checked = runner(
+            [str(helper), "--self-check"], capture_output=True, timeout=30, env=environment
+        )
+        if checked.returncode or json.loads(checked.stdout) != {
+            "credential_helper_self_check": "passed",
+            "keychain_accessed": False,
+            "ui_opened": False,
+        }:
+            raise ValueError("Helper health unconfirmed")
     plan_path = state / "install-plan.json"
     removal = home / ".config/agent-brain-client/uninstall-receipt.json"
     from client_lifecycle import read_removal
@@ -457,7 +469,7 @@ def prepare_materials(
     package = state / "bootstrap"
     if not package.exists():
         staging = Path(tempfile.mkdtemp(prefix="bootstrap-", dir=state))
-        export(SOURCE, staging / "package", https_content_candidate=True)
+        export(SOURCE, staging / "package", https_content_candidate=True,target_platform=native_platform())
         os.rename(staging / "package", package)
     plan = prepare(home, package, state / "release-policy.json", policy_sha)
     plan_sha = same_private(plan_path, plan)
@@ -517,7 +529,7 @@ def reinstall_removed(home, native, connection, *, store=None, transport=None, s
     from client_lifecycle import validate_uninstalled_state
     validate_uninstalled_state(home, removed, allow_unrelated_config_edits=True)
     staging = Path(tempfile.mkdtemp(prefix='reinstall-bootstrap-', dir=state))
-    manifest = export(SOURCE, staging / 'package', https_content_candidate=True)
+    manifest = export(SOURCE, staging / 'package', https_content_candidate=True,target_platform=native_platform())
     package_sha = sha(canonical(manifest['files']))
     package = state / ('bootstrap-' + package_sha)
     if not package.exists():
@@ -553,7 +565,7 @@ def run(
     installer=None,
 ):
     state = safe(Path(home) / ".config/agent-brain-client/first-install")
-    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    private_directory(state)
     try:
         with private_lease(state):
             description = (
@@ -790,7 +802,7 @@ def manage_update(home, action, *, channel_factory=None):
             receipt_path = safe(Path(home)/'.config/agent-brain-client/content-install-receipt.json')
             receipt = content_install.private_json(receipt_path)
             if receipt.get('phase') == 'complete' and receipt.get('plan_sha256') == plan_digest:
-                verified = json.loads((candidate/'verified.json').read_text())
+                verified = json.loads((candidate/'verified.json').read_text(encoding='utf-8'))
                 candidate_manifest = verified['manifest']
                 candidate_is_active = (
                     active.get('version') == candidate_manifest.get('version')
@@ -951,8 +963,7 @@ def main():
     parser.add_argument("--expected-connection-sha256")
     args = parser.parse_args()
     try:
-        if sys.platform != "darwin" or platform.machine().lower() != "arm64":
-            raise ValueError("Actual Mac arm64 required")
+        require_platform('first-install')
         home = Path.home().resolve()
         if args.action in ('check-update', 'update'):
             if args.connection is not None or args.expected_connection_sha256 is not None:
@@ -1000,7 +1011,7 @@ def main():
         except ConnectionRequired:
             print(json.dumps({"status": "first-install-connection-required", "installed": False,
                               "native_changed": False, "credential_accessed": False,
-                              "next_action": "Obtain connection.json and its SHA-256 through your service issuer's trusted delivery channel. The issuer uses Server tools/export_connection.py; then run this script with --connection and --expected-connection-sha256. See docs/FIRST-INSTALL-MAC.md. No invitation is needed until ready.json exists."}))
+                              "next_action": "Obtain connection.json and its SHA-256 through your service issuer's trusted delivery channel. The issuer uses Server tools/export_connection.py; then run this script with --connection and --expected-connection-sha256. See docs/FIRST-INSTALL-WINDOWS.md on Windows or docs/FIRST-INSTALL-MAC.md on macOS. No invitation is needed until ready.json exists."}))
             return 2
         except Exception:
             print(json.dumps({"status": "connection-file-review-required" if args.connection else "connection-recovery-review-required",

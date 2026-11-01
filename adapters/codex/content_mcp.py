@@ -546,11 +546,11 @@ def main():
         from https_content import HTTPSContentClient
         client=HTTPSContentClient(args.https_profile,args.https_profile_sha256,credential_access=False)
         _STARTUP_STAGE='credential-source-validation'
-        source=CLIENT_ROOT/'native/CredentialStore.swift'
-        if not args.credential_source_sha256 or hashlib.sha256(source.read_bytes()).hexdigest()!=args.credential_source_sha256 or client.profile['credential_source_sha256']!=args.credential_source_sha256:raise ValueError('Credential helper source review required')
+        source=CLIENT_ROOT/('scripts/brain_windows.py' if client.profile['platform'].startswith('win32-') else 'native/CredentialStore.swift')
+        if not args.credential_source_sha256 or hashlib.sha256(source.read_bytes()).hexdigest()!=args.credential_source_sha256 or (client.profile.get('credential_source_sha256') or client.profile['credential_backend']['source_sha256'])!=args.credential_source_sha256:raise ValueError('Credential helper source review required')
         _STARTUP_STAGE='device-binding-validation'
         if Path(client.profile['state_directory'])!=Path(args.device_home)/'.config/agent-brain-client/https':raise ValueError('Credential device binding changed')
-        if Path(args.device_home) not in Path(client.profile['credential_helper']).parents:raise ValueError('Device-local helper required')
+        if 'credential_helper' in client.profile and Path(args.device_home) not in Path(client.profile['credential_helper']).parents:raise ValueError('Device-local helper required')
         _STARTUP_STAGE='identity-activation'
         client.activate_identity()
     elif args.https_profile_sha256 or args.credential_source_sha256:raise ValueError('HTTPS profile required')
@@ -590,7 +590,20 @@ def main():
     serve(ContentServer(adapter,args.client_version),sys.stdin.buffer,sys.stdout)
 
 def cli():
-    try:main()
+    try:
+        # Windows cannot inherit a POSIX descriptor lease. The real worker also
+        # holds its own shared LockFileEx lease, including if its launcher dies.
+        if os.name=='nt' and '--cache' in sys.argv and '--installation-check' not in sys.argv:
+            cache=Path(sys.argv[sys.argv.index('--cache')+1])
+            from brain_lock import private_directory
+            private_directory(cache)
+            with locked(cache/'.content-runtime.lock',timeout=0,shared=True):
+                from content_install import inspect
+                home=Path(sys.argv[sys.argv.index('--device-home')+1])
+                if not inspect(home).get('installed'):
+                    raise ValueError('Native installation changed before worker lease')
+                main()
+        else: main()
     except PlatformUnsupported as error:
         if '--event-hook' in sys.argv:
             print('{}');emit_startup_failure(_STARTUP_STAGE,error);return 0
