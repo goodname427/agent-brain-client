@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -123,6 +124,22 @@ class WindowsNative(unittest.TestCase):
             self.assertIn('commandWindows', text)
             self.assertEqual(value['legacy_projects'], [])
             self.assertFalse(global_memory.approved(value))
+            checkout = self.home / 'Public 工具 checkout'
+            for name in ('adapters', 'scripts', 'tools'):
+                shutil.copytree(ROOT / name, checkout / name)
+            environment = dict(os.environ, HOME=str(self.home), USERPROFILE=str(self.home), CODEX_HOME=str(native))
+            for shell in ('powershell.exe', 'pwsh.exe'):
+                if shutil.which(shell) is None:
+                    continue
+                for script, arguments, field in (
+                    ('install-windows.ps1', ['-Action', 'status'], 'installed'),
+                    ('memory-windows.ps1', ['global-status', '--device-home', str(self.home)], 'global_entry_installed'),
+                ):
+                    with self.subTest(shell=shell, script=script):
+                        command = [shell, '-NoLogo', '-NoProfile', '-NonInteractive', '-File', str(checkout / 'tools' / script), *arguments]
+                        run = subprocess.run(command, env=environment, capture_output=True, text=True, encoding='utf-8', timeout=60)
+                        self.assertEqual(run.returncode, 0, run.stderr)
+                        self.assertTrue(json.loads(run.stdout)[field], run.stdout)
             hooks.uninstall(args)
             self.assertNotIn(hooks.BEGIN, config.read_text(encoding='utf-8'))
             self.assertTrue(content_install.inspect(self.home)['registration_verified'])
