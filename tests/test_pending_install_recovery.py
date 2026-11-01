@@ -15,6 +15,21 @@ import test_windows_native as windows_fixtures
 
 
 class RecoveryContracts(unittest.TestCase):
+    def test_missing_profile_resumes_ordinary_preparation_but_retains_migration_journal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            state = home / '.config/agent-brain-client/first-install'
+            state.mkdir(parents=True)
+            (state / 'binding.json').write_bytes(b'{"schema":1}')
+            with patch.object(recovery, 'native_platform', return_value='win32-amd64'), patch.object(recovery, 'private_json', side_effect=ValueError('Missing profile preserved')) as read:
+                recovery.repair_crlf_preparation(home, home / 'codex')
+                read.assert_not_called()
+                self.assertFalse((state / 'https-profile.json').exists())
+                (state / 'crlf-recovery.json').write_bytes(b'{"schema":1}')
+                with self.assertRaisesRegex(ValueError, 'Missing profile preserved'):
+                    recovery.repair_crlf_preparation(home, home / 'codex')
+                read.assert_called_once_with(state / 'https-profile.json')
+
     def test_refresh_cannot_change_identity_authority_environment_or_native_preimage(self):
         old = {'package': '/synthetic/old', 'package_sha256': 'a' * 64,
             'mcp': {'args': ['-I', '-B', '/synthetic/old/adapters/codex/client_startup.py'], 'env': {'PATH': '/synthetic/tools'}},
