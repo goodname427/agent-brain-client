@@ -76,7 +76,7 @@ class Server:
         if not re.fullmatch(r'\d+\.\d+\.\d+',client_version):raise ValueError('Invalid client version')
         self.client, self.state, self.client_version = client, 'new', client_version
         self.client_platform=client_platform or sys.platform+'-'+platform.machine().lower()
-        if not re.fullmatch(r'(darwin|linux)-(arm64|aarch64|x86_64)',self.client_platform):raise ValueError('Unsupported client checkpoint')
+        if not re.fullmatch(r'(darwin|linux)-(arm64|aarch64|x86_64)|win32-(amd64|arm64)',self.client_platform):raise ValueError('Unsupported client checkpoint')
 
     def invoke(self, name, arguments):
         if name not in FIELDS:

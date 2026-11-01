@@ -31,7 +31,7 @@ sha=lambda data:hashlib.sha256(data).hexdigest()
 def profile(path):
     p=Path(path)
     if p.is_symlink() or not p.is_file() or p.stat().st_mode&0o077:raise ValueError('Private approved profile required')
-    value=json.loads(p.read_text())
+    value=json.loads(p.read_text(encoding='utf-8'))
     if set(value)!={'schema','adapter','platform','data_mode','ssh'} or value['schema']!=1 or value['adapter']!='codex' or value['data_mode'] not in ('synthetic-only','personal-explicit'):raise ValueError('Unsupported service profile')
     if value['platform']!='darwin-'+platform.machine().lower():raise ValueError('Actual Mac Codex platform must match')
     ssh=value['ssh']
@@ -62,11 +62,13 @@ def probe(mcp):
 
 def atomic(path,raw,mode):
     require_platform('private-write')
-    path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    from brain_lock import private_directory,atomic_replace,file_mode
+    private_directory(path.parent)
     fd,name=tempfile.mkstemp(prefix='.client-native-',dir=path.parent)
     try:
-        with os.fdopen(fd,'wb') as file:file.write(raw);file.flush();os.fsync(file.fileno())
-        os.chmod(name,mode);os.replace(name,path)
+        with os.fdopen(fd,'wb') as file:file_mode(file.fileno(),mode);file.write(raw);file.flush();os.fsync(file.fileno())
+        if os.name != 'nt': os.chmod(name,mode)
+        atomic_replace(name,path)
     finally:
         if Path(name).exists():Path(name).unlink()
 
@@ -79,24 +81,24 @@ def connect(home, profile_path=None, apply=False, approved_digest=None):
     for p in (registration,config,agents,state,state.parent):
         if p.is_symlink():return {'status':'local-state-review-required','native_changed':False,'next_action':'Preserve linked native/client state and inspect ownership.'}
     override=native/'AGENTS.override.md'
-    if override.exists() and override.read_text().strip():return {'status':'native-repair-review-required','native_changed':False,'next_action':'Existing override shadows managed instructions; review before installation or reuse.'}
-    cfg=tomllib.loads(config.read_text()) if config.exists() else {}
+    if override.exists() and override.read_text(encoding='utf-8').strip():return {'status':'native-repair-review-required','native_changed':False,'next_action':'Existing override shadows managed instructions; review before installation or reuse.'}
+    cfg=tomllib.loads(config.read_text(encoding='utf-8')) if config.exists() else {}
     if profile_path is None and (state/'service-profile.json').exists():profile_path=state/'service-profile.json'
     candidate,mcp=profile(profile_path) if profile_path else (None,None)
     if registration.exists():
-        registered=json.loads(registration.read_text());installed=cfg.get('mcp_servers',{}).get(NAME)
+        registered=json.loads(registration.read_text(encoding='utf-8'));installed=cfg.get('mcp_servers',{}).get(NAME)
         if not isinstance(registered,dict) or registered.get('schema')!=1 or registered.get('data_mode') not in ('synthetic-only','personal-explicit') or registered.get('real_data_authorized') is not (registered.get('data_mode')=='personal-explicit') or registered.get('native_mcp_name')!=NAME or not installed:
             return {'status':'local-state-review-required','native_changed':False,'next_action':'Preserve unsupported client registration.'}
         if 'mcp_sha256' in registered:
             if legacy.exists():return {'status':'migration-review-required','native_changed':False,'next_action':'A later legacy registration overlaps this client; preserve both and review migration.'}
-            text=agents.read_text() if agents.is_file() else ''
+            text=agents.read_text(encoding='utf-8') if agents.is_file() else ''
             managed=MANAGED if registered['data_mode']=='synthetic-only' else PERSONAL_MANAGED
             valid=sha(json.dumps(installed,sort_keys=True).encode())==registered['mcp_sha256'] and text.count(BEGIN)==text.count(END)==1 and BLOCK.findall(text)==[managed]
         else:
             receipt_path=Path(registered.get('migration_receipt',''))
             valid=False
             if receipt_path.is_file() and not receipt_path.is_symlink() and not receipt_path.stat().st_mode&0o077:
-                receipt=json.loads(receipt_path.read_text())
+                receipt=json.loads(receipt_path.read_text(encoding='utf-8'))
                 valid=receipt.get('installation_complete') is True and receipt.get('native_registered') is True and receipt.get('new_registration_path')==str(registration)
                 owned={str(config),str(agents),str(native/'hooks.json'),str(home/'.config/agent-brain/codex/permissions-policy.json'),str(home/'.config/agent-brain/codex/integrity.json'),str(registration)}
                 valid=valid and set(receipt.get('after',{}))==owned and all(Path(p).is_file() and not Path(p).is_symlink() and sha(Path(p).read_bytes())==expected for p,expected in receipt['after'].items())
@@ -106,7 +108,7 @@ def connect(home, profile_path=None, apply=False, approved_digest=None):
         return {'status':'native-client-registered','native_changed':False,'protocol_checked':True,'model_loaded':'unknown','legacy_preserved':legacy.exists(),'updates':updates,'next_action':'Reuse this synthetic MCP. A new release source or runtime bootstrap requires its own pinned approval.'}
     if legacy.exists():return {'status':'migration-review-required','native_changed':False,'next_action':'Prepare an exact legacy migration with backups; preserve existing hooks, bindings and permissions.'}
     if candidate is None:return {'status':'server-authorization-required','native_changed':False,'next_action':'Locate the approved private SSH service profile. Do not send keys or tokens to chat.'}
-    if NAME in cfg.get('mcp_servers',{}) or (agents.exists() and (BEGIN in agents.read_text() or END in agents.read_text())):
+    if NAME in cfg.get('mcp_servers',{}) or (agents.exists() and (BEGIN in agents.read_text(encoding='utf-8') or END in agents.read_text(encoding='utf-8'))):
         return {'status':'native-repair-review-required','native_changed':False,'next_action':'Existing unowned MCP/managed block preserved; inspect its registration.'}
     updates=probe(mcp)
     config_raw=config.read_bytes() if config.exists() else b'';agents_raw=agents.read_bytes() if agents.exists() else b''
@@ -126,7 +128,7 @@ def connect(home, profile_path=None, apply=False, approved_digest=None):
     after={str(p):sha(raw) for p,raw in payload.items()};journal={'schema':1,'phase':'prepared','plan_sha256':plan,'before':before,'after':after}
     if receipt.is_symlink():raise ValueError('Linked transaction receipt preserved')
     if receipt.exists():
-        previous=json.loads(receipt.read_text())
+        previous=json.loads(receipt.read_text(encoding='utf-8'))
         if previous.get('phase')!='rolled-back' or previous.get('plan_sha256')!=plan or previous.get('before')!=before:
             return {'status':'native-repair-review-required','native_changed':False,'next_action':'Existing transaction receipt preserved; inspect before retry.'}
     atomic(receipt,(json.dumps(journal)+'\n').encode(),0o600)

@@ -12,7 +12,7 @@ import re
 import subprocess
 import sys
 
-from brain_lock import locked, private_mode, require_platform, platform_paths, WINDOWS_PLATFORMS
+from brain_lock import file_mode,locked, private_mode, require_platform, platform_paths, WINDOWS_PLATFORMS, private_directory
 
 
 def canonical(value):return json.dumps(value,sort_keys=True,separators=(',',':')).encode()
@@ -88,11 +88,13 @@ class CredentialStore:
         # Only private non-secret locks live on disk. The entire enrollment
         # holds one lease, so concurrent starts cannot replace each other's item.
         require_platform('credential-store')
-        self.directory.mkdir(parents=True,exist_ok=True,mode=0o700)
+        private_directory(self.directory)
         owned(self.directory,directory=True)
         path=self.directory/'pairing.lock'
         try:
-            fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600);os.close(fd)
+            fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+            try: file_mode(fd,0o600)
+            finally: os.close(fd)
         except FileExistsError:pass
         owned(path)
         return locked(path,timeout=0)
@@ -106,8 +108,8 @@ def credential_metadata(target, descriptor):
     """Validate nonsecret backend metadata separately from choosing a real store."""
     paths = platform_paths(target)
     if target in WINDOWS_PLATFORMS:
-        if descriptor != {'kind': 'unsupported', 'platform': target}:
-            raise ValueError('Unimplemented platform backend must be explicit')
+        if not isinstance(descriptor,dict) or set(descriptor)!={'kind','source_sha256'} or descriptor['kind']!='windows-credential-manager' or not re.fullmatch(r'[a-f0-9]{64}',descriptor['source_sha256']):
+            raise ValueError('Pinned Windows credential backend required')
         return descriptor
     keys = {'kind', 'helper', 'helper_sha256', 'source_sha256'}
     if not isinstance(descriptor, dict) or set(descriptor) != keys or descriptor['kind'] != 'mac-login-keychain':
@@ -147,7 +149,7 @@ def profile_credentials(value):
 
 def credential_paths(profile):
     require_platform('credential-store', profile['platform'])
-    for key in ('credential_helper', 'state_directory'):
+    for key in (('state_directory',) if profile['platform'] in WINDOWS_PLATFORMS else ('credential_helper', 'state_directory')):
         p = Path(profile[key])
         if any(item.is_symlink() for item in (p, *p.parents)):
             raise ValueError('Canonical credential runtime required')
@@ -155,6 +157,13 @@ def credential_paths(profile):
 
 def store_for_profile(profile, profile_sha):
     require_platform('credential-store', profile.get('platform'))
-    backend = NativeKeychain(profile['credential_helper'], profile['credential_helper_sha256'],
-                             'agent-brain.https.' + profile_sha)
+    if profile['platform'] in WINDOWS_PLATFORMS:
+        import brain_windows
+        descriptor=profile_credentials(profile)
+        if hashlib.sha256(Path(brain_windows.__file__).read_bytes()).hexdigest()!=descriptor['source_sha256']:
+            raise ValueError('Windows credential backend changed; profile review required')
+        backend=brain_windows.WindowsCredentials('agent-brain.https.'+profile_sha)
+    else:
+        backend = NativeKeychain(profile['credential_helper'], profile['credential_helper_sha256'],
+                                 'agent-brain.https.' + profile_sha)
     return CredentialStore(backend, profile['state_directory'])
