@@ -1,5 +1,6 @@
 """Isolated source/release MCP checkpoint regression; synthetic catalog only."""
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -36,7 +37,7 @@ cloud = Cloud()
 result = installation_check(cloud, policy, '0.5.6')
 assert result['status'] == 'content-native-protocol-checked' and len(cloud.requests) == 1
 assert result['native_changed'] is False
-with tempfile.TemporaryDirectory(dir=Path.home()) as temporary:
+with tempfile.TemporaryDirectory(dir=Path(os.environ['HOME'])) as temporary:
     home = Path(temporary)
     adapter = ContentAdapter(home, home / 'cache', policy, cloud, codex_home=home / 'codex')
     server = ContentServer(adapter, '0.5.6')
