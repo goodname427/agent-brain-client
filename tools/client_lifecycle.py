@@ -31,7 +31,8 @@ def read_removal(home):
 def lease(path):
     path = install.safe(path)
     parent = path.parent.stat()
-    if not path.parent.is_dir() or parent.st_uid != os.getuid() or parent.st_mode & 0o022:
+    if os.name=='nt': private_mode(path.parent,directory=True,owner=True)
+    if not path.parent.is_dir() or os.name!='nt' and (parent.st_uid != os.getuid() or parent.st_mode & 0o022):
         raise install.InstallBlocked('Non-writable owned lock directory required')
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -41,7 +42,8 @@ def lease(path):
     # Existing nonsecret 0.2.5 lock files can be 0644 inside a private directory.
     # Keep their inode/mode; never follow a link or reset the kernel lease.
     stat = path.stat()
-    if not path.is_file() or stat.st_uid != os.getuid() or stat.st_nlink != 1:
+    if os.name=='nt': private_mode(path,owner=True)
+    if not path.is_file() or os.name!='nt' and stat.st_uid != os.getuid() or stat.st_nlink != 1:
         raise install.InstallBlocked('Owned lock required')
     return locked(path, timeout=0)
 

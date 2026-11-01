@@ -20,7 +20,7 @@ ROOT=BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 import content_contract as contract
 from codex_connect import atomic
-from brain_lock import locked,require_platform,private_mode,sync_directory
+from brain_lock import locked,require_platform,private_mode,sync_directory,private_directory
 from remote_http import check_request,RequestStopped
 
 BEGIN='<!-- agent-brain-content:begin -->';END='<!-- agent-brain-content:end -->'
@@ -44,6 +44,9 @@ def inventory_codex_memories(codex_home, *, max_files=1024, max_file_bytes=13107
     them for import. A digest cursor lets a caller detect a changed inventory
     without treating this scan as coverage or an import plan.
     """
+    if os.name == 'nt':
+        return {'schema':1,'status':'unavailable','reason':'legacy memory import has no reviewed Windows reader; future Hook capture is available',
+                'sources':[],'cursor':sha(b'windows-legacy-import-unavailable')}
     root=Path(codex_home).expanduser()/'memories'
     rows=[];total=0;walked=0;entries_seen=0;directories_seen=0
     def source_id(relative):return 'codex-memory:'+sha(relative.encode('utf-8','surrogateescape'))
@@ -164,7 +167,7 @@ class ContentAdapter:
         if self.home==self.cache or self.cache in self.home.parents:raise CacheBlocked()
         if any(self.cache==self.home/name or self.home/name in self.cache.parents for name in ('.codex','.agents','.config/agent-brain-client/content')):raise CacheBlocked()
         self._safe(self.home,self.home);self._safe(self.cache,self.cache)
-        self.cache.mkdir(parents=True,exist_ok=True,mode=0o700)
+        private_directory(self.cache)
         private_mode(self.cache,directory=True,blocked=CacheBlocked)
         sync_directory(self.cache.parent)
 
@@ -173,6 +176,7 @@ class ContentAdapter:
         if path!=base and base not in path.parents:raise CacheBlocked()
         for item in [path,*path.parents]:
             if item.is_symlink():raise CacheBlocked()
+            if os.name=='nt' and item.exists() and getattr(item.lstat(),'st_file_attributes',0)&0x400:raise CacheBlocked()
             if item==base:break
 
     def _path(self,name):
@@ -557,6 +561,7 @@ class ContentAdapter:
             key=sha(contract.encode([source_id,fingerprint]));row=inventory['sources'].get(key)
             if row is None or row.get('source_id')!=source_id or row.get('source_fingerprint')!=fingerprint or row.get('status') not in ('not-checked','read'):
                 raise CacheBlocked()
+            if os.name == 'nt': raise CacheBlocked('Legacy import reader unavailable on Windows')
             root=self.native_home/'memories';directory_flag=getattr(os,'O_DIRECTORY',0);nofollow=getattr(os,'O_NOFOLLOW',0)
             try:root_fd=os.open(root,os.O_RDONLY|directory_flag|nofollow)
             except OSError:raise CacheBlocked() from None

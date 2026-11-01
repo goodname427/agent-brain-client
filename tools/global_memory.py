@@ -21,7 +21,8 @@ from global_memory_scope import validate, select, source_id, namespace, digest, 
 
 MARKER = 'Agent Brain global memory'
 FILES = (*old.RUNTIME, 'tools/global_memory.py', 'tools/global_memory_scope.py',
-         'tools/global_memory_install.py', 'tools/global_memory_operator.py')
+         'tools/global_memory_install.py', 'tools/global_memory_operator.py',
+         *(('scripts/brain_windows.py',) if os.name == 'nt' else ()))
 
 
 def settings_path(home):
@@ -31,7 +32,7 @@ def settings_path(home):
 def load(home):
     file = settings_path(home)
     directory=old.canonical(file.parent,existing=True)
-    if directory.stat().st_uid!=os.getuid() or directory.stat().st_mode&0o077:raise ValueError('Private global state directory required')
+    old.private_mode(directory,directory=True,owner=True)
     value = old.private_json(file)
     keys = {'schema', 'enabled', 'scope', 'approved_scope_sha256', 'server_scope_sha256',
             'device_home', 'legacy_projects', 'code_sha256', 'operator', 'operator_sha256'}
@@ -310,6 +311,9 @@ def main():
     p.add_argument('--exclude-root', action='append', default=[])
     p.add_argument('--non-project-root', action='append', default=[])
     p.add_argument('--approve-scope')
+    p.add_argument('--profile-id')
+    p.add_argument('--packet-output')
+    p.add_argument('--activate-packet')
     p.add_argument('--operator'); p.add_argument('--operator-sha256')
     p.add_argument('--query', default='personal preferences and task progress')
     a = p.parse_args()

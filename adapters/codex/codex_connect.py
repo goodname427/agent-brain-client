@@ -62,11 +62,13 @@ def probe(mcp):
 
 def atomic(path,raw,mode):
     require_platform('private-write')
-    path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    from brain_lock import private_directory,atomic_replace,file_mode
+    private_directory(path.parent)
     fd,name=tempfile.mkstemp(prefix='.client-native-',dir=path.parent)
     try:
-        with os.fdopen(fd,'wb') as file:file.write(raw);file.flush();os.fsync(file.fileno())
-        os.chmod(name,mode);os.replace(name,path)
+        with os.fdopen(fd,'wb') as file:file_mode(file.fileno(),mode);file.write(raw);file.flush();os.fsync(file.fileno())
+        if os.name != 'nt': os.chmod(name,mode)
+        atomic_replace(name,path)
     finally:
         if Path(name).exists():Path(name).unlink()
 

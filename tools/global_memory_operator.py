@@ -55,10 +55,42 @@ raise SystemExit(r.returncode)
     return receipt
 
 
+def activate(value, scope):
+    """Authenticate server admission before enabling future local Hook capture."""
+    from global_memory import GlobalClient, settings_path
+    client = GlobalClient(value)
+    if scope['include_roots']:
+        root = scope['include_roots'][0]['root']
+        local = {'kind': 'project', 'cwd': root, 'project_root': root, 'repository_root': root}
+    elif scope['non_project_roots']:
+        local = {'kind': 'non-project', 'cwd': scope['non_project_roots'][0], 'project_root': None, 'repository_root': None}
+    else: raise ValueError('Approved source root required')
+    response = client.wire('memory_global_status', {'origin': local, 'session_id': 'device-activation-status'})
+    result = response.get('result', {})
+    pin = digest(scope)
+    if result.get('scope_sha256') != pin or result.get('global_profile_id') != scope['profile_id'] or result.get('source_device_id') != client.device_id:
+        raise ValueError('Authenticated source admission unconfirmed')
+    value.update(scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin, enabled=True)
+    old.write(settings_path(value['device_home']), value)
+    response = client.wire('memory_global_resume', {})
+    if 'error' in response: raise ValueError('Source resume unconfirmed; local fence retained')
+    off = settings_path(value['device_home']).parent / 'global.off'
+    if off.exists(): off.unlink()
+    return {'status': 'global-memory-configured', 'scope_sha256': pin, 'source_device_id': client.device_id,
+            'activated': True, 'model_calls': 0, 'auto_recharge': False, 'trust': 'normal-host-hook-review-required'}
+
+
 def configure(args):
     from global_memory import load, settings_path, GlobalClient
     value = load(args.device_home); directory = settings_path(args.device_home).parent
     pending = directory / 'pending-scope.json'
+    if getattr(args, 'activate_packet', None):
+        packet = old.private_json(args.activate_packet)
+        if packet['scope'] != value['scope'] or packet['approved_scope_sha256'] != value['approved_scope_sha256']:
+            raise ValueError('Original approved source packet required')
+        client = GlobalClient(value)
+        if packet['client']['source_device_id'] != client.device_id: raise ValueError('Original device identity required')
+        return activate(value, packet['scope'])
     changed = args.include_root or args.isolate_root or args.exclude_root or args.non_project_root
     if changed:
         scope = copy.deepcopy(value['scope'])
@@ -96,14 +128,31 @@ def configure(args):
         if 'error' in response: raise ValueError('Previous global source stop unconfirmed')
     _, registered = old.registration(args.device_home); r = registered['runtime']
     profile = old.private_json(r['https_profile'], r['https_profile_sha256'])
-    if not value['legacy_projects']: raise ValueError('Existing primary source metadata required')
-    existing = old.load(value['legacy_projects'][0]['settings'], value['legacy_projects'][0]['settings_sha256'])
-    recall = old.private_json(existing['recall_policy'], existing['recall_policy_sha256'])
+    if value['legacy_projects']:
+        existing = old.load(value['legacy_projects'][0]['settings'], value['legacy_projects'][0]['settings_sha256'])
+        recall = old.private_json(existing['recall_policy'], existing['recall_policy_sha256'])
+        device_id = recall['source_device_id']
+    else:
+        device_id = GlobalClient(value).device_id
     packet = {'schema': 1, 'scope': scope, 'approved_scope_sha256': pin,
               'client': {'profile_sha256': r['https_profile_sha256'], 'content_policy_sha256': r['content_policy_sha256'],
                          'endpoint': profile['endpoint'], 'directory': str(directory),
                          'legacy_projects': {row['root']: row['project_id'] for row in value['legacy_projects'] if row.get('capture_delegated', True)},
-                         'actor': profile['grant']['actor'], 'source_device_id': recall['source_device_id']}}
+                         'actor': profile['grant']['actor'], 'source_device_id': device_id}}
+    if not value['legacy_projects']:
+        packet['schema'] = 2
+        packet['client']['grant'] = profile['grant']
+    if getattr(args, 'packet_output', None):
+        target = old.canonical(args.packet_output)
+        if target.exists():
+            if old.private_json(target) != packet: raise ValueError('Existing device packet preserved')
+        else: old.write(target, packet)
+        value.update(scope=scope, approved_scope_sha256=pin, enabled=False)
+        old.write(settings_path(args.device_home), value)
+        return {'status': 'global-memory-device-packet-prepared', 'packet': str(target),
+                'packet_sha256': old.digest(target.read_bytes()), 'scope_sha256': pin,
+                'source_device_id': device_id, 'activated': False, 'model_calls': 0,
+                'next_action': 'Existing Server operator applies this exact metadata packet; then run global-configure --activate-packet with this file.'}
     receipt = operator(value, packet)
     value.update(scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin, enabled=True)
     old.write(settings_path(args.device_home), value)

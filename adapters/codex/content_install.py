@@ -14,7 +14,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from client_release import policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,HTTPS_CONTENT_CLIENT_FILES,LEGACY_030_HTTPS_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases,dependency_environment
+from client_release import https_files,policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,HTTPS_CONTENT_CLIENT_FILES,LEGACY_030_HTTPS_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases,dependency_environment
 from content_mcp import pinned,pairs
 from content_cache import validate_policy,sha,contract
 from client_pairing import ComponentClient
@@ -26,6 +26,9 @@ class InstallBlocked(ValueError):pass
 
 def safe(path):
     path=Path(path)
+    if os.name == 'nt':
+        from brain_windows import canonical
+        canonical(path)
     if not path.is_absolute() or any(p.is_symlink() for p in (path,*path.parents)):raise InstallBlocked('Linked/noncanonical path')
     return path
 
@@ -49,7 +52,7 @@ def package_check(package,policy,*,allow_legacy_030_active=False):
         receipt=json.loads(raw(package/'verified.json'));manifest=receipt['manifest']
         ReleaseEngine(policy['cache'],policy,None,ClientPackage(policy),{}).validate(manifest,None)
     else:manifest=json.loads(raw(package/'export-manifest.json'))
-    files=HTTPS_CONTENT_CLIENT_FILES if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES else SSH_CONTENT_CLIENT_FILES if policy['capabilities']==SSH_CONTENT_CAPABILITIES else CONTENT_CLIENT_FILES
+    files=https_files(policy['platform']) if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES else SSH_CONTENT_CLIENT_FILES if policy['capabilities']==SSH_CONTENT_CAPABILITIES else CONTENT_CLIENT_FILES
     legacy_030_active=(allow_legacy_030_active and policy['capabilities']==HTTPS_CONTENT_CAPABILITIES
                        and policy['file_prefixes']==list(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES)
                        and manifest.get('version')=='0.3.0'
@@ -80,9 +83,10 @@ def context(home,package,policy_path,policy_sha,*,inspection=False,allow_legacy_
     if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES:
         from https_content import HTTPSContentClient
         client=HTTPSContentClient(runtime['https_profile'],runtime['https_profile_sha256'],credential_access=False)
-        if client.profile['credential_source_sha256']!=runtime['credential_source_sha256'] or Path(client.profile['state_directory'])!=home/'.config/agent-brain-client/https':raise InstallBlocked('HTTPS credential runtime binding changed')
-        helper=Path(client.profile['credential_helper'])
-        if home not in helper.parents:raise InstallBlocked('Reviewed device-local credential helper required')
+        if (client.profile.get('credential_source_sha256') or client.profile['credential_backend']['source_sha256'])!=runtime['credential_source_sha256'] or Path(client.profile['state_directory'])!=home/'.config/agent-brain-client/https':raise InstallBlocked('HTTPS credential runtime binding changed')
+        if 'credential_helper' in client.profile:
+            helper=Path(client.profile['credential_helper'])
+            if home not in helper.parents:raise InstallBlocked('Reviewed device-local credential helper required')
     elif policy['capabilities']==SSH_CONTENT_CAPABILITIES:
         from ssh_content import SSHContentClient
         client=SSHContentClient(runtime['ssh_profile'],runtime['ssh_profile_sha256'])

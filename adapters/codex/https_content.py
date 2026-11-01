@@ -22,7 +22,7 @@ sys.path.insert(0,str(ROOT/'scripts'))
 from remote_http import RemoteClient,NoRedirect,RequestStopped
 from client_pairing import EnrollmentTerminal,reviewed_ids,allowed_id
 from system_credentials import NativeKeychain,canonical,unique,owned,credential_fields,profile_credentials,credential_paths,store_for_profile
-from brain_lock import require_platform,platform_paths,PlatformUnsupported
+from brain_lock import require_platform,platform_paths,PlatformUnsupported,native_platform
 
 
 def valid_secret(value):return isinstance(value,str) and re.fullmatch(r'[A-Za-z0-9_-]{32,128}',value)
@@ -80,7 +80,7 @@ def profile_file(path,digest):
     if hashlib.sha256(raw).hexdigest()!=digest:raise ValueError('Profile changed')
     value=validate_profile_metadata(json.loads(raw,object_pairs_hook=unique))
     require_platform('credential-store',value['platform'])
-    if value['platform']!='darwin-'+platform.machine().lower():raise ValueError('Actual credential platform required')
+    if value['platform']!=native_platform():raise ValueError('Actual credential platform required')
     credential_paths(value)
     return value
 

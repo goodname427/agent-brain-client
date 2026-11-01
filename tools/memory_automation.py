@@ -13,7 +13,8 @@ import shlex
 import sys
 import time
 import tempfile
-import fcntl
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
+from brain_lock import private_mode,private_directory,file_mode,atomic_replace,sync_directory,locked,command_line
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,12 +66,8 @@ def canonical(path, *, existing=False):
 
 def private_json(path, sha=None):
     p = canonical(path, existing=True)
-    if (
-        not p.is_file()
-        or p.stat().st_mode & 0o077
-        or p.stat().st_uid != os.getuid()
-        or p.stat().st_size > 262144
-    ):
+    private_mode(p,owner=True)
+    if p.stat().st_size > 262144:
         raise ValueError("Private owned metadata required")
     raw = p.read_bytes()
     if sha is not None and digest(raw) != sha:
@@ -85,7 +82,7 @@ def write(path, value, *, exclusive=False, mode=0o600):
     ).encode()
     if exclusive:
         with p.open("xb") as stream:
-            os.fchmod(stream.fileno(), mode)
+            file_mode(stream.fileno(), mode)
             stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
@@ -93,19 +90,15 @@ def write(path, value, *, exclusive=False, mode=0o600):
         fd, pending = tempfile.mkstemp(prefix="." + p.name + "-", dir=p.parent)
         try:
             with os.fdopen(fd, "wb") as stream:
-                os.fchmod(stream.fileno(), mode)
+                file_mode(stream.fileno(), mode)
                 stream.write(raw)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(pending, p)
+            atomic_replace(pending, p)
         finally:
             if os.path.exists(pending):
                 os.unlink(pending)
-    fd = os.open(p.parent, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    sync_directory(p.parent)
     return digest(raw)
 
 
@@ -299,7 +292,7 @@ def setup(args):
         "source_mode": value["source_mode"],
         "capture_enabled": False,
         "hooks_installed": False,
-        "next_command": shlex.join(
+        "next_command": command_line(
             [
                 sys.executable,
                 str(ENTRY),
@@ -366,10 +359,10 @@ def enable(args):
     if marker.exists():
         if (
             not marker.is_file()
-            or marker.stat().st_uid != os.getuid()
-            or marker.stat().st_mode & 0o077
+            or (os.name != "nt" and (marker.stat().st_uid != os.getuid() or marker.stat().st_mode & 0o077))
         ):
             raise ValueError("Unknown stop marker preserved")
+        private_mode(marker, owner=True)
         marker.unlink()
     if not active(p):
         raise ValueError("Source window closed; enabling does not renew it")
@@ -394,7 +387,7 @@ def definitions(p, path, sha):
         + ";"
         'sys.argv=[str(p),*sys.argv[1:]];runpy.run_path(str(p),run_name="__main__")'
     )
-    command = shlex.join(
+    command = command_line(
         [
             sys.executable,
             "-I",
@@ -430,13 +423,14 @@ def definitions(p, path, sha):
 
 def install_locked(p, path, sha):
     directory = canonical(Path(p["project_root"]) / ".codex")
-    directory.mkdir(mode=0o700, exist_ok=True)
+    private_directory(directory)
     target = directory / "hooks.json"
     canonical(target)
-    if target.exists() and (
+    if target.exists() and os.name != "nt" and (
         target.stat().st_uid != os.getuid() or target.stat().st_mode & 0o022
     ):
         raise ValueError("Unknown hook ownership/permissions preserved")
+    if os.name == "nt" and target.exists(): private_mode(target, owner=True)
     mode = target.stat().st_mode & 0o777 if target.exists() else 0o600
     before = target.read_bytes() if target.exists() else None
     if before is not None:
@@ -509,7 +503,7 @@ def install_locked(p, path, sha):
         "capture_registered": p["source_mode"] in ("codex-hooks", "codex-project"),
         "model_calls_sent": 0,
         "native_delivery": "requires-supported-host-and-native-trust",
-        "manual_entry": shlex.join(
+        "manual_entry": command_line(
             [
                 sys.executable,
                 str(ENTRY),
@@ -525,9 +519,7 @@ def install_locked(p, path, sha):
 
 def install(p, path, sha):
     lock = canonical(Path(path).parent / "hook-install.lock")
-    with lock.open("ab") as stream:
-        os.fchmod(stream.fileno(), 0o600)
-        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with locked(lock,timeout=0):
         return install_locked(p, path, sha)
 
 
@@ -542,9 +534,8 @@ def import_bundle(args):
         raise ValueError("Reviewed compiler activation receipt required")
     directory = canonical(Path(args.activation).parent, existing=True)
     target = canonical(manifest["client_policy_directory"])
-    target.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if target.stat().st_uid != os.getuid() or target.stat().st_mode & 0o077:
-        raise ValueError("Private policy directory required")
+    private_directory(target)
+    private_mode(target, directory=True, owner=True)
     bundle = private_json(
         directory / "client-bundle.json", manifest["files"]["client-bundle.json"]
     )
@@ -573,9 +564,8 @@ def import_bundle(args):
         notes = canonical(capture["notes_directory"])
         if notes != target / "notes":
             raise ValueError("Dedicated private note directory required")
-        notes.mkdir(mode=0o700, exist_ok=True)
-        if notes.stat().st_uid != os.getuid() or notes.stat().st_mode & 0o077:
-            raise ValueError("Private note directory required")
+        private_directory(notes)
+        private_mode(notes, directory=True, owner=True)
     profile = private_json(r["https_profile"], r["https_profile_sha256"])
     if (
         capture["profile_sha256"] != r["https_profile_sha256"]
@@ -1133,11 +1123,11 @@ def record_daily(p, path):
     source = canonical(path, existing=True)
     if (
         not source.is_file()
-        or source.stat().st_mode & 0o077
-        or source.stat().st_uid != os.getuid()
+        or (os.name != "nt" and (source.stat().st_mode & 0o077 or source.stat().st_uid != os.getuid()))
         or source.stat().st_size > 32768
     ):
         raise ValueError("Explicit private note file required")
+    private_mode(source, owner=True)
     capture_policy = private_json(p["capture_policy"], p["capture_policy_sha256"])
     notes = canonical(capture_policy["notes_directory"], existing=True)
     if notes not in source.parents or source.suffix.lower() not in (
@@ -1253,10 +1243,10 @@ def daily_command(p, action):
         if marker.exists():
             if (
                 not marker.is_file()
-                or marker.stat().st_uid != os.getuid()
-                or marker.stat().st_mode & 0o077
+                or (os.name != "nt" and (marker.stat().st_uid != os.getuid() or marker.stat().st_mode & 0o077))
             ):
                 raise ValueError("Unknown local source marker preserved")
+            private_mode(marker, owner=True)
             marker.unlink()
         return result
     policy = private_json(p["recall_policy"], p["recall_policy_sha256"])
@@ -1531,7 +1521,7 @@ def main():
             elif args.action in ("stop", "revoke"):
                 marker = canonical(p["off_file"])
                 with marker.open("ab") as stream:
-                    os.fchmod(stream.fileno(), 0o600)
+                    file_mode(stream.fileno(), 0o600)
                     stream.flush()
                     os.fsync(stream.fileno())
                 remote = None
