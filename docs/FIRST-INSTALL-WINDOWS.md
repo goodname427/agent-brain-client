@@ -6,7 +6,7 @@
 
 使用当前用户的普通 PowerShell。准备 Python 3.11+、Git 和 Codex；没有依赖时可从它们的官方安装器安装，或用已安装的 winget 安装 Python.Python.3.12 和 Git.Git。安装完成后重新打开终端。无需管理员运行，不更改执行策略、沙箱或 Hook 信任设置。
 
-首次安装只需要服务发行者提供的 HTTPS 地址和长期接入密钥。密钥仅在本机隐藏的控制台提示中输入，保存在用户 Credential Manager；不能发送到聊天或放入命令行、环境变量、配置文件。Windows 更新继续使用独立的 `releases/personal-https-windows-stable` 渠道。
+首次安装只需要服务发行者提供的 HTTPS 地址和长期接入密钥。密钥仅在本机Windows 原生凭据窗口的隐藏密码框中输入，保存在用户 Credential Manager；不能发送到聊天或放入命令行、环境变量、配置文件。Windows 更新继续使用独立的 `releases/personal-https-windows-stable` 渠道。
 
 ```powershell
 $checkout = Join-Path $env:TEMP ('agent-brain-client-' + [guid]::NewGuid())
@@ -15,7 +15,7 @@ Set-Location $checkout
 & ./tools/install-windows.ps1
 ```
 
-脚本在本机询问 HTTPS Server 地址（也可用非秘密参数 `-Server 'https://your-server.example'` 指定），再请求隐藏输入密钥。认证后自动获取该 Windows 平台授权及发布元数据，核验发行包、保存设备身份并完成本地 MCP 安装。不要求 connection.json、文件摘要、ready.json 或邀请码。中断重跑相同入口，复用密钥、nonce、安装计划和队列。错误密钥可重新输入；网络或证书错误保留原记录，不能跳过 HTTPS 验证。只有本地事务与只读协议检查都成功才报告 installed:true。
+脚本在本机询问 HTTPS Server 地址（也可用非秘密参数 `-Server 'https://your-server.example'` 指定），再用 Windows 原生凭据窗口请求隐藏输入密钥。认证后自动获取该 Windows 平台授权及发布元数据，核验发行包、保存设备身份并完成本地 MCP 安装。不要求 connection.json、文件摘要、ready.json 或邀请码。中断重跑相同入口，复用密钥、nonce、安装计划和队列。错误密钥可重新输入；网络或证书错误保留原记录，不能跳过 HTTPS 验证。只有本地事务与只读协议检查都成功才报告 installed:true。
 
 安装成功后正常重载 Codex 的 `agent_brain_server` MCP，并按既有 Onboard 流程核对获授权的 Memory/Rule/Skill。模型加载不可观测时仍报告 unknown。完整信任与恢复说明见 [地址与密钥安装](ADDRESS-KEY-INSTALL.md)。
 

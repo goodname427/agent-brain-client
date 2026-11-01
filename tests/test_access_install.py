@@ -259,3 +259,79 @@ class AccessTransaction(unittest.TestCase):
             )
         self.assertTrue(third["installed"], third)
         self.assertEqual(fixture.backend.record["device_id"], device_id)
+
+
+class WindowsAccessDialog(unittest.TestCase):
+    def test_generic_hidden_key_prompt_no_os_auth_or_automatic_persistence(self):
+        import ctypes as C
+        from access_windows import secure_input
+
+        captured = []
+
+        def prompt(
+            info,
+            target,
+            context,
+            error,
+            username,
+            namesize,
+            password,
+            size,
+            save,
+            flags,
+        ):
+            self.assertEqual(info._obj.cbSize, C.sizeof(info._obj))
+            self.assertIn("https://synthetic.invalid", info._obj.pszMessageText)
+            self.assertEqual(username.value, "Agent Brain access key")
+            self.assertEqual(flags, 0x140082)
+            self.assertFalse(save._obj.value)
+            self.assertIsNone(context)
+            self.assertEqual(error, 0)
+            password.value = KEY
+            captured.append(password)
+            return 0
+
+        self.assertEqual(secure_input("https://synthetic.invalid", prompt=prompt), KEY)
+        self.assertEqual(captured[0].value, "")
+
+    def test_cancel_error_and_invalid_input_clear_buffers_without_fallback(self):
+        from access_windows import secure_input
+
+        for status, value in ((1223, KEY), (5, KEY), (0, "invalid")):
+            captured = []
+
+            def prompt(
+                info,
+                target,
+                context,
+                error,
+                username,
+                namesize,
+                password,
+                size,
+                save,
+                flags,
+            ):
+                password.value = value
+                captured.append(password)
+                return status
+
+            if status == 1223:
+                self.assertIsNone(
+                    secure_input("https://synthetic.invalid", prompt=prompt)
+                )
+            else:
+                with self.assertRaises(ValueError):
+                    secure_input("https://synthetic.invalid", prompt=prompt)
+            self.assertEqual(captured[0].value, "")
+
+    @unittest.skipUnless(
+        sys.platform == "win32", "Native Windows CredUI symbol and ABI"
+    )
+    def test_native_dialog_api_binding_without_opening_ui(self):
+        import ctypes as C
+        from access_windows import dialog_api, CredUIInfo
+
+        prompt = dialog_api()
+        self.assertEqual(len(prompt.argtypes), 10)
+        self.assertEqual(C.sizeof(CredUIInfo), 40 if C.sizeof(C.c_void_p) == 8 else 20)

@@ -12,7 +12,6 @@ import secrets
 import sys
 from urllib.error import HTTPError
 from urllib.request import Request
-import warnings
 
 import mac_first_install as wizard
 from https_content import PairingHTTPS, endpoint_check, valid_secret
@@ -136,22 +135,17 @@ def access_store(home, endpoint, materials, *, helper_builder=None):
             metadata = {k: built[k] for k in ("source_sha256", "helper_sha256")}
             wizard.same_private(pin, metadata)
         backend = NativeKeychain(helper, metadata["helper_sha256"], service)
-    return CredentialStore(backend, state / "credentials")
+    store = CredentialStore(backend, state / "credentials")
+    store.endpoint = endpoint
+    return store
 
 
 def hidden_input(store):
     if os.name != "nt":
         return store.backend.secure_input()
-    import getpass
+    from access_windows import secure_input
 
-    if not sys.stdin.isatty():
-        raise ValueError(
-            "Interactive local Windows console required for hidden key input"
-        )
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", getpass.GetPassWarning)
-        key = getpass.getpass("Agent Brain Server access key (hidden; Enter cancels): ")
-    return key or None
+    return secure_input(store.endpoint)
 
 
 def run_address_install(
