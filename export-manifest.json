@@ -2,7 +2,7 @@
   "schema": 1,
   "review_status": "unpublished-candidate",
   "files": {
-    "README.md": "350125f5ee814c6d8c3688d01d4f8ad2dbe329ce900be708615838399e19bc3f",
+    "README.md": "cb5059f4769f5d401d68ec282622f7824f862a5ba6b1a6502fcb6fdd5c429912",
     "BOOTSTRAP.md": "bc2bfc095e32636103846e907d407c62eaef4d6b54ab91e63ba6de3db4664b1b",
     "PROTOCOL.md": "9a907bb4781365b95e4558dc4c3f4ee21c349fa434b8119d6403ddfd87af1187",
     "ADAPTERS.md": "784792d32cc18dde29b73528a18c1bda7de4a2409a18f20e3f366260462e2738",
@@ -17,9 +17,9 @@
     "scripts/brain_lock.py": "e6ed46848fdab2bc908d8a60b780a1b7b6f196a988c2515e05da4c57bfe95a6f",
     "adapters/codex/client_pairing.py": "c627030d0369c8e4e1e3df20191b61bc5774c037c2d84e07fbce3c75633bf722",
     "adapters/codex/content_cache.py": "5e39485fbfc9ddeb7a8b4b573729698df1b1d2432f01554660910a4e82ade5d8",
-    "adapters/codex/content_mcp.py": "9cbbb62fd4d6bc40c3cfc7c263566c9c2e1af35fa51ce002620e1a2043090bec",
+    "adapters/codex/content_mcp.py": "5079b34eda74775f351c9a002a9c4cefafa99e4bfecc58d3407a7d173c8b72c7",
     "adapters/codex/content_contract.py": "d31b506060ffe5f19d97f59a59fbc00797e9df72600bc0f9ee1fa2ddbe1dc1af",
-    "adapters/codex/content_install.py": "38b8b4c04e6410e155cc56ffac447d6d3dc978b60677116e2f13e90453d9ff0c",
+    "adapters/codex/content_install.py": "bd362ddca25a17884d9939e90ff14d3621785f1c0ee5e85f01b95566c0909e02",
     "adapters/codex/https_content.py": "ebb2346be885fcc8b20be995f5444a6f39a20a185292d762969675096984c769",
     "adapters/codex/system_credentials.py": "2b41da8aabf72557071919e7aee392ece36d485430e3597fbd266b38853e0e2c",
     "scripts/brain_windows.py": "ab7cca081846c19f1755455d6bdc6a9852b64ba91bde74b7a2545c7f010743f5"

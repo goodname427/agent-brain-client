@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tomllib
 from client_release import https_files,policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,HTTPS_CONTENT_CLIENT_FILES,LEGACY_030_HTTPS_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases,dependency_environment
-from content_mcp import pinned,pairs
+from content_mcp import pinned,pairs,enabled_tools,LOCAL_TOOLS,TOOL_CONTRACT_VERSION
 from content_cache import validate_policy,sha,contract
 from client_pairing import ComponentClient
 from codex_connect import atomic,NAME,BEGIN,END,BLOCK
@@ -95,7 +95,7 @@ def context(home,package,policy_path,policy_sha,*,inspection=False,allow_legacy_
         client=ComponentClient(runtime['device_plan'],runtime['device_plan_sha256'],signing)
     if client.data_mode!='personal':raise InstallBlocked('Personal content profile required')
     validate_policy(content,client.grant)
-    methods=sorted(contract.mcp_methods(client.grant['scopes'])-{'memory_query'})
+    methods=enabled_tools(content,client.grant)
     package_sha=package_check(package,policy,allow_legacy_030_active=allow_legacy_030_active)
     mcp={'command':str(Path(sys.executable).resolve()),'args':['-I','-B',str(safe(package)/'adapters/codex/client_startup.py'),'--policy-file',str(policy_path),'--policy-sha256',policy_sha],
          'startup_timeout_sec':60,'tool_timeout_sec':120,'enabled':True,'enabled_tools':methods,'default_tools_approval_mode':'writes'}
@@ -142,6 +142,10 @@ def registered_context(home,metadata,config_image=None):
         if command!=str(Path(dependencies['python']).resolve()):raise InstallBlocked('Installed interpreter dependency binding changed')
     mcp['command']=command
     if recorded.get('enabled') is False:mcp['enabled']=False
+    # Existing installed tables retain their authenticated legacy whitelist.
+    # Inspection never enables local tools or rewrites native configuration.
+    if recorded.get('enabled_tools') == sorted(set(mcp['enabled_tools'])-LOCAL_TOOLS-{'memory_query'}):
+        mcp['enabled_tools']=recorded['enabled_tools']
     if recorded!=mcp:raise InstallBlocked('Installed MCP binding drift')
     return policy,mcp,package_sha,native
 
@@ -187,7 +191,7 @@ def prepare(home,package,policy_path,policy_sha,replace_existing=False):
                 legacy_agents={'path':str(agents),'before_sha256':sha(agents_raw),'after_sha256':sha(after)}
     elif registered is not None:raise InstallBlocked('Orphan registration preserved')
     desired=render(before,mcp,bool(old))
-    plan={'schema':1,'adapter':'codex','platform':policy['platform'],'device_home':str(home),'codex_home':str(native),'package':str(package),'package_sha256':package_sha,
+    plan={'schema':1,'tool_contract_version':TOOL_CONTRACT_VERSION,'adapter':'codex','platform':policy['platform'],'device_home':str(home),'codex_home':str(native),'package':str(package),'package_sha256':package_sha,
           'release_policy':str(policy_path),'release_policy_sha256':policy_sha,'replace_existing':replace_existing,'mcp':mcp,'before':{str(config):digest_or_none(before),str(registration):digest_or_none(registered)},'config_after_sha256':sha(desired),'legacy_agents':legacy_agents}
     if legacy_agents:plan['before'][legacy_agents['path']]=legacy_agents['before_sha256']
     return plan
@@ -198,7 +202,7 @@ def probe(plan):
     run=subprocess.run([plan['mcp']['command'],*plan['mcp']['args'],'--installation-check'],capture_output=True,stdin=subprocess.DEVNULL,timeout=60,env=environment)
     if run.returncode or len(run.stdout)>16384:raise InstallBlocked('Protocol/authentication unconfirmed')
     value=json.loads(run.stdout)
-    if value.get('status')!='content-native-protocol-checked' or value.get('protocol_checked') is not True or value.get('authentication_checked') is not True or value.get('native_changed') is not False or value.get('tools')!=plan['mcp']['enabled_tools']:raise InstallBlocked('Unexpected installation protocol check')
+    if value.get('status')!='content-native-protocol-checked' or value.get('protocol_checked') is not True or value.get('authentication_checked') is not True or value.get('native_changed') is not False or value.get('tools')!=plan['mcp']['enabled_tools'] or (type(value.get('tool_contract_version')) is not int or value['tool_contract_version']!=plan['tool_contract_version']):raise InstallBlocked('Unexpected installation protocol check')
 
 
 def probe_bootstrap(plan):
@@ -218,7 +222,7 @@ def probe_bootstrap(plan):
 
 def validate_install_scope(plan):
     keys={'schema','adapter','platform','device_home','codex_home','package','package_sha256','release_policy','release_policy_sha256','replace_existing','mcp','before','config_after_sha256','legacy_agents'}
-    if not isinstance(plan,dict) or set(plan)!=keys or plan['schema']!=1 or plan['adapter']!='codex' or type(plan['replace_existing'])!=bool:raise InstallBlocked('Unsupported install plan')
+    if not isinstance(plan,dict) or set(plan) not in (keys, keys|{'tool_contract_version'}) or ('tool_contract_version' in plan and (type(plan['tool_contract_version']) is not int or plan['tool_contract_version']!=TOOL_CONTRACT_VERSION)) or plan['schema']!=1 or plan['adapter']!='codex' or type(plan['replace_existing'])!=bool:raise InstallBlocked('Unsupported install plan')
     path_type=platform_paths(plan['platform'])
     home,native=path_type(plan['device_home']),path_type(plan['codex_home'])
     if any(not p.is_absolute() or '..' in p.parts for p in (home,native)):raise InstallBlocked('Absolute native paths required')
