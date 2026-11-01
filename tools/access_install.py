@@ -291,6 +291,7 @@ def resume_applying_registration(home, native, endpoint=None):
     receipt_path = state / "content-install-receipt.json"
     if not receipt_path.exists():
         return None
+    stage = "receipt-validation"
     try:
         journal = wizard.private_json(owned(receipt_path))
         if journal.get("phase") != "applying":
@@ -299,6 +300,7 @@ def resume_applying_registration(home, native, endpoint=None):
 
         first = state / "first-install"
         access = state / "access-bootstrap"
+        stage = "connection-validation"
         connection = wizard.connection_value(
             wizard.private_json(owned(access / "connection.json"))
         )
@@ -311,6 +313,7 @@ def resume_applying_registration(home, native, endpoint=None):
             raise ValueError("Existing Server identity preserved")
         if wizard.private_json(owned(first / "connection.json")) != connection:
             raise ValueError("Original access connection changed")
+        stage = "binding-validation"
         binding = wizard.private_json(owned(first / "binding.json"))
         if (
             set(binding)
@@ -330,6 +333,7 @@ def resume_applying_registration(home, native, endpoint=None):
             != {"schema": 1, "id": binding["installation_id"]}
         ):
             raise ValueError("Original installation binding changed")
+        stage = "plan-validation"
         plan = wizard.private_json(owned(first / "install-plan.json"))
         plan_sha = wizard.sha(canonical(plan))
         plan_home, plan_native, _ = plan_scope(plan)
@@ -339,6 +343,7 @@ def resume_applying_registration(home, native, endpoint=None):
             or journal.get("plan_sha256") != plan_sha
         ):
             raise ValueError("Original plan scope changed")
+        stage = "registration-validation"
         metadata = wizard.private_json(owned(state / "codex-mcp.json"))
         if metadata.get("plan_sha256") != plan_sha or any(
             metadata.get(k) != plan[k]
@@ -353,13 +358,16 @@ def resume_applying_registration(home, native, endpoint=None):
             raise ValueError("Applying registration differs from original plan")
         if plan["release_policy"] != str(first / "release-policy.json"):
             raise ValueError("Original policy path changed")
+        stage = "policy-validation"
         wizard.existing_connection(home, native, connection, metadata)
+        stage = "native-images-validation"
         validate_recovery(journal, plan)
         with wizard.private_lease(access):
             # Revalidate after taking the same lease as the address/key entry.
             if wizard.private_json(owned(receipt_path)) != journal:
                 raise ValueError("Recovery journal changed")
             validate_recovery(journal, plan)
+            stage = "transaction-recovery"
             return wizard.run(
                 home, native, connection, binding["connection_sha256"], access_mode=True
             )
@@ -369,5 +377,6 @@ def resume_applying_registration(home, native, endpoint=None):
             "installed": False,
             "native_changed": None,
             "credential_accessed": False,
+            "reason": stage,
             "next_action": "Preserve the original access binding, plan, native files and applying receipt. Review drift; do not reset credentials or provide a replacement legacy connection.",
         }
