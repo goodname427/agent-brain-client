@@ -27,4 +27,6 @@
 
 这些差异留在已有平台边界和可重复回归里。新功能默认检查两平台，不另造业务流程或为了潜在 OS 提前抽象。
 
+0.5.4 补充验收要求：不能只测平台 helper、包自检或 bootstrap。必须在实际发布包和最小启动环境里进入默认 `remote_mcp.Server` checkpoint、`ContentServer` 初始化及只读 installation check；历史版本的真实失败路径作为回归基线。架构发现只在 `brain_lock.py` 实现，源码检查拒绝其他生产模块直接调用 platform.machine/system/uname/architecture 或 os.uname（含别名导入）。Mac-only 入口仍明确限制 Mac，显式协议 checkpoint 的既有白名单保留。已验证活动运行包在重试间前向更新，不等于重写固定 bootstrap 或重置设备身份。
+
 后续 Harness 需交付：受支持官方事件来源及真实代码证据、稳定 request/event/session 身份、origin 与获准未来范围、取消/重复/中断语义、启动召回接口、正常安装/卸载/trust、断网队列与撤销合同。其适配器输出公共事件，不直接调用系统凭据 API或另造模型调度。缺某个生命周期事件时提供明确的固定补救步骤，不通过读取历史数据库伪装全自动。DeepSeek Harness 留待独立开发任务；当前 DeepSeek 提取 provider 不能计为 Harness 适配。

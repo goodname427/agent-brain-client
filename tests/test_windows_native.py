@@ -81,7 +81,7 @@ class WindowsNative(unittest.TestCase):
                     manifest['files']['scripts/brain_lock.py'] = wizard.sha(old_detector)
                     file.write_text(json.dumps(manifest), encoding='utf-8')
         payloads = {}
-        for version in ('0.5.0', '0.5.3'):
+        for version in ('0.5.0', '0.5.3', '0.5.4'):
             payload = self.root / version
             release(ROOT, payload, version, data_mode='personal-content-https', target_platform=target)
             if version == '0.5.0': legacy_package(payload)
@@ -91,7 +91,7 @@ class WindowsNative(unittest.TestCase):
             manifest = json.loads((payload / 'releases/manifest.json').read_bytes())
             class Source:
                 def latest(self):
-                    return ('a' if version == '0.5.0' else 'b') * 40, manifest, lambda name: (payload / name).read_bytes()
+                    return {'0.5.0': 'a', '0.5.3': 'b', '0.5.4': 'c'}[version] * 40, manifest, lambda name: (payload / name).read_bytes()
             def run():
                 policy = self.home / '.config/agent-brain-client/first-install/release-policy.json'
                 releases = ClientReleases(policy, wizard.sha(policy.read_bytes()))
@@ -127,7 +127,13 @@ class WindowsNative(unittest.TestCase):
             run = subprocess.run([plan['mcp']['command'], *plan['mcp']['args'], '--bootstrap-check'],
                 env=environment, capture_output=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertEqual(json.loads(run.stdout)['active_package_version'], '0.5.3')
+            self.assertEqual(json.loads(run.stdout)['active_package_version'], '0.5.4')
+            active = json.loads((state / 'releases/active.json').read_bytes())
+            checkpoint = subprocess.run([plan['mcp']['command'], '-I', '-B',
+                str(ROOT / 'tests/fixtures/checkpoint_probe.py'), active['package']],
+                env=environment, capture_output=True, timeout=30)
+            self.assertEqual(checkpoint.returncode, 0, checkpoint.stderr)
+            self.assertEqual(json.loads(checkpoint.stdout)['installation_check'], 'content-native-protocol-checked')
         options['installer'] = lambda plan, digest: content_install.apply(plan, digest, offline_bootstrap_probe)
         import pending_install_recovery as recovery
         original_save = recovery.save
@@ -140,6 +146,10 @@ class WindowsNative(unittest.TestCase):
         self.assertFalse(interrupted_result['installed'])
         self.assertEqual(config.read_bytes(), initial_config)
         self.assertEqual(backend.record, identity)
+        # Normal startup may have advanced the independently verified runtime
+        # after a prior failed install; retry must retain the fixed bootstrap,
+        # profile, nonce and original plan recovery without requiring input.
+        self.assertEqual(updater('0.5.4')()['status'], 'updated')
         second = wizard.run(self.home, native, connection, wizard.sha(wizard.canonical(connection)),
             updater=lambda: self.fail('Interrupted recovery reuses verified package'), **options)
         self.assertTrue(second['installed'], second)

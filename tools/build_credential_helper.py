@@ -4,18 +4,22 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-import platform
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'scripts'))
+from brain_lock import require_platform,MAC_PLATFORMS
 
 
 def build(output, *, access=False):
     output = Path(output).resolve()
     if output.exists():
         raise ValueError("Existing helper preserved")
-    if platform.system() != "Darwin":
+    target = require_platform('credential-helper-build')
+    if target not in MAC_PLATFORMS:
         raise ValueError("macOS Swift build host required")
+    machine = target.removeprefix('darwin-')
     cache = ROOT / ".local/swift-module-cache"
     cache.mkdir(parents=True, exist_ok=True, mode=0o700)
     output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -29,7 +33,7 @@ def build(output, *, access=False):
             "/usr/bin/swiftc",
             "-O",
             "-target",
-            platform.machine().lower() + "-apple-macos13.0",
+            machine + "-apple-macos13.0",
             "-module-cache-path",
             str(cache),
             str(source),
@@ -45,7 +49,7 @@ def build(output, *, access=False):
     check = json.loads(run.stdout)
     return {
         "schema": 1,
-        "platform": platform.system() + "-" + platform.machine(),
+        "platform": 'Darwin-' + machine,
         "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
         "helper_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
         "self_check": check,
