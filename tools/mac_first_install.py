@@ -9,7 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import platform
+import platform as platform  # Kept as the historical installer inspection seam.
 import re
 import subprocess
 import sys
@@ -23,7 +23,6 @@ from brain_lock import file_mode,locked,native_platform,require_platform,private
 from client_release import (
     ClientReleases,
     HTTPS_CONTENT_CAPABILITIES,
-    HTTPS_CONTENT_CLIENT_FILES,
     https_files,
     dependency_environment,
     CHECK_UPDATE_COMMAND,

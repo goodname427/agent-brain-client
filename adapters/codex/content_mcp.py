@@ -597,7 +597,12 @@ def cli():
             cache=Path(sys.argv[sys.argv.index('--cache')+1])
             from brain_lock import private_directory
             private_directory(cache)
-            with locked(cache/'.content-runtime.lock',timeout=0,shared=True): main()
+            with locked(cache/'.content-runtime.lock',timeout=0,shared=True):
+                from content_install import inspect
+                home=Path(sys.argv[sys.argv.index('--device-home')+1])
+                if not inspect(home).get('installed'):
+                    raise ValueError('Native installation changed before worker lease')
+                main()
         else: main()
     except PlatformUnsupported as error:
         if '--event-hook' in sys.argv:
