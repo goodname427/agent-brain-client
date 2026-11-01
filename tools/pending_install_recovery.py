@@ -32,7 +32,8 @@ def repair_crlf_preparation(home, native):
         return
     profile_path = state / 'https-profile.json'
     journal_path = state / 'crlf-recovery.json'
-    if not profile_path.exists() and not profile_path.is_symlink() and not journal_path.exists():
+    if (not profile_path.exists() and not profile_path.is_symlink()
+            and not journal_path.exists() and not journal_path.is_symlink()):
         # Binding precedes profile creation. Resume ordinary exact preparation;
         # there is no profile pin to migrate yet. An existing recovery journal
         # still requires its original profile/preimages and must fail closed.
