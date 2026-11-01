@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def check_platform_boundary(name, source):
     """Architecture discovery has one implementation, shared by every caller."""
-    if name == 'scripts/brain_lock.py' or name.split('/')[0] not in ('adapters', 'scripts', 'tools'):
+    if name == 'scripts/brain_lock.py' or name.split('/')[0] == 'tests':
         return
     tree = ast.parse(source, filename=name)
     modules, functions = {}, set()
