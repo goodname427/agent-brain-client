@@ -43,8 +43,8 @@ root=Path(sys.argv[1]);sys.path[:0]=[str(root/n) for n in ('scripts','adapters/c
 assert platform.machine()==''
 from remote_mcp import Server
 from brain_lock import require_platform
-assert Server(None,'0.5.5').client_platform==require_platform('checkpoint-regression')
-print(json.dumps({'stdlib_machine_empty':True,'fixed_checkpoint':Server(None,'0.5.5').client_platform}))
+assert Server(None,'0.5.6').client_platform==require_platform('checkpoint-regression')
+print(json.dumps({'stdlib_machine_empty':True,'fixed_checkpoint':Server(None,'0.5.6').client_platform}))
 """
         run = subprocess.run([sys.executable, '-I', '-B', '-c', code, str(ROOT)],
             env={'SystemRoot': os.environ['SystemRoot']}, capture_output=True, text=True, timeout=30)
@@ -53,7 +53,7 @@ print(json.dumps({'stdlib_machine_empty':True,'fixed_checkpoint':Server(None,'0.
 
     def test_default_checkpoint_uses_shared_detector_and_explicit_metadata_stays_validated(self):
         with patch.object(remote_mcp, 'native_platform', return_value='win32-arm64') as detect:
-            self.assertEqual(remote_mcp.Server(None, '0.5.5').client_platform, 'win32-arm64')
+            self.assertEqual(remote_mcp.Server(None, '0.5.6').client_platform, 'win32-arm64')
             detect.assert_called_once()
         with patch.object(remote_mcp, 'native_platform', side_effect=AssertionError('Explicit metadata')):
             self.assertEqual(remote_mcp.Server(None, client_platform='linux-x86_64').client_platform, 'linux-x86_64')
@@ -65,7 +65,7 @@ print(json.dumps({'stdlib_machine_empty':True,'fixed_checkpoint':Server(None,'0.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             payload = root / 'release'
-            release(ROOT, payload, '0.5.5', 'personal-content-https', native_platform())
+            release(ROOT, payload, '0.5.6', 'personal-content-https', native_platform())
             environment = {'HOME': str(root), 'CODEX_HOME': str(root / 'codex')}
             if os.name == 'nt':
                 environment['SystemRoot'] = os.environ['SystemRoot']

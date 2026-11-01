@@ -65,6 +65,7 @@ class MacPendingRecovery(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
+        self.test_enrolled_pre_native_050_recovers_to_verified_release_without_new_input = self.test_shared_pre_native_recovery
         self.root.chmod(0o700)
         self.home = brain_lock.private_directory(self.root / 'User Space & 文本')
         eligibility = patch.object(recovery, 'WINDOWS_PLATFORMS', (brain_lock.native_platform(),))
@@ -72,6 +73,8 @@ class MacPendingRecovery(unittest.TestCase):
         self.addCleanup(eligibility.stop)
 
     test_shared_pre_native_recovery = windows_fixtures.WindowsNative.test_enrolled_pre_native_050_recovers_to_verified_release_without_new_input
+    test_enrolled_055_three_tool_plan_recovers_without_identity_or_scope_change = windows_fixtures.WindowsNative.test_enrolled_055_three_tool_plan_recovers_without_identity_or_scope_change
+    test_fresh_normal_entry_compares_real_runtime_tools_before_and_after_install = windows_fixtures.WindowsNative.test_fresh_normal_entry_compares_real_runtime_tools_before_and_after_install
 
 
 if __name__ == '__main__':

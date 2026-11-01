@@ -153,7 +153,7 @@ class HTTPSContent(unittest.TestCase):
         policy={'schema':1,'adapter':'codex','platform':GRANT['platform'],'origin':'https://synthetic.invalid/client.git','ref':'refs/heads/releases/stable','anchor_commit':'a'*40,'channel':'stable','core_api':1,'state_schema':1,'capabilities':HTTPS_CONTENT_CAPABILITIES,'file_prefixes':list(HTTPS_CONTENT_CLIENT_FILES),'repository':str(self.base/'repository'),'cache':str(self.base/'release-cache'),'runtime':runtime}
         path=self.base/'release-policy.json';path.write_bytes(canonical(policy));path.chmod(0o600);digest=hashlib.sha256(path.read_bytes()).hexdigest()
         with patch.object(NativeKeychain,'call',side_effect=AssertionError('No real credential access during plan')):
-            plan=install.prepare(self.home,package,path,digest);self.assertEqual(config.read_bytes(),before);self.assertEqual(plan['mcp']['enabled_tools'],['content_catalog','content_put','content_read'])
+            plan=install.prepare(self.home,package,path,digest);self.assertEqual(config.read_bytes(),before);self.assertEqual(plan['mcp']['enabled_tools'],['content_catalog','content_put','content_read','content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage','memory_query'])
             calls=[]
             def check(value):
                 calls.append(value)

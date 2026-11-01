@@ -16,6 +16,29 @@ sys.path[:0] = [str(ROOT / n) for n in ('scripts', 'adapters/codex', 'tools', 't
 from brain_lock import private_directory, private_mode, locked, LockTimeout, command_line, native_platform
 
 
+def check_install_contract(test, plan):
+    """Real pinned launcher plus real probe; substitute only credential/transport I/O.
+
+    The child executes the built runtime's Server, ContentAdapter and read-only
+    protocol check. Its tool list is never copied from the expected plan.
+    """
+    from unittest.mock import patch
+    import content_install
+    real_run = subprocess.run
+    environment = dict(plan['mcp']['env'], HOME=plan['device_home'])
+    run = real_run([plan['mcp']['command'], *plan['mcp']['args'], '--bootstrap-check'],
+                   env=environment, capture_output=True, timeout=30)
+    test.assertEqual(run.returncode, 0, run.stderr)
+    state = Path(plan['device_home']) / '.config/agent-brain-client/first-install'
+    active = json.loads((state / 'releases/active.json').read_bytes())
+    def protocol_command(argv, **options):
+        test.assertIn('--installation-check', argv)
+        return real_run([plan['mcp']['command'], '-I', '-B',
+            str(ROOT / 'tests/fixtures/checkpoint_probe.py'), active['package'], '--installation-result'], **options)
+    with patch.object(content_install.subprocess, 'run', side_effect=protocol_command):
+        content_install.probe(plan)
+
+
 @unittest.skipUnless(os.name == 'nt', 'Native Windows APIs required')
 class WindowsNative(unittest.TestCase):
     def setUp(self):
@@ -81,7 +104,10 @@ class WindowsNative(unittest.TestCase):
                     manifest['files']['scripts/brain_lock.py'] = wizard.sha(old_detector)
                     file.write_text(json.dumps(manifest), encoding='utf-8')
         payloads = {}
-        for version in ('0.5.0', '0.5.3', '0.5.5'):
+        fresh = getattr(self, 'fresh_tools', False)
+        tools_only = getattr(self, 'tools_only', False)
+        old_version = '0.5.6' if fresh else '0.5.5' if tools_only else '0.5.0'
+        for version in sorted({old_version, '0.5.3', '0.5.6'}):
             payload = self.root / version
             release(ROOT, payload, version, data_mode='personal-content-https', target_platform=target)
             if version == '0.5.0': legacy_package(payload)
@@ -91,7 +117,7 @@ class WindowsNative(unittest.TestCase):
             manifest = json.loads((payload / 'releases/manifest.json').read_bytes())
             class Source:
                 def latest(self):
-                    return {'0.5.0': 'a', '0.5.3': 'b', '0.5.5': 'c'}[version] * 40, manifest, lambda name: (payload / name).read_bytes()
+                    return {'0.5.0': 'a', '0.5.3': 'b', '0.5.5': 'd', '0.5.6': 'c'}[version] * 40, manifest, lambda name: (payload / name).read_bytes()
             def run():
                 policy = self.home / '.config/agent-brain-client/first-install/release-policy.json'
                 releases = ClientReleases(policy, wizard.sha(policy.read_bytes()))
@@ -107,58 +133,78 @@ class WindowsNative(unittest.TestCase):
             confirm=lambda token, nonce: {'phase': 'active', 'device_id': 'd' * 32, 'grant': grant})
         def old_export(source, output, **options):
             result = export(source, output, **options)
-            legacy_package(output)
+            if not (tools_only or fresh):legacy_package(output)
             return result
         options = dict(access_mode=True, dependency_preparer=lambda *a, **k: materials, store=store, transport=peer,
             confirm=lambda *a: self.fail('No invitation prompt'), secure_input=lambda: 'SYNTHETIC_ENROLLMENT_MARKER_12345678901234567890')
-        with patch.object(wizard, 'export', side_effect=old_export):
-            first = wizard.run(self.home, native, connection, wizard.sha(wizard.canonical(connection)), updater=updater('0.5.0'), **options)
+        import pending_install_recovery as recovery
+        real_prepare = wizard.prepare
+        def old_prepare(*args, **kwargs):return recovery.legacy_plan(real_prepare(*args, **kwargs))
+        if fresh:
+            options['installer'] = lambda plan, digest: content_install.apply(plan, digest, lambda p: check_install_contract(self, p))
+            first = wizard.run(self.home, native, connection, wizard.sha(wizard.canonical(connection)), updater=updater(old_version), **options)
+            self.assertTrue(first['installed'], first)
+            self.assertTrue(content_install.inspect(self.home)['installed'])
+            self.assertEqual(len(content_install.private_json(self.home / '.config/agent-brain-client/first-install/install-plan.json')['mcp']['enabled_tools']), 9)
+            return
+        with patch.object(wizard, 'export', side_effect=old_export), patch.object(wizard, 'prepare', side_effect=old_prepare), patch.object(content_install, 'prepare', side_effect=old_prepare):
+            first = wizard.run(self.home, native, connection, wizard.sha(wizard.canonical(connection)), updater=updater(old_version), **options)
         self.assertFalse(first['installed'], first)
         self.assertEqual(backend.record['phase'], 'active')
         identity = copy.deepcopy(backend.record)
         self.assertEqual(config.read_bytes(), initial_config)
         state = self.home / '.config/agent-brain-client/first-install'
         old_plan = (state / 'install-plan.json').read_bytes()
+        self.assertEqual(json.loads(old_plan)['mcp']['enabled_tools'], ['content_catalog', 'content_put', 'content_read'])
         old_bootstrap = state / 'bootstrap'
-        self.assertEqual((old_bootstrap / 'scripts/brain_lock.py').read_bytes(), old_detector)
+        if not tools_only:self.assertEqual((old_bootstrap / 'scripts/brain_lock.py').read_bytes(), old_detector)
         options['secure_input'] = lambda: self.fail('Recovery must not request a new credential')
+        checks = []
         def offline_bootstrap_probe(plan):
-            environment = dict(plan['mcp']['env'], HOME=plan['device_home'])
-            run = subprocess.run([plan['mcp']['command'], *plan['mcp']['args'], '--bootstrap-check'],
-                env=environment, capture_output=True, timeout=30)
-            self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertEqual(json.loads(run.stdout)['active_package_version'], '0.5.5')
-            active = json.loads((state / 'releases/active.json').read_bytes())
-            checkpoint = subprocess.run([plan['mcp']['command'], '-I', '-B',
-                str(ROOT / 'tests/fixtures/checkpoint_probe.py'), active['package']],
-                env=environment, capture_output=True, timeout=30)
-            self.assertEqual(checkpoint.returncode, 0, checkpoint.stderr)
-            self.assertEqual(json.loads(checkpoint.stdout)['installation_check'], 'content-native-protocol-checked')
+            check_install_contract(self, plan)
+            checks.append(True)
+            if tools_only and len(checks) == 2:
+                raise OSError('Synthetic postcheck failure after native write')
         options['installer'] = lambda plan, digest: content_install.apply(plan, digest, offline_bootstrap_probe)
-        import pending_install_recovery as recovery
         original_save = recovery.save
         def interrupted(path, value):
             original_save(path, value)
             if Path(path).name == 'install-plan.json':
                 raise OSError('SYNTHETIC_PLAN_PIN_INTERRUPTION')
         with patch.object(recovery, 'save', side_effect=interrupted):
-            interrupted_result = wizard.run(self.home, native, connection, wizard.sha(wizard.canonical(connection)), updater=updater('0.5.3'), **options)
+            interrupted_result = wizard.run(self.home, native, connection, wizard.sha(wizard.canonical(connection)), updater=updater('0.5.6' if tools_only else '0.5.3'), **options)
         self.assertFalse(interrupted_result['installed'])
         self.assertEqual(config.read_bytes(), initial_config)
         self.assertEqual(backend.record, identity)
         # Normal startup may have advanced the independently verified runtime
         # after a prior failed install; retry must retain the fixed bootstrap,
         # profile, nonce and original plan recovery without requiring input.
-        self.assertEqual(updater('0.5.5')()['status'], 'updated')
         second = wizard.run(self.home, native, connection, wizard.sha(wizard.canonical(connection)),
-            updater=lambda: self.fail('Interrupted recovery reuses verified package'), **options)
+            updater=updater('0.5.6'), **options)
+        if tools_only:
+            self.assertFalse(second['installed'], second)
+            self.assertEqual(config.read_bytes(), initial_config)
+            self.assertEqual(backend.record, identity)
+            receipt = content_install.private_json(self.home / '.config/agent-brain-client/content-install-receipt.json')
+            self.assertEqual(receipt['phase'], 'rolled-back')
+            second = wizard.run(self.home, native, connection, wizard.sha(wizard.canonical(connection)),
+                updater=lambda: self.fail('Exact rollback retry must not replace runtime'), **options)
         self.assertTrue(second['installed'], second)
         self.assertEqual(backend.record, identity)
-        journal = content_install.private_json(state / 'platform-recovery.json')
+        self.assertEqual(json.loads((state / 'releases/active.json').read_bytes())['version'], '0.5.6')
+        journal = content_install.private_json(state / ('tools-recovery.json' if tools_only else 'platform-recovery.json'))
         self.assertEqual(journal['phase'], 'complete')
         self.assertEqual(journal['before'], json.loads(old_plan))
-        self.assertEqual((old_bootstrap / 'scripts/brain_lock.py').read_bytes(), old_detector)
+        if not tools_only:self.assertEqual((old_bootstrap / 'scripts/brain_lock.py').read_bytes(), old_detector)
         self.assertTrue(content_install.inspect(self.home)['installed'])
+
+    def test_enrolled_055_three_tool_plan_recovers_without_identity_or_scope_change(self):
+        self.tools_only = True
+        self.test_enrolled_pre_native_050_recovers_to_verified_release_without_new_input()
+
+    def test_fresh_normal_entry_compares_real_runtime_tools_before_and_after_install(self):
+        self.fresh_tools = True
+        self.test_enrolled_pre_native_050_recovers_to_verified_release_without_new_input()
 
     def test_exact_crlf_pre_enrollment_metadata_recovers_without_resetting_dependencies(self):
         from unittest.mock import patch
