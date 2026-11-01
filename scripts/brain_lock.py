@@ -26,7 +26,33 @@ class PlatformUnsupported(ValueError):
                     platform=self.target, **fields)
 
 
+def windows_machine():
+    """Read native architecture without CPython's version-dependent environment.
+
+    IsWow64Process2 reports the host even for an emulated interpreter. Unknown
+    architectures/API failures remain unsupported; no environment fallback.
+    """
+    import ctypes
+    from ctypes import wintypes
+    if sys.platform != 'win32' or os.name != 'nt':
+        raise PlatformUnsupported('platform-detection', 'unreviewed-platform')
+    try:
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.GetCurrentProcess.argtypes = []
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel.IsWow64Process2.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.USHORT), ctypes.POINTER(wintypes.USHORT)]
+        kernel.IsWow64Process2.restype = wintypes.BOOL
+        process, native = wintypes.USHORT(), wintypes.USHORT()
+        if not kernel.IsWow64Process2(kernel.GetCurrentProcess(), ctypes.byref(process), ctypes.byref(native)):
+            raise OSError('Native architecture unavailable')
+        return {0x8664: 'amd64', 0xAA64: 'arm64'}.get(native.value, 'unknown')
+    except (AttributeError, OSError):
+        raise PlatformUnsupported('platform-detection', 'unreviewed-platform') from None
+
+
 def native_platform():
+    if sys.platform == 'win32' and os.name == 'nt':
+        return 'win32-' + windows_machine()
     machine = platform.machine().lower()
     if machine == 'aarch64': machine = 'arm64'
     if sys.platform == 'win32' and machine == 'x86_64': machine = 'amd64'

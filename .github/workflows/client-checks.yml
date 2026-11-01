@@ -31,9 +31,12 @@ jobs:
           python -m pip install ruff==0.14.0 mypy==1.18.2
           ruff check --no-cache --select E4,E7,E9,F --ignore E402 tools/access_install.py tools/access_windows.py tests/test_access_install.py tools/mac_first_install.py tools/client_lifecycle.py tools/prepare_install_runtime.py tools/check_source.py tests/test_mac_first_install.py tests/test_client_uninstall.py tests/test_install_contracts.py
           ruff check --no-cache --select F821,F822,F823,F841 adapters/codex scripts
+          ruff check --no-cache --select E4,E7,E9,F --ignore E402 tools/pending_install_recovery.py tests/test_pending_install_recovery.py tests/test_bootstrap_main.py
+          ruff check --no-cache --select F tools/bootstrap_main.py tests/test_windows_native.py
           ruff check --no-cache --select E4,E7,E9,F --ignore E402 tests/test_content_local_durable.py tests/test_receipt_transport.py tests/test_memory_behavior.py tests/test_memory_query.py tools/memory_review.py
           mypy --check-untyped-defs --follow-imports skip --ignore-missing-imports tools/access_install.py tools/access_windows.py tools/mac_first_install.py tools/client_lifecycle.py tools/prepare_install_runtime.py tools/check_source.py tools/memory_review.py
           mypy --check-untyped-defs --follow-imports skip --ignore-missing-imports adapters/codex/content_cache.py adapters/codex/remote_http.py adapters/codex/content_contract.py
+          mypy --check-untyped-defs --follow-imports skip --ignore-missing-imports tools/pending_install_recovery.py tools/bootstrap_main.py
       - name: Keychain helper self-check only
         shell: bash
         run: |
@@ -43,11 +46,14 @@ jobs:
           HOME="$TEST_ROOT/home" CODEX_HOME="$TEST_ROOT/codex" python -B tools/build_credential_helper.py --access --output "$TEST_ROOT/access-helper"
   windows-contracts:
     runs-on: windows-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.13']
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python }}
       - name: Native credentials, DACL, lifecycle, installer, offline recovery and shared contracts
         shell: pwsh
         run: |
@@ -57,7 +63,7 @@ jobs:
           $env:USERPROFILE = "$testRoot/home"
           $env:CODEX_HOME = "$testRoot/codex"
           $env:PYTHONPATH = '.;scripts;adapters/codex;tools;tests'
-          python -B -m unittest test_install_contracts.Contracts test_install_contracts.PlatformMainContracts test_windows_native test_source_paths test_access_install
+          python -B -m unittest test_install_contracts.Contracts test_install_contracts.PlatformMainContracts test_windows_native test_source_paths test_access_install test_bootstrap_main test_pending_install_recovery
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -B tools/build_client.py --scan
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

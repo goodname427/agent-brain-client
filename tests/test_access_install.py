@@ -358,8 +358,14 @@ class BootstrapCacheEntry(unittest.TestCase):
 
         def git(args, **kwargs):
             if "clone" in args:
-                (Path(args[-1]) / ".git").mkdir()
+                checkout = Path(args[-1])
+                (checkout / '.git').mkdir()
+                (checkout / 'fixture.txt').write_bytes(b'Synthetic checkout\n')
                 return subprocess.CompletedProcess(args, 0, "", "")
+            if 'ls-tree' in args:
+                data = b'Synthetic checkout\n'
+                digest = wizard.hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+                return subprocess.CompletedProcess(args, 0, '100644 blob ' + digest + '\tfixture.txt\0', '')
             if "rev-parse" in args:
                 return subprocess.CompletedProcess(args, 0, "a" * 40 + "\n", "")
             if "branch" in args:

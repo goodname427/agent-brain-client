@@ -3,6 +3,7 @@
 This is deliberately a small checkout bootstrap, not a self-updater for the
 installed runtime. It never edits or falls back to the caller's checkout.
 """
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -17,7 +18,28 @@ ONE_SHOT = 'agent-brain-bootstrap-once'
 
 
 def _run(args, *, runner, env):
-    return runner(args, capture_output=True, text=True, timeout=120, env=env)
+    return runner(args, capture_output=True, text=True, encoding='utf-8', timeout=120, env=env)
+
+
+def checkout_bytes(root, *, runner, git, env):
+    """Git's clean status can hide CRLF conversion; require exact blob bytes."""
+    tree = _run([git, '-C', str(root), 'ls-tree', '-rz', '--full-tree', 'HEAD'], runner=runner, env=env)
+    if tree.returncode or not tree.stdout:
+        return False
+    for record in tree.stdout.split('\0'):
+        if not record:
+            continue
+        metadata, name = record.split('\t', 1)
+        mode, kind, oid = metadata.split()
+        path = root / name
+        if (mode not in ('100644', '100755') or kind != 'blob'
+                or not path.is_file() or path.is_symlink() or root not in path.resolve().parents):
+            return False
+        raw = path.read_bytes()
+        actual = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+        if actual != oid:
+            return False
+    return True
 
 
 def should_bootstrap(argv):
@@ -65,6 +87,8 @@ def verified_one_shot(root, *, runner=subprocess.run, git='git'):
             or origin.stdout.strip() != ORIGIN or live_main.returncode
             or live_commit != commit or status.returncode or status.stdout.strip()):
         raise ValueError('Fresh official checkout changed; preserve it and retry from a clean checkout')
+    if not checkout_bytes(root, runner=runner, git=git, env=env):
+        return False  # Preserve converted/modified caller bytes; download afresh.
     marker.unlink()
     return True
 
@@ -87,7 +111,7 @@ def fresh_checkout(home, *, runner=subprocess.run, git='git', root=None):
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull,
            'GIT_TERMINAL_PROMPT': '0'}
     if os.name == 'nt': env.update(SystemRoot=os.environ['SystemRoot'], USERPROFILE=str(home))
-    cloned = _run([git, 'clone', '--depth', '1', '--single-branch', '--branch', BRANCH,
+    cloned = _run([git, '-c', 'core.autocrlf=false', '-c', 'core.eol=lf', 'clone', '--depth', '1', '--single-branch', '--branch', BRANCH,
                    '--no-tags', '--', ORIGIN, str(checkout)], runner=runner, env=env)
     if cloned.returncode:
         raise ValueError('Official main checkout download failed; caller checkout was not run')
@@ -99,7 +123,8 @@ def fresh_checkout(home, *, runner=subprocess.run, git='git', root=None):
     if (head.returncode or not re.fullmatch(r'[a-f0-9]{40}', commit)
             or branch.returncode or branch.stdout.strip() != BRANCH
             or origin.returncode or origin.stdout.strip() != ORIGIN
-            or status.returncode or status.stdout.strip()):
+            or status.returncode or status.stdout.strip()
+            or not checkout_bytes(checkout, runner=runner, git=git, env=env)):
         raise ValueError('Downloaded official main checkout failed validation; caller checkout was not run')
     git_dir = checkout / '.git'
     (git_dir / SOURCE_RECORD).write_text(commit + '\n')

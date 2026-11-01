@@ -10,12 +10,16 @@
 
 ```powershell
 $checkout = Join-Path $env:TEMP ('agent-brain-client-' + [guid]::NewGuid())
-git clone --depth 1 --single-branch --branch main --no-tags https://github.com/goodname427/agent-brain-client.git $checkout
+git -c core.autocrlf=false -c core.eol=lf clone --depth 1 --single-branch --branch main --no-tags https://github.com/goodname427/agent-brain-client.git $checkout
 Set-Location $checkout
 & ./tools/install-windows.ps1
 ```
 
 脚本在本机询问 HTTPS Server 地址（也可用非秘密参数 `-Server 'https://your-server.example'` 指定），再用 Windows 原生凭据窗口请求隐藏输入密钥。认证后自动获取该 Windows 平台授权及发布元数据，核验发行包、保存设备身份并完成本地 MCP 安装。不要求 connection.json、文件摘要、ready.json 或邀请码。中断重跑相同入口，复用密钥、nonce、安装计划和队列。错误密钥可重新输入；网络或证书错误保留原记录，不能跳过 HTTPS 验证。只有本地事务与只读协议检查都成功才报告 installed:true。
+
+0.5.3 的入口会自动跳过 Windows Store 执行别名，查找可固定摘要的用户 Python／Python launcher／注册解释器；不需要手改 PATH。Python 3.11 仍受支持，Windows 架构不再依赖被最小运行环境移除的变量。Git 换行由仓库和独立 checkout 固定为 LF，真实字节变化仍拒绝。
+
+已在 0.5.0 运行包完成设备登记、但安装检查失败且尚未生成原生安装回执时，取得新的官方 main 后正常重跑安装入口即可复用原接入密钥与设备身份。入口只从原受信渠道获取兼容包，保存旧 bootstrap 与计划，按精确原生前像刷新未执行计划，再运行原安装事务。已开始或已完成的原生事务走原恢复，不能套用此迁移。预登记 CRLF 元数据仅在无设备身份、无原生事务且精确匹配已知换行差异时自动迁移，原始摘要保存在恢复记录中。不要移动目录、重写摘要或重新生成密钥。
 
 安装成功后正常重载 Codex 的 `agent_brain_server` MCP，并按既有 Onboard 流程核对获授权的 Memory/Rule/Skill。模型加载不可观测时仍报告 unknown。完整信任与恢复说明见 [地址与密钥安装](ADDRESS-KEY-INSTALL.md)。
 
