@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import platform
 import ssl
 import subprocess
 import sys
@@ -103,7 +102,9 @@ def runtime(home, *, fetch=download, prepare=True):
 
 def main():
     try:
-        if sys.platform != 'darwin' or platform.machine().lower() != 'arm64':
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        from brain_lock import native_platform
+        if native_platform() != 'darwin-arm64':
             raise ValueError('Reviewed Mac arm64 backend required')
         sys.path.insert(0, str(ROOT / 'tools'))
         from bootstrap_main import should_bootstrap

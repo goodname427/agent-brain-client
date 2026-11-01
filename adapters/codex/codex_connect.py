@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import platform
 import re
 import subprocess
 import tempfile
@@ -17,7 +16,7 @@ import tomllib
 
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/"scripts"))
-from brain_lock import require_platform
+from brain_lock import require_platform,native_platform,MAC_PLATFORMS
 
 NAME='agent_brain_server'
 TOOLS=['topic','recall','remember','forget','client_updates']
@@ -33,7 +32,7 @@ def profile(path):
     if p.is_symlink() or not p.is_file() or p.stat().st_mode&0o077:raise ValueError('Private approved profile required')
     value=json.loads(p.read_text(encoding='utf-8'))
     if set(value)!={'schema','adapter','platform','data_mode','ssh'} or value['schema']!=1 or value['adapter']!='codex' or value['data_mode'] not in ('synthetic-only','personal-explicit'):raise ValueError('Unsupported service profile')
-    if value['platform']!='darwin-'+platform.machine().lower():raise ValueError('Actual Mac Codex platform must match')
+    if value['platform'] not in MAC_PLATFORMS or value['platform']!=native_platform():raise ValueError('Actual Mac Codex platform must match')
     ssh=value['ssh']
     if set(ssh)!={'host','user','identity_file','known_hosts_file','known_hosts_sha256','remote_command'}:raise ValueError('Unknown SSH scope')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,252}',ssh['host']) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]{0,31}',ssh['user']):raise ValueError('Invalid SSH destination')

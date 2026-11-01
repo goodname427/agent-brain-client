@@ -1,9 +1,39 @@
 """Compile every repository Python source without bytecode or external imports."""
 
+import ast
 import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def check_platform_boundary(name, source):
+    """Architecture discovery has one implementation, shared by every caller."""
+    if name == 'scripts/brain_lock.py' or name.split('/')[0] not in ('adapters', 'scripts', 'tools'):
+        return
+    tree = ast.parse(source, filename=name)
+    modules, functions = {}, set()
+    prohibited = {'platform': {'machine', 'system', 'uname', 'architecture'}, 'os': {'uname'}}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in prohibited:
+                    modules[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module in prohibited:
+            for alias in node.names:
+                if alias.name == '*':
+                    functions.update(prohibited[node.module])
+                elif alias.name in prohibited[node.module]:
+                    functions.add(alias.asname or alias.name)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        called = node.func
+        direct = isinstance(called, ast.Name) and called.id in functions
+        attribute = (isinstance(called, ast.Attribute) and isinstance(called.value, ast.Name)
+                     and called.attr in prohibited.get(modules.get(called.value.id, ''), set()))
+        if direct or attribute:
+            raise ValueError(f'Shared platform detector required: {name}:{node.lineno}')
 
 
 def check():
@@ -16,7 +46,10 @@ def check():
             continue
         if path.is_symlink():
             raise ValueError("Linked public source")
-        compile(path.read_bytes(), path.relative_to(ROOT).as_posix(), "exec")
+        name = path.relative_to(ROOT).as_posix()
+        source = path.read_bytes()
+        compile(source, name, "exec")
+        check_platform_boundary(name, source)
         count += 1
     return {
         "status": "source-syntax-checked",

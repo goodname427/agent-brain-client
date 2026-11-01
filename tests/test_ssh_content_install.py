@@ -17,7 +17,7 @@ from ssh_content import PREFIX,SSHChannel
 class SSHInstall(unittest.TestCase):
     def setUp(self):
         self.f=fixtures.ContentInstall('test_prepare_read_only_then_apply_inspect_reuse_and_single_link_state');self.f.setUp();self.addCleanup(self.f.doCleanups)
-        f=self.f;self.base=f.base;self.patch=patch('ssh_content.platform.machine',return_value='arm64');self.patch.start();self.addCleanup(self.patch.stop)
+        f=self.f;self.base=f.base;self.patch=patch('brain_lock.platform.machine',return_value='arm64');self.patch.start();self.addCleanup(self.patch.stop)
         key=self.base/'unexecuted-synthetic-ssh-key';key.write_text('SYNTHETIC_NOT_A_KEY');key.chmod(0o600)
         known=self.base/'ssh-known';known.write_text('synthetic pinned host');known.chmod(0o600)
         value={'schema':1,'adapter':'codex','platform':'darwin-arm64','data_mode':'personal','transport':'ssh-fixed-proxy','grant':f.grant,'ssh':{'host':'synthetic.invalid','user':'ubuntu','port':22,'identity_file':str(key),'known_hosts_file':str(known),'known_hosts_sha256':install.sha(known.read_bytes()),'remote_command':PREFIX+'/opt/agent-brain-client/ssh-bootstrap/scripts/brain_ssh_proxy.py --policy-file /var/lib/agent-brain/auth/ssh-proxy.json --policy-sha256 '+'e'*64}}

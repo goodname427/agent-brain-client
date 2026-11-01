@@ -4,6 +4,7 @@ The origin key and enrolled device record are never read or rewritten here.
 Old plans/packages remain available; native receipt recovery stays with apply.
 """
 import copy
+import json
 from pathlib import Path
 
 from brain_lock import WINDOWS_PLATFORMS, native_platform
@@ -157,8 +158,13 @@ def refresh_plan(path, update):
             raise ValueError('Pending platform recovery inputs changed')
     releases = ClientReleases(new['release_policy'], new['release_policy_sha256'])
     active = releases.verified_active()
-    if not active or active['package'] != new['package'] or version(active['version']) < (0, 5, 3):
+    bootstrap_version = json.loads(raw(Path(new['package']) / 'verified.json'))['manifest']['version']
+    if (not active or version(active['version']) < (0, 5, 3)
+            or active['package'] != new['package'] and version(active['version']) <= version(bootstrap_version)):
         raise ValueError('Verified recovery release changed')
+    # The immutable bootstrap stays pinned by the plan. Its independently
+    # verified runtime pointer may advance through the same original policy
+    # between retries; that does not replace the bootstrap or device profile.
     attempt_path = path.parent / 'pairing-attempt.json'
     current_attempt = private_json(attempt_path) if attempt_path.exists() else None
     after_attempt = {'schema': 1, 'plan_sha256': sha(encode(new))} if attempt is not None else None

@@ -2,12 +2,13 @@
 import argparse
 import json
 from pathlib import Path
-import platform
 import re
 import sys
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
+from brain_lock import native_platform
 from remote_http import RemoteClient
 
 VERSIONS = ('2025-11-25', '2025-06-18', '2025-03-26')
@@ -75,7 +76,7 @@ class Server:
         self.data_mode=data_mode;self.daily=False
         if not re.fullmatch(r'\d+\.\d+\.\d+',client_version):raise ValueError('Invalid client version')
         self.client, self.state, self.client_version = client, 'new', client_version
-        self.client_platform=client_platform or sys.platform+'-'+platform.machine().lower()
+        self.client_platform=client_platform or native_platform()
         if not re.fullmatch(r'(darwin|linux)-(arm64|aarch64|x86_64)|win32-(amd64|arm64)',self.client_platform):raise ValueError('Unsupported client checkpoint')
 
     def invoke(self, name, arguments):

@@ -3,15 +3,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import platform
 import re
 import subprocess
-import sys
 import time
 from types import SimpleNamespace
 from client_pairing import reviewed_ids,allowed_id
 import content_contract as contract
 from remote_http import check_request,current_request,request_timeout
+from brain_lock import native_platform,MAC_PLATFORMS
 
 PREFIX='/usr/bin/sudo -n -u agent-brain /usr/bin/python3 -I -B '
 COMMAND=r'/opt/agent-brain-client/[A-Za-z0-9_-]+/scripts/brain_ssh_proxy\.py --policy-file /var/lib/agent-brain/auth/[A-Za-z0-9_-]+\.json --policy-sha256 [a-f0-9]{64}'
@@ -50,7 +49,7 @@ def profile(path,digest):
     path=private(path);raw=path.read_bytes()
     if len(raw)>16384 or hashlib.sha256(raw).hexdigest()!=digest:raise ValueError('SSH profile drift')
     value=json.loads(raw,object_pairs_hook=pairs)
-    if set(value)!={'schema','adapter','platform','data_mode','transport','ssh','grant'} or value['schema']!=1 or value['adapter']!='codex' or value['transport']!='ssh-fixed-proxy' or value['data_mode']!='personal' or value['platform']!='darwin-'+platform.machine().lower() or sys.platform!='darwin':raise ValueError('Actual Mac Codex SSH profile required')
+    if set(value)!={'schema','adapter','platform','data_mode','transport','ssh','grant'} or value['schema']!=1 or value['adapter']!='codex' or value['transport']!='ssh-fixed-proxy' or value['data_mode']!='personal' or value['platform'] not in MAC_PLATFORMS or value['platform']!=native_platform():raise ValueError('Actual Mac Codex SSH profile required')
     grant_scope(value['grant'])
     if value['grant']['platform']!=value['platform']:raise ValueError('Device platform drift')
     ssh=value['ssh']
