@@ -189,8 +189,10 @@ def private_lease(state):
     path = safe(state / "first-install.lock")
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try: file_mode(fd,0o600)
-        finally: os.close(fd)
+        try:
+            file_mode(fd,0o600)
+        finally:
+            os.close(fd)
     except FileExistsError:
         pass
     owned(path)
@@ -228,7 +230,8 @@ def prepare_dependencies(home, *, runner=subprocess.run, helper_builder=build_he
     env = {"PATH": os.environ.get('PATH','') if os.name=='nt' else "/usr/bin:/bin", "HOME": str(home), "LANG": "en_US.UTF-8",
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
            "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "0"}
-    if os.name=='nt': env.update(SystemRoot=os.environ['SystemRoot'],USERPROFILE=str(home))
+    if os.name=='nt':
+        env.update(SystemRoot=os.environ['SystemRoot'],USERPROFILE=str(home))
     runner([str(git), "--version"], capture_output=True, timeout=30, env=env, check=True)
     core = Path(runner([str(git), "--exec-path"], capture_output=True,
                        timeout=30, env=env, check=True).stdout.decode().strip()).resolve()
