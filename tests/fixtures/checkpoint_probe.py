@@ -10,7 +10,7 @@ from remote_mcp import Server
 from content_mcp import installation_check
 
 target = require_platform('checkpoint-regression')
-assert Server(None, '0.5.4').client_platform == target
+assert Server(None, '0.5.5').client_platform == target
 grant = {'adapter': 'codex', 'platform': target, 'actor': 'synthetic-owner',
          'scopes': ['read', 'put'], 'artifact_types': ['memory'], 'ids': {'memory': '*'}}
 policy = {'schema': 1, 'adapter': 'codex', 'kinds': ['memory'], 'ids': {'memory': '*'},
@@ -30,7 +30,7 @@ class Cloud:
 
 
 cloud = Cloud()
-result = installation_check(cloud, policy, '0.5.4')
+result = installation_check(cloud, policy, '0.5.5')
 assert result['status'] == 'content-native-protocol-checked' and len(cloud.requests) == 1
 assert result['native_changed'] is False
 print(json.dumps({'checkpoint': target, 'installation_check': result['status'],
