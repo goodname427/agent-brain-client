@@ -49,7 +49,7 @@ def block(value):
     lines = [BEGIN]
     for event in ('SessionStart', 'UserPromptSubmit', 'Stop'):
         lines += ['[[hooks.' + event + ']]', '[[hooks.' + event + '.hooks]]', 'type = "command"',
-                  'command = ' + json.dumps(command), 'timeout = ' + ('120' if event == 'Stop' else '40'),
+                  'command = ' + json.dumps(command), 'timeout = ' + ('120' if event in ('SessionStart', 'Stop') else '40'),
                   'statusMessage = ' + json.dumps(MARKER)]
         if event == 'Stop': lines += ['async = true']
     return '\n'.join(lines) + '\n' + END + '\n'
