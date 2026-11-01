@@ -204,8 +204,8 @@ class ContentInstall(unittest.TestCase):
                     writes.append(p)
                     if len(writes) == failure:raise OSError('Synthetic interrupted migration')
                 with patch.object(recovery, 'save', side_effect=interrupt):
-                    with self.assertRaises(OSError):recovery.refresh_plan(path, lambda: self.fail('No release replacement'))
-                result = recovery.refresh_plan(path, lambda: self.fail('No release replacement'))
+                    with self.assertRaises(OSError):recovery.refresh_plan(path, lambda: {'status': 'current'})
+                result = recovery.refresh_plan(path, lambda: {'status': 'current'})
                 self.assertEqual(result, current)
                 self.assertEqual(install.private_json(attempt)['plan_sha256'], self.digest(current))
                 self.assertEqual(install.private_json(journal)['before'], old)
@@ -213,7 +213,7 @@ class ContentInstall(unittest.TestCase):
         changed = install.private_json(journal)
         changed['after']['mcp']['enabled_tools'].append('content_remove')
         save(journal, changed)
-        with self.assertRaises(ValueError):recovery.refresh_plan(path, lambda: self.fail('No release replacement'))
+        with self.assertRaises(ValueError):recovery.refresh_plan(path, lambda: {'status': 'current'})
         self.assertEqual(install.private_json(path), current)
         self.assertEqual(self.config.read_bytes(), before)
 

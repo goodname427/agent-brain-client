@@ -167,18 +167,18 @@ class WindowsNative(unittest.TestCase):
             if Path(path).name == 'install-plan.json':
                 raise OSError('SYNTHETIC_PLAN_PIN_INTERRUPTION')
         with patch.object(recovery, 'save', side_effect=interrupted):
-            interrupted_result = wizard.run(self.home, native, connection, wizard.sha(wizard.canonical(connection)), updater=updater('0.5.3'), **options)
+            interrupted_result = wizard.run(self.home, native, connection, wizard.sha(wizard.canonical(connection)), updater=updater('0.5.6' if tools_only else '0.5.3'), **options)
         self.assertFalse(interrupted_result['installed'])
         self.assertEqual(config.read_bytes(), initial_config)
         self.assertEqual(backend.record, identity)
         # Normal startup may have advanced the independently verified runtime
         # after a prior failed install; retry must retain the fixed bootstrap,
         # profile, nonce and original plan recovery without requiring input.
-        self.assertEqual(updater('0.5.6')()['status'], 'updated')
         second = wizard.run(self.home, native, connection, wizard.sha(wizard.canonical(connection)),
-            updater=lambda: self.fail('Interrupted recovery reuses verified package'), **options)
+            updater=updater('0.5.6'), **options)
         self.assertTrue(second['installed'], second)
         self.assertEqual(backend.record, identity)
+        self.assertEqual(json.loads((state / 'releases/active.json').read_bytes())['version'], '0.5.6')
         journal = content_install.private_json(state / ('tools-recovery.json' if tools_only else 'platform-recovery.json'))
         self.assertEqual(journal['phase'], 'complete')
         self.assertEqual(journal['before'], json.loads(old_plan))

@@ -215,8 +215,25 @@ def verified_pending(plan):
 def refresh_plan(path, update):
     path = safe(path)
     journal_path = path.parent / 'tools-recovery.json'
+    original = private_json(path)
+    refresh = update
+    if verified_pending(original) != original or journal_path.exists():
+        state = Path(original['device_home']) / '.config/agent-brain-client'
+        if any((state / name).exists() or (state / name).is_symlink() for name in
+               ('codex-mcp.json', 'content-install-receipt.json', 'uninstall-receipt.json')):
+            raise ValueError('Native transaction requires its original recovery')
+        # Pending installation must also advance its independently verified
+        # runtime. A newer installer cannot repair an older active MCP by only
+        # changing the plan. Preserve the bootstrap; use the original policy.
+        result = update()
+        releases = ClientReleases(original['release_policy'], original['release_policy_sha256'])
+        if result.get('status') not in ('current', 'updated', 'offline') or not releases.verified_active():
+            raise ValueError('Verified pending runtime unavailable')
+        def cached_update():
+            return result
+        refresh = cached_update
     if not journal_path.exists():
-        _refresh_platform_plan(path, update)
+        _refresh_platform_plan(path, refresh)
     plan = private_json(path)
     journal = private_json(journal_path) if journal_path.exists() else None
     current = verified_pending(plan)
