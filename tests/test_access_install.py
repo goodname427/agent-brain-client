@@ -410,7 +410,7 @@ class BootstrapCacheEntry(unittest.TestCase):
     "Mac transaction fixture; Windows native transaction case is separate",
 )
 class ApplyingAccessEntry(unittest.TestCase):
-    def fixture(self):
+    def fixture(self, unicode_home=False):
         import content_install
 
         f = fixtures.FirstInstall(
@@ -418,6 +418,20 @@ class ApplyingAccessEntry(unittest.TestCase):
         )
         f.setUp()
         self.addCleanup(f.doCleanups)
+        if unicode_home:
+            from system_credentials import CredentialStore
+
+            destination = f.home.with_name("home & 文本")
+            f.home.rename(destination)
+            f.home = destination
+            f.store = CredentialStore(
+                f.backend, f.home / ".config/agent-brain-client/https"
+            )
+            environment = patch.dict(
+                os.environ, HOME=str(f.home), CODEX_HOME=str(f.home / "codex")
+            )
+            environment.start()
+            self.addCleanup(environment.stop)
         f.fixture()
         self.assertTrue(f.run_wizard(access_mode=True)["installed"])
         state = f.home / ".config/agent-brain-client"
@@ -432,10 +446,10 @@ class ApplyingAccessEntry(unittest.TestCase):
         self.assertFalse(content_install.inspect(f.home).get("registration_verified"))
         return f, state, receipt
 
-    def test_cli_resumes_after_registration_write_without_another_key_or_identity(self):
+    def exercise_recovery(self, unicode_home=False):
         import content_install
 
-        f, state, _ = self.fixture()
+        f, state, _ = self.fixture(unicode_home=unicode_home)
         identity = copy.deepcopy(f.backend.record)
         original = wizard.run
 
@@ -469,6 +483,14 @@ class ApplyingAccessEntry(unittest.TestCase):
             "complete",
         )
         self.assertEqual(f.backend.record, identity)
+
+    def test_cli_resumes_after_registration_write_without_another_key_or_identity(self):
+        self.exercise_recovery()
+
+    def test_unicode_normal_install_and_registration_retry_use_the_persisted_plan_digest(
+        self,
+    ):
+        self.exercise_recovery(unicode_home=True)
 
     def test_cli_preserves_applying_journal_and_outside_edit_before_credential_access(
         self,

@@ -408,8 +408,9 @@ def install_once(plan,approved_digest,*,store=None,transport=None,secure_input=N
     existing profile. Pairing recovery remains in the same dedicated OS item.
     """
     from content_install import context,prepare,apply,private_json,InstallBlocked
+    from content_contract import encode as plan_bytes
     try:
-        if not isinstance(plan,dict) or hashlib.sha256(canonical(plan)).hexdigest()!=approved_digest:
+        if not isinstance(plan,dict) or hashlib.sha256(plan_bytes(plan)).hexdigest()!=approved_digest:
             raise InstallBlocked('Exact approved native plan required')
         policy,_,_,_=context(plan['device_home'],plan['package'],plan['release_policy'],plan['release_policy_sha256'])
         from client_release import HTTPS_CONTENT_CAPABILITIES

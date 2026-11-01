@@ -41,6 +41,7 @@ from https_content import (
     profile_metadata,
 )
 from system_credentials import canonical, unique, owned
+from content_contract import encode as plan_bytes
 from build_client import export
 from build_credential_helper import build as build_helper
 import shutil
@@ -406,7 +407,7 @@ def prepare_materials(
         raise ValueError("Resume uninstall with --action repair before reinstall")
     if plan_path.exists():
         plan = private_json(plan_path)
-        plan_sha = sha(canonical(plan))
+        plan_sha = sha(plan_bytes(plan))
         receipt = home / ".config/agent-brain-client/content-install-receipt.json"
         if receipt.exists() and private_json(receipt).get("phase") in (
             "complete",
@@ -549,7 +550,7 @@ def reinstall_removed(home, native, connection, *, store=None, transport=None, s
         os.rename(staging / 'package', package)
     # Existing package is independently rehashed by prepare; never overwrite it.
     plan = prepare(home, package, metadata['release_policy'], metadata['release_policy_sha256'])
-    plan_sha = sha(canonical(plan))
+    plan_sha = sha(plan_bytes(plan))
     plan_path = state / ('reinstall-plan-' + plan_sha + '.json')
     same_private(plan_path, plan)
     same_private(current_path, {'schema': 1, 'removed_plan_sha256': metadata['plan_sha256'],

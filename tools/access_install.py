@@ -335,7 +335,7 @@ def resume_applying_registration(home, native, endpoint=None):
             raise ValueError("Original installation binding changed")
         stage = "plan-validation"
         plan = wizard.private_json(owned(first / "install-plan.json"))
-        plan_sha = wizard.sha(canonical(plan))
+        plan_sha = wizard.sha(wizard.plan_bytes(plan))
         plan_home, plan_native, _ = plan_scope(plan)
         if (
             plan_home != Path(home)
