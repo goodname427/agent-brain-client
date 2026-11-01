@@ -67,8 +67,7 @@ def inspect_plan(path):
     import hashlib
     import json
     from pathlib import Path
-    import platform
-    import sys
+    from brain_lock import native_platform,MAC_PLATFORMS
     try:
         plan=Path(path)
         if plan.is_symlink() or not plan.is_file() or plan.stat().st_mode&0o077 or plan.stat().st_size>16384:raise ValueError('Private plan required')
@@ -80,7 +79,7 @@ def inspect_plan(path):
             return value
         value=json.loads(plan.read_text(encoding='utf-8'),object_pairs_hook=unique)
         if set(value)!={'schema','adapter','platform','profile','profile_sha256','component','component_sha256'} or value['schema']!=1 or value['adapter']!='codex':raise ValueError('Unknown plan')
-        if sys.platform!='darwin' or value['platform']!='darwin-'+platform.machine().lower():return {'status':'adapter-review-required','native_changed':False}
+        if value['platform'] not in MAC_PLATFORMS or value['platform']!=native_platform():return {'status':'adapter-review-required','native_changed':False}
         profile=Path(value['profile']);component=Path(value['component'])
         if not profile.is_absolute() or not component.is_absolute() or profile.is_symlink() or component.is_symlink():raise ValueError('Owned absolute files required')
         if not profile.is_file() or profile.stat().st_mode&0o077 or profile.stat().st_size>16384:return {'status':'pairing-profile-review-required','native_changed':False}
