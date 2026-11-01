@@ -576,7 +576,7 @@ class LifecycleExitCodes(unittest.TestCase):
 
 class NewDeviceConnectionCLI(unittest.TestCase):
     @unittest.skipUnless(sys.platform == 'darwin' and wizard.platform.machine().lower() == 'arm64', 'Actual Mac arm64 CLI only')
-    def test_actual_process_reports_issuer_delivery_before_preparing_or_pairing(self):
+    def test_actual_process_requests_local_address_before_preparing_or_pairing(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
@@ -585,8 +585,8 @@ class NewDeviceConnectionCLI(unittest.TestCase):
                                     env=env, capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 2, result.stderr)
             value = json.loads(result.stdout)
-            self.assertEqual(value['status'], 'first-install-connection-required')
-            self.assertIn('tools/export_connection.py', value['next_action'])
+            self.assertEqual(value['status'], 'access-input-cancelled')
+            self.assertIn('HTTPS address', result.stderr)
             self.assertFalse(value['credential_accessed'])
             self.assertFalse((home / '.config').exists())
 

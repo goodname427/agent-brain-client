@@ -1,6 +1,6 @@
 # Agent Brain Client
 
-把本仓库链接 `https://github.com/goodname427/agent-brain-client` 发给本地 Codex，即可作为 Agent Brain 的安装／更新入口，无需再附安装提示。执行 Agent 先读 [统一引导](BOOTSTRAP.md)：识别 Windows／Mac，检测已有安装；已安装则沿原策略检查并升级，未安装则进入对应平台的首次接入流程。首次连接资料、设备配对及采集目录仍走正常安全流程。
+把本仓库链接 `https://github.com/goodname427/agent-brain-client` 发给本地 Codex，即可作为 Agent Brain 的安装／更新入口，无需再附安装提示。执行 Agent 先读 [统一引导](BOOTSTRAP.md)：识别 Windows／Mac，检测已有安装；已安装则沿原策略检查并升级，未安装则进入对应平台的首次接入流程。首次只需 HTTPS Server 地址和本机隐藏输入的长期接入密钥；安装器自动获取授权配置并完成安装，见 [地址与密钥安装](docs/ADDRESS-KEY-INSTALL.md)。采集目录仍须单独授权。
 
 Windows Codex 的安装、升级和来源启用见 [Windows 固定步骤](docs/FIRST-INSTALL-WINDOWS.md)，复用架构与后续 Harness 接入规范见 [多平台开发](docs/MULTIPLATFORM-DEVELOPMENT.md)。5.0 Windows Codex 使用 Client 0.5.0，见 [发布说明](docs/RELEASE-5.0-WINDOWS.md)；实际运行版本由所固定的发布渠道决定。
 
@@ -30,7 +30,7 @@ python3 -B tools/build_credential_helper.py --output .local/credential-helper
 
 已交付 HTTPS 客户端支持一个审核安装入口：先检查原生计划，再一次安全输入，prepare→安全存储→confirm 后执行原生安装；失败和重试沿用持久配对状态。支持恢复与撤销、来源隔离缓存、CAS outbox。具体交付、恢复及验收边界见 [HTTPS-INSTALL.md](docs/HTTPS-INSTALL.md)。0.2.5 已验收 HTTPS 个人内容范围，见 [PERSONAL-OWNER-SCOPE.md](docs/PERSONAL-OWNER-SCOPE.md)。本轮首次安装候选不重新验收既有 0.2.5，不发布新资产或部署生产；保留既有 SSH 恢复材料。用户资料、部署地址、私钥、配对码、原生配置和会话不进入公开仓库。
 
-Mac arm64 的唯一用户操作说明见 [安装、使用、卸载与再次安装](docs/FIRST-INSTALL-MAC.md)，连接交付格式见 [无凭据示例](docs/connection.example.json)。同一个脚本提供 install/status/repair/uninstall；入口从固定官方 `main` 建立独立 checkout 并记录源码 SHA，旧目录和用户修改保留，下载失败不会运行旧入口。已有身份再次安装复用或恢复原身份、helper/profile/队列与信任锚。修改前下载的旧脚本无法被远端更新，必须按文档先取得新的 checkout。新设备由服务发行者用 Server 的 `tools/export_connection.py` 交付连接资料和摘要，准备完成后再走原邀请流程；没有可信交付渠道时停止，不使用示例安装。无需 Apple 分发身份或公证。独立实机验收仍须实际执行，合成验证不代表已通过。普通 Client 不包含管理员发码工具。
+Mac arm64 的唯一用户操作说明见 [安装、使用、卸载与再次安装](docs/FIRST-INSTALL-MAC.md)，连接交付格式见 [无凭据示例](docs/connection.example.json)。同一个脚本提供 install/status/repair/uninstall；入口从固定官方 `main` 建立独立 checkout 并记录源码 SHA，旧目录和用户修改保留，下载失败不会运行旧入口。已有身份再次安装复用或恢复原身份、helper/profile/队列与信任锚。修改前下载的旧脚本无法被远端更新，必须按文档先取得新的 checkout。新设备使用用户选择的 HTTPS Server 地址及 Server 生成的长期接入密钥，自动取得该平台配置、核验发布渠道并完成原安装事务。旧 connection／邀请协议仅保留兼容，不再作为正常首次安装的前置。无需 Apple 分发身份或公证。独立实机验收仍须实际执行，合成验证不代表已通过。普通 Client 不包含管理员发码工具。
 
 弱网兼容源码区分服务器本地已保存（local_durable:true、GitHub 未确认）和原 durable:true 的 GitHub 确认。前者可继续 CAS/映射，但不会冒称备份完成；同 request_id 明确重试可更新回执。公开协议见 PROTOCOL.md。HTTPS 0.2.7 通过明确 HTTP 写回执能力声明选择本地确认；运行中的旧 worker 不会热替换。0.2.5 与已冻结 0.2.6 未声明时仍保持原 GitHub 确认/可重试错误语义。Server 兼容部署不要求所有 Client 先升级；本批记忆行为与 query 的源码合入仍不代表发布。
 

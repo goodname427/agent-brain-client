@@ -1,8 +1,8 @@
 # Mac arm64：安装、使用、卸载、再次安装
 
-支持 Apple Silicon Mac、Codex 和既有 HTTPS 个人 Memory/Rule/Skill 服务。普通客户端无管理 SSH、sudo、发码或 Server/Data 凭据。Windows 保留配置/协议边界，目前返回 unsupported，不支持实装。其他 Harness 与 Intel Mac 不在本入口范围。
+支持 Apple Silicon Mac、Codex 和既有 HTTPS 个人 Memory/Rule/Skill 服务。普通客户端无管理 SSH、sudo、发码或 Server/Data 凭据。Windows 使用同一接入协议，见 [Windows 步骤](FIRST-INSTALL-WINDOWS.md)。其他 Harness 与 Intel Mac 不在本入口范围。
 
-## 取得源码和连接文件
+## 取得源码并连接 Server
 
 在终端执行；缺少系统命令行工具时先完成 macOS 提供的标准工具安装，再重跑。每次开始安装或再次安装都从固定官方 `main` 建立独立的新 checkout，写入本次 commit SHA，然后从该 checkout 启动入口；旧 checkout 和其中的用户修改均保留：
 
@@ -20,31 +20,15 @@ sh "$CHECKOUT_ROOT/tools/install-mac.sh"
 
 下载失败会停止，不会改用旧目录运行。新入口会核对 `origin`、`main`、commit SHA 和干净工作区，再消费一次性标记并执行该 checkout；从普通旧 checkout 启动时才会另建最新 `main` checkout。Git checkout 只负责安装器源码，不改变已安装 MCP 的 HTTPS 发布 origin/ref/anchor 或运行时信任锚。
 
-如果手上只有修改前的旧 checkout，它的 shell 脚本不能被远端 `main` 反向更新。不要从那个目录执行旧入口；先用上述完整命令取得并启动新 checkout。进入新入口后，中断恢复/再次安装继续使用原来的身份、连接、安装计划和审核流程；只有新设备需要发行者交付连接描述。
-
-新设备的连接交付是一个明确的两阶段流程：
-
-1. 在该服务原有、已验证的发行交付渠道申请 **Mac arm64 / Codex 连接资料包**，资料包须包含 `connection.json`、该文件的 SHA-256、发行者身份及准备回执的交回渠道。发行者使用独立 Server 的 [连接交付工具与操作步骤](https://github.com/goodname427/agent-brain-server/blob/main/docs/CONNECTION-DELIVERY.md)，从已有批准的服务范围和发布元数据导出，不发邀请码、不建立设备授权。不要索取开发目录或管理员配置。
-2. 通过该渠道核对发行者、文件及摘要，再运行下方安装命令。脚本完成准备后才产生 `ready.json`；按资料包标明的渠道交回该准备回执及摘要，发行者按既有私有邀请控制台审核并安全交付短期邀请，客户端仅在现有安全输入窗口输入。
-
-此仓库没有内置统一公共服务地址、发行者账号或自助发码网站。尚未获得具体服务的可信交付渠道或发行者未配置交付时，停在 `first-install-connection-required`，由该服务发行者补齐资料包和交付入口；示例、任意网站或 Git 当前 HEAD 不能替代。私有 Server 文档可能需要发行者的仓库权限，普通设备不需要取得该权限。
-
-`connection.json` 仅含 HTTPS endpoint、grant（actor、adapter、platform、scopes、artifact_types、ids）与既有官方 release origin/ref/anchor。格式见 [connection.example.json](connection.example.json)：示例为虚构服务，不能用于真实安装；实际 anchor 必须是已批准的发布祖先，不是随意填版本 commit。连接文件没有邀请码、token、nonce、SSH 或 admin 字段，也不是设备凭证，但服务地址和用户范围仍应按私有交付资料保管。`connect.json` 是同类文件的另一种命名，脚本只检查 `--connection` 指定的内容，不依赖文件名。不要把真实部署配置提交到仓库。保持文件和路径稳定；以下变量均为非凭证资料：
+如果手上只有旧 checkout，先运行上面的完整命令获取最新入口。首次只需在本机填写用户选择的 **HTTPS Server 地址**，然后在原生隐藏输入窗口填写 **Server 生成的长期接入密钥**。也可用非秘密参数指定地址：
 
 ```sh
-CONNECTION_JSON="/absolute/path/to/connection.json"
-CONNECTION_SHA256="<发行者通过可信渠道交付的文件 SHA-256>"
+sh "$CHECKOUT_ROOT/tools/install-mac.sh" --server 'https://your-server.example'
 ```
 
-## 安装
+正常首次安装不要求 connection 文件、SHA-256、ready 回执或邀请码。地址必须准确且证书正常；安装器不追随认证重定向。密钥只进入本机隐藏输入和专用 login Keychain，不能粘贴到聊天、命令行或环境变量。Server 返回当前平台配置与已授权内容范围后，自动完成发行链验证、设备身份确认、MCP 配置事务和只读协议检查。服务未启用新协议、证书失败或范围漂移时停止并保留现场，不能借示例配置绕过。
 
-```sh
-sh "$CHECKOUT_ROOT/tools/install-mac.sh" --connection "$CONNECTION_JSON" --expected-connection-sha256 "$CONNECTION_SHA256"
-```
-
-终端展示服务器、actor、内容类型、IDs、read/put 范围及发布源；输入 `Continue` 确认，`Cancel` 退出。缺少命令行工具时，脚本请求标准安装并退出，完成后重跑同一命令。它准备 Git HTTPS、Python 3.11+、系统 TLS 根及原有 Swift helper：工具链 Python 不足时获取固定 SHA 校验的 Python 归档，准备到用户私有目录。无需 Apple 分发身份、公证、sudo、远程脚本或更改系统信任。
-
-准备检查成功后提示 `ready.json` 的完整路径。此时管理员才按这份回执发短期邀请；客户端不发码。收到邀请后选择 `Continue`，仅在原有安全输入窗口中输入一次。不要将邀请粘贴到终端、聊天、命令参数、环境变量或剪贴板。取消/Back 可重跑；网络失败、丢 ACK 或重启必须重跑同一命令，继续原配对尝试，不申请新邀请。只有服务端明确拒绝并经再次检查和确认，才结束错误/过期邀请尝试。
+缺少命令行工具时完成 macOS 标准工具安装后重跑。Git HTTPS、Python 3.11+、系统 TLS 根和 Swift helper 按既有准备流程检查；工具链 Python 不足时获取固定 SHA 校验的 Python 归档到用户私有目录。接入密钥使用独立 helper，原有设备 helper 与旧身份保持兼容。网络失败、丢回复或中断时重跑同一命令，复用保存的密钥、nonce 与原安装事务。详细协议与恢复见 [地址与密钥安装](ADDRESS-KEY-INSTALL.md)。
 
 `installed:true` 表示 HTTPS 协议/认证及一个 MCP 表登记完成；打开/重载 Codex，正常新 MCP 进程加载。它不会强杀旧 worker，也不意味着已运行模型自动重读了指令。`model_loaded:"unknown"` 表示此接口无法观测模型是否采用了指令；不能解释为已加载或未加载。旧回执的历史字段同样不是当前模型加载探针。再次运行安装命令会检查已装身份/范围，不再输入邀请。profile、policy、helper、scope 或配置漂移时停止并保留现场，不自动扩权。
 
@@ -92,7 +76,7 @@ sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action repair
 sh "$CHECKOUT_ROOT/tools/install-mac.sh"
 ```
 
-repair 继续自身中断的卸载，只接受事务前后像，外部修改停止并保留双方。首次安装/配对中断重跑带同一连接文件及摘要的原命令；已有身份的再次安装直接重跑无参数命令，复用已保存计划、原 identity/profile/helper 和同一缓存，按现有安装事务恢复。
+repair 继续自身中断的卸载，只接受事务前后像，外部修改停止并保留双方。地址／密钥首次安装中断时重跑同一入口，自动恢复；旧 connection 协议的未完成事务仍用原文件及摘要恢复；已有身份的再次安装直接重跑无参数命令，复用已保存计划、原 identity/profile/helper 和同一缓存，按现有安装事务恢复。
 
 无参数入口先核验现有登记或完成的卸载回执，再验证原 profile、发布政策、bootstrap、设备及 Codex 路径绑定。已有保存的 `first-install/connection.json` 必须与该绑定完全一致；旧安装没有此文件时，在内存中从保留元数据恢复同一连接描述，不生成凭证、不索取新文件、不改变信任锚。不可信、外部修改、未完成卸载或仅有孤立连接文件时报告 `connection-recovery-review-required` 并保留现场；显式指定的错误连接文件报告 `connection-file-review-required`，不会静默换用其他资料。若原身份不存在，现有安装事务停止，不转为新身份配对。
 
