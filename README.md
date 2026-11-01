@@ -1,6 +1,6 @@
 # Agent Brain Client
 
-安装器与 Windows 运行包 0.5.4 补齐默认 MCP checkpoint 的平台识别，统一复用平台边界并覆盖 Python 3.11 最小环境中的真实初始化路径，保留原身份恢复，见 [发布说明](docs/RELEASE-0.5.4.md)。
+安装器与 Windows 运行包 0.5.5 完成默认 MCP checkpoint、根目录旧入口与全部生产模块的平台识别收口，覆盖 Python 3.11 最小环境中的真实初始化路径并保留原身份恢复，见 [发布说明](docs/RELEASE-0.5.5.md)。
 
 把本仓库链接 `https://github.com/goodname427/agent-brain-client` 发给本地 Codex，即可作为 Agent Brain 的安装／更新入口，无需再附安装提示。执行 Agent 先读 [统一引导](BOOTSTRAP.md)：识别 Windows／Mac，检测已有安装；已安装则沿原策略检查并升级，未安装则进入对应平台的首次接入流程。首次只需 HTTPS Server 地址和本机隐藏输入的长期接入密钥；安装器自动获取授权配置并完成安装，见 [地址与密钥安装](docs/ADDRESS-KEY-INSTALL.md)。采集目录仍须单独授权。
 
