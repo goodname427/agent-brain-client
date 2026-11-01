@@ -3,6 +3,7 @@
 param(
     [ValidateSet('install','status','repair','uninstall','check-update','update')]
     [string]$Action = 'install',
+    [string]$Server,
     [string]$Connection,
     [string]$ExpectedConnectionSha256
 )
@@ -19,13 +20,14 @@ try {
     $python = & $pythonCommand.Source -X utf8 -I -B -c 'import sys; assert sys.version_info >= (3,11); print(sys.executable)'
     if ($LASTEXITCODE -ne 0) { throw 'Python 3.11+ required.' }
     $arguments = @('--action', $Action)
+    if ($Server) { $arguments += @('--server', $Server) }
     if ($Connection) { $arguments += @('--connection', $Connection) }
     if ($ExpectedConnectionSha256) { $arguments += @('--expected-connection-sha256', $ExpectedConnectionSha256) }
     if ($Action -eq 'install') {
         $checkout = & $python -X utf8 -I -B (Join-Path $root 'tools/bootstrap_main.py') --ensure
         if ($LASTEXITCODE -ne 0) { throw 'Fresh official checkout could not be verified; preserve existing installation.' }
         if ($checkout -ne $root) {
-            & (Join-Path $checkout 'tools/install-windows.ps1') -Action $Action -Connection $Connection -ExpectedConnectionSha256 $ExpectedConnectionSha256
+            & (Join-Path $checkout 'tools/install-windows.ps1') -Action $Action -Server $Server -Connection $Connection -ExpectedConnectionSha256 $ExpectedConnectionSha256
             exit $LASTEXITCODE
         }
     }

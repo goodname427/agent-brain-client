@@ -563,6 +563,7 @@ def run(
     transport=None,
     secure_input=None,
     installer=None,
+    access_mode=False,
 ):
     state = safe(Path(home) / ".config/agent-brain-client/first-install")
     private_directory(state)
@@ -582,7 +583,9 @@ def run(
                 + "\nAnchor: "
                 + connection["release"]["anchor_commit"]
             )
-            if confirm(description) != "Continue":
+            if access_mode:
+                print(description, file=sys.stderr)
+            if not access_mode and confirm(description) != "Continue":
                 return {
                     "status": "first-install-cancelled",
                     "installed": False,
@@ -622,7 +625,7 @@ def run(
             resuming = attempt.exists()
             if resuming:
                 retire_ready(state)
-            if not (
+            if not access_mode and not (
                 Path(home) / ".config/agent-brain-client/content-install-receipt.json"
             ).exists():
                 selected = confirm(
@@ -658,6 +661,9 @@ def run(
             retire_ready(state)
             if result.get("status") in ("pairing-cancelled", "pairing-invalid-input"):
                 attempt.unlink()
+            if result.get("status") == "pairing-reenrollment-review-required" and access_mode:
+                return dict(result, status="access-device-recovery-required", credential_record_preserved=True,
+                            next_action="Preserve the revoked device identity and offline queue; arrange exact device recovery with the Server operator. Do not clear or replace credentials automatically.")
             if result.get("status") == "pairing-reenrollment-review-required":
                 profile_sha = private_json(state / "release-policy.json")["runtime"]["https_profile_sha256"]
                 profile = profile_file(state / "https-profile.json", profile_sha)
@@ -959,6 +965,7 @@ def lifecycle_exit(action, value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--action", choices=("install", "status", "repair", "uninstall", "check-update", "update"), default="install")
+    parser.add_argument("--server", help="Your selected credential-free HTTPS Server origin; access key is requested only in the local hidden input.")
     parser.add_argument("--connection", type=Path)
     parser.add_argument("--expected-connection-sha256")
     args = parser.parse_args()
@@ -966,7 +973,7 @@ def main():
         require_platform('first-install')
         home = Path.home().resolve()
         if args.action in ('check-update', 'update'):
-            if args.connection is not None or args.expected_connection_sha256 is not None:
+            if args.server is not None or args.connection is not None or args.expected_connection_sha256 is not None:
                 value = {'status': 'client-update-review-required', 'reason': 'existing-policy-only',
                          'native_changed': False, 'device_credentials_accessed': False,
                          'next_action': 'Update management reuses the verified registration; do not pass a replacement connection or invitation.'}
@@ -1004,20 +1011,36 @@ def main():
             print(json.dumps(value))
             return lifecycle_exit(args.action,value)
         native = Path(os.environ.get("CODEX_HOME", str(home / ".codex"))).absolute()
+        access_state = home / '.config/agent-brain-client/access-bootstrap/endpoint.json'
+        registration = home / '.config/agent-brain-client/codex-mcp.json'
+        removal = home / '.config/agent-brain-client/uninstall-receipt.json'
+        if args.server and (args.connection or args.expected_connection_sha256):
+            raise ValueError('Choose the address/key entry or the legacy connection entry')
+        if not registration.exists() and not removal.exists() and (args.server or access_state.parent.exists()):
+            from access_install import run_address_install
+            value = run_address_install(home, native, args.server)
+            from content_contract import installation_follow_up
+            value = installation_follow_up(value)
+            print(json.dumps(value))
+            return lifecycle_exit('install', value)
         try:
             connection, connection_sha = resolve_connection(
                 home, native, args.connection, args.expected_connection_sha256
             )
         except ConnectionRequired:
-            print(json.dumps({"status": "first-install-connection-required", "installed": False,
-                              "native_changed": False, "credential_accessed": False,
-                              "next_action": "Obtain connection.json and its SHA-256 through your service issuer's trusted delivery channel. The issuer uses Server tools/export_connection.py; then run this script with --connection and --expected-connection-sha256. See docs/FIRST-INSTALL-WINDOWS.md on Windows or docs/FIRST-INSTALL-MAC.md on macOS. No invitation is needed until ready.json exists."}))
-            return 2
+            from access_install import run_address_install
+            value = run_address_install(home, native, args.server)
+            from content_contract import installation_follow_up
+            value = installation_follow_up(value)
+            print(json.dumps(value))
+            return lifecycle_exit('install', value)
         except Exception:
             print(json.dumps({"status": "connection-file-review-required" if args.connection else "connection-recovery-review-required",
                               "installed": False, "native_changed": False, "credential_accessed": False,
                               "next_action": "Preserve connection metadata, original profile/policy and recovery receipts. Review the original binding; do not reset identity, replace digests or use an example connection."}))
             return 2
+        if args.server is not None and endpoint_check(args.server) != endpoint_check(connection['endpoint']):
+            raise ValueError('Existing Server identity preserved')
         value = run(home, native, connection, connection_sha)
         from content_contract import installation_follow_up
         value = installation_follow_up(value)
