@@ -78,7 +78,7 @@ def inspect_plan(path):
                 if key in value:raise ValueError('Duplicate plan/profile field')
                 value[key]=item
             return value
-        value=json.loads(plan.read_text(),object_pairs_hook=unique)
+        value=json.loads(plan.read_text(encoding='utf-8'),object_pairs_hook=unique)
         if set(value)!={'schema','adapter','platform','profile','profile_sha256','component','component_sha256'} or value['schema']!=1 or value['adapter']!='codex':raise ValueError('Unknown plan')
         if sys.platform!='darwin' or value['platform']!='darwin-'+platform.machine().lower():return {'status':'adapter-review-required','native_changed':False}
         profile=Path(value['profile']);component=Path(value['component'])
@@ -118,8 +118,8 @@ class ComponentClient:
         self.path=Path(plan_path)
         if inspect_plan(self.path)['status']!='pairing-ready-for-secure-user-input' or hashlib.sha256(self.path.read_bytes()).hexdigest()!=plan_sha256:raise ValueError('Reviewed component plan required')
         if not isinstance(signing,dict) or set(signing)!={'identifier','team_id'} or not isinstance(signing['identifier'],str) or not re.fullmatch(r'[A-Za-z0-9]+(?:\.[A-Za-z0-9_-]+)+',signing['identifier']) or not isinstance(signing['team_id'],str) or not re.fullmatch(r'[A-Z0-9]{10}',signing['team_id']):raise ValueError('Reviewed signing identity required')
-        self.plan=json.loads(self.path.read_text());self.plan_sha=plan_sha256;self.runner=runner or subprocess.run
-        profile=json.loads(Path(self.plan['profile']).read_text())
+        self.plan=json.loads(self.path.read_text(encoding='utf-8'));self.plan_sha=plan_sha256;self.runner=runner or subprocess.run
+        profile=json.loads(Path(self.plan['profile']).read_text(encoding='utf-8'))
         if not profile['access_group'].startswith(signing['team_id']+'.'):raise ValueError('Reviewed access group required')
         grant=profile['grant']
         if set(grant)!={'actor','scopes','artifact_types','ids','adapter','platform'} or grant['adapter']!='codex' or grant['platform']!=self.plan['platform'] or not isinstance(grant['actor'],str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}',grant['actor']):raise ValueError('Reviewed device grant required')

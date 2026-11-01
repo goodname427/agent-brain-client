@@ -62,7 +62,7 @@ def discover(cwd):
             return {'kind': 'project', 'cwd': str(current), 'project_root': str(root), 'repository_root': str(root)}
         if marker.is_file():
             if marker.stat().st_size > 4096 or marker.is_symlink(): raise ValueError('Unrecognized worktree metadata')
-            line = marker.read_text().strip()
+            line = marker.read_text(encoding='utf-8').strip()
             if not line.startswith('gitdir: '): raise ValueError('Unrecognized worktree metadata')
             gitdir = Path(line[8:]); gitdir = (root / gitdir).resolve() if not gitdir.is_absolute() else gitdir.resolve()
             # Standard worktree layout; no Git config, remote, history or body IO.

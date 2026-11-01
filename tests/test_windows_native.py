@@ -104,7 +104,9 @@ class WindowsNative(unittest.TestCase):
             policy = state / 'release-policy.json'
             client = ClientReleases(policy, installer.sha(policy.read_bytes()))
             client.engine.source = Source()
-            return client.update()
+            result = client.engine.check()
+            result['active'] = client.verified_active()
+            return result
         with patch.dict(os.environ, CODEX_HOME=str(native)):
             plan, pin, _ = installer.prepare_materials(materials, self.home, native, connection,
                 installer.sha(installer.canonical(connection)), updater=update)

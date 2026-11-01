@@ -1135,7 +1135,7 @@ def record_daily(p, path):
         ".json",
     ):
         raise ValueError("Only the configured private note directory is a source")
-    text = source.read_text()
+    text = source.read_text(encoding='utf-8')
     if private_content(text):
         return {
             "status": "excluded-local-only-or-sensitive",

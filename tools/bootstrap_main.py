@@ -46,8 +46,8 @@ def verified_one_shot(root, *, runner=subprocess.run, git='git'):
     marker = git_dir / ONE_SHOT
     if not git_dir.is_dir() or not record.is_file() or not marker.is_file():
         return False
-    commit = record.read_text().strip()
-    if not re.fullmatch(r'[a-f0-9]{40}', commit) or marker.read_text().strip() != commit:
+    commit = record.read_text(encoding='utf-8').strip()
+    if not re.fullmatch(r'[a-f0-9]{40}', commit) or marker.read_text(encoding='utf-8').strip() != commit:
         return False
     env = {'PATH': os.environ.get('PATH', '') if os.name == 'nt' else '/usr/bin:/bin', 'HOME': os.environ.get('HOME', ''),
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull,

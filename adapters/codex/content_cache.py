@@ -208,7 +208,7 @@ class ContentAdapter:
         if not path.exists():return default
         if not path.is_file() or path.stat().st_size>1048576:raise CacheBlocked()
         private_mode(path,blocked=CacheBlocked)
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding='utf-8'))
 
     def _save(self,name,value):
         require_platform('cache-storage',self.platform)

@@ -799,7 +799,7 @@ def manage_update(home, action, *, channel_factory=None):
             receipt_path = safe(Path(home)/'.config/agent-brain-client/content-install-receipt.json')
             receipt = content_install.private_json(receipt_path)
             if receipt.get('phase') == 'complete' and receipt.get('plan_sha256') == plan_digest:
-                verified = json.loads((candidate/'verified.json').read_text())
+                verified = json.loads((candidate/'verified.json').read_text(encoding='utf-8'))
                 candidate_manifest = verified['manifest']
                 candidate_is_active = (
                     active.get('version') == candidate_manifest.get('version')

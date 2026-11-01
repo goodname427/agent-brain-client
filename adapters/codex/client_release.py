@@ -194,7 +194,7 @@ class ClientReleases:
         require_platform('release-update',self.policy['platform'])
         active=self.engine.active()
         if active and self.policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES):
-            receipt=json.loads((Path(active['package'])/'verified.json').read_text())
+            receipt=json.loads((Path(active['package'])/'verified.json').read_text(encoding='utf-8'))
             self.engine.adapter.preflight(Path(active['package']),receipt['manifest'],allow_legacy_030_active=True)
         return active
 
