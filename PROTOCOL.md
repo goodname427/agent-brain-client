@@ -315,3 +315,11 @@ Exact recall validates L0 empty, one L1/L2/L3, selection/content digests and
 committed source provenance. It does not assert model output truth. No implicit
 retry, new credential, background upload, capture registration or model call is
 introduced by installing the source.
+
+## Address and long-term access-key bootstrap (installer 0.5.1)
+
+The explicitly selected, normally verified HTTPS Server origin supplies bootstrap authority. POST `/v1/access/bootstrap` uses `Authorization: Bearer <access-key>` and body `{"device":{"adapter":"codex","platform":"<actual-platform>"}}`; only successful authentication returns `{"schema":1,"connection":<credential-free-platform-connection>}`. The connection pins the exact grant and official release origin/ref/anchor. Subsequent Git ancestry, manifest, file-scope and health checks remain required; hashes supplied alongside untrusted package bytes cannot establish trust.
+
+POST `/v1/access/enroll` uses the same authorization and device metadata plus a stable nonce, returning the existing pending device credential/nonce/device_id/grant/phase shape. The installer persists the separate device credential in the existing OS store before calling `/v1/pairing/confirm`. Lost replies reuse the nonce. Long-term keys remain in an origin-specific OS item and never authorize content/admin requests directly. Server stores only key digests with a frozen access-policy digest and revocation state; revocation also rejects linked devices. No expiry is imposed by default. Existing invitation enrollment and device protocols remain compatible.
+
+Both bootstrap requests refuse redirects and use normal TLS certificate/hostname verification. They send no key in URL, JSON body, CLI arguments, environment or plaintext state. Explicit access_denied may retire only the rejected origin key; uncertain transport outcomes preserve it. Installation success still requires the owned local transaction and read-only protocol check. Access grants do not approve source directories, hooks, native session access or unlimited collection.

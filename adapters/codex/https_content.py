@@ -43,7 +43,7 @@ def grant_check(grant):
 def endpoint_check(endpoint):
     if not isinstance(endpoint,str):raise ValueError('HTTPS origin required')
     value=urlsplit(endpoint)
-    if value.scheme!='https' or not value.hostname or value.username or value.password or value.query or value.fragment or value.path not in ('','/') or any(c.isspace() for c in endpoint):raise ValueError('Credential-free HTTPS origin required')
+    if value.scheme!='https' or not value.hostname or value.username or value.password or value.query or value.fragment or value.path not in ('','/') or any(c.isspace() or ord(c)<33 or ord(c)==127 for c in endpoint):raise ValueError('Credential-free HTTPS origin required')
     return endpoint.rstrip('/')
 
 def profile_metadata(endpoint, grant, descriptor, state_directory):
@@ -408,8 +408,9 @@ def install_once(plan,approved_digest,*,store=None,transport=None,secure_input=N
     existing profile. Pairing recovery remains in the same dedicated OS item.
     """
     from content_install import context,prepare,apply,private_json,InstallBlocked
+    from content_contract import encode as plan_bytes
     try:
-        if not isinstance(plan,dict) or hashlib.sha256(canonical(plan)).hexdigest()!=approved_digest:
+        if not isinstance(plan,dict) or hashlib.sha256(plan_bytes(plan)).hexdigest()!=approved_digest:
             raise InstallBlocked('Exact approved native plan required')
         policy,_,_,_=context(plan['device_home'],plan['package'],plan['release_policy'],plan['release_policy_sha256'])
         from client_release import HTTPS_CONTENT_CAPABILITIES
