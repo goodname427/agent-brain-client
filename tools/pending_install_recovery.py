@@ -31,12 +31,18 @@ def repair_crlf_preparation(home, native):
     if not (state / 'binding.json').exists():
         return
     profile_path = state / 'https-profile.json'
+    journal_path = state / 'crlf-recovery.json'
+    if (not profile_path.exists() and not profile_path.is_symlink()
+            and not journal_path.exists() and not journal_path.is_symlink()):
+        # Binding precedes profile creation. Resume ordinary exact preparation;
+        # there is no profile pin to migrate yet. An existing recovery journal
+        # still requires its original profile/preimages and must fail closed.
+        return
     profile = private_json(profile_path)
     source = (wizard.SOURCE / 'scripts/brain_windows.py').read_bytes()
     if b'\r' in source:
         raise ValueError('Exact LF checkout required')
     before_sha, after_sha = sha(source.replace(b'\n', b'\r\n')), sha(source)
-    journal_path = state / 'crlf-recovery.json'
     if not journal_path.exists() and profile.get('credential_backend', {}).get('source_sha256') != before_sha:
         return
     forbidden = ('pairing-attempt.json', 'install-plan.json', 'bootstrap', 'ready.json')
