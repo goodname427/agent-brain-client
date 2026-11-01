@@ -54,6 +54,31 @@ class GlobalMemoryFixtures(unittest.TestCase):
         with patch.object(gm, 'eligible', return_value=local), patch.object(sys, 'stdin', type('Input', (), {'buffer': io.BytesIO(json.dumps(payload).encode())})()), patch.object(gm, 'submit_hook', side_effect=AssertionError('duplicate capture')):
             self.assertEqual(gm.hook(value), {})
 
+    def test_question_drives_recall_without_promoting_other_project_rules(self):
+        from global_memory_scope import source_context, restricted
+        local = self.origin('/synthetic/personal/one')
+        foreign = self.origin('/synthetic/personal/two')
+        context = source_context([foreign], local)
+        self.assertEqual(context['relation'], 'other-source')
+        self.assertFalse(context['global_rule'])
+        item = {'content': 'Synthetic project convention', 'source_context': context}
+        payload = {'cwd': local['cwd'], 'hook_event_name': 'UserPromptSubmit', 'session_id': 'session', 'turn_id': 'turn', 'prompt': 'How did the other project handle retries?'}
+        value = {'scope': self.scope, 'legacy_projects': [], 'device_home': str(self.root)}
+        def stdin(): return type('Input', (), {'buffer': io.BytesIO(json.dumps(payload).encode())})()
+        with patch.object(gm, 'eligible', return_value=local), patch.object(gm, 'submit_hook', return_value={'status': 'staged'}), patch.object(gm, 'settings_path', return_value=self.root/'settings.json'), patch.object(gm, 'recall', return_value=[item]) as recall:
+            with patch.object(sys, 'stdin', stdin()): result = gm.hook(value)
+            self.assertEqual(recall.call_args.args[3], payload['prompt'])
+            self.assertIn('do not apply to this project', result['hookSpecificOutput']['additionalContext'])
+            with patch.object(sys, 'stdin', stdin()): self.assertEqual(gm.hook(value), {})
+            self.assertEqual(recall.call_count, 1)
+        self.assertTrue(restricted('禁止跨项目共享这段内容'))
+        self.assertTrue(restricted('[project-only] synthetic information'))
+
+    def test_migrated_legacy_source_is_collected_by_shared_router(self):
+        local = self.origin('/synthetic/personal/one')
+        value = {'legacy_projects': [{'root': local['cwd'], 'capture_delegated': False}]}
+        self.assertIsNone(gm.legacy(value, local))
+
     def test_inline_install_reentry_uninstall_preserves_mcp_and_other_hooks(self):
         native, state = self.root / 'native', self.root / 'state'
         native.mkdir(mode=0o700); state.mkdir(mode=0o700)

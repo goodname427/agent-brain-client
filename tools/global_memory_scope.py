@@ -80,3 +80,23 @@ def source_id(scope, value, sharing):
 
 def namespace(actor, source):
     return 'abp-' + digest([actor, source])[:32]
+
+
+def restricted(text):
+    """Explicit sharing restrictions; callers also run existing secret guards."""
+    return isinstance(text, str) and bool(re.search(
+        r"(?im)(?:^\s*\[(?:no[-_ ]?share|project[-_ ]?only|do[-_ ]?not[-_ ]?share)\]|禁止(?:跨项目)?共享|不要(?:跨项目)?共享|仅限(?:当前|本)项目|do not share (?:this|across projects)|keep (?:this )?project[- ]only)", text))
+
+
+def source_context(origins, current):
+    """Location applicability is separate from searchable memory content."""
+    origin(current)
+    rows = {digest(origin(item)): item for item in origins}
+    if not rows or len(rows) > 32:
+        raise ValueError('Bounded verified origin context required')
+    def key(item):
+        return (item['kind'], path(item['repository_root'] or item['cwd']).casefold())
+    matches = [key(item) == key(current) for item in rows.values()]
+    relation = 'current-source' if all(matches) else 'other-source' if not any(matches) else 'mixed-source'
+    return {'origins': [rows[k] for k in sorted(rows)], 'relation': relation,
+            'use': 'reference-only', 'global_rule': False}

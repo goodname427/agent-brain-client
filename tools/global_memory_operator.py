@@ -10,7 +10,7 @@ import subprocess
 from urllib.parse import urlsplit
 
 import memory_automation as old
-from global_memory_scope import validate, digest, within
+from global_memory_scope import validate, digest, within, select
 
 
 def operator(value, packet):
@@ -78,12 +78,19 @@ def configure(args):
                 'next_command': 'sh tools/memory.sh global-configure --approve-scope ' + pin,
                 'recipient': 'existing Server and configured DeepSeek Flash', 'budget': 'existing unlimited cumulative accounting; no recharge', 'model_calls': 0}
     off = directory / 'global.off'; off.touch(mode=0o600)
-    # Explicit exclusions take precedence over an older project collector too.
+    # Hand future legacy collection to the unified pool only after exact source
+    # approval. Retain its configuration, data and outbox without replay/import.
     for row in value['legacy_projects']:
-        if any(within(row['root'], denied) for denied in scope['exclude_roots']):
+        local = {'kind': 'project', 'cwd': row['root'], 'project_root': row['root'], 'repository_root': row['root']}
+        choice = select(scope, local)
+        excluded = any(within(row['root'], denied) for denied in scope['exclude_roots'])
+        if excluded or choice is not None and choice['sharing'] == 'personal':
             source = old.load(row['settings'], row['settings_sha256'])
             Path(source['off_file']).touch(mode=0o600)
-            old.daily_command(source, 'stop')
+            state = old.daily_command(source, 'stop')
+            if state.get('source_admitted') is not False: raise ValueError('Legacy source handoff unconfirmed')
+            row['capture_delegated'] = False
+    old.write(settings_path(args.device_home), value)
     if value['server_scope_sha256']:
         response = GlobalClient(value).wire('memory_global_stop', {})
         if 'error' in response: raise ValueError('Previous global source stop unconfirmed')
@@ -95,7 +102,7 @@ def configure(args):
     packet = {'schema': 1, 'scope': scope, 'approved_scope_sha256': pin,
               'client': {'profile_sha256': r['https_profile_sha256'], 'content_policy_sha256': r['content_policy_sha256'],
                          'endpoint': profile['endpoint'], 'directory': str(directory),
-                         'legacy_projects': {row['root']: row['project_id'] for row in value['legacy_projects']},
+                         'legacy_projects': {row['root']: row['project_id'] for row in value['legacy_projects'] if row.get('capture_delegated', True)},
                          'actor': profile['grant']['actor'], 'source_device_id': recall['source_device_id']}}
     receipt = operator(value, packet)
     value.update(scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin, enabled=True)
