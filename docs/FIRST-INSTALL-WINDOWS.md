@@ -1,5 +1,7 @@
 # Windows Codex 安装、升级与未来记忆
 
+可以只把本仓库链接发给 Windows 上的本地 Codex；入口约定见 [统一引导](../BOOTSTRAP.md)。执行 Agent 先从干净官方 main 运行 `& ./tools/install-windows.ps1 -Action status`。已有核验安装时使用 `-Action check-update`、`-Action update`，保留现有身份与策略；明确未安装时才继续下述首次安装。状态异常或事务未完成时保留材料并按 status／repair 恢复，不重新发码或重置。
+
 适用原生 Windows x64/ARM64、本地编排的 Codex。WSL 是另一套 Linux 环境；Work Cloud 编排不执行本地 command Hook，不能据此承诺云会话覆盖。安装不读取原生 session/history。真实 Windows 桌面、用户邀请输入与 Codex Hook trust 尚需该设备正常操作；Windows runner 的合成检查不等于这些实机体验已验收。
 
 使用当前用户的普通 PowerShell。准备 Python 3.11+、Git 和 Codex；没有依赖时可从它们的官方安装器安装，或用已安装的 winget 安装 Python.Python.3.12 和 Git.Git。安装完成后重新打开终端。无需管理员运行，不更改执行策略、沙箱或 Hook 信任设置。

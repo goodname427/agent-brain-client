@@ -1,5 +1,7 @@
 # Agent Brain Client
 
+把本仓库链接 `https://github.com/goodname427/agent-brain-client` 发给本地 Codex，即可作为 Agent Brain 的安装／更新入口，无需再附安装提示。执行 Agent 先读 [统一引导](BOOTSTRAP.md)：识别 Windows／Mac，检测已有安装；已安装则沿原策略检查并升级，未安装则进入对应平台的首次接入流程。首次连接资料、设备配对及采集目录仍走正常安全流程。
+
 Windows Codex 的安装、升级和来源启用见 [Windows 固定步骤](docs/FIRST-INSTALL-WINDOWS.md)，复用架构与后续 Harness 接入规范见 [多平台开发](docs/MULTIPLATFORM-DEVELOPMENT.md)。5.0 Windows Codex 使用 Client 0.5.0，见 [发布说明](docs/RELEASE-5.0-WINDOWS.md)；实际运行版本由所固定的发布渠道决定。
 
 当前产品封板说明及组件映射：[Agent Brain 4.0](docs/RELEASE-4.0.md)、[不可变实现基线](FREEZE-4.0.json)。4.0 封板基线的 Client 包版本为 0.4.8；本阶段保留既有 Mac 渠道、来源批准及权限。
