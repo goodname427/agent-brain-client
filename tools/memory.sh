@@ -12,5 +12,6 @@ try:
 except Exception:
     print("{\"status\":\"existing-client-python-required\",\"installed\":false}")
     raise SystemExit(2)
-os.execv(str(python),[str(python),"-I","-B",str(root/"tools/memory_automation.py"),*sys.argv[2:]])
+entry="global_memory.py" if len(sys.argv)>2 and sys.argv[2].startswith("global-") else "memory_automation.py"
+os.execv(str(python),[str(python),"-I","-B",str(root/"tools"/entry),*sys.argv[2:]])
 ' "$HERE" "$@"
