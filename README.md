@@ -1,5 +1,7 @@
 # Agent Brain Client
 
+当前产品封板说明及组件映射：[Agent Brain 4.0](docs/RELEASE-4.0.md)、[不可变实现基线](FREEZE-4.0.json)。Client 包版本保持 0.4.8；封板不改既有安装渠道、来源批准或权限。
+
 本仓库是公开 Client 的独立源码权威。`main` 保存源码、测试与构建工具；运行包以安装时固定的受信发布渠道为准，main 或 tags 不是已安装客户端的更新渠道。源码合入不自动发布或修改安装指针。运行时只通过已批准的 HTTP/HTTPS 或固定 SSH 协议访问 Server；不导入 Server/Core，不克隆私人 Data。
 
 Python 3.11+ 与 Git 是现有 Python 客户端的运行依赖。源码测试使用 Python 标准库；每个测试仅使用合成资料，HOME/CODEX_HOME 必须隔离。以下测试命令先准备临时 HOME/CODEX_HOME；不使用当前设备的原生配置或凭据。

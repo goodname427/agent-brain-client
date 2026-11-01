@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "product": "Agent Brain",
+  "product_version": "4.0",
+  "freeze_date": "2026-11-01",
+  "client": {
+    "package_version": "0.4.8",
+    "implementation_commit": "f1eb9e8e74f96c9dd7032f5b4c1f4da2935b8731",
+    "runtime_channel_commit": "6927089fd33ad59b5133d6b8a29277d3c0c4db1e",
+    "runtime_channel_ref": "refs/heads/releases/personal-https-candidate-0.4.0-install-fix-ce9f72b"
+  },
+  "server": {
+    "implementation_commit": "90c4acf677ad1660cf0db818ef5e45873dfe20d2",
+    "previous_code_fallback": "fe41753da518d6335c0ea0691ea1e7b940de66ef"
+  },
+  "compatibility": {
+    "core_api": 1,
+    "state_schema": 1,
+    "python_min": "3.11",
+    "current_local_host": "macOS arm64 Codex workflows supporting official hooks",
+    "windows_support_included": false,
+    "deepseek_harness_support_included": false
+  },
+  "release_scope": "Documentation and immutable baseline only; no new feature, permission, provider or model probe",
+  "verification_scope": "Existing CI and deployment/queue evidence; not a claim of all-scenario acceptance"
+}
