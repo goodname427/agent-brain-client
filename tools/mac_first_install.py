@@ -389,6 +389,18 @@ def prepare_materials(
     policy_sha = same_private(state / "release-policy.json", policy)
     environment = dependency_environment(policy)
     environment.update(HOME=str(home), LANG="en_US.UTF-8")
+    def update_release():
+        update = updater or (lambda: ClientReleases(state / 'release-policy.json', policy_sha).update())
+        old = {key: os.environ.get(key) for key in environment}
+        try:
+            os.environ.update(environment)
+            return update()
+        finally:
+            for key, value in old.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
     # No credential access in dependency/helper preflight.
     if os.name!='nt':
         checked = runner(
@@ -414,6 +426,9 @@ def prepare_materials(
             "applying",
         ):
             return plan, plan_sha, binding
+        from pending_install_recovery import refresh_plan
+        plan = refresh_plan(plan_path, update_release)
+        plan_sha = sha(plan_bytes(plan))
         inspect_plan(plan_path, plan_sha)
         readiness(state, connection, connection_sha, bundle_sha, plan_sha)
         return plan, plan_sha, binding
@@ -461,19 +476,7 @@ def prepare_materials(
         raise ValueError("Release origin drift")
     # Use the existing updater, immutable packages, preflight, health and rollback.
     # Never activate an unpublished bundled candidate in place of a trusted ref.
-    update = updater or (
-        lambda: ClientReleases(state / "release-policy.json", policy_sha).update()
-    )
-    old = {k: os.environ.get(k) for k in environment}
-    try:
-        os.environ.update(environment)
-        result = update()
-    finally:
-        for key, value in old.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+    result = update_release()
     if result.get("status") not in ("current", "updated", "offline") or not result.get(
         "active"
     ):

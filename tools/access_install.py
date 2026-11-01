@@ -200,6 +200,8 @@ def run_address_install(
         with wizard.private_lease(state):
             wizard.same_private(marker, {"schema": 1, "endpoint": endpoint})
             print("Agent Brain Server: " + endpoint, file=sys.stderr)
+            from pending_install_recovery import repair_crlf_preparation
+            repair_crlf_preparation(Path(home), Path(native))
             materials = dependency_preparer(Path(home))
             store = store_factory(home, endpoint, materials)
             peer = transport or AccessHTTPS(endpoint)

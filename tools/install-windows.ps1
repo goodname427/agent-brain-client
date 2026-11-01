@@ -15,10 +15,8 @@ try {
     $OutputEncoding = [Console]::OutputEncoding
     if ($env:OS -ne 'Windows_NT') { throw 'Native Windows required; WSL uses a different OS and identity.' }
     $root = Split-Path -Parent $PSScriptRoot
-    $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
-    if (-not $pythonCommand) { throw 'Install Python 3.11+ and Git for this user, then rerun. See docs/FIRST-INSTALL-WINDOWS.md.' }
-    $python = & $pythonCommand.Source -X utf8 -I -B -c 'import sys; assert sys.version_info >= (3,11); print(sys.executable)'
-    if ($LASTEXITCODE -ne 0) { throw 'Python 3.11+ required.' }
+    . (Join-Path $PSScriptRoot 'windows-python.ps1')
+    $python = Resolve-AgentBrainPython
     $arguments = @('--action', $Action)
     if ($Server) { $arguments += @('--server', $Server) }
     if ($Connection) { $arguments += @('--connection', $Connection) }

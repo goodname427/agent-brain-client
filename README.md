@@ -1,6 +1,6 @@
 # Agent Brain Client
 
-安装器源码 0.5.2 修复正常 Windows 首次路由和登记后中断恢复，见 [发布说明](docs/RELEASE-INSTALLER-0.5.2.md)。
+安装器与 Windows 运行包 0.5.3 修复 Python 选择、Git 换行字节和最小环境下的平台识别，支持保留原身份的未完成安装恢复，见 [发布说明](docs/RELEASE-0.5.3.md)。
 
 把本仓库链接 `https://github.com/goodname427/agent-brain-client` 发给本地 Codex，即可作为 Agent Brain 的安装／更新入口，无需再附安装提示。执行 Agent 先读 [统一引导](BOOTSTRAP.md)：识别 Windows／Mac，检测已有安装；已安装则沿原策略检查并升级，未安装则进入对应平台的首次接入流程。首次只需 HTTPS Server 地址和本机隐藏输入的长期接入密钥；安装器自动获取授权配置并完成安装，见 [地址与密钥安装](docs/ADDRESS-KEY-INSTALL.md)。采集目录仍须单独授权。
 

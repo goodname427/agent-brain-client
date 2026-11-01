@@ -1,5 +1,6 @@
 """Checkout bootstrap never edits or executes a stale local installer."""
 from pathlib import Path
+import hashlib
 import subprocess
 import sys
 import tempfile
@@ -44,7 +45,38 @@ class FreshMainCheckout(unittest.TestCase):
             return subprocess.CompletedProcess(args, 0, bootstrap_main.ORIGIN + '\n', '')
         if 'status' in args:
             return subprocess.CompletedProcess(args, 0, '', '')
+        if 'ls-tree' in args:
+            checkout = Path(args[args.index('-C') + 1])
+            records = []
+            for item in (checkout / 'tools').iterdir():
+                raw = item.read_bytes()
+                oid = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+                records.append('100644 blob ' + oid + '\t' + item.relative_to(checkout).as_posix() + '\0')
+            return subprocess.CompletedProcess(args, 0, ''.join(records), '')
         raise AssertionError(args)
+
+    def test_autocrlf_checkout_bytes_are_lf_and_real_tamper_still_fails(self):
+        import os
+        source = self.root / 'source'
+        source.mkdir()
+        env = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                   GIT_AUTHOR_NAME='Synthetic', GIT_COMMITTER_NAME='Synthetic',
+                   GIT_AUTHOR_EMAIL='synthetic@example.invalid', GIT_COMMITTER_EMAIL='synthetic@example.invalid')
+        def git(*args):
+            return subprocess.run(['git', '-C', str(source), *args], env=env, check=True, capture_output=True)
+        git('init')
+        (source / 'runtime.py').write_bytes(b'print("synthetic")\n')
+        (source / '.gitattributes').write_bytes(b'* text=auto eol=lf\n')
+        git('add', '.gitattributes', 'runtime.py')
+        git('commit', '-m', 'Synthetic exact-byte fixture')
+        clone = self.root / 'autocrlf-checkout'
+        subprocess.run(['git', '-c', 'core.autocrlf=true', 'clone', str(source), str(clone)], env=env, check=True, capture_output=True)
+        self.assertEqual((clone / 'runtime.py').read_bytes(), b'print("synthetic")\n')
+        self.assertTrue(bootstrap_main.checkout_bytes(clone, runner=subprocess.run, git='git', env=env))
+        (clone / 'runtime.py').write_bytes(b'print("synthetic")\r\n')
+        self.assertFalse(bootstrap_main.checkout_bytes(clone, runner=subprocess.run, git='git', env=env))
+        (clone / 'runtime.py').write_bytes(b'print("altered")\n')
+        self.assertFalse(bootstrap_main.checkout_bytes(clone, runner=subprocess.run, git='git', env=env))
 
     def test_only_install_entries_bootstrap_fresh_main(self):
         for args, expected in (
