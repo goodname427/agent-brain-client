@@ -27,3 +27,5 @@
 隔离合成测试覆盖接入协议、错误密钥、长期有效、响应丢失、撤销、轮换、范围拒绝和安装事务；Mac/Windows CI 使用各自 OS 的现有凭据及权限测试。CI 不等同于真实 Windows 桌面的输入体验、Codex 重载或模型采用指令。没有新增真实模型测试、真实长期密钥或目录采集授权。
 
 Windows 原生隐藏输入使用通用应用凭据对话框（固定 Agent Brain 用户名标签、禁用 CredUI 自行持久化），密钥随后仅由专用 Credential Manager 项保存；不是 Windows 登录／管理员密码。API 依据：[Microsoft CredUIPromptForCredentialsW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-creduipromptforcredentialsw)。原生 UI 不可用时停止，没有终端回显回退。
+
+安装器 0.5.2 修复正常 Windows checkout 缓存的首次路由，以及 registration 已写入但 applying 回执尚未提交的中断恢复。此阶段重跑同一入口会先核验原连接、绑定、计划和 journal 前后像，再沿原设备认证与安装事务恢复；不会重新 bootstrap、索取 legacy 文件或新密钥。外部编辑或绑定漂移会停止并保留现场。

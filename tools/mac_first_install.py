@@ -96,6 +96,19 @@ class ConnectionRequired(ValueError):
     pass
 
 
+
+def bootstrap_state_only(state):
+    """Installer caches are preparation, never identity or release authority."""
+    state = safe(state)
+    if not state.exists():
+        return True
+    for item in state.iterdir():
+        if item.name not in ('install-runtime', 'installer-checkouts'):
+            return False
+        owned(item, directory=True)
+    return True
+
+
 def resolve_connection(home, native, path=None, expected=None):
     """Restore only the connection authenticated by an existing local binding.
 
@@ -162,7 +175,7 @@ def resolve_connection(home, native, path=None, expected=None):
             validate_uninstalled_state(home, journal, allow_unrelated_config_edits=True)
         metadata = journal['registration']
     else:
-        if registration.exists() or state.exists() and any(p.name != 'install-runtime' for p in state.iterdir()):
+        if registration.exists() or not bootstrap_state_only(state):
             raise ValueError("Unverified installation materials preserved")
         raise ConnectionRequired("Trusted issuer delivery required")
     policy = policy_file(metadata['release_policy'], metadata['release_policy_sha256'], runtime_check=False)
@@ -1016,7 +1029,15 @@ def main():
         removal = home / '.config/agent-brain-client/uninstall-receipt.json'
         if args.server and (args.connection or args.expected_connection_sha256):
             raise ValueError('Choose the address/key entry or the legacy connection entry')
-        if not registration.exists() and not removal.exists() and (args.server or access_state.parent.exists()):
+        if registration.exists() and not removal.exists() and access_state.exists() and not args.connection and not args.expected_connection_sha256:
+            from access_install import resume_applying_registration
+            resumed = resume_applying_registration(home, native, args.server)
+            if resumed is not None:
+                from content_contract import installation_follow_up
+                resumed = installation_follow_up(resumed)
+                print(json.dumps(resumed))
+                return lifecycle_exit('install', resumed)
+        if not registration.exists() and not removal.exists() and not args.connection and not args.expected_connection_sha256 and (args.server or access_state.parent.exists()):
             from access_install import run_address_install
             value = run_address_install(home, native, args.server)
             from content_contract import installation_follow_up

@@ -3,6 +3,7 @@
 import copy
 from contextlib import nullcontext
 import io
+import json
 import os
 from pathlib import Path
 import sys
@@ -344,3 +345,150 @@ class WindowsAccessDialog(unittest.TestCase):
         prompt = dialog_api()
         self.assertEqual(len(prompt.argtypes), 10)
         self.assertEqual(C.sizeof(CredUIInfo), 40 if C.sizeof(C.c_void_p) == 8 else 20)
+
+
+class BootstrapCacheEntry(unittest.TestCase):
+    setUp = AddressInstall.setUp
+
+    def test_fresh_checkout_cache_reaches_address_and_key_input_without_legacy_file(
+        self,
+    ):
+        import bootstrap_main
+        import subprocess
+
+        def git(args, **kwargs):
+            if "clone" in args:
+                (Path(args[-1]) / ".git").mkdir()
+                return subprocess.CompletedProcess(args, 0, "", "")
+            if "rev-parse" in args:
+                return subprocess.CompletedProcess(args, 0, "a" * 40 + "\n", "")
+            if "branch" in args:
+                return subprocess.CompletedProcess(args, 0, "main\n", "")
+            if "remote" in args:
+                return subprocess.CompletedProcess(
+                    args, 0, bootstrap_main.ORIGIN + "\n", ""
+                )
+            if "status" in args:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            raise AssertionError(args)
+
+        cache = self.home / ".config/agent-brain-client/installer-checkouts"
+        checkout = bootstrap_main.fresh_checkout(self.home, runner=git, root=cache)
+        address = Mock(return_value="https://synthetic.invalid")
+        original = access.run_address_install
+
+        def install(home, native, endpoint=None):
+            return original(
+                home,
+                native,
+                endpoint,
+                transport=self.peer,
+                store_factory=lambda *a: self.store,
+                dependency_preparer=lambda *a: {},
+                key_input=lambda *a: None,
+                address_input=address,
+                install=self.install,
+            )
+
+        with (
+            patch.object(Path, "home", return_value=self.home),
+            patch.dict(os.environ, CODEX_HOME=str(self.native)),
+            patch.object(sys, "argv", ["mac_first_install.py"]),
+            patch.object(sys, "stdout", io.StringIO()) as output,
+            patch.object(access, "run_address_install", side_effect=install),
+        ):
+            self.assertEqual(wizard.main(), 2)
+        self.assertEqual(
+            json.loads(output.getvalue())["status"], "access-input-cancelled"
+        )
+        address.assert_called_once()
+        self.assertTrue((checkout / ".git/agent-brain-source-sha").is_file())
+
+
+@unittest.skipIf(
+    os.name == "nt",
+    "Mac transaction fixture; Windows native transaction case is separate",
+)
+class ApplyingAccessEntry(unittest.TestCase):
+    def fixture(self):
+        import content_install
+
+        f = fixtures.FirstInstall(
+            "test_first_install_cli_emits_onboard_handoff_without_importing"
+        )
+        f.setUp()
+        self.addCleanup(f.doCleanups)
+        f.fixture()
+        self.assertTrue(f.run_wizard(access_mode=True)["installed"])
+        state = f.home / ".config/agent-brain-client"
+        receipt = wizard.private_json(state / "content-install-receipt.json")
+        receipt["phase"] = "applying"
+        wizard.save(state / "content-install-receipt.json", receipt)
+        wizard.same_private(
+            state / "access-bootstrap/endpoint.json",
+            {"schema": 1, "endpoint": f.connection["endpoint"]},
+        )
+        wizard.same_private(state / "access-bootstrap/connection.json", f.connection)
+        self.assertFalse(content_install.inspect(f.home).get("registration_verified"))
+        return f, state, receipt
+
+    def test_cli_resumes_after_registration_write_without_another_key_or_identity(self):
+        import content_install
+
+        f, state, _ = self.fixture()
+        identity = copy.deepcopy(f.backend.record)
+        original = wizard.run
+
+        def run(home, native, connection, digest, **options):
+            return original(
+                home,
+                native,
+                connection,
+                digest,
+                **options,
+                confirm=lambda *a: self.fail("No new consent/invitation prompt"),
+                updater=lambda: self.fail("No release/identity replacement"),
+                runner=f.runner,
+                dependency_preparer=lambda *a, **k: f.materials,
+                store=f.store,
+                secure_input=lambda: self.fail("No new key input"),
+                installer=lambda p, d: content_install.apply(p, d, lambda v: None),
+            )
+
+        with (
+            patch.object(Path, "home", return_value=f.home),
+            patch.dict(os.environ, CODEX_HOME=str(f.native)),
+            patch.object(sys, "argv", ["mac_first_install.py"]),
+            patch.object(wizard, "run", side_effect=run),
+            patch.object(sys, "stdout", io.StringIO()) as output,
+        ):
+            self.assertEqual(wizard.main(), 0, output.getvalue())
+        self.assertTrue(json.loads(output.getvalue())["installed"])
+        self.assertEqual(
+            wizard.private_json(state / "content-install-receipt.json")["phase"],
+            "complete",
+        )
+        self.assertEqual(f.backend.record, identity)
+
+    def test_cli_preserves_applying_journal_and_outside_edit_before_credential_access(
+        self,
+    ):
+        f, state, _ = self.fixture()
+        f.config.write_text('model="synthetic"\n# external edit must survive\n')
+        before = f.config.read_bytes()
+        journal = (state / "content-install-receipt.json").read_bytes()
+        with (
+            patch.object(Path, "home", return_value=f.home),
+            patch.dict(os.environ, CODEX_HOME=str(f.native)),
+            patch.object(sys, "argv", ["mac_first_install.py"]),
+            patch.object(
+                wizard,
+                "run",
+                side_effect=AssertionError("No recovery over outside edits"),
+            ),
+            patch.object(sys, "stdout", io.StringIO()) as output,
+        ):
+            self.assertEqual(wizard.main(), 2)
+        self.assertFalse(json.loads(output.getvalue())["installed"])
+        self.assertEqual(f.config.read_bytes(), before)
+        self.assertEqual((state / "content-install-receipt.json").read_bytes(), journal)
