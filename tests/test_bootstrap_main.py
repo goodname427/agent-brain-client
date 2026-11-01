@@ -1,6 +1,7 @@
 """Checkout bootstrap never edits or executes a stale local installer."""
 from pathlib import Path
 import hashlib
+import os
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,9 @@ class FreshMainCheckout(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
+        if os.name == 'nt':
+            from brain_windows import protect_new
+            protect_new(self.root, directory=True)
         self.home = self.root / 'home'
         self.home.mkdir()
         self.base = self.root / 'private-checkouts'

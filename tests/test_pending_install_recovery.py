@@ -23,7 +23,7 @@ class RecoveryContracts(unittest.TestCase):
             'before': {'/synthetic/config.toml': 'd' * 64}}
         new = copy.deepcopy(old)
         new.update(package='/synthetic/new', package_sha256='e' * 64, config_after_sha256='f' * 64)
-        new['mcp']['args'][2] = '/synthetic/new/adapters/codex/client_startup.py'
+        new['mcp']['args'][2] = str(Path(new['package']) / 'adapters/codex/client_startup.py')
         recovery.validate_change(old, new)
         for field, value in (('release_policy_sha256', '0' * 64), ('before', {}), ('replace_existing', True)):
             altered = copy.deepcopy(new)
