@@ -91,12 +91,27 @@ class WindowsNative(unittest.TestCase):
             'release': {'origin': installer.OFFICIAL_ORIGIN, 'ref': 'refs/heads/releases/personal-https-windows-stable', 'anchor_commit': 'a'*40}}
         materials = installer.prepare_dependencies(self.home)
         from unittest.mock import patch
+        from build_client import release
+        from client_release import ClientReleases
+        payload = self.root / 'synthetic-release'
+        release(ROOT, payload, '0.5.0', data_mode='personal-content-https', target_platform=native_platform())
+        manifest = json.loads((payload / 'releases/manifest.json').read_bytes())
+        class Source:
+            def latest(self):
+                return 'a'*40, manifest, lambda name: (payload / name).read_bytes()
+        def update():
+            state = self.home / '.config/agent-brain-client/first-install'
+            policy = state / 'release-policy.json'
+            client = ClientReleases(policy, installer.sha(policy.read_bytes()))
+            client.engine.source = Source()
+            return client.update()
         with patch.dict(os.environ, CODEX_HOME=str(native)):
             plan, pin, _ = installer.prepare_materials(materials, self.home, native, connection,
-                installer.sha(installer.canonical(connection)), updater=lambda: {'status':'updated','active':{'version':'0.5.0'}})
+                installer.sha(installer.canonical(connection)), updater=update)
             result = content_install.apply(plan, pin, lambda value: None)
             self.assertTrue(result['installed'], result)
-            self.assertTrue(content_install.inspect(self.home)['registration_verified'])
+            inspected = content_install.inspect(self.home)
+            self.assertTrue(inspected.get('registration_verified'), inspected)
             again = content_install.apply(plan, pin, lambda value: None)
             self.assertTrue(again['installed'])
             args = SimpleNamespace(device_home=str(self.home), operator=None, operator_sha256=None, profile_id='f'*32)
@@ -115,7 +130,7 @@ class WindowsNative(unittest.TestCase):
         from content_cache import ContentAdapter
         cloud = Cloud(); cloud.grant.update(platform=native_platform())
         cache = self.home / 'cache'
-        def adapter(): return ContentAdapter(self.home, cache, copy.deepcopy(POLICY), cloud)
+        def adapter(): return ContentAdapter(self.home, cache, copy.deepcopy(POLICY), cloud, codex_home=self.home / 'codex')
         first = adapter(); cloud.offline = True
         request = {'request_id':'synthetic_windows_write_001','method':'content_put',
                    'params':{'kind':'memory','id':'synthetic-topic','record':MEMORY,'expected_revision':'missing'}}

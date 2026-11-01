@@ -126,6 +126,9 @@ def command_line(argv):
             i = argv.index('-c') + 1
             payload = base64.b64encode(zlib.compress(argv[i].encode())).decode()
             argv[i] = "exec(__import__('zlib').decompress(__import__('base64').b64decode('" + payload + "')))"
+            # Isolated Python ignores PYTHONIOENCODING. Its own UTF-8 switch
+            # keeps Hook input/output Unicode-safe on legacy Windows consoles.
+            argv[1:1] = ['-X', 'utf8']
         script = "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; $env:PYTHONIOENCODING='utf-8'; & " + ' '.join("'" + item.replace("'", "''") + "'" for item in argv) + '; exit $LASTEXITCODE'
         encoded = base64.b64encode(script.encode('utf-16le')).decode()
         return 'powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ' + encoded
