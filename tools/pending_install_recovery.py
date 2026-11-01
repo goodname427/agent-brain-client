@@ -77,7 +77,7 @@ def repair_crlf_preparation(home, native):
                 or {k: old_policy[k] for k in ('origin', 'ref', 'anchor_commit')} != connection['release']
                 or old_policy['platform'] != connection['grant']['platform']
                 or runtime['https_profile'] != str(profile_path)
-                or runtime['https_profile_sha256'] != sha(canonical(old_profile))
+                or runtime['https_profile_sha256'] != sha(encode(old_profile))
                 or runtime['credential_source_sha256'] != before_sha
                 or runtime['device_home'] != str(home) or runtime['codex_home'] != str(native)):
             raise ValueError('CRLF preparation binding changed')
@@ -86,7 +86,7 @@ def repair_crlf_preparation(home, native):
         new_profile = copy.deepcopy(old_profile)
         new_profile['credential_backend']['source_sha256'] = after_sha
         new_policy = copy.deepcopy(old_policy)
-        new_policy['runtime'].update(credential_source_sha256=after_sha, https_profile_sha256=sha(canonical(new_profile)))
+        new_policy['runtime'].update(credential_source_sha256=after_sha, https_profile_sha256=sha(encode(new_profile)))
         new_binding = dict(old_binding, bundle_sha256=sha(canonical(dict(old_materials, source_sha256=after_sha))))
         replacements = {'binding.json': new_binding, 'https-profile.json': new_profile, 'release-policy.json': new_policy}
         if journal is None:
