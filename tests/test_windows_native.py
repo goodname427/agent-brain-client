@@ -159,7 +159,12 @@ class WindowsNative(unittest.TestCase):
         old_bootstrap = state / 'bootstrap'
         if not tools_only:self.assertEqual((old_bootstrap / 'scripts/brain_lock.py').read_bytes(), old_detector)
         options['secure_input'] = lambda: self.fail('Recovery must not request a new credential')
-        def offline_bootstrap_probe(plan):check_install_contract(self, plan)
+        checks = []
+        def offline_bootstrap_probe(plan):
+            check_install_contract(self, plan)
+            checks.append(True)
+            if tools_only and len(checks) == 2:
+                raise OSError('Synthetic postcheck failure after native write')
         options['installer'] = lambda plan, digest: content_install.apply(plan, digest, offline_bootstrap_probe)
         original_save = recovery.save
         def interrupted(path, value):
@@ -176,6 +181,14 @@ class WindowsNative(unittest.TestCase):
         # profile, nonce and original plan recovery without requiring input.
         second = wizard.run(self.home, native, connection, wizard.sha(wizard.canonical(connection)),
             updater=updater('0.5.6'), **options)
+        if tools_only:
+            self.assertFalse(second['installed'], second)
+            self.assertEqual(config.read_bytes(), initial_config)
+            self.assertEqual(backend.record, identity)
+            receipt = content_install.private_json(self.home / '.config/agent-brain-client/content-install-receipt.json')
+            self.assertEqual(receipt['phase'], 'rolled-back')
+            second = wizard.run(self.home, native, connection, wizard.sha(wizard.canonical(connection)),
+                updater=lambda: self.fail('Exact rollback retry must not replace runtime'), **options)
         self.assertTrue(second['installed'], second)
         self.assertEqual(backend.record, identity)
         self.assertEqual(json.loads((state / 'releases/active.json').read_bytes())['version'], '0.5.6')

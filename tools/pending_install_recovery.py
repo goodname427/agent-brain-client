@@ -10,7 +10,7 @@ from pathlib import Path
 from brain_lock import WINDOWS_PLATFORMS, native_platform
 from client_release import ClientReleases, dependency_environment, version
 from content_contract import encode
-from content_install import prepare, private_json, raw, safe, save, sha, render
+from content_install import prepare, private_json, raw, safe, save, sha, render, validate_recovery, digest_or_none
 from content_mcp import LOCAL_TOOLS
 
 # Exact pre-fix platform detector shipped by runtime 0.5.0 / installer 0.5.2.
@@ -212,11 +212,53 @@ def verified_pending(plan):
     return current
 
 
+def tool_journal(journal, plan):
+    if (set(journal) != {'schema', 'phase', 'before', 'after', 'attempt'}
+            or journal['schema'] != 1 or journal['phase'] not in ('prepared', 'complete')
+            or plan not in (journal['before'], journal['after'])):
+        raise ValueError('Pending tool recovery changed')
+    old, new, attempt = journal['before'], journal['after'], journal['attempt']
+    if verified_pending(old) != new or verified_pending(new) != new or legacy_plan(new) != old:
+        raise ValueError('Pending tool recovery scope changed')
+    if attempt is not None and attempt != {'schema': 1, 'plan_sha256': sha(encode(old))}:
+        raise ValueError('Original pairing attempt changed')
+    return old, new, attempt
+
+
+def rolled_back_retry(path, plan, journal_path):
+    state = Path(plan['device_home']) / '.config/agent-brain-client'
+    receipt_path = state / 'content-install-receipt.json'
+    if not journal_path.exists() or not receipt_path.exists():
+        return False
+    receipt = private_json(receipt_path)
+    if receipt.get('phase') != 'rolled-back':
+        return False
+    journal = private_json(journal_path)
+    _, new, attempt = tool_journal(journal, plan)
+    if journal['phase'] != 'complete' or new != plan:
+        raise ValueError('Tool migration not complete before rollback')
+    if any((state / name).exists() or (state / name).is_symlink() for name in
+           ('codex-mcp.json', 'uninstall-receipt.json')):
+        raise ValueError('Native transaction requires its original recovery')
+    validate_recovery(dict(receipt, phase='applying'), plan)
+    if ({name: image['sha'] for name, image in receipt['before'].items()} != plan['before']
+            or any(digest_or_none(raw(name)) != digest for name, digest in plan['before'].items())):
+        raise ValueError('Rollback preimages not fully restored')
+    expected = {'schema': 1, 'plan_sha256': sha(encode(plan))} if attempt is not None else None
+    attempt_path = path.parent / 'pairing-attempt.json'
+    current = private_json(attempt_path) if attempt_path.exists() else None
+    if current != expected:
+        raise ValueError('Pairing attempt changed after rollback')
+    return True
+
+
 def refresh_plan(path, update):
     path = safe(path)
     journal_path = path.parent / 'tools-recovery.json'
     original = private_json(path)
     refresh = update
+    if verified_pending(original) == original and rolled_back_retry(path, original, journal_path):
+        return original  # Let apply retry the exact restored transaction, without replacing it.
     if verified_pending(original) != original or journal_path.exists():
         state = Path(original['device_home']) / '.config/agent-brain-client'
         if any((state / name).exists() or (state / name).is_symlink() for name in
@@ -244,13 +286,7 @@ def refresh_plan(path, update):
            ('codex-mcp.json', 'content-install-receipt.json', 'uninstall-receipt.json')):
         raise ValueError('Native transaction requires its original recovery')
     if journal:
-        if (set(journal) != {'schema', 'phase', 'before', 'after', 'attempt'}
-                or journal['schema'] != 1 or journal['phase'] not in ('prepared', 'complete')
-                or plan not in (journal['before'], journal['after'])):
-            raise ValueError('Pending tool recovery changed')
-        old, new, attempt = journal['before'], journal['after'], journal['attempt']
-        if verified_pending(old) != new or verified_pending(new) != new or legacy_plan(new) != old:
-            raise ValueError('Pending tool recovery scope changed')
+        old, new, attempt = tool_journal(journal, plan)
     else:
         old, new = plan, current
         if old['replace_existing'] or old['legacy_agents'] is not None or legacy_plan(new) != old:
