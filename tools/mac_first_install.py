@@ -41,6 +41,7 @@ from https_content import (
     profile_metadata,
 )
 from system_credentials import canonical, unique, owned
+from content_contract import encode as plan_bytes
 from build_client import export
 from build_credential_helper import build as build_helper
 import shutil
@@ -94,6 +95,19 @@ def connection_value(value):
 
 class ConnectionRequired(ValueError):
     pass
+
+
+
+def bootstrap_state_only(state):
+    """Installer caches are preparation, never identity or release authority."""
+    state = safe(state)
+    if not state.exists():
+        return True
+    for item in state.iterdir():
+        if item.name not in ('install-runtime', 'installer-checkouts'):
+            return False
+        owned(item, directory=True)
+    return True
 
 
 def resolve_connection(home, native, path=None, expected=None):
@@ -162,7 +176,7 @@ def resolve_connection(home, native, path=None, expected=None):
             validate_uninstalled_state(home, journal, allow_unrelated_config_edits=True)
         metadata = journal['registration']
     else:
-        if registration.exists() or state.exists() and any(p.name != 'install-runtime' for p in state.iterdir()):
+        if registration.exists() or not bootstrap_state_only(state):
             raise ValueError("Unverified installation materials preserved")
         raise ConnectionRequired("Trusted issuer delivery required")
     policy = policy_file(metadata['release_policy'], metadata['release_policy_sha256'], runtime_check=False)
@@ -393,7 +407,7 @@ def prepare_materials(
         raise ValueError("Resume uninstall with --action repair before reinstall")
     if plan_path.exists():
         plan = private_json(plan_path)
-        plan_sha = sha(canonical(plan))
+        plan_sha = sha(plan_bytes(plan))
         receipt = home / ".config/agent-brain-client/content-install-receipt.json"
         if receipt.exists() and private_json(receipt).get("phase") in (
             "complete",
@@ -536,7 +550,7 @@ def reinstall_removed(home, native, connection, *, store=None, transport=None, s
         os.rename(staging / 'package', package)
     # Existing package is independently rehashed by prepare; never overwrite it.
     plan = prepare(home, package, metadata['release_policy'], metadata['release_policy_sha256'])
-    plan_sha = sha(canonical(plan))
+    plan_sha = sha(plan_bytes(plan))
     plan_path = state / ('reinstall-plan-' + plan_sha + '.json')
     same_private(plan_path, plan)
     same_private(current_path, {'schema': 1, 'removed_plan_sha256': metadata['plan_sha256'],
@@ -1016,7 +1030,15 @@ def main():
         removal = home / '.config/agent-brain-client/uninstall-receipt.json'
         if args.server and (args.connection or args.expected_connection_sha256):
             raise ValueError('Choose the address/key entry or the legacy connection entry')
-        if not registration.exists() and not removal.exists() and (args.server or access_state.parent.exists()):
+        if registration.exists() and not removal.exists() and access_state.exists() and not args.connection and not args.expected_connection_sha256:
+            from access_install import resume_applying_registration
+            resumed = resume_applying_registration(home, native, args.server)
+            if resumed is not None:
+                from content_contract import installation_follow_up
+                resumed = installation_follow_up(resumed)
+                print(json.dumps(resumed))
+                return lifecycle_exit('install', resumed)
+        if not registration.exists() and not removal.exists() and not args.connection and not args.expected_connection_sha256 and (args.server or access_state.parent.exists()):
             from access_install import run_address_install
             value = run_address_install(home, native, args.server)
             from content_contract import installation_follow_up

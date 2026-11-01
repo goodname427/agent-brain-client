@@ -115,6 +115,28 @@ class WindowsNative(unittest.TestCase):
             self.assertTrue(result['installed'], result)
             inspected = content_install.inspect(self.home)
             self.assertTrue(inspected.get('registration_verified'), inspected)
+            # A process can stop after registration is written but before the
+            # receipt is committed. Retry the normal no-argument CLI, preserving
+            # the profile and using the existing owned journal recovery.
+            state = self.home / '.config/agent-brain-client'
+            receipt = content_install.private_json(state / 'content-install-receipt.json')
+            receipt['phase'] = 'applying'
+            content_install.save(state / 'content-install-receipt.json', receipt)
+            installer.same_private(state / 'access-bootstrap/endpoint.json', {'schema': 1, 'endpoint': connection['endpoint']})
+            installer.same_private(state / 'access-bootstrap/connection.json', connection)
+            original_run = installer.run
+            def resume(home, codex, value, digest, **options):
+                return original_run(home, codex, value, digest, **options,
+                    confirm=lambda *a: self.fail('No invitation or consent prompt during exact recovery'),
+                    dependency_preparer=lambda *a, **k: materials,
+                    secure_input=lambda: self.fail('No new credential input'),
+                    updater=lambda: self.fail('No replacement release'),
+                    installer=lambda p, d: content_install.apply(p, d, lambda value: None))
+            import io
+            with patch.object(Path, 'home', return_value=self.home), patch.object(sys, 'argv', ['mac_first_install.py']), patch.object(installer, 'run', side_effect=resume), patch.object(sys, 'stdout', io.StringIO()) as output:
+                self.assertEqual(installer.main(), 0, output.getvalue())
+            self.assertTrue(json.loads(output.getvalue())['installed'])
+            self.assertTrue(content_install.inspect(self.home).get('registration_verified'))
             again = content_install.apply(plan, pin, lambda value: None)
             self.assertTrue(again['installed'])
             args = SimpleNamespace(device_home=str(self.home), operator=None, operator_sha256=None, profile_id='f'*32)

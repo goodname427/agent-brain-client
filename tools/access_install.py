@@ -278,3 +278,105 @@ def run_address_install(
             "native_changed": None,
             "next_action": "Retry the same Server address. Preserve the system credentials, authenticated metadata and installation receipts; authentication alone does not complete installation.",
         }
+
+
+def resume_applying_registration(home, native, endpoint=None):
+    """Reach the existing journal recovery only through the original local pins.
+
+    No new bootstrap, invitation or origin credential access is needed after
+    registration was written. The existing apply transaction still verifies
+    native pre/post images and performs its device protocol/auth checks.
+    """
+    state = Path(home) / ".config/agent-brain-client"
+    receipt_path = state / "content-install-receipt.json"
+    if not receipt_path.exists():
+        return None
+    stage = "receipt-validation"
+    try:
+        journal = wizard.private_json(owned(receipt_path))
+        if journal.get("phase") != "applying":
+            return None
+        from content_install import plan_scope, validate_recovery
+
+        first = state / "first-install"
+        access = state / "access-bootstrap"
+        stage = "connection-validation"
+        connection = wizard.connection_value(
+            wizard.private_json(owned(access / "connection.json"))
+        )
+        selected = wizard.private_json(owned(access / "endpoint.json"))
+        if selected != {"schema": 1, "endpoint": connection["endpoint"]}:
+            raise ValueError("Original selected Server changed")
+        if endpoint is not None and endpoint_check(endpoint) != endpoint_check(
+            connection["endpoint"]
+        ):
+            raise ValueError("Existing Server identity preserved")
+        if wizard.private_json(owned(first / "connection.json")) != connection:
+            raise ValueError("Original access connection changed")
+        stage = "binding-validation"
+        binding = wizard.private_json(owned(first / "binding.json"))
+        if (
+            set(binding)
+            != {
+                "schema",
+                "connection_sha256",
+                "bundle_sha256",
+                "device_home",
+                "codex_home",
+                "installation_id",
+            }
+            or binding["schema"] != 1
+            or binding["device_home"] != str(home)
+            or binding["codex_home"] != str(native)
+            or binding["connection_sha256"] != wizard.sha(canonical(connection))
+            or wizard.private_json(owned(first / "installation-id.json"))
+            != {"schema": 1, "id": binding["installation_id"]}
+        ):
+            raise ValueError("Original installation binding changed")
+        stage = "plan-validation"
+        plan = wizard.private_json(owned(first / "install-plan.json"))
+        plan_sha = wizard.sha(wizard.plan_bytes(plan))
+        plan_home, plan_native, _ = plan_scope(plan)
+        if (
+            plan_home != Path(home)
+            or plan_native != Path(native)
+            or journal.get("plan_sha256") != plan_sha
+        ):
+            raise ValueError("Original plan scope changed")
+        stage = "registration-validation"
+        metadata = wizard.private_json(owned(state / "codex-mcp.json"))
+        if metadata.get("plan_sha256") != plan_sha or any(
+            metadata.get(k) != plan[k]
+            for k in (
+                "package",
+                "package_sha256",
+                "release_policy",
+                "release_policy_sha256",
+                "platform",
+            )
+        ):
+            raise ValueError("Applying registration differs from original plan")
+        if plan["release_policy"] != str(first / "release-policy.json"):
+            raise ValueError("Original policy path changed")
+        stage = "policy-validation"
+        wizard.existing_connection(home, native, connection, metadata)
+        stage = "native-images-validation"
+        validate_recovery(journal, plan)
+        with wizard.private_lease(access):
+            # Revalidate after taking the same lease as the address/key entry.
+            if wizard.private_json(owned(receipt_path)) != journal:
+                raise ValueError("Recovery journal changed")
+            validate_recovery(journal, plan)
+            stage = "transaction-recovery"
+            return wizard.run(
+                home, native, connection, binding["connection_sha256"], access_mode=True
+            )
+    except Exception:
+        return {
+            "status": "access-install-recovery-review-required",
+            "installed": False,
+            "native_changed": None,
+            "credential_accessed": False,
+            "reason": stage,
+            "next_action": "Preserve the original access binding, plan, native files and applying receipt. Review drift; do not reset credentials or provide a replacement legacy connection.",
+        }
