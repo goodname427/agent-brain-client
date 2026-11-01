@@ -24,7 +24,9 @@ class FreshMainCheckout(unittest.TestCase):
         self.home = self.root / 'home'
         self.home.mkdir()
         self.base = self.root / 'private-checkouts'
-        self.base.mkdir(mode=0o700)
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+        from brain_lock import private_directory
+        private_directory(self.base)
         self.old = self.root / 'old-checkout'
         self.old.mkdir()
         (self.old / 'tools').mkdir()
