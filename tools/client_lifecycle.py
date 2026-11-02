@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import content_install as install
 from content_cache import ContentAdapter, BEGIN, END, BLOCK
 from content_mcp import pinned
-from brain_lock import locked, require_platform, private_mode
+from brain_lock import locked, require_platform, private_mode, file_mode
 from client_release import HTTPS_CONTENT_CAPABILITIES,CHECK_UPDATE_COMMAND,UPDATE_COMMAND
 
 
@@ -37,7 +37,10 @@ def lease(path):
         raise install.InstallBlocked('Non-writable owned lock directory required')
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        os.close(fd)
+        try:
+            file_mode(fd,0o600)
+        finally:
+            os.close(fd)
     except FileExistsError:
         pass
     # Existing nonsecret 0.2.5 lock files can be 0644 inside a private directory.

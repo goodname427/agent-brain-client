@@ -506,6 +506,20 @@ class WindowsNative(unittest.TestCase):
             self.assertNotIn(hooks.BEGIN, config.read_text(encoding='utf-8'))
             self.assertTrue(content_install.inspect(self.home)['registration_verified'])
 
+    def test_uninstall_new_private_lease_keeps_existing_host_security_separate(self):
+        from client_lifecycle import lease
+        directory=private_directory(self.home/'private-lease-state')
+        path=directory/'new-runtime.lock'
+        with lease(path):
+            private_mode(path,owner=True)
+        identity=path.stat().st_ino
+        with lease(path):pass
+        self.assertEqual(path.stat().st_ino,identity)
+        foreign=directory/'existing-host.lock';foreign.write_bytes(b'')
+        security=self.host_acl(foreign)
+        with self.assertRaises(ValueError):lease(foreign)
+        self.assertEqual(host_security(foreign),security)
+
     def test_stale_053_launcher_057_active_handover_and_retained_reinstall(self):
         from types import SimpleNamespace
         from unittest.mock import patch
