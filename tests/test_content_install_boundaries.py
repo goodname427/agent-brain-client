@@ -1,4 +1,5 @@
 """Synthetic native ownership, serialized plans and fixed-bootstrap regressions."""
+from contextlib import contextmanager
 import copy
 import json
 from pathlib import Path
@@ -72,11 +73,15 @@ class InstallBoundaries(unittest.TestCase):
         self.assertFalse(install.inspect(self.f.home)['installed'])
 
     def test_interrupted_serialized_install_recovers_and_postcheck_preserves_outside_model_edit(self):
-        plan=json.loads(install.contract.encode(self.f.plan()));real=install.atomic
+        plan=json.loads(install.contract.encode(self.f.plan()));real=install.host_stage
+        @contextmanager
         def crash(path,*args):
-            real(path,*args)
-            if path==self.f.config:raise SystemExit('synthetic interruption')
-        with patch.object(install,'atomic',side_effect=crash):
+            with real(path,*args) as commit:
+                def interrupted():
+                    commit()
+                    if path==self.f.config:raise SystemExit('synthetic interruption')
+                yield interrupted
+        with patch.object(install,'host_stage',side_effect=crash):
             with self.assertRaises(SystemExit):install.apply(plan,self.f.digest(plan),lambda p:None)
         calls=[]
         def outside_model_edit(p):

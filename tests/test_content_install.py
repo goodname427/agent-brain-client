@@ -1,5 +1,6 @@
 """Candidate install/update against fake homes, synthetic Git and fake protocol checks."""
 import copy
+from contextlib import contextmanager
 import io
 import json
 from pathlib import Path
@@ -96,16 +97,59 @@ class ContentInstall(unittest.TestCase):
         before=self.native_files();self.assertEqual(install.apply(plan,self.digest(plan),lambda p:None)['status'],'content-install-recovery-review-required');self.assertEqual(self.native_files(),before)
 
     def test_interrupted_apply_recovers_before_retry(self):
-        plan=self.plan();real=install.atomic;calls=[]
+        plan=self.plan();real=install.host_stage;calls=[]
+        @contextmanager
         def crash(path,*args):
-            result=real(path,*args)
-            if path==self.config:
-                calls.append(path)
-                if len(calls)==1:raise SystemExit('Synthetic interruption')
-            return result
-        with patch.object(install,'atomic',side_effect=crash):
+            with real(path,*args) as commit:
+                def interrupted():
+                    commit()
+                    if path==self.config:
+                        calls.append(path)
+                        if len(calls)==1:raise SystemExit('Synthetic interruption')
+                yield interrupted
+        with patch.object(install,'host_stage',side_effect=crash):
             with self.assertRaises(SystemExit):install.apply(plan,self.digest(plan),lambda p:None)
         result=install.apply(plan,self.digest(plan),lambda p:None);self.assertTrue(result['installed']);self.assertTrue(install.inspect(self.home)['installed'])
+
+    def test_host_config_never_enters_private_writer_on_install_upgrade_or_rollback(self):
+        real=install.atomic
+        def only_private(path,*args):
+            self.assertNotEqual(Path(path).parent,self.native)
+            return real(path,*args)
+        self.config.chmod(0o640)
+        parent_mode=self.native.stat().st_mode
+        with patch.object(install,'atomic',side_effect=only_private):
+            plan=self.plan()
+            self.assertTrue(install.apply(plan,self.digest(plan),lambda p:None)['installed'])
+            before=self.config.read_bytes()
+            replacement=self.plan(replace=True);calls=[]
+            def fail(p):
+                calls.append(p)
+                if len(calls)==2:raise OSError('Synthetic postcheck failure')
+            self.assertEqual(install.apply(replacement,self.digest(replacement),fail)['status'],'content-install-rolled-back')
+            self.assertEqual(self.config.read_bytes(),before)
+            self.assertTrue(install.apply(replacement,self.digest(replacement),lambda p:None)['installed'])
+        self.assertEqual(self.config.stat().st_mode&0o777,0o640)
+        self.assertEqual(self.native.stat().st_mode,parent_mode)
+
+    def test_host_preflight_failure_happens_before_journal_or_registration_mutation(self):
+        plan=self.plan();before=self.native_files()
+        @contextmanager
+        def denied(*args):
+            raise PermissionError('Synthetic host security cannot be preserved')
+            yield
+        with patch.object(install,'host_stage',side_effect=denied),self.assertRaises(PermissionError):
+            install.apply(plan,self.digest(plan),lambda p:None)
+        self.assertEqual(self.native_files(),before)
+
+    def test_new_host_config_failed_install_removes_only_own_file_then_retries(self):
+        self.config.unlink();plan=self.plan();calls=[]
+        def fail(p):
+            calls.append(p)
+            if len(calls)==2:raise OSError('Synthetic postcheck failure')
+        self.assertEqual(install.apply(plan,self.digest(plan),fail)['status'],'content-install-rolled-back')
+        self.assertFalse(self.config.exists())
+        self.assertTrue(install.apply(plan,self.digest(plan),lambda p:None)['installed'])
 
     def test_input_drift_wrong_digest_and_unknown_existing_binding_preserved(self):
         plan=self.plan();before=self.native_files()

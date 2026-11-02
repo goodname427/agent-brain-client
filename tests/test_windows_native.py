@@ -16,6 +16,23 @@ sys.path[:0] = [str(ROOT / n) for n in ('scripts', 'adapters/codex', 'tools', 't
 from brain_lock import private_directory, private_mode, locked, LockTimeout, command_line, native_platform
 
 
+def host_security(path, information=7):
+    """Test-only diagnostic; production writes never need descriptor access."""
+    from brain_windows import libraries
+    from ctypes import wintypes as W
+    api, kernel = libraries(); size = W.DWORD()
+    api.GetFileSecurityW.argtypes = [W.LPCWSTR, W.DWORD, ctypes.c_void_p, W.DWORD, ctypes.POINTER(W.DWORD)]
+    api.GetFileSecurityW(str(path), information, None, 0, ctypes.byref(size))
+    if not size.value: raise ValueError('Test token cannot read requested security metadata')
+    raw = ctypes.create_string_buffer(size.value)
+    if not api.GetFileSecurityW(str(path), information, raw, size, ctypes.byref(size)): raise ValueError('Test metadata unavailable')
+    api.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [ctypes.c_void_p, W.DWORD, W.DWORD, ctypes.POINTER(W.LPWSTR), ctypes.c_void_p]
+    text = W.LPWSTR()
+    if not api.ConvertSecurityDescriptorToStringSecurityDescriptorW(raw, 1, information, ctypes.byref(text), None): raise ValueError('Test metadata unavailable')
+    try: return text.value
+    finally: kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+
+
 def check_install_contract(test, plan):
     """Real pinned launcher plus real probe; substitute only credential/transport I/O.
 
@@ -48,6 +65,97 @@ class WindowsNative(unittest.TestCase):
         from brain_windows import protect_new
         protect_new(self.root, directory=True)
         self.home = private_directory(self.root / 'User Space & 文本')
+
+    def host_acl(self, path, *, owner=None, inherited=False):
+        from brain_windows import libraries, user_sid
+        from ctypes import wintypes as W
+        api, kernel = libraries(); descriptor = ctypes.c_void_p()
+        # An inert, unresolvable SID models a Codex sandbox principal; this
+        # never grants anything on a real host directory or private state.
+        sandbox = 'S-1-5-21-111111111-222222222-333333333-1002'
+        flags = 'OICI' if Path(path).is_dir() else ''
+        sddl = 'O:' + (owner or user_sid()) + 'D:' + ('' if inherited else 'P') + '(A;' + flags + ';FA;;;' + user_sid() + ')(A;' + flags + ';FR;;;' + sandbox + ')'
+        api.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [W.LPCWSTR, W.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+        api.SetFileSecurityW.argtypes = [W.LPCWSTR, W.DWORD, ctypes.c_void_p]
+        self.assertTrue(api.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(descriptor), None))
+        try:
+            if not api.SetFileSecurityW(str(path), 5 | (0x20000000 if inherited else 0x80000000), descriptor):
+                if owner: self.skipTest('Synthetic administrator owner cannot be assigned by this token')
+                self.fail('Synthetic host ACL setup failed')
+        finally: kernel.LocalFree(descriptor)
+        return host_security(path)
+
+    def test_host_directory_sandbox_acl_and_administrator_owner_are_not_private(self):
+        from codex_connect import host_atomic
+        native = self.home / 'host-codex'; native.mkdir()
+        original = self.host_acl(native)
+        with self.assertRaises(ValueError): private_directory(native)
+        path = native / 'config.toml'
+        host_atomic(path, b'model="synthetic"\n', 0o600, None)
+        security = host_security(path)
+        with self.assertRaises(ValueError): private_mode(path, owner=True)
+        host_atomic(path, b'model="updated"\n', 0o600, path.read_bytes())
+        self.assertEqual(host_security(path), security)
+        self.assertEqual(host_security(native), original)
+
+    def test_administrator_owned_host_directory_and_file_keep_security(self):
+        from codex_connect import host_atomic
+        admin = self.home / 'admin-codex'; admin.mkdir()
+        admin_security = self.host_acl(admin, owner='BA')
+        with self.assertRaises(ValueError): private_directory(admin)
+        host_atomic(admin / 'config.toml', b'model="synthetic"\n', 0o600, None)
+        self.assertEqual(host_security(admin), admin_security)
+        config = admin / 'config.toml'
+        file_security = self.host_acl(config, owner='BA')
+        identity = config.stat().st_ino
+        host_atomic(config, b'model="updated"\n', 0o600, config.read_bytes())
+        self.assertEqual(host_security(config), file_security)
+        self.assertEqual(config.stat().st_ino, identity)
+
+    def test_existing_host_security_preflight_rollback_and_conflicts(self):
+        from codex_connect import host_atomic, host_stage
+        native = self.home / 'host-codex'; native.mkdir()
+        self.host_acl(native)
+        path = native / 'config.toml'; path.write_bytes(b'original')
+        original = self.host_acl(path, inherited=True)
+        with host_stage(path, b'installed', 0o600, b'original') as commit: commit()
+        self.assertEqual(host_security(path), original)
+        host_atomic(path, b'original', 0o600, b'installed')
+        self.assertEqual(host_security(path), original)
+        with host_stage(path, b'candidate', 0o600, b'original'):
+            with self.assertRaises(OSError): path.write_bytes(b'external')
+        path.write_bytes(b'external')
+        with self.assertRaises(ValueError): host_atomic(path, b'candidate', 0o600, b'original')
+        self.assertEqual(path.read_bytes(), b'external')
+        with host_stage(path, b'candidate', 0o600, b'external') as commit:
+            changed = self.host_acl(path)
+            commit()
+        self.assertEqual(host_security(path), changed)
+        self.assertEqual(list(native.glob('.client-host-*')), [])
+
+    def test_existing_host_handle_excludes_writes_and_renames_but_allows_readers(self):
+        from codex_connect import host_stage
+        native = self.home / 'host-codex'; native.mkdir()
+        self.host_acl(native)
+        config = native / 'config.toml'; config.write_bytes(b'original')
+        identity = config.stat().st_ino
+        with host_stage(config, b'updated', 0o600, b'original') as commit:
+            self.assertEqual(config.read_bytes(), b'original')
+            with self.assertRaises(OSError):
+                with config.open('r+b'): pass
+            other = native / 'outside'; other.write_bytes(b'outside')
+            with self.assertRaises(OSError): os.replace(other, config)
+            commit()
+        self.assertEqual(config.read_bytes(), b'updated')
+        self.assertEqual(config.stat().st_ino, identity)
+
+    def test_readable_sacl_is_unchanged_without_production_security_api_calls(self):
+        from codex_connect import host_atomic
+        path = self.home / 'audited-config.toml'; path.write_bytes(b'original')
+        try: original = host_security(path, 15)
+        except ValueError: self.skipTest('Audit descriptor observation needs a pre-authorized test token')
+        host_atomic(path, b'updated', 0o600, b'original')
+        self.assertEqual(host_security(path, 15), original)
 
     def test_native_platform_in_minimal_environment_and_forged_processor_variables(self):
         code = "import sys;sys.path.insert(0,sys.argv[1]);from brain_lock import require_platform;print(require_platform('minimal-environment'))"
@@ -299,8 +407,10 @@ class WindowsNative(unittest.TestCase):
         import global_memory_install as hooks
         import global_memory
         from types import SimpleNamespace
-        native = private_directory(self.home / 'codex')
+        native = self.home / 'codex'; native.mkdir()
+        parent_security = self.host_acl(native)
         config = native / 'config.toml'; config.write_text('model="synthetic"\n', encoding='utf-8')
+        file_security = host_security(config)
         connection = {'schema': 1, 'endpoint': 'https://synthetic.invalid',
             'grant': {'adapter': 'codex', 'platform': native_platform(), 'actor': 'synthetic-owner', 'scopes': ['read','put'],
                       'artifact_types': ['memory','rule','skill'], 'ids': {k:'personal-owner' for k in ('memory','rule','skill')}},
@@ -326,6 +436,17 @@ class WindowsNative(unittest.TestCase):
         with patch.dict(os.environ, CODEX_HOME=str(native)):
             plan, pin, _ = installer.prepare_materials(materials, self.home, native, connection,
                 installer.sha(installer.canonical(connection)), updater=update)
+            calls = []
+            before_config = config.read_bytes()
+            before_identity = config.stat().st_ino
+            def fail_postcheck(value):
+                calls.append(True)
+                if len(calls) == 2: raise OSError('Synthetic failed postcheck')
+            failed = content_install.apply(plan, pin, fail_postcheck)
+            self.assertEqual(failed['status'], 'content-install-rolled-back')
+            self.assertEqual(config.read_bytes(), before_config)
+            self.assertEqual(config.stat().st_ino, before_identity)
+            self.assertEqual(host_security(config), file_security)
             result = content_install.apply(plan, pin, lambda value: None)
             self.assertTrue(result['installed'], result)
             inspected = content_install.inspect(self.home)
@@ -354,6 +475,10 @@ class WindowsNative(unittest.TestCase):
             self.assertTrue(content_install.inspect(self.home).get('registration_verified'))
             again = content_install.apply(plan, pin, lambda value: None)
             self.assertTrue(again['installed'])
+            self.assertEqual(host_security(native), parent_security)
+            self.assertEqual(host_security(config), file_security)
+            from brain_windows import protect_new
+            protect_new(native, directory=True); protect_new(config)
             args = SimpleNamespace(device_home=str(self.home), operator=None, operator_sha256=None, profile_id='f'*32)
             hooks.install(args)
             value = global_memory.load(self.home)

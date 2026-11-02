@@ -1,4 +1,5 @@
 """Regression checks for interrupted installs and finite contextual recall."""
+from contextlib import contextmanager
 import copy
 import io
 import json
@@ -33,12 +34,16 @@ class InstallRecovery(unittest.TestCase):
         return code, json.loads(output.getvalue())
 
     def interrupt(self):
-        real_atomic = install.atomic
+        real_stage = install.host_stage
+        @contextmanager
         def crash(path, *args):
-            real_atomic(path, *args)
-            if path == self.f.config:
-                raise SystemExit('Synthetic interruption after config write')
-        with patch.object(install, 'atomic', side_effect=crash):
+            with real_stage(path, *args) as commit:
+                def interrupted():
+                    commit()
+                    if path == self.f.config:
+                        raise SystemExit('Synthetic interruption after config write')
+                yield interrupted
+        with patch.object(install, 'host_stage', side_effect=crash):
             with self.assertRaises(SystemExit):
                 self.run_entry()
         receipt = self.f.home / '.config/agent-brain-client/content-install-receipt.json'
