@@ -1113,6 +1113,13 @@ def finish_install(home, value):
     return complete(home,value)
 
 
+def recover_windows_setup(home, native):
+    if not native_platform().startswith('win32-'):
+        return None
+    from windows_install_complete import resume_setup
+    return resume_setup(home,native)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--action", choices=("install", "status", "repair", "uninstall", "check-update", "update"), default="install")
@@ -1167,6 +1174,10 @@ def main():
         removal = home / '.config/agent-brain-client/uninstall-receipt.json'
         if args.server and (args.connection or args.expected_connection_sha256):
             raise ValueError('Choose the address/key entry or the legacy connection entry')
+        recovery=recover_windows_setup(home,native)
+        if recovery is not None:
+            print(json.dumps(recovery))
+            return 2
         if registration.exists() and not removal.exists() and access_state.exists() and not args.connection and not args.expected_connection_sha256:
             from access_install import resume_applying_registration
             resumed = resume_applying_registration(home, native, args.server)

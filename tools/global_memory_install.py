@@ -1,4 +1,5 @@
 """Owned inline user Hook transaction; leaves legacy hooks.json and MCP intact."""
+import base64
 import hashlib
 import json
 import os
@@ -50,6 +51,54 @@ def block(value):
     return '\n'.join(lines) + '\n' + END + '\n'
 
 
+def recover_record(file, receipt, record):
+    """Restore only this journal's exact host images, without parsing live TOML."""
+    from codex_connect import host_restore
+    if record.get('schema')!=2 or set(record.get('host',{}))!={str(file)}:
+        raise ValueError('Hook recovery scope changed')
+    row=record['host'][str(file)]
+    if row['before_sha']!=record['before_sha256'] or row['target_sha']!=record['after_sha256']:
+        raise ValueError('Hook recovery images changed')
+    before=base64.b64decode(row['before'],validate=True)
+    target=base64.b64decode(row['target'],validate=True)
+    outside, previous=split_owned(before)
+    expected=(outside.rstrip()+('\n\n'+record['block'] if record['block'] is not None else '\n')).encode()
+    if previous!=record['previous_block'] or target!=expected:
+        raise ValueError('Hook recovery target changed')
+    if tomllib.loads(before.decode()).get('mcp_servers')!=tomllib.loads(target.decode()).get('mcp_servers'):
+        raise ValueError('Hook recovery MCP scope changed')
+    host_restore(record['host'],lambda:old.write(receipt,record))
+    restored=dict(record,phase='rolled-back',block=record['previous_block'])
+    old.write(receipt,restored)
+    return restored
+
+
+def recover_pending(home, native):
+    """Authenticate the saved registration image before early Hook restoration.
+
+    The current configuration may be a recognized torn write and invalid TOML.
+    All policy/command validation uses the pinned preimage, never an exception
+    to registration verification. No credentials or source bodies are read.
+    """
+    import content_install as ci
+    from brain_lock import locked
+    from global_memory import settings_path
+    home=ci.safe(home);native=ci.safe(native)
+    receipt=settings_path(home).parent/'hook-install.json'
+    if not receipt.exists():return False
+    with locked(receipt.parent/'hook-install.lock'):
+        record=read_receipt(receipt)
+        if record.get('phase')!='applying':return False
+        file=native/'config.toml'
+        if set(record.get('host',{}))!={str(file)}:raise ValueError('Hook native binding changed')
+        before=base64.b64decode(record['host'][str(file)]['before'],validate=True)
+        meta=ci.private_json(home/'.config/agent-brain-client/codex-mcp.json')
+        _,_,_,registered_native=ci.registered_context(home,meta,config_image=before)
+        if registered_native!=native:raise ValueError('Hook native binding changed')
+        recover_record(file,receipt,record)
+    return True
+
+
 def transact(native, directory, owned, *, remove=False):
     from brain_lock import locked
     file = old.canonical(native / 'config.toml', existing=True)
@@ -58,12 +107,7 @@ def transact(native, directory, owned, *, remove=False):
     with locked(directory / 'hook-install.lock'):
         record = read_receipt(receipt) if receipt.exists() else None
         if record and record.get('phase')=='applying':
-            if record.get('schema')!=2 or set(record.get('host',{}))!={str(file)}:raise ValueError('Hook recovery scope changed')
-            row=record['host'][str(file)]
-            if row['before_sha']!=record['before_sha256'] or row['target_sha']!=record['after_sha256']:raise ValueError('Hook recovery images changed')
-            host_restore(record['host'],lambda:old.write(receipt,record))
-            record=dict(record,phase='rolled-back',block=record['previous_block'])
-            old.write(receipt,record)
+            record=recover_record(file,receipt,record)
         before = file.read_bytes(); outside, previous = split_owned(before)
         if record:
             candidates = [record.get('block'), record.get('previous_block')] if record.get('phase') == 'prepared' else [record.get('block')]
@@ -90,7 +134,12 @@ def transact(native, directory, owned, *, remove=False):
         else:
             expected = tomllib.loads(outside.rstrip() + '\n\n' + owned)
         if new_config != expected: raise ValueError('Unexpected native configuration change')
-        if before == after: return {'status': 'global-hook-installed', 'native_changed': False, 'trust': 'normal-host-review-required-if-not-already-trusted'}
+        if before == after:
+            if record and record.get('phase')=='rolled-back':
+                old.write(receipt,{'schema':2,'phase':'complete','block':owned,'previous_block':previous,
+                                   'before_sha256':hashlib.sha256(before).hexdigest(),'after_sha256':hashlib.sha256(after).hexdigest(),
+                                   'host':host_plan({file:after})})
+            return {'status':'global-hook-installed','native_changed':False,'trust':'normal-host-review-required-if-not-already-trusted'}
         journal = {'schema': 2, 'phase': 'applying', 'block': None if remove else owned, 'previous_block': previous,
                    'before_sha256': hashlib.sha256(before).hexdigest(), 'after_sha256': hashlib.sha256(after).hexdigest()}
         journal['host']=host_plan({file:after})

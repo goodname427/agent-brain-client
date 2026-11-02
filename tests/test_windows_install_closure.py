@@ -6,6 +6,7 @@ import io
 import json
 import os
 import runpy
+import re
 import sys
 from pathlib import Path
 import tempfile
@@ -21,6 +22,7 @@ import global_memory as gm
 import global_memory_install as hooks
 import mac_first_install as wizard
 import windows_install_complete as guide
+import access_install
 from global_memory_scope import digest
 from test_content_outbox import Cloud, POLICY, RULE, SKILL
 import test_content_install as install_fixture
@@ -47,6 +49,70 @@ def inplace_stage(path, raw, mode, expected):
 
 
 ORIGINAL_STAGE = host.host_stage
+
+
+def normal_retry(test, home, native):
+    """Execute real argparse/early recovery; isolate downstream installation UI."""
+    state = home / ".config/agent-brain-client"
+    ci.save(
+        state / "access-bootstrap/endpoint.json",
+        {"schema": 1, "endpoint": "https://synthetic.invalid"},
+    )
+
+    def original_install_recovery(*args):
+        receipt = ci.private_json(state / "content-install-receipt.json")
+        test.assertEqual(receipt["phase"], "complete")
+        value = ci.inspect(home)
+        test.assertTrue(value.get("registration_verified"), value)
+        return value
+
+    with (
+        patch.object(Path, "home", return_value=home),
+        patch.dict(os.environ, CODEX_HOME=str(native)),
+        patch.object(sys, "argv", ["mac_first_install.py"]),
+        patch.object(wizard, "native_platform", return_value="win32-amd64"),
+        patch.object(
+            access_install,
+            "resume_applying_registration",
+            side_effect=original_install_recovery,
+        ),
+        patch.object(sys, "stdout", io.StringIO()) as output,
+    ):
+        code = wizard.main()
+    return code, json.loads(output.getvalue())
+
+
+def torn_hook(test, home, native):
+    file = native / "config.toml"
+    before = file.read_bytes()
+    body = hooks.split_owned(before)[1]
+    body = re.sub(
+        r"^command = .+$", 'command = "synthetic revised command"', body, flags=re.M
+    )
+
+    def tear(stream, raw):
+        for offset in range(1, len(raw)):
+            try:
+                ci.tomllib.loads((raw[:offset] + before[offset:]).decode())
+            except (ValueError, UnicodeError):
+                break
+        else:
+            test.fail("A malformed recognized Hook prefix is required")
+        stream.seek(0)
+        stream.write(raw[:offset])
+        stream.flush()
+        os.fsync(stream.fileno())
+        raise SystemExit("Synthetic Hook interruption")
+
+    with (
+        patch.object(host, "host_stage", side_effect=inplace_stage),
+        patch.object(host, "host_write", side_effect=tear),
+        test.assertRaises(SystemExit),
+    ):
+        hooks.transact(native, gm.settings_path(home).parent, body)
+    with test.assertRaises((ValueError, UnicodeError)):
+        ci.tomllib.loads(file.read_bytes().decode())
+    return before
 
 
 class MappingClosure(unittest.TestCase):
@@ -236,6 +302,43 @@ class LauncherClosure(unittest.TestCase):
             return wizard.windows_launcher_handover(
                 self.f.home, channel=self.channel, before=self.before, meta=self.meta
             )
+
+    def test_normal_install_retry_dispatches_applying_launcher_before_original_plan(
+        self,
+    ):
+        marker = self.f.home / ".config/agent-brain-client/launcher-handover.json"
+        receipt = (
+            self.f.home / ".config/agent-brain-client/content-install-receipt.json"
+        )
+        original_save = ci.save
+
+        def stop(path, value):
+            original_save(path, value)
+            if path == receipt and value.get("phase") == "applying":
+                raise SystemExit("Synthetic launcher apply interruption")
+
+        with patch.object(ci, "save", side_effect=stop), self.assertRaises(SystemExit):
+            self.handover()
+        self.assertTrue(marker.exists())
+        self.assertFalse(ci.inspect(self.f.home).get("installed"))
+        updates = []
+
+        def resume(home, action):
+            updates.append(action)
+            wizard.windows_launcher_handover(
+                home, channel_factory=lambda *a: self.channel
+            )
+            return {"status": "client-update-current", "channel_checked": True}
+
+        with (
+            patch.object(wizard, "manage_update", side_effect=resume),
+            patch.object(wizard, "probe_launcher", return_value=None),
+        ):
+            code, value = normal_retry(self, self.f.home, self.f.native)
+        self.assertEqual(code, 0, value)
+        self.assertTrue(value["installed"])
+        self.assertEqual(updates, ["update"])
+        self.assertFalse(marker.exists())
 
     def test_actual_053_validator_rejects_nine_tools_with_057_active_then_handover_repairs(
         self,
@@ -511,6 +614,42 @@ class SourceClosure(unittest.TestCase):
         self.assertEqual(config.stat().st_ino, inode)
         self.assertEqual(ci.tomllib.loads(config.read_text())["mcp_servers"], original)
         self.assertTrue(hooks.installation_status(gm.load(self.home)))
+
+    def test_normal_install_retry_restores_torn_hook_before_registration_parse(self):
+        inode = (self.f.native / "config.toml").stat().st_ino
+        before = torn_hook(self, self.home, self.f.native)
+        self.assertFalse(ci.inspect(self.home).get("registration_verified"))
+        with (
+            patch.object(host, "host_stage", side_effect=inplace_stage),
+            patch.object(
+                wizard,
+                "manage_update",
+                side_effect=AssertionError("No launcher change for Hook recovery"),
+            ),
+        ):
+            code, value = normal_retry(self, self.home, self.f.native)
+        self.assertEqual(code, 0, value)
+        self.assertTrue(value["installed"])
+        self.assertEqual((self.f.native / "config.toml").read_bytes(), before)
+        self.assertEqual((self.f.native / "config.toml").stat().st_ino, inode)
+        hooks.install(
+            SimpleNamespace(
+                device_home=str(self.home),
+                profile_id=None,
+                operator=None,
+                operator_sha256=None,
+            )
+        )
+        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+
+    def test_early_hook_recovery_retains_foreign_edits_and_native_binding(self):
+        torn_hook(self, self.home, self.f.native)
+        file = self.f.native / "config.toml"
+        foreign = b"foreign user edit\n"
+        file.write_bytes(foreign)
+        value = guide.resume_setup(self.home, self.f.native)
+        self.assertEqual(value["status"], "windows-setup-recovery-review-required")
+        self.assertEqual(file.read_bytes(), foreign)
 
     def test_hook_reinstall_preserves_existing_identity_scope_and_pause(self):
         value = gm.load(self.home)

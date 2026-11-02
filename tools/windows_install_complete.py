@@ -14,6 +14,47 @@ from typing import Any
 from types import SimpleNamespace
 
 
+def resume_setup(home, native):
+    """Dispatch owned pending transactions before original-install inspection."""
+    import content_install as ci
+    from global_memory_install import recover_pending
+    from mac_first_install import manage_update
+
+    stage = "hook-recovery"
+    try:
+        recover_pending(home, native)
+        marker = ci.safe(
+            Path(home) / ".config/agent-brain-client/launcher-handover.json"
+        )
+        if marker.exists():
+            stage = "launcher-recovery"
+            saved = ci.private_json(marker)
+            _, bound_native, _ = ci.validate_install_scope(saved["plan"])
+            if str(bound_native) != str(native):
+                raise ValueError("Original native binding required")
+            result = manage_update(home, "update")
+            if result.get("status") not in (
+                "client-update-current",
+                "client-update-updated",
+            ):
+                return dict(
+                    result,
+                    installed=False,
+                    installation_complete=False,
+                    recovery_stage=stage,
+                )
+        return None
+    except Exception:
+        return {
+            "status": "windows-setup-recovery-review-required",
+            "installed": False,
+            "native_changed": None,
+            "installation_complete": False,
+            "recovery_stage": stage,
+            "next_action": "Preserve the original policy, registration and setup journals. Resume the normal Windows install entry after reviewing the named recovery stage; do not reset data or edit digests.",
+        }
+
+
 def mapping_refresh(home, policy, mcp, *, runner=subprocess.run):
     from client_release import ClientReleases, LEGACY_PRESERVATION, DEPENDENCY_RUNTIME
     import content_install as ci

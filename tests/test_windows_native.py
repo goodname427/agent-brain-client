@@ -479,6 +479,14 @@ class WindowsNative(unittest.TestCase):
             self.assertEqual(host_security(config), file_security)
             args = SimpleNamespace(device_home=str(self.home), operator=None, operator_sha256=None, profile_id='f'*32)
             hooks.install(args)
+            from test_windows_install_closure import torn_hook
+            before_hook=torn_hook(self,self.home,native)
+            self.assertFalse(content_install.inspect(self.home).get('registration_verified'))
+            with patch.object(Path,'home',return_value=self.home),patch.object(sys,'argv',['mac_first_install.py']),patch.object(installer,'run',side_effect=lambda *a,**k:content_install.inspect(self.home)),patch.object(installer,'finish_install',side_effect=lambda home,value:value),patch.object(sys,'stdout',io.StringIO()) as output:
+                self.assertEqual(installer.main(),0,output.getvalue())
+            self.assertEqual(config.read_bytes(),before_hook)
+            hooks.install(args)
+            self.assertTrue(hooks.installation_status(global_memory.load(self.home)))
             self.assertEqual(host_security(native),parent_security)
             self.assertEqual(host_security(config),file_security)
             value = global_memory.load(self.home)
@@ -582,7 +590,23 @@ class WindowsNative(unittest.TestCase):
         self.assertEqual(observed.returncode,0,observed.stderr)
         self.assertEqual(json.loads(observed.stdout)['reason'],'mcp-binding-changed')
         selected[0]='0.5.8'
-        fixed=wizard.manage_update(self.home,'update',channel_factory=channel)
+        original_save=ci.save
+        receipt_path=state/'content-install-receipt.json'
+        def stop_applying(path,value):
+            original_save(path,value)
+            if path==receipt_path and value.get('phase')=='applying':raise SystemExit('Synthetic pending launcher transaction')
+        with patch.object(ci,'save',side_effect=stop_applying),self.assertRaises(SystemExit):
+            wizard.manage_update(self.home,'update',channel_factory=channel)
+        wizard.same_private(state/'access-bootstrap/endpoint.json',{'schema':1,'endpoint':connection['endpoint']})
+        wizard.same_private(state/'access-bootstrap/connection.json',connection)
+        original_update=wizard.manage_update;recovered_updates=[]
+        def resume_update(home,action):
+            result=original_update(home,action,channel_factory=channel);recovered_updates.append(result);return result
+        import io
+        with patch.object(Path,'home',return_value=self.home),patch.dict(os.environ,CODEX_HOME=str(native)),patch.object(sys,'argv',['mac_first_install.py']),patch.object(wizard,'manage_update',side_effect=resume_update),patch.object(wizard,'run',side_effect=lambda *a,**k:ci.inspect(self.home)),patch.object(wizard,'finish_install',side_effect=lambda home,value:value),patch.object(sys,'stdout',io.StringIO()) as output:
+            self.assertEqual(wizard.main(),0,output.getvalue())
+        self.assertTrue(json.loads(output.getvalue())['installed'])
+        fixed=recovered_updates[0]
         self.assertEqual(fixed['status'],'client-update-updated',fixed)
         self.assertTrue(fixed['native_changed']);self.assertTrue(fixed['reload_required'])
         self.assertEqual(fixed['active_package_version'],'0.5.8');self.assertTrue(ci.inspect(self.home)['installed'])
