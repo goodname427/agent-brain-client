@@ -2,7 +2,7 @@
   "schema": 1,
   "review_status": "unpublished-candidate",
   "files": {
-    "README.md": "cb5059f4769f5d401d68ec282622f7824f862a5ba6b1a6502fcb6fdd5c429912",
+    "README.md": "92eb78f40609f93fda802e7c31e3fdee1f63a244fe32471162136c020acfd959",
     "BOOTSTRAP.md": "bc2bfc095e32636103846e907d407c62eaef4d6b54ab91e63ba6de3db4664b1b",
     "PROTOCOL.md": "9a907bb4781365b95e4558dc4c3f4ee21c349fa434b8119d6403ddfd87af1187",
     "ADAPTERS.md": "784792d32cc18dde29b73528a18c1bda7de4a2409a18f20e3f366260462e2738",
@@ -10,7 +10,7 @@
     "connect.py": "1604bcecdd5f8787f28c4cd151dec5179ddbb52f569a56f1fb5047eaa6b944a0",
     "adapters/codex/remote_http.py": "494b47213f1da701cc8f6db597212fa42df36528fdf3f0e4ad66b34d01f48b64",
     "adapters/codex/remote_mcp.py": "87ec652505609976b24acaae0fe9ca6426a199d3498bf501cff4897b6877a772",
-    "adapters/codex/codex_connect.py": "6089d37b5fa45626f7f3789d777796e8be4123f8d4ff28ebbaefdd17a681882b",
+    "adapters/codex/codex_connect.py": "0442833cbf802a8e397e9fc77af77b04f08eb47fd7c2ca4360d4dd46b69649bc",
     "adapters/codex/client_release.py": "3ff0386d1a2d1e76a610887da691fbf5dbe5cc365d1b57a5cb1ed07ec75d4eb8",
     "adapters/codex/client_startup.py": "178cce4b4e017c1c3d94b8c7b0ccb6930b988bc3e2683a22adfc294f6c558a46",
     "scripts/brain_release.py": "92b9f5cd0d49a8d55fde149070000f76e2690c60d58150e258a729581e375f03",
@@ -19,7 +19,7 @@
     "adapters/codex/content_cache.py": "5e39485fbfc9ddeb7a8b4b573729698df1b1d2432f01554660910a4e82ade5d8",
     "adapters/codex/content_mcp.py": "5079b34eda74775f351c9a002a9c4cefafa99e4bfecc58d3407a7d173c8b72c7",
     "adapters/codex/content_contract.py": "d31b506060ffe5f19d97f59a59fbc00797e9df72600bc0f9ee1fa2ddbe1dc1af",
-    "adapters/codex/content_install.py": "bd362ddca25a17884d9939e90ff14d3621785f1c0ee5e85f01b95566c0909e02",
+    "adapters/codex/content_install.py": "22aa419a842179d05086ea5b85265ce2f84e79b0d653296c122ce25708a722a2",
     "adapters/codex/https_content.py": "ebb2346be885fcc8b20be995f5444a6f39a20a185292d762969675096984c769",
     "adapters/codex/system_credentials.py": "2b41da8aabf72557071919e7aee392ece36d485430e3597fbd266b38853e0e2c",
     "scripts/brain_windows.py": "ab7cca081846c19f1755455d6bdc6a9852b64ba91bde74b7a2545c7f010743f5"

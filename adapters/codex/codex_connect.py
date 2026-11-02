@@ -4,6 +4,7 @@ No SSH key creation, token copying, hooks, model tests, Core or data Git.
 Legacy-only bindings always require their own migration plan.
 """
 import base64
+from contextlib import contextmanager
 import copy
 import hashlib
 import json
@@ -70,6 +71,125 @@ def atomic(path,raw,mode):
         atomic_replace(name,path)
     finally:
         if Path(name).exists():Path(name).unlink()
+
+
+def host_image(path):
+    """Nonsecret host preflight; never read or rewrite its security descriptor."""
+    path = Path(path)
+    if not path.is_absolute() or '..' in path.parts or any(p.is_symlink() for p in (path, *path.parents)):
+        raise ValueError('Canonical host path required')
+    if os.name == 'nt':
+        from brain_windows import canonical
+        canonical(path)
+    try: st = path.stat()
+    except FileNotFoundError: return None
+    if not path.is_file() or st.st_nlink != 1 or st.st_size > 1048576:
+        raise ValueError('Single bounded host file required')
+    metadata = getattr(st, 'st_file_attributes', 0) if os.name == 'nt' else (st.st_uid, st.st_gid, st.st_mode & 0o777)
+    return (path.read_bytes(), st.st_dev, st.st_ino, st.st_mtime_ns, metadata)
+
+
+@contextmanager
+def windows_host_file(path):
+    """Open the existing object for data I/O; allow readers, exclude writers.
+
+    OPEN_EXISTING never replaces the object or assigns a security descriptor.
+    No DELETE, WRITE_DAC, WRITE_OWNER or ACCESS_SYSTEM_SECURITY is requested.
+    """
+    import ctypes as C
+    from ctypes import wintypes as W
+    import msvcrt
+    from brain_windows import canonical, libraries
+    path = canonical(path)
+    _, kernel = libraries()
+    kernel.CreateFileW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, C.c_void_p, W.DWORD, W.DWORD, W.HANDLE]
+    kernel.CreateFileW.restype = W.HANDLE
+    kernel.CloseHandle.argtypes = [W.HANDLE]
+    handle = kernel.CreateFileW(str(path), 0xC0000000, 1, None, 3, 0x00200000, None)
+    if handle == W.HANDLE(-1).value:
+        raise ValueError('Host configuration is busy or not writable')
+    try: fd = msvcrt.open_osfhandle(handle, os.O_RDWR | getattr(os, 'O_BINARY', 0))
+    except BaseException:
+        kernel.CloseHandle(handle)
+        raise
+    with os.fdopen(fd, 'r+b', buffering=0) as file:
+        st = os.fstat(file.fileno())
+        if st.st_nlink != 1 or getattr(st, 'st_file_attributes', 0) & 0x400:
+            raise ValueError('Single non-reparse host file required')
+        yield file
+
+
+def host_write(file, raw):
+    """Write a prefix before truncating, so journaled torn writes are bounded."""
+    file.seek(0)
+    offset = 0
+    while offset < len(raw):
+        written = file.write(raw[offset:])
+        if not written: raise OSError('Host write incomplete')
+        offset += written
+    file.flush(); os.fsync(file.fileno())
+    file.truncate(len(raw))
+    file.flush(); os.fsync(file.fileno())
+
+
+@contextmanager
+def host_stage(path, raw, mode, expected):
+    """Preflight host writes without applying the private-store policy.
+
+    Windows existing files keep their object (and unknown SACL/owner/streams).
+    The caller must flush its write-ahead journal before commit. Readers may
+    observe a partial write; the kernel excludes competing writers and renames.
+    New files and POSIX writes use staged, atomic publication instead.
+    """
+    require_platform('native-install')
+    from brain_lock import atomic_replace, sync_directory
+    path = Path(path)
+    image = host_image(path)
+    if (image[0] if image is not None else None) != expected:
+        raise ValueError('Host configuration concurrently changed')
+    if os.name == 'nt' and image is not None:
+        with windows_host_file(path) as file:
+            st = os.fstat(file.fileno())
+            original = file.read(1048577)
+            if original != expected or (st.st_dev, st.st_ino) != image[1:3]:
+                raise ValueError('Host configuration concurrently changed')
+            def commit_inplace():
+                file.seek(0)
+                if file.read(1048577) != expected or host_image(path) != image:
+                    raise ValueError('Host configuration concurrently changed')
+                host_write(file, raw)
+            commit_inplace.inplace_identity = {'device': st.st_dev, 'inode': st.st_ino}
+            yield commit_inplace
+        return
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    host_image(path)
+    fd, name = tempfile.mkstemp(prefix='.client-host-', dir=path.parent)
+    pending = Path(name)
+    try:
+        with os.fdopen(fd, 'wb') as file:
+            if os.name != 'nt':
+                if image is not None:
+                    st = pending.stat()
+                    if (st.st_uid, st.st_gid) != image[4][:2]:
+                        os.fchown(file.fileno(), *image[4][:2])
+                os.fchmod(file.fileno(), mode)
+            file.write(raw); file.flush(); os.fsync(file.fileno())
+        staged = host_image(pending)
+        def commit():
+            if host_image(path) != image or host_image(pending) != staged:
+                raise ValueError('Host configuration concurrently changed')
+            if image is None:
+                if os.name == 'nt': os.rename(pending, path)
+                else: os.link(pending, path); pending.unlink()
+            else: atomic_replace(pending, path)
+            sync_directory(path.parent)
+        yield commit
+    finally:
+        pending.unlink(missing_ok=True)
+
+
+def host_atomic(path, raw, mode, expected):
+    with host_stage(path, raw, mode, expected) as commit: commit()
 
 
 def connect(home, profile_path=None, apply=False, approved_digest=None):
