@@ -587,6 +587,15 @@ class WindowsNative(unittest.TestCase):
         self.assertTrue(fixed['native_changed']);self.assertTrue(fixed['reload_required'])
         self.assertEqual(fixed['active_package_version'],'0.5.8');self.assertTrue(ci.inspect(self.home)['installed'])
         meta=ci.private_json(state/'codex-mcp.json');policy=ci.private_json(meta['release_policy']);runtime=policy['runtime']
+        # A failed old launcher can leave MCP registered with no content cache.
+        # Ordinary retained-data uninstall/reinstall must work from that state.
+        self.assertFalse(Path(runtime['content_cache']).exists())
+        config.write_bytes(config.read_bytes().replace(b'enabled = true',b'enabled = false'))
+        self.assertEqual(lifecycle.uninstall(self.home,lambda message:'Continue')['status'],'client-uninstalled')
+        private_mode(Path(runtime['content_cache']),directory=True,owner=True)
+        options['secure_input']=lambda:self.fail('No new credential input for MCP-only reinstall')
+        restored=wizard.run(self.home,native,connection,wizard.sha(wizard.canonical(connection)),updater=update,**options)
+        self.assertTrue(restored['installed'],restored);self.assertEqual(backend.record,identity)
         cloud=Cloud();content=ci.private_json(runtime['content_policy']);cloud.grant=copy.deepcopy(grant)
         cloud.records={('rule','personal-owner'):dict(RULE,enabled=True),('skill','personal-owner'):dict(SKILL,enabled=True,files={'SKILL.md':SKILL['files']['SKILL.md'].replace('synthetic-skill','personal-owner')})}
         adapter=ContentAdapter(self.home,runtime['content_cache'],content,cloud,codex_home=native)

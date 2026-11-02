@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import content_install as install
 from content_cache import ContentAdapter, BEGIN, END, BLOCK
 from content_mcp import pinned
-from brain_lock import locked, require_platform, private_mode, file_mode
+from brain_lock import locked, require_platform, private_mode, file_mode, private_directory
 from client_release import HTTPS_CONTENT_CAPABILITIES,CHECK_UPDATE_COMMAND,UPDATE_COMMAND
 
 
@@ -411,7 +411,7 @@ def uninstall(home, confirm):
             adapter=validate_journal(home,previous)
         else:
             adapter, _, _ = adapter_for(home, meta)
-        adapter.cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+        private_directory(adapter.cache)
         private_mode(adapter.cache, directory=True, owner=True, blocked=install.InstallBlocked)
         with lease(adapter.cache / '.content-runtime.lock'), lease(adapter.cache / 'content.lock'):
             if continuing:
