@@ -87,6 +87,7 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
         active=releases.verified_active()
         if not active:return {'status':'client-bootstrap-review-required','served':False,'native_changed':False}
         return {'status':'client-bootstrap-verified','active_package_version':active['version'],
+                'active_package_commit':active.get('commit'),'active_package':active.get('package'),
                 'native_changed':False,'network_used':False,'device_credentials_accessed':False}
     # During the exact 0.3.0-to-0.3.1 bridge, the new command becomes visible
     # before its transaction's second postcheck. A concurrently launched worker
@@ -102,6 +103,11 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
             return {'status':'client-bootstrap-handover-in-progress','served':False,
                     'native_changed':False,
                     'next_action':'A verified bootstrap handover is in progress. Retry after the official update command completes; do not replace or remove its recovery plan.'}
+    if isinstance(device_home,str):
+        handover=Path(device_home)/'.config/agent-brain-client/launcher-handover.json'
+        if handover.exists() or handover.is_symlink():
+            return {'status':'client-bootstrap-handover-in-progress','served':False,'native_changed':False,
+                    'next_action':'Resume the public Windows install/update entry with its saved launcher transaction.'}
     if event_hook:
         # Per-turn capture must never install, refresh or move an active release.
         # Constructor and verified_active retain the normal release trust chain.

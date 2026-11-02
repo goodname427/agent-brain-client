@@ -3,27 +3,23 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from brain_lock import file_mode,atomic_replace,sync_directory,command_line,private_directory,private_mode
-import tempfile
+from brain_lock import command_line,private_directory,private_mode
 import tomllib
 import uuid
 
 import memory_automation as old
-from global_memory_scope import digest, validate
+from global_memory_scope import validate
 
 BEGIN = '# agent-brain-global-memory:begin'
 END = '# agent-brain-global-memory:end'
 
 
-def atomic(file, raw, mode):
-    fd, pending = tempfile.mkstemp(prefix='.global-memory-', dir=file.parent)
-    try:
-        with os.fdopen(fd, 'wb') as f:
-            file_mode(f.fileno(), mode); f.write(raw); f.flush(); os.fsync(f.fileno())
-        atomic_replace(pending, file)
-        sync_directory(file.parent)
-    finally:
-        if os.path.exists(pending): os.unlink(pending)
+def read_receipt(path):
+    path=old.canonical(path,existing=True)
+    private_mode(path,owner=True)
+    if not path.is_file() or path.stat().st_nlink!=1 or path.stat().st_size>4*1048576:
+        raise ValueError('Bounded private Hook receipt required')
+    return json.loads(path.read_bytes(),object_pairs_hook=old.unique)
 
 
 def split_owned(raw):
@@ -57,15 +53,28 @@ def block(value):
 def transact(native, directory, owned, *, remove=False):
     from brain_lock import locked
     file = old.canonical(native / 'config.toml', existing=True)
-    if os.name=='nt': private_mode(file,owner=True)
-    elif file.stat().st_uid != os.getuid() or file.stat().st_mode & 0o022: raise ValueError('Owned native configuration required')
     receipt = directory / 'hook-install.json'
+    from codex_connect import host_plan,host_apply,host_restore
     with locked(directory / 'hook-install.lock'):
+        record = read_receipt(receipt) if receipt.exists() else None
+        if record and record.get('phase')=='applying':
+            if record.get('schema')!=2 or set(record.get('host',{}))!={str(file)}:raise ValueError('Hook recovery scope changed')
+            row=record['host'][str(file)]
+            if row['before_sha']!=record['before_sha256'] or row['target_sha']!=record['after_sha256']:raise ValueError('Hook recovery images changed')
+            host_restore(record['host'],lambda:old.write(receipt,record))
+            record=dict(record,phase='rolled-back',block=record['previous_block'])
+            old.write(receipt,record)
         before = file.read_bytes(); outside, previous = split_owned(before)
-        record = old.private_json(receipt) if receipt.exists() else None
         if record:
             candidates = [record.get('block'), record.get('previous_block')] if record.get('phase') == 'prepared' else [record.get('block')]
-            if previous not in candidates: raise ValueError('Outside edit to owned global Hook preserved')
+            if previous not in candidates:
+                # A verified normal uninstall removes the owned inline block
+                # while retaining this private receipt and device settings.
+                from client_lifecycle import read_removal,validate_journal
+                removal=read_removal(Path(directory).parents[2])
+                validate_journal(Path(directory).parents[2],removal)
+                if previous is not None or removal.get('phase') not in ('complete','reinstalled') or removal.get('hook_block')!=record.get('block'):
+                    raise ValueError('Outside edit to owned global Hook preserved')
         elif previous is not None: raise ValueError('Unowned global Hook block preserved')
         if remove and previous is None: return {'status': 'global-hook-not-installed', 'native_changed': False}
         after = (outside.rstrip() + ('\n\n' + owned if not remove else '\n')).encode()
@@ -82,19 +91,24 @@ def transact(native, directory, owned, *, remove=False):
             expected = tomllib.loads(outside.rstrip() + '\n\n' + owned)
         if new_config != expected: raise ValueError('Unexpected native configuration change')
         if before == after: return {'status': 'global-hook-installed', 'native_changed': False, 'trust': 'normal-host-review-required-if-not-already-trusted'}
-        journal = {'schema': 1, 'phase': 'prepared', 'block': None if remove else owned, 'previous_block': previous,
+        journal = {'schema': 2, 'phase': 'applying', 'block': None if remove else owned, 'previous_block': previous,
                    'before_sha256': hashlib.sha256(before).hexdigest(), 'after_sha256': hashlib.sha256(after).hexdigest()}
-        old.write(receipt, journal)
-        if file.read_bytes() != before: raise ValueError('Native config changed before transaction')
-        atomic(file, after, file.stat().st_mode & 0o777)
-        old.write(receipt, dict(journal, phase='complete'))
+        journal['host']=host_plan({file:after})
+        if journal['host'][str(file)]['before_sha']!=journal['before_sha256']:raise ValueError('Native config changed before transaction')
+        try:
+            host_apply(journal['host'],lambda:old.write(receipt,journal))
+            old.write(receipt,dict(journal,phase='complete'))
+        except Exception:
+            host_restore(journal['host'],lambda:old.write(receipt,journal))
+            old.write(receipt,dict(journal,phase='rolled-back',block=previous))
+            raise
     return {'status': 'global-hook-removed' if remove else 'global-hook-installed', 'native_changed': True,
             'target': str(file), 'mcp_registrations_preserved': True, 'legacy_hooks_json_unchanged': True,
             'trust_changed': False, 'trust': 'normal-host-review-required-if-not-already-trusted'}
 
 
 def install(args):
-    from global_memory import settings_path, FILES, ROOT
+    from global_memory import settings_path, FILES, ROOT, approved
     old.imports()
     home = old.canonical(args.device_home, existing=True)
     _, registered = old.registration(home); native = Path(registered['runtime']['codex_home'])
@@ -104,7 +118,7 @@ def install(args):
         value = old.private_json(file); validate(value['scope'])
         if value['device_home'] != str(home): raise ValueError('Existing global identity preserved')
     else:
-        value = {'schema': 1, 'enabled': True, 'device_home': str(home),
+        value = {'schema': 1, 'enabled': False, 'device_home': str(home),
                  'scope': {'schema': 1, 'profile_id': uuid.uuid4().hex, 'include_roots': [], 'exclude_roots': [], 'non_project_roots': [], 'recall_personal': True},
                  'approved_scope_sha256': None, 'server_scope_sha256': None, 'legacy_projects': [],
                  'operator': None, 'operator_sha256': None}
@@ -116,7 +130,7 @@ def install(args):
         value['scope']['profile_id'] = profile_id
     routes = {row['root']: row for row in value['legacy_projects']}
     base = home / '.config/agent-brain-client/project-memory'
-    if base.exists():
+    if os.name!='nt' and base.exists():
         for candidate in base.glob('*/settings.json'):
             try:
                 pin = old.digest(candidate.read_bytes()); source = old.load(candidate, pin)
@@ -132,7 +146,7 @@ def install(args):
         value.update(operator=args.operator, operator_sha256=args.operator_sha256)
     old.write(file, value)
     result = transact(native, file.parent, block(value))
-    result.update(expanded_sources_enabled=value['approved_scope_sha256'] == digest(value['scope']) and value['server_scope_sha256'] == digest(value['scope']),
+    result.update(expanded_sources_enabled=approved(value),
                   pending_sources_default_disabled=True, legacy_project_roots=list(routes), settings=str(file), model_calls=0)
     return result
 
@@ -150,6 +164,6 @@ def installation_status(value):
     native=Path(registered['runtime']['codex_home'])
     receipt=settings_path(value['device_home']).parent/'hook-install.json'
     if not receipt.exists():return False
-    record=old.private_json(receipt)
+    record=read_receipt(receipt)
     _, owned=split_owned((native/'config.toml').read_bytes())
     return record.get('phase')=='complete' and owned is not None and owned==record.get('block')

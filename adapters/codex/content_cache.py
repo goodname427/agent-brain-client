@@ -19,7 +19,7 @@ BASE=Path(__file__).resolve().parent
 ROOT=BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 import content_contract as contract
-from codex_connect import atomic
+from codex_connect import atomic,host_atomic,host_plan,host_apply,host_restore
 from brain_lock import locked,require_platform,private_mode,sync_directory,private_directory
 from remote_http import check_request,RequestStopped
 
@@ -206,14 +206,15 @@ class ContentAdapter:
         require_platform('cache-storage',self.platform)
         path=self.cache/name;self._safe(path,self.cache)
         if not path.exists():return default
-        if not path.is_file() or path.stat().st_size>1048576:raise CacheBlocked()
+        limit=3*1048576 if name=='transaction.json' else 1048576
+        if not path.is_file() or path.stat().st_size>limit:raise CacheBlocked()
         private_mode(path,blocked=CacheBlocked)
         return json.loads(path.read_text(encoding='utf-8'))
 
     def _save(self,name,value):
         require_platform('cache-storage',self.platform)
         raw=contract.encode(value)
-        if len(raw)>1048576:raise CacheBlocked()
+        if len(raw)>(3*1048576 if name=='transaction.json' else 1048576):raise CacheBlocked()
         path=self.cache/name;self._safe(path,self.cache);atomic(path,raw,0o600)
         for directory in [path.parent,*path.parent.parents]:
             sync_directory(directory)
@@ -779,7 +780,7 @@ class ContentAdapter:
     def _raw(self,name):
         path=self._path(name)
         if not path.exists():return None
-        if not path.is_file() or path.stat().st_size>262144:raise CacheBlocked()
+        if not path.is_file() or path.stat().st_nlink!=1 or path.stat().st_size>262144:raise CacheBlocked()
         return path.read_bytes()
 
     def _owned(self):
@@ -803,7 +804,17 @@ class ContentAdapter:
     def _restore(self,journal):
         require_platform('cache-recovery',self.platform)
         # Preflight all files before any restoration; preserve outside edits.
-        if set(journal)!={'phase','before','after','owned','active'} or set(journal['before'])!=set(journal['after']) or journal['owned'].get('policy_sha')!=self.policy_sha or journal['owned'].get('binding')!=self.binding:raise CacheBlocked()
+        if set(journal) not in ({'phase','before','after','owned','active'}, {'phase','before','after','owned','active','host'}) or set(journal['before'])!=set(journal['after']) or journal['owned'].get('policy_sha')!=self.policy_sha or journal['owned'].get('binding')!=self.binding:raise CacheBlocked()
+        if 'host' in journal:
+            rows=journal['host']
+            if set(rows)!={str(self._path(name)) for name in journal['before']}:raise CacheBlocked()
+            for name,old in journal['before'].items():
+                row=rows[str(self._path(name))]
+                if row['before']!=old['data'] or row['before_sha']!=old['sha'] or row['target_sha']!=journal['after'][name]:raise CacheBlocked()
+            host_restore(rows,lambda:self._save('transaction.json',journal))
+            self._save('owned.json',journal['owned']);self._save('active.json',journal['active'])
+            self._save('transaction.json',dict(journal,phase='rolled-back'))
+            return
         for name,old in journal['before'].items():
             if set(old)!={'data','sha','mode'} or type(old['mode'])!=int or old['mode']&~0o777:raise CacheBlocked()
             backup=base64.b64decode(old['data'],validate=True) if old['data'] is not None else None
@@ -813,7 +824,7 @@ class ContentAdapter:
         for name,old in journal['before'].items():
             path=self._path(name)
             if old['data'] is None:path.unlink(missing_ok=True)
-            else:atomic(path,base64.b64decode(old['data'],validate=True),old['mode'])
+            else:host_atomic(path,base64.b64decode(old['data'],validate=True),old['mode'],self._raw(name))
         self._save('owned.json',journal['owned']);self._save('active.json',journal['active'])
         self._save('transaction.json',dict(journal,phase='rolled-back'))
 
@@ -992,12 +1003,11 @@ class ContentAdapter:
                     path=self._path(name);before[name]={'data':base64.b64encode(raw).decode() if raw is not None else None,'sha':sha(raw) if raw is not None else None,'mode':path.stat().st_mode&0o777 if raw is not None else 0o600}
                     after[name]=sha(desired[name]) if name in desired else None
                 journal={'phase':'applying','before':before,'after':after,'owned':owned,'active':active}
+                journal['host']=host_plan({self._path(name):desired.get(name) for name in before})
+                if any(journal['host'][str(self._path(name))]['before_sha']!=old['sha'] for name,old in before.items()):raise CacheBlocked()
                 self._save('transaction.json',journal)
                 try:
-                    for name in before:
-                        path=self._path(name)
-                        if name in desired:atomic(path,desired[name],before[name]['mode'])
-                        else:path.unlink(missing_ok=True)
+                    host_apply(journal['host'],lambda:self._save('transaction.json',journal))
                     self._save('snapshots/'+snapshot['commit']+'.json',snapshot)
                     self._save('owned.json',{'policy_sha':self.policy_sha,'binding':self.binding,'files':{name:sha(raw) for name,raw in desired.items()}})
                     self._save('active.json',{'commit':snapshot['commit'],'snapshot_sha':sha(contract.encode(snapshot))})

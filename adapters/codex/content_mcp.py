@@ -199,9 +199,10 @@ class ContentServer(Server):
             return {'tools':tools}
         result=super().handle(request)
         if isinstance(request,dict) and request.get('method')=='initialize' and isinstance(result,dict):
-            self.adapter.refresh()
+            mapping=self.adapter.refresh()
+            result['content_mapping']=mapping
             result['serverInfo']['name']='agent-brain-content-codex-candidate'
-            result['instructions']=contract.MEMORY_GUIDANCE+'content_catalog lists authorized AgentBrain destination records only; it does not discover Harness-native sources. '+'Writes require the current expected_revision and stable request_id; retain exact request arguments on retries. '+'Pending/local-confirmed/remote-confirmed and durable fields distinguish client, Server and backup status. '+'Rules/Skills retain enabled state; refreshing mappings does not reload an already running model. '+'Only granted methods and IDs are exposed; pairing and publication remain separate. '+UPDATE_GUIDANCE
+            result['instructions']=contract.MEMORY_GUIDANCE+'content_catalog lists authorized AgentBrain destination records only; it does not discover Harness-native sources. '+'Writes require the current expected_revision and stable request_id; retain exact request arguments on retries. '+'Pending/local-confirmed/remote-confirmed and durable fields distinguish client, Server and backup status. '+'Rules/Skills retain enabled state; refreshing mappings does not reload an already running model. '+'Only granted methods and IDs are exposed; pairing and publication remain separate. '+'Native mapping result: '+json.dumps(mapping,sort_keys=True)+'. '+UPDATE_GUIDANCE
         return result
 
 def pinned(path,digest):
@@ -550,6 +551,7 @@ def main():
     for name in ('device-plan','device-plan-sha256','signing-policy','signing-policy-sha256','ssh-profile','ssh-profile-sha256','https-profile','https-profile-sha256','credential-source-sha256'):parser.add_argument('--'+name)
     parser.add_argument('--codex-home',help='Approved actual Codex home; otherwise honor CODEX_HOME and preserve device-level skills.')
     parser.add_argument('--installation-check',action='store_true',help='Fixed read-only protocol/auth check; does not write cache or native files.')
+    parser.add_argument('--mapping-refresh',action='store_true',help='Finite native mapping after installation; no source discovery or collection.')
     parser.add_argument('--event-hook',action='store_true',help='One finite authorized native event; no refresh, inventory or installer.')
     parser.add_argument('--event-hook-policy');parser.add_argument('--event-hook-policy-sha256')
     parser.add_argument('--import-plan',help='Explicit reviewed private normalized source plan; no native discovery.')
@@ -559,6 +561,7 @@ def main():
     args=parser.parse_args()
     _STARTUP_STAGE='component-source-check'
     if args.component_source_sha256 and hashlib.sha256((CLIENT_ROOT/'native/DeviceComponent.swift').read_bytes()).hexdigest()!=args.component_source_sha256:raise ValueError('Native source review required')
+    if args.mapping_refresh and (args.installation_check or args.event_hook or args.import_plan):raise ValueError('Distinct mapping mode required')
     _STARTUP_STAGE='content-policy-validation'
     policy=pinned(args.content_policy,args.content_policy_sha256)
     hook_policy=None;hook_payload=None
@@ -606,6 +609,10 @@ def main():
         print(json.dumps(installation_check(client,policy,args.client_version)));return
     _STARTUP_STAGE='content-adapter-start'
     adapter=ContentAdapter(args.device_home,args.cache,policy,client,codex_home=args.codex_home)
+    if args.mapping_refresh:
+        result=adapter.refresh();print(json.dumps(result))
+        if result.get('status') not in ('content-current','content-refreshed'):raise SystemExit(2)
+        return
     if args.event_hook:
         _STARTUP_STAGE='event-hook-run'
         run_event_hook(adapter,hook_policy,hook_payload)

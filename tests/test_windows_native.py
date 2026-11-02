@@ -477,10 +477,10 @@ class WindowsNative(unittest.TestCase):
             self.assertTrue(again['installed'])
             self.assertEqual(host_security(native), parent_security)
             self.assertEqual(host_security(config), file_security)
-            from brain_windows import protect_new
-            protect_new(native, directory=True); protect_new(config)
             args = SimpleNamespace(device_home=str(self.home), operator=None, operator_sha256=None, profile_id='f'*32)
             hooks.install(args)
+            self.assertEqual(host_security(native),parent_security)
+            self.assertEqual(host_security(config),file_security)
             value = global_memory.load(self.home)
             text = config.read_text(encoding='utf-8')
             self.assertIn('commandWindows', text)
@@ -505,6 +505,95 @@ class WindowsNative(unittest.TestCase):
             hooks.uninstall(args)
             self.assertNotIn(hooks.BEGIN, config.read_text(encoding='utf-8'))
             self.assertTrue(content_install.inspect(self.home)['registration_verified'])
+
+    def test_stale_053_launcher_057_active_handover_and_retained_reinstall(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from build_client import release,export
+        import mac_first_install as wizard
+        import content_install as ci
+        import client_lifecycle as lifecycle
+        import global_memory_install as hooks
+        import global_memory as gm
+        from client_release import ClientReleases
+        from content_cache import ContentAdapter
+        from test_content_outbox import Cloud,RULE,SKILL
+        from test_https_content import Backend
+        from contextlib import nullcontext
+        native=self.home/'codex';native.mkdir();config=native/'config.toml';config.write_bytes(b'model="synthetic"\n')
+        directory_security=self.host_acl(native);file_security=host_security(config);inode=config.stat().st_ino
+        target=native_platform()
+        connection={'schema':1,'endpoint':'https://synthetic.invalid','grant':{'adapter':'codex','platform':target,'actor':'synthetic-owner','scopes':['read','put'],'artifact_types':['memory','rule','skill'],'ids':{k:'personal-owner' for k in ('memory','rule','skill')}},
+                    'release':{'origin':wizard.OFFICIAL_ORIGIN,'ref':'refs/heads/releases/personal-https-windows-stable','anchor_commit':'a'*40}}
+        payloads={}
+        for version in ('0.5.7','0.5.8'):
+            payloads[version]=self.root/version
+            release(ROOT,payloads[version],version,data_mode='personal-content-https',target_platform=target)
+        selected=['0.5.7']
+        def channel(path,pin,**kwargs):
+            value=ClientReleases(path,pin,**kwargs)
+            class Source:
+                def latest(self):
+                    payload=payloads[selected[0]];manifest=json.loads((payload/'releases/manifest.json').read_bytes())
+                    return ('a' if selected[0]=='0.5.7' else 'b')*40,manifest,lambda name:(payload/name).read_bytes()
+            value.engine.source=Source()
+            return value
+        def update():
+            policy=self.home/'.config/agent-brain-client/first-install/release-policy.json'
+            return channel(policy,wizard.sha(policy.read_bytes())).update()
+        def old_export(source,output,**options):
+            result=export(source,output,**options)
+            fixture=ROOT/'tests/fixtures/windows_launcher_053'
+            pins=json.loads((fixture/'manifest.json').read_bytes())['files']
+            for name,pin in pins.items():
+                raw=(fixture/name).read_bytes();self.assertEqual(wizard.sha(raw),pin)
+                destination='adapters/codex/'+name.removesuffix('.fixture')
+                (Path(output)/destination).write_bytes(raw);result['files'][destination]=pin
+            (Path(output)/'export-manifest.json').write_text(json.dumps(result),encoding='utf-8')
+            return result
+        backend=Backend();store=SimpleNamespace(load=backend.load,save=backend.save,lease=nullcontext)
+        grant=connection['grant']
+        peer=SimpleNamespace(prepare=lambda code,nonce,profile:{'phase':'pending','nonce':nonce,'credential':'t'*40,'device_id':'d'*32,'grant':grant},confirm=lambda token,nonce:{'phase':'active','device_id':'d'*32,'grant':grant})
+        options=dict(access_mode=True,dependency_preparer=lambda *a,**k:wizard.prepare_dependencies(self.home),store=store,transport=peer,confirm=lambda *a:'Continue',secure_input=lambda:'SYNTHETIC_ENROLLMENT_MARKER_12345678901234567890',installer=lambda p,d:ci.apply(p,d,lambda value:None))
+        with patch.object(wizard,'export',side_effect=old_export):
+            first=wizard.run(self.home,native,connection,wizard.sha(wizard.canonical(connection)),updater=update,**options)
+        self.assertTrue(first['installed'],first);identity=copy.deepcopy(backend.record)
+        state=self.home/'.config/agent-brain-client';meta=ci.private_json(state/'codex-mcp.json')
+        table=ci.tomllib.loads(config.read_text(encoding='utf-8'))['mcp_servers'][ci.NAME]
+        self.assertEqual(len(table['enabled_tools']),9)
+        # Execute the historical validator in its own process. It reconstructs
+        # three tools and rejects the authenticated nine-tool registration.
+        code="import sys,json;sys.path.insert(0,sys.argv[1]);import content_install;print(json.dumps(content_install.inspect(sys.argv[2])))"
+        observed=subprocess.run([table['command'],'-I','-B','-c',code,str(Path(meta['package'])/'adapters/codex'),str(self.home)],capture_output=True,text=True,timeout=60)
+        self.assertEqual(observed.returncode,0,observed.stderr)
+        self.assertEqual(json.loads(observed.stdout)['reason'],'mcp-binding-changed')
+        selected[0]='0.5.8'
+        fixed=wizard.manage_update(self.home,'update',channel_factory=channel)
+        self.assertEqual(fixed['status'],'client-update-updated',fixed)
+        self.assertTrue(fixed['native_changed']);self.assertTrue(fixed['reload_required'])
+        self.assertEqual(fixed['active_package_version'],'0.5.8');self.assertTrue(ci.inspect(self.home)['installed'])
+        meta=ci.private_json(state/'codex-mcp.json');policy=ci.private_json(meta['release_policy']);runtime=policy['runtime']
+        cloud=Cloud();content=ci.private_json(runtime['content_policy']);cloud.grant=copy.deepcopy(grant)
+        cloud.records={('rule','personal-owner'):dict(RULE,enabled=True),('skill','personal-owner'):dict(SKILL,enabled=True,files={'SKILL.md':SKILL['files']['SKILL.md'].replace('synthetic-skill','personal-owner')})}
+        adapter=ContentAdapter(self.home,runtime['content_cache'],content,cloud,codex_home=native)
+        self.assertEqual(adapter.refresh()['status'],'content-refreshed')
+        args=SimpleNamespace(device_home=str(self.home),profile_id=None,operator=None,operator_sha256=None)
+        hooks.install(args);self.assertFalse(gm.approved(gm.load(self.home)))
+        self.assertEqual(host_security(config),file_security);self.assertEqual(host_security(native),directory_security);self.assertEqual(config.stat().st_ino,inode)
+        # Pause only this MCP before owned removal. Identity, source settings,
+        # snapshots and the original file object survive normal uninstall.
+        config.write_bytes(config.read_bytes().replace(b'enabled = true',b'enabled = false'))
+        removed=lifecycle.uninstall(self.home,lambda message:'Continue')
+        self.assertEqual(removed['status'],'client-uninstalled',removed)
+        self.assertNotIn(hooks.BEGIN,config.read_text(encoding='utf-8'))
+        self.assertEqual(backend.record,identity);self.assertTrue(gm.settings_path(self.home).exists())
+        options['secure_input']=lambda:self.fail('No new credential input on reinstall')
+        again=wizard.run(self.home,native,connection,wizard.sha(wizard.canonical(connection)),updater=update,**options)
+        self.assertTrue(again['installed'],again)
+        self.assertEqual(adapter.refresh()['status'],'content-refreshed')
+        hooks.install(args)
+        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        self.assertEqual(backend.record,identity);self.assertEqual(host_security(config),file_security);self.assertEqual(config.stat().st_ino,inode)
 
     def test_offline_outbox_reconnect_and_rule_skill_mapping_share_same_core(self):
         from test_content_outbox import Cloud, POLICY, MEMORY, RULE, SKILL

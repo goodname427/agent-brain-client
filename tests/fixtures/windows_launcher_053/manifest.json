@@ -1,0 +1,9 @@
+{
+  "source_commit": "c8f499b005b2f87135f70435834f06021d267f49",
+  "version": "0.5.3",
+  "purpose": "Exact public historical launcher validators for isolated stale-launcher regression; never installed on a user device.",
+  "files": {
+    "content_install.py.fixture": "38b8b4c04e6410e155cc56ffac447d6d3dc978b60677116e2f13e90453d9ff0c",
+    "client_startup.py.fixture": "178cce4b4e017c1c3d94b8c7b0ccb6930b988bc3e2683a22adfc294f6c558a46"
+  }
+}
