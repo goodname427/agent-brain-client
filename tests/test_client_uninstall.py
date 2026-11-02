@@ -1,5 +1,6 @@
 """Synthetic install/use/remove/reinstall; no real Keychain, server or Codex."""
 import copy
+from contextlib import contextmanager
 import io
 import json
 import os
@@ -113,14 +114,16 @@ class ClientUninstall(unittest.TestCase):
         self.remove()
         (self.preparation / 'connection.json').unlink()
         (self.f.base / 'connection.json').unlink()
-        original = install.atomic
-
+        original = install.host_stage
+        @contextmanager
         def crash(path, *args):
-            original(path, *args)
-            if path == self.f.config:
-                raise SystemExit('Synthetic interrupted CLI reinstall')
-
-        with patch.object(install, 'atomic', side_effect=crash):
+            with original(path, *args) as commit:
+                def interrupted():
+                    commit()
+                    if path == self.f.config:
+                        raise SystemExit('Synthetic interrupted CLI reinstall')
+                yield interrupted
+        with patch.object(install, 'host_stage', side_effect=crash):
             with self.assertRaises(SystemExit):
                 self.connection_cli()
         code, result = self.connection_cli('--action', 'install')
@@ -246,14 +249,16 @@ class ClientUninstall(unittest.TestCase):
     def test_interrupted_reinstall_keeps_unrelated_config_preimage_strict(self):
         self.remove()
         self.f.config.write_text('model = "changed-after-uninstall"\n[mcp_servers.other]\ncommand="keep"\n')
-        original = install.atomic
-
+        original = install.host_stage
+        @contextmanager
         def crash(path, *args):
-            original(path, *args)
-            if path == self.f.config:
-                raise SystemExit('Synthetic interrupted reinstall after valid edit')
-
-        with patch.object(install, 'atomic', side_effect=crash):
+            with original(path, *args) as commit:
+                def interrupted():
+                    commit()
+                    if path == self.f.config:
+                        raise SystemExit('Synthetic interrupted reinstall after valid edit')
+                yield interrupted
+        with patch.object(install, 'host_stage', side_effect=crash):
             with self.assertRaises(SystemExit):
                 self.connection_cli()
         self.assertTrue((self.preparation / 'reinstall-current.json').exists())
@@ -603,12 +608,16 @@ class ClientUninstall(unittest.TestCase):
 
     def test_reinstall_interruption_resumes_saved_plan_without_new_input(self):
         self.remove()
-        original = install.atomic
+        original = install.host_stage
+        @contextmanager
         def crash(path, *args):
-            original(path, *args)
-            if path == self.f.config:
-                raise SystemExit('Synthetic interrupted reinstall')
-        with patch.object(install, 'atomic', side_effect=crash):
+            with original(path, *args) as commit:
+                def interrupted():
+                    commit()
+                    if path == self.f.config:
+                        raise SystemExit('Synthetic interrupted reinstall')
+                yield interrupted
+        with patch.object(install, 'host_stage', side_effect=crash):
             with self.assertRaises(SystemExit):
                 self.f.run_wizard()
         self.assertTrue((self.preparation / 'reinstall-current.json').exists())

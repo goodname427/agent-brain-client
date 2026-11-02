@@ -6,6 +6,7 @@ the caller's deployment authorization. No secret creation, UI, hooks or daemon.
 import argparse
 import base64
 import copy
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -18,7 +19,7 @@ from client_release import https_files,policy_file,CONTENT_CAPABILITIES,CONTENT_
 from content_mcp import pinned,pairs,enabled_tools,LOCAL_TOOLS,TOOL_CONTRACT_VERSION
 from content_cache import validate_policy,sha,contract
 from client_pairing import ComponentClient
-from codex_connect import atomic,NAME,BEGIN,END,BLOCK
+from codex_connect import atomic,host_stage,host_atomic,host_image,NAME,BEGIN,END,BLOCK
 from brain_lock import locked,require_platform,platform_paths,private_mode,PlatformUnsupported,native_platform
 from brain_release import ReleaseEngine
 
@@ -35,7 +36,7 @@ def safe(path):
 def raw(path,limit=262144):
     path=safe(path)
     if not path.exists():return None
-    if not path.is_file() or path.stat().st_size>limit:raise InstallBlocked('Unsupported native file')
+    if not path.is_file() or path.stat().st_nlink!=1 or path.stat().st_size>limit:raise InstallBlocked('Unsupported native file')
     return path.read_bytes()
 
 def save(path,value):atomic(safe(path),contract.encode(value),0o600)
@@ -245,26 +246,93 @@ def inspect_plan(path,digest):
     if sha(contract.encode(plan))!=digest or prepare(home,plan['package'],plan['release_policy'],plan['release_policy_sha256'],plan['replace_existing'])!=plan:raise InstallBlocked('Install plan drift')
     return {'status':'content-native-install-ready','plan_sha256':digest,'native_changed':False,'installed':False,'next_action':'Apply this exact plan within the approved signing, credential, transport and native scope. Protocol/auth checks run before and after the one-table transaction; no new model conversation required.'}
 
+def partial_prefix(before,after,current):
+    """Recognize only prefix writes followed by one truncate, never arbitrary drift."""
+    if current==after:return len(after)
+    offset=0
+    for old,new in zip(current,after):
+        if old!=new:break
+        offset+=1
+    if len(current)==max(len(before),offset) and current==after[:offset]+before[offset:]:return offset
+    return None
+
+
+def host_target(path,plan,old):
+    _,native,_=plan_scope(plan)
+    if path==native/'config.toml':
+        target=render(old,plan['mcp'],NAME in tomllib.loads(old.decode()).get('mcp_servers',{}))
+        expected=plan['config_after_sha256']
+    elif plan['legacy_agents'] and path==native/'AGENTS.md':
+        target=BLOCK.sub('',old.decode()).encode();expected=plan['legacy_agents']['after_sha256']
+    else:raise InstallBlocked('In-place write scope changed')
+    if sha(target)!=expected:raise InstallBlocked('In-place write target changed')
+    return target
+
+
+def recovery_image(path,journal,plan):
+    old=journal['before'][str(path)]
+    backup=base64.b64decode(old['data'],validate=True) if old['data'] is not None else None
+    current=raw(path)
+    inplace=journal.get('host_inplace',{}).get(str(path))
+    if inplace is None:
+        if digest_or_none(current) not in (old['sha'],journal['after'][str(path)]):raise InstallBlocked('Outside edit preserved')
+        return current
+    if backup is None or current is None:raise InstallBlocked('In-place recovery object missing')
+    st=path.stat()
+    if (st.st_dev,st.st_ino)!=(inplace['device'],inplace['inode']):raise InstallBlocked('In-place recovery object changed')
+    target=host_target(path,plan,backup)
+    if sha(target)!=journal['after'][str(path)]:raise InstallBlocked('In-place recovery target changed')
+    rollback=journal.get('host_rollback',{}).get(str(path))
+    if rollback is not None:
+        if not isinstance(rollback,dict) or set(rollback)!={'prefix','size'} or any(type(v)!=int or v<0 for v in rollback.values()) or rollback['prefix']>len(target) or rollback['size']>max(len(backup),len(target)):raise InstallBlocked('In-place recovery intent changed')
+        image=(target[:rollback['prefix']]+backup[rollback['prefix']:])[:rollback['size']]
+        if partial_prefix(backup,target,image) is None:raise InstallBlocked('In-place recovery intent changed')
+        if partial_prefix(image,backup,current) is None:raise InstallBlocked('Outside edit preserved')
+    elif partial_prefix(backup,target,current) is None:raise InstallBlocked('Outside edit preserved')
+    return current
+
+
 def validate_recovery(journal,plan):
-    _,_,paths=plan_scope(plan)
-    if (set(journal)!={'schema','phase','plan_sha256','before','after'}
+    _,native,paths=plan_scope(plan)
+    keys={'schema','phase','plan_sha256','before','after'}
+    if (not keys<=set(journal) or set(journal)-keys-{'host_inplace','host_rollback'}
             or journal['schema']!=1 or journal['phase']!='applying'
             or journal['plan_sha256']!=sha(contract.encode(plan))
             or set(journal['before'])!={str(p) for p in paths}
             or set(journal['after'])!=set(journal['before'])):raise InstallBlocked('Recovery journal mismatch')
+    inplace=journal.get('host_inplace',{});rollback=journal.get('host_rollback',{})
+    if not isinstance(inplace,dict) or not isinstance(rollback,dict) or not set(rollback)<=set(inplace):raise InstallBlocked('In-place recovery scope changed')
+    for name,identity in inplace.items():
+        if name not in journal['before'] or Path(name).parent!=native or not isinstance(identity,dict) or set(identity)!={'device','inode'} or any(type(v)!=int or v<0 for v in identity.values()):raise InstallBlocked('In-place recovery scope changed')
     for path in paths:
         old=journal['before'][str(path)]
         if set(old)!={'data','sha','mode'} or type(old['mode'])!=int or old['mode']&~0o777:raise InstallBlocked('Recovery preimage mismatch')
         backup=base64.b64decode(old['data'],validate=True) if old['data'] is not None else None
-        if digest_or_none(backup)!=old['sha'] or digest_or_none(raw(path)) not in (old['sha'],journal['after'][str(path)]):raise InstallBlocked('Outside edit preserved')
+        if digest_or_none(backup)!=old['sha'] or old['sha']!=plan['before'][str(path)]:raise InstallBlocked('Recovery preimage mismatch')
+        recovery_image(path,journal,plan)
     return paths
 
+
 def restore(journal,plan):
-    _,_,paths=plan_scope(plan)
+    home,native,paths=plan_scope(plan)
     validate_recovery(journal,plan)
     for path in paths:
         old=journal['before'][str(path)]
-        if old['data'] is None:path.unlink(missing_ok=True)
+        current=recovery_image(path,journal,plan)
+        if digest_or_none(current)==old['sha']:continue
+        if path.parent==native:
+            if old['data'] is None:
+                image=host_image(path)
+                if digest_or_none(image[0] if image else None)!=journal['after'][str(path)]:raise InstallBlocked('Outside edit preserved')
+                path.unlink(missing_ok=True)
+            else:
+                backup=base64.b64decode(old['data'])
+                if str(path) in journal.get('host_inplace',{}) and str(path) not in journal.get('host_rollback',{}):
+                    target=host_target(path,plan,backup)
+                    journal.setdefault('host_rollback',{})[str(path)]={'prefix':partial_prefix(backup,target,current),'size':len(current)}
+                    save(home/'.config/agent-brain-client/content-install-receipt.json',journal)
+                host_atomic(path,backup,old['mode'],current)
+        elif old['data'] is None:path.unlink(missing_ok=True)
         else:atomic(path,base64.b64decode(old['data']),old['mode'])
     journal['phase']='rolled-back'
 
@@ -317,22 +385,29 @@ def apply(plan,approved_digest,check=probe):
         if {name:value['sha'] for name,value in before.items()}!=plan['before']:
             raise InstallBlocked('Install preimage changed before commit')
         journal={'schema':1,'phase':'applying','plan_sha256':approved_digest,'before':before,'after':{str(p):sha(v) for p,v in payload.items()}}
-        save(receipt,journal)
-        try:
-            for path,value in payload.items():
-                if digest_or_none(raw(path))!=before[str(path)]['sha']:raise InstallBlocked('Preimage race')
-                atomic(path,value,before[str(path)]['mode'])
-            check(plan)
-            completed=dict(journal,phase='complete')
-            save(receipt,completed)
-            journal['phase']='complete'
-        except Exception:
+        with ExitStack() as staging:
+            # Preflight every host file before the transaction journal or writes.
+            commits={p:staging.enter_context(host_stage(p,v,before[str(p)]['mode'],base64.b64decode(before[str(p)]['data']) if before[str(p)]['data'] is not None else None)) for p,v in payload.items() if p.parent==native}
+            inplace={str(p):commit.inplace_identity for p,commit in commits.items() if hasattr(commit,'inplace_identity')}
+            if inplace:journal['host_inplace']=inplace
+            save(receipt,journal)
             try:
-                restore(journal,plan)
-                if previous and previous.get('phase')=='complete' and not reinstallation:save(receipt,previous)
-                else:save(receipt,journal)
-            except Exception:return {'status':'content-install-recovery-review-required','native_changed':None,'installed':False}
-            return {'status':'content-install-rolled-back','native_changed':False,'installed':False}
+                for path,value in payload.items():
+                    if digest_or_none(raw(path))!=before[str(path)]['sha']:raise InstallBlocked('Preimage race')
+                    if path in commits:commits[path]()
+                    else:atomic(path,value,before[str(path)]['mode'])
+                check(plan)
+                completed=dict(journal,phase='complete')
+                save(receipt,completed)
+                journal['phase']='complete'
+            except Exception:
+                staging.close()  # Release writer handles before recovery.
+                try:
+                    restore(journal,plan)
+                    if previous and previous.get('phase')=='complete' and not reinstallation:save(receipt,previous)
+                    else:save(receipt,journal)
+                except Exception:return {'status':'content-install-recovery-review-required','native_changed':None,'installed':False}
+                return {'status':'content-install-rolled-back','native_changed':False,'installed':False}
         return {'status':'content-native-client-installed','native_changed':True,'installed':True,'protocol_checked':True,'model_loaded':'unknown'}
 
 def inspect(home):
