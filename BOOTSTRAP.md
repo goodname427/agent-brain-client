@@ -19,3 +19,9 @@
 6. 安装／更新后正常重载 `agent_brain_server`，继续既有 Onboard 流程。分别报告已验证活动包、成功检查的渠道版本和可观察的 worker 版本；未观察模型加载时报告 unknown。首次新设备权限、未来采集目录及 Hook trust 仍需正常授权，仓库链接本身不扩大这些范围。
 
 验证源码时使用隔离 HOME 与 CODEX_HOME，测试只访问合成 localhost。构建不会证明模型已经加载 MCP、Keychain 提示通过或已部署。保留原生工具工作流；不读取原生会话或数据库。
+
+Windows 的正常安装入口还会继续受信 launcher 交接、有限 Rule/Skill 映射与全局 Hook 引导。
+逐项查看 `installation_stages`；MCP 可列工具不等于映射或 Hook 已生效。
+让用户在本机流程中选择来源并批准展示的范围；未选择或 Server 尚未准入时，保留具体待办，
+不扫描、不沿用其他设备授权。正常重载和新会话加载由宿主完成。
+操作说明见 [Windows installation stages](docs/WINDOWS-INSTALL-CLOSURE.md)。

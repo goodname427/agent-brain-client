@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import content_install as install
 from content_cache import ContentAdapter, BEGIN, END, BLOCK
 from content_mcp import pinned
-from brain_lock import locked, require_platform, private_mode
+from brain_lock import locked, require_platform, private_mode, file_mode, private_directory
 from client_release import HTTPS_CONTENT_CAPABILITIES,CHECK_UPDATE_COMMAND,UPDATE_COMMAND
 
 
@@ -37,7 +37,10 @@ def lease(path):
         raise install.InstallBlocked('Non-writable owned lock directory required')
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        os.close(fd)
+        try:
+            file_mode(fd,0o600)
+        finally:
+            os.close(fd)
     except FileExistsError:
         pass
     # Existing nonsecret 0.2.5 lock files can be 0644 inside a private directory.
@@ -117,7 +120,11 @@ def remove_table(raw):
         raise install.InstallBlocked('Owned table syntax changed')
     start, end = matches[0].span()
     following = re.search(r'^\[', text[end:], re.M)
-    desired = (text[:start] + text[end + following.start():] if following else text[:start]).encode()
+    stop=end+following.start() if following else len(text)
+    hook=text.find('# agent-brain-global-memory:begin',end,stop)
+    if hook >= 0:
+        stop = hook
+    desired=(text[:start]+text[stop:]).encode()
     expected = copy.deepcopy(parsed)
     del expected['mcp_servers'][install.NAME]
     actual = install.tomllib.loads(desired.decode())
@@ -146,7 +153,19 @@ def prepare_removal(home):
     if transaction and transaction.get('phase') not in ('complete', 'rolled-back'):
         raise install.InstallBlocked('Mapping transaction needs repair')
     owned = adapter._owned()
-    payload = {native / 'config.toml': remove_table(install.raw(native / 'config.toml')), registration: None}
+    config_before=install.raw(native/'config.toml')
+    config_after=remove_table(config_before)
+    hook_block=None
+    if adapter.platform.startswith('win32-'):
+        from global_memory_install import split_owned
+        from global_memory import settings_path
+        _,hook_block=split_owned(config_before)
+        if hook_block is not None:
+            record=install.private_json(settings_path(home).parent/'hook-install.json')
+            if record.get("phase") != "complete" or record.get("block") != hook_block:
+                raise install.InstallBlocked("Hook ownership changed")
+            config_after=split_owned(config_after)[0].encode()
+    payload = {native / 'config.toml': config_after, registration: None}
     for name in owned['files']:
         path = adapter._path(name)
         if name == '.codex/AGENTS.md':
@@ -165,13 +184,13 @@ def prepare_removal(home):
         value = install.raw(path, 1048576)
         before[str(path)] = {'data': base64.b64encode(value).decode() if value is not None else None,
                              'sha': install.digest_or_none(value), 'mode': path.stat().st_mode & 0o777 if value is not None else 0o600}
-    return {'schema': 1, 'phase': 'prepared', 'device_home': str(home), 'registration': meta,
+    return {'schema': 1, 'phase': 'prepared', 'device_home': str(home), 'registration': meta, **({'hook_block':hook_block} if hook_block is not None else {}),
             'before': before, 'after': {str(p): base64.b64encode(v).decode() if v is not None else None for p, v in payload.items()},
             'queue': counts, 'removed_mapping_files': len(owned['files'])}
 
 
 def validate_journal(home, journal):
-    if set(journal) != {'schema', 'phase', 'device_home', 'registration', 'before', 'after', 'queue', 'removed_mapping_files'} or journal['schema'] != 1 or journal['device_home'] != str(home) or journal['phase'] not in ('prepared', 'applying', 'complete', 'reinstalled'):
+    if set(journal)-{'host','hook_block'} != {'schema', 'phase', 'device_home', 'registration', 'before', 'after', 'queue', 'removed_mapping_files'} or journal['schema'] != 1 or journal['device_home'] != str(home) or journal['phase'] not in ('prepared', 'applying', 'complete', 'reinstalled'):
         raise install.InstallBlocked('Removal receipt changed')
     metadata=journal['registration']
     policy=install.policy_file(metadata['release_policy'],metadata['release_policy_sha256'],runtime_check=False)
@@ -201,7 +220,18 @@ def validate_journal(home, journal):
         raise install.InstallBlocked('Removal registration image changed')
     config = native / 'config.toml'
     config_before = decode(journal['before'][str(config)]['data'])
-    if install.tomllib.loads(config_before.decode()).get('mcp_servers', {}).get(install.NAME) != mcp or decode(journal['after'][str(config)]) != remove_table(config_before):
+    expected=remove_table(config_before)
+    if 'hook_block' in journal:
+        from global_memory_install import split_owned
+        _,block=split_owned(config_before)
+        if (
+            not adapter.platform.startswith("win32-")
+            or block != journal["hook_block"]
+            or block is None
+        ):
+            raise install.InstallBlocked("Removal Hook scope changed")
+        expected=split_owned(expected)[0].encode()
+    if install.tomllib.loads(config_before.decode()).get('mcp_servers', {}).get(install.NAME) != mcp or decode(journal['after'][str(config)]) != expected:
         raise install.InstallBlocked('Removal table image changed')
     owned_path = adapter.cache / 'owned.json'
     original_owned = decode(journal['before'][str(owned_path)]['data'])
@@ -226,6 +256,17 @@ def validate_journal(home, journal):
             raise install.InstallBlocked('Removal mapping output changed')
     if len(install.contract.encode(journal)) > 3 * 1048576:
         raise install.InstallBlocked('Removal receipt exceeds bound')
+    if 'host' in journal:
+        paths={str(native/'config.toml')}|{str(adapter._path(name)) for name in owned['files']}
+        if set(journal["host"]) != paths:
+            raise install.InstallBlocked("Removal host scope changed")
+        for name,row in journal['host'].items():
+            if (
+                row["before"] != journal["before"][name]["data"]
+                or row["before_sha"] != journal["before"][name]["sha"]
+                or row["target"] != journal["after"][name]
+            ):
+                raise install.InstallBlocked("Removal host images changed")
     return adapter
 
 
@@ -295,14 +336,27 @@ def validate_uninstalled_state(home, journal, *, allow_unrelated_config_edits=Fa
     return changed
 
 def finish_removal(home, journal):
-    validate_journal(home, journal)
+    adapter=validate_journal(home, journal)
+    from codex_connect import host_plan,host_apply,host_restore
+    if 'host' in journal:
+        host_restore(journal['host'],lambda:install.save(journal_path(home),journal))
     # All preimages checked before any write; interrupted runs accept only own images.
     for name, old in journal['before'].items():
         if install.digest_or_none(install.raw(name, 1048576)) not in (old['sha'], install.digest_or_none(decode(journal['after'][name]))):
             raise install.InstallBlocked('Outside edit retained')
+    host_paths=set()
+    if adapter.platform.startswith('win32-'):
+        host_paths=({str(adapter.native_home/'config.toml')}|{str(adapter._path(name)) for name in adapter._load('owned.json',{'files':{}})['files']})
+        if "host" in journal:
+            host_paths = set(journal["host"])
+        journal['host']=host_plan({Path(name):decode(journal['after'][name]) for name in host_paths})
     journal['phase'] = 'applying'
     install.save(journal_path(home), journal)
+    if host_paths:
+        host_apply(journal["host"], lambda: install.save(journal_path(home), journal))
     for name, value in journal['after'].items():
+        if name in host_paths:
+            continue
         path = install.safe(name)
         desired = decode(value)
         old=journal['before'][name]
@@ -357,7 +411,7 @@ def uninstall(home, confirm):
             adapter=validate_journal(home,previous)
         else:
             adapter, _, _ = adapter_for(home, meta)
-        adapter.cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+        private_directory(adapter.cache)
         private_mode(adapter.cache, directory=True, owner=True, blocked=install.InstallBlocked)
         with lease(adapter.cache / '.content-runtime.lock'), lease(adapter.cache / 'content.lock'):
             if continuing:

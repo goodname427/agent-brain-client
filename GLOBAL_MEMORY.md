@@ -78,3 +78,12 @@ origin data is filtered from later derived recall. LocalOnly markers and known
 credential patterns provide an additional content gate, not a classifier for all
 business confidential information. Company locations must be explicitly selected
 for exclusion or left outside approved personal roots.
+
+## Windows normal entry
+
+The normal `& ./tools/install-windows.ps1` flow now installs the owned inline Hook
+and offers explicit local source selection and scope approval. See
+[Windows installation stages](docs/WINDOWS-INSTALL-CLOSURE.md). Deferring selection
+keeps the Hook inert before reading its input. An unadmitted device receives a
+metadata packet and a concrete Server-operator/activation task; no Mac source
+approval is imported and no Server privileges are created.
