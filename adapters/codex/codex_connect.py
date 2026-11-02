@@ -192,6 +192,92 @@ def host_atomic(path, raw, mode, expected):
     with host_stage(path, raw, mode, expected) as commit: commit()
 
 
+def host_plan(payload):
+    """Bounded data images for nonsecret host files; journal stays private."""
+    rows = {}
+    for path, target in payload.items():
+        image = host_image(path)
+        before = image[0] if image else None
+        if target is not None and (not isinstance(target, bytes) or len(target) > 1048576):
+            raise ValueError('Bounded host target required')
+        rows[str(path)] = {'before': base64.b64encode(before).decode() if before is not None else None,
+                           'target': base64.b64encode(target).decode() if target is not None else None,
+                           'before_sha': sha(before) if before is not None else None,
+                           'target_sha': sha(target) if target is not None else None,
+                           'mode': path.stat().st_mode & 0o777 if image else 0o600}
+    return rows
+
+
+def host_row(path, row):
+    keys = {'before', 'target', 'before_sha', 'target_sha', 'mode'}
+    if not keys <= set(row) or set(row)-keys-{'identity', 'rollback'} or type(row['mode']) is not int or row['mode'] & ~0o777:
+        raise ValueError('Host journal changed')
+    before, target = (base64.b64decode(row[k], validate=True) if row[k] is not None else None for k in ('before', 'target'))
+    if any(v is not None and len(v)>1048576 for v in (before,target)) or (sha(before) if before is not None else None)!=row['before_sha'] or (sha(target) if target is not None else None)!=row['target_sha']:
+        raise ValueError('Host journal images changed')
+    image = host_image(path); current = image[0] if image else None
+    identity = row.get('identity')
+    if identity is not None:
+        if not isinstance(identity,dict) or set(identity)!={'device','inode'} or any(type(v) is not int or v<0 for v in identity.values()) or image is None or image[1:3]!=(identity['device'],identity['inode']) or before is None or target is None:
+            raise ValueError('Host recovery object changed')
+        intent = row.get('rollback')
+        if intent is not None:
+            if not isinstance(intent,dict) or set(intent)!={'data','sha'}: raise ValueError('Host rollback intent changed')
+            torn = base64.b64decode(intent['data'],validate=True)
+            if sha(torn)!=intent['sha'] or partial_prefix(before,target,torn) is None or partial_prefix(torn,before,current) is None:
+                raise ValueError('Outside host edit preserved')
+        elif partial_prefix(before,target,current) is None: raise ValueError('Outside host edit preserved')
+    elif current not in (before,target) or 'rollback' in row:
+        raise ValueError('Outside host edit preserved')
+    return before,target,current
+
+
+def partial_prefix(before, after, current):
+    if current == after: return len(after)
+    offset = 0
+    for old, new in zip(current, after):
+        if old != new: break
+        offset += 1
+    if len(current) == max(len(before),offset) and current == after[:offset]+before[offset:]: return offset
+    return None
+
+
+def host_apply(rows, persist):
+    """Persist exact intent before data writes, including Windows file identity."""
+    from contextlib import ExitStack
+    with ExitStack() as staging:
+        commits = {}
+        for name,row in rows.items():
+            path=Path(name); before,target,current=host_row(path,row)
+            if current!=before: raise ValueError('Host preimage changed')
+            if target is not None:
+                commit=staging.enter_context(host_stage(path,target,row['mode'],before))
+                if hasattr(commit,'inplace_identity'): row['identity']=commit.inplace_identity
+                commits[name]=commit
+        persist()
+        for name,row in rows.items():
+            if name in commits: commits[name]()
+            else:
+                path=Path(name)
+                if (host_image(path) or (None,))[0] != (base64.b64decode(row['before']) if row['before'] is not None else None):
+                    raise ValueError('Host removal preimage changed')
+                path.unlink(missing_ok=True)
+
+
+def host_restore(rows, persist):
+    # Callers validate their exact permitted path set and image hashes first.
+    for name,row in rows.items(): host_row(Path(name),row)
+    for name,row in rows.items():
+        path=Path(name); before,target,current=host_row(path,row)
+        if current==before: continue
+        if before is None: path.unlink(missing_ok=True)
+        else:
+            if 'identity' in row and 'rollback' not in row:
+                row['rollback']={'data':base64.b64encode(current).decode(),'sha':sha(current)}
+                persist()
+            host_atomic(path,before,row['mode'],current)
+
+
 def connect(home, profile_path=None, apply=False, approved_digest=None):
     home=Path(home).resolve();state=home/'.config/agent-brain-client';registration=state/'codex-mcp.json'
     if os.sys.platform!='darwin':return {'status':'adapter-review-required','native_changed':False,'next_action':'Verify actual Harness loading and prepare its adapter; only Mac Codex is wired here.'}

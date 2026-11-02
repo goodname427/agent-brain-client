@@ -111,7 +111,10 @@ def render(config,mcp,existing):
         matches=list(pattern.finditer(text))
         if len(matches)!=1:raise InstallBlocked('Existing MCP table syntax needs review')
         start=matches[0].start();end=matches[0].end();next_header=re.search(r'^\[',text[end:],re.M)
-        stop=end+next_header.start() if next_header else len(text);text=text[:start]+text[stop:]
+        stop=end+next_header.start() if next_header else len(text)
+        hook=text.find('# agent-brain-global-memory:begin',end,stop)
+        if hook>=0:stop=hook
+        text=text[:start]+text[stop:]
     def literal(value):
         if isinstance(value,dict):return '{'+', '.join(json.dumps(k)+' = '+literal(value[k]) for k in sorted(value))+'}'
         return json.dumps(value,ensure_ascii=False)
@@ -180,7 +183,11 @@ def prepare(home,package,policy_path,policy_sha,replace_existing=False):
         if metadata.get('schema')!=1 or metadata.get('native_mcp_name')!=NAME:raise InstallBlocked('Unknown existing registration')
         if 'mcp_sha256' in metadata:
             if registered_mcp_digest(old)!=metadata['mcp_sha256']:raise InstallBlocked('Existing MCP drift')
+            if metadata.get('content_candidate') is True:
+                _,original,_,_=registered_context(home,metadata)
+                mcp['command']=original['command']
             if old.get('enabled') is False:mcp['enabled']=False
+            if old.get('enabled_tools')==sorted(set(mcp['enabled_tools'])-LOCAL_TOOLS-{'memory_query'}):mcp['enabled_tools']=old['enabled_tools']
         else:
             receipt=private_json(metadata['migration_receipt'])
             if receipt.get('installation_complete') is not True or receipt.get('native_registered') is not True or receipt.get('new_registration_path')!=str(registration) or receipt.get('after',{}).get(str(config))!=sha(before) or receipt.get('after',{}).get(str(registration))!=sha(registered):raise InstallBlocked('Existing migration receipt drift')
