@@ -14,9 +14,9 @@ import uuid
 from typing import Any
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from remote_mcp import Server,ProtocolError,keys,pairs,MAX_MESSAGE
-from content_cache import CacheBlocked,ContentAdapter,contract,validate_policy,ROOT as CLIENT_ROOT
+from content_cache import CacheBlocked,ContentAdapter,contract,validate_policy,operation_diagnostics,ROOT as CLIENT_ROOT
 from client_pairing import ComponentClient
-from brain_lock import PlatformUnsupported,require_platform,private_mode,locked
+from brain_lock import LockTimeout,PlatformUnsupported,require_platform,private_mode,locked
 from remote_http import RequestControl,RequestStopped
 from client_release import UPDATE_GUIDANCE
 
@@ -151,11 +151,23 @@ class ContentServer(Server):
             message='Invalid '+name+' arguments; use the exact fields and types in this tool input schema.'
             if name in contract.WRITES:message+=' Writes require a stable request_id and the expected_revision obtained from content_read.'
             raise ContentParameterError(message) from None
-        try:
-            request={'request_id':rid,'method':name,'params':params}
-            result=self.adapter.invoke(request,reconciles=reconciles) if reconciles is not None else self.adapter.invoke(request)
-        except RequestStopped:raise
-        except Exception:result={'request_id':rid,'error':{'code':'content_adapter_blocked','retryable':False,'stage':'content-validation'},'persistence':{'durable':False}}
+        with operation_diagnostics() as diagnostic:
+            try:
+                request={'request_id':rid,'method':name,'params':params}
+                result=self.adapter.invoke(request,reconciles=reconciles) if reconciles is not None else self.adapter.invoke(request)
+            except RequestStopped:raise
+            except Exception as error:
+                # A busy local lock is transient. Keep the original CAS request
+                # and ID for an explicit retry; do not replay anything here.
+                busy=isinstance(error,LockTimeout)
+                known=(CacheBlocked,LockTimeout,OSError,PermissionError,FileNotFoundError,
+                       FileExistsError,NotADirectoryError,IsADirectoryError,TimeoutError,
+                       ValueError,TypeError,KeyError,RuntimeError,json.JSONDecodeError,
+                       UnicodeDecodeError,UnicodeEncodeError)
+                exception_type=type(error).__name__ if type(error) in known else 'Exception'
+                result={'request_id':rid,'error':{'code':'content_busy' if busy else 'content_adapter_blocked',
+                        'retryable':busy,'stage':diagnostic['stage'],'exception_type':exception_type},
+                        'persistence':{'durable':False}}
         result=dict(result,client_runtime=self.client_runtime)
         return {'isError':'error' in result,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
 
