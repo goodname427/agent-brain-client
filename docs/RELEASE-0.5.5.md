@@ -1,3 +1,6 @@
+> 历史记录：仅描述本文所列版本／当时验收范围，不能作为当前安装步骤或当前能力清单。当前入口见 [文档索引](README.md)；[归档正文](archive/0.5/release-0.5.5.md)。
+
+<!-- historical-body -->
 # 0.5.5：包含根目录入口的平台边界完整收口
 
 本版本包含 0.5.4 的真实 MCP checkpoint 修复，并将根目录 `connect.py` 旧 HTTP 元数据发现也改为复用 `brain_lock.native_platform()`。旧 HTTP 分支仍先拒绝原生 Windows，不引入旧协议作为 Windows 安装回退，不扩大平台或授权。

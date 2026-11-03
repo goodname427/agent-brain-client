@@ -1,3 +1,6 @@
+> 历史记录：仅描述本文所列版本／当时验收范围，不能作为当前安装步骤或当前能力清单。当前入口见 [文档索引](README.md)；[归档正文](archive/0.5/release-0.5.7.md)。
+
+<!-- historical-body -->
 # 0.5.7：Windows 宿主配置权限与安全恢复
 
 0.5.6 安装和回滚错误地对 `.codex` 应用 Agent Brain 私有目录策略，遇到 Administrators owner 或宿主沙箱 ACL 可能失败。0.5.7 分开宿主配置与私有状态写入；密钥、注册、计划、身份、nonce 和恢复记录沿原私有策略保护，密钥不进入 TOML。

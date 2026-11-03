@@ -1,3 +1,6 @@
+> 历史记录：仅描述本文所列版本／当时验收范围，不能作为当前安装步骤或当前能力清单。当前入口见 [文档索引](README.md)；[归档正文](archive/5.0/release-5.0-windows.md)。
+
+<!-- historical-body -->
 # Agent Brain 5.0 Windows Codex
 
 本阶段提供 Windows Codex 接入，Client 组件版本为 0.5.0。支持原生 Windows x64/ARM64 的固定安装、升级、工具接入及获准未来会话的采集、提取和相关召回。具体使用 [Windows 安装步骤](FIRST-INSTALL-WINDOWS.md)；架构复用、同步开发发布及后续 Harness 合同见 [多平台开发经验](MULTIPLATFORM-DEVELOPMENT.md)。

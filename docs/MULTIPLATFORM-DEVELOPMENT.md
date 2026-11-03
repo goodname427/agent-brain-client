@@ -1,5 +1,7 @@
 # 多平台开发与后续 Harness 接入
 
+> 状态：当前维护。适用：当前共用核心、平台边界与后续 Harness 开发约定。文档核对日期：2026-11-03；验收范围见 [0.5 交付状态](releases/0.5-status.md)。
+
 这次探索的主要重复来自原先把 Mac 路径、Swift helper、安装入口和单设备 Server 身份混进业务流程。Windows 与 Mac 的业务差异很小，但凭据、权限及进程锁不能靠换平台字符串解决。
 
 共用业务核心：HTTPS 请求与回执、CAS/outbox、断网缓存、Rule/Skill 映射、安装事务及前后像、release manifest/健康回滚、来源语法和排除规则。共用 Codex 适配：Hook 输入、事件身份、来源发现、召回上下文、用户级 owned Hook 块与 MCP 协议。薄 OS 层：实际平台识别、路径语法、凭据 API、DACL/POSIX 权限、原子替换/刷盘、命令转义、共享锁与 worker 生命周期。

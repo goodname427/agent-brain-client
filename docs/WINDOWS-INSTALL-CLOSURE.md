@@ -1,5 +1,7 @@
 # Windows installation and future memory sources
 
+> 状态：当前维护。适用：Windows 0.5.8 起的分阶段安装合同，0.5.9 保留。文档核对日期：2026-11-03；验收范围见 [0.5 交付状态](releases/0.5-status.md)。
+
 Use the normal public entry from a fresh official Client checkout:
 
 ```powershell

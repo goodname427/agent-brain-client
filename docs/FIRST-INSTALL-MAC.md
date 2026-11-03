@@ -1,5 +1,7 @@
 # Mac arm64：安装、使用、卸载、再次安装
 
+> 状态：当前维护。适用：Mac arm64 当前安装入口；运行版本由原渠道固定。文档核对日期：2026-11-03；验收范围见 [0.5 交付状态](releases/0.5-status.md)。
+
 支持 Apple Silicon Mac、Codex 和既有 HTTPS 个人 Memory/Rule/Skill 服务。普通客户端无管理 SSH、sudo、发码或 Server/Data 凭据。Windows 使用同一接入协议，见 [Windows 步骤](FIRST-INSTALL-WINDOWS.md)。其他 Harness 与 Intel Mac 不在本入口范围。
 
 ## 取得源码并连接 Server

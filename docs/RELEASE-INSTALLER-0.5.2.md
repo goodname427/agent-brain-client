@@ -1,3 +1,6 @@
+> 历史记录：仅描述本文所列版本／当时验收范围，不能作为当前安装步骤或当前能力清单。当前入口见 [文档索引](README.md)；[归档正文](archive/0.5/release-installer-0.5.2.md)。
+
+<!-- historical-body -->
 # Installer 0.5.2：正常入口与登记后中断恢复
 
 0.5.2 修复 0.5.1 地址／密钥入口的两个问题：Windows 正常 bootstrap 创建的 installer-checkouts 缓存不再被误判为未知安装；registration 写入后、applying 回执完成前中断时，重跑正常入口可验证原绑定、计划和 journal 并恢复事务，无需 legacy connection 文件或新密钥。

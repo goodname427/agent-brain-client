@@ -1,5 +1,7 @@
 # Personal owner collection contract
 
+> Reference: the owner-scope contract below is retained from the accepted 0.2.5 baseline. Invitation rollout details describe that baseline; current first enrollment uses [address/key bootstrap](ADDRESS-KEY-INSTALL.md). Scope and authorization semantics are unchanged by documentation organization.
+
 Client 0.2.5 is the accepted HTTPS baseline. Earlier 0.2.2→0.2.3 versions remain synthetic isolated upgrade fixtures. The Mac first-install entry is the repository script; see FIRST-INSTALL-MAC.md. It does not require an app bundle or Apple distribution identity. Source preparation does not deploy, publish a release, issue an invitation or install credentials.
 
 A reviewed grant may use `ids` equal to `{"memory":"personal-owner","rule":"personal-owner","skill":"personal-owner"}`. This complete three-kind marker requires exactly `scopes:["read","put"]`. It names the authenticated owner's fixed personal collection, including future IDs; it is not a filesystem wildcard. Partial markers, rule/skill `*`, remove, write aliases and additional grant fields are rejected. Existing exact-ID grants and the legacy memory `*` remain unchanged and are never automatically expanded.

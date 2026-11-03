@@ -1,8 +1,10 @@
 # Windows Codex 安装、升级与未来记忆
 
+> 状态：当前维护。适用：Windows 当前安装入口；0.5.9 基线。文档核对日期：2026-11-03；验收范围见 [0.5 交付状态](releases/0.5-status.md)。
+
 可以只把本仓库链接发给 Windows 上的本地 Codex；入口约定见 [统一引导](../BOOTSTRAP.md)。执行 Agent 先从干净官方 main 运行 `& ./tools/install-windows.ps1 -Action status`。已有核验安装时使用 `-Action check-update`、`-Action update`，保留现有身份与策略；明确未安装时才继续下述首次安装。状态异常或事务未完成时保留材料并按 status／repair 恢复，不重新发码或重置。
 
-适用原生 Windows x64/ARM64、本地编排的 Codex。WSL 是另一套 Linux 环境；Work Cloud 编排不执行本地 command Hook，不能据此承诺云会话覆盖。安装不读取原生 session/history。真实 Windows 桌面、用户隐藏密钥输入与 Codex Hook trust 尚需该设备正常操作；Windows runner 的合成检查不等于这些实机体验已验收。
+适用原生 Windows x64/ARM64、本地编排的 Codex。WSL 是另一套 Linux 环境；Work Cloud 编排不执行本地 command Hook，不能据此承诺云会话覆盖。安装不读取原生 session/history。用户已确认本轮 Windows 安装与验收通过；公开记录没有列出设备架构和逐项结果，因此不推定所有架构、Hook trust、模型加载或异常恢复场景均通过。新设备仍需正常操作和逐项核对，参见 [交付状态](releases/0.5-status.md)。
 
 使用当前用户的普通 PowerShell。准备 Python 3.11+、Git 和 Codex；没有依赖时可从它们的官方安装器安装，或用已安装的 winget 安装 Python.Python.3.12 和 Git.Git。安装完成后重新打开终端。无需管理员运行，不更改执行策略、沙箱或 Hook 信任设置。
 
@@ -54,6 +56,6 @@ Set-Location $checkout
 
 升级复用现有 policy、凭据、信任锚、缓存和幂等队列；不重新配对。不确定/冲突回执保留，断网读明确标为旧缓存，恢复后重放原 request_id。卸载前正常停止该 MCP worker，再移除 owned Hook；普通卸载不清凭据和记忆。显示 `review-required` 时保留原材料，用 status/repair 处理未完成事务。安装目录或 Python/Git 被移动/升级而摘要变化时，需要精确依赖迁移，不能替换摘要掩盖漂移。
 
-Windows 凭据使用用户 Credential Manager；私有状态检查 DACL、owner 和 reparse point，锁使用 LockFileEx。没有轮询聊天目录的本地常驻采集器；后台提取消费在 Server，MCP worker 由 Codex 管理生命周期。可选的旧 Codex memories 导入目前没有 Windows reader，返回 unavailable，未来 Hook 采集不依赖它。未实现 DeepSeek Harness；DeepSeek 当前只是提取 provider。
+Windows 凭据使用用户 Credential Manager；私有状态检查 DACL、owner 和 reparse point，锁使用 LockFileEx。没有轮询聊天目录的本地常驻采集器；后台提取消费在 Server，MCP worker 由 Codex 管理生命周期。0.5.9 已包含 Mac／Windows 的有界原生 `CODEX_HOME/memories` 导入，具体边界见 [现有接口说明](MEMORY-BEHAVIOR.md)；该能力不包含 `memories_v2`、SQLite 或聊天历史，也不代替未来 Hook 来源批准。未实现 DeepSeek Harness；DeepSeek 当前只是提取 provider。
 
 协议依据：[Codex Hooks](https://learn.chatgpt.com/docs/hooks)、[Windows Sandbox](https://learn.chatgpt.com/docs/windows/windows-sandbox)、[Win32 Credential](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、[LockFileEx](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfileex)。

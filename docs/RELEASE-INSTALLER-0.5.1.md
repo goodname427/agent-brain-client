@@ -1,3 +1,6 @@
+> 历史记录：仅描述本文所列版本／当时验收范围，不能作为当前安装步骤或当前能力清单。当前入口见 [文档索引](README.md)；[归档正文](archive/0.5/release-installer-0.5.1.md)。
+
+<!-- historical-body -->
 # Installer 0.5.1：地址与长期接入密钥
 
 本版本更新官方 main 的正常首次安装链。新设备只输入所选 HTTPS Server 地址，以及本机隐藏输入中的 Server 长期接入密钥；安装器自动取得平台配置、校验发行链、保存独立设备身份并完成原安装事务。Mac／Windows 共享接入协议与安装核心，各自使用 login Keychain／Credential Manager。无需 connection.json、独立摘要、ready 回执或邀请码。

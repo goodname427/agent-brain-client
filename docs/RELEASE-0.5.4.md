@@ -1,3 +1,6 @@
+> 历史记录：仅描述本文所列版本／当时验收范围，不能作为当前安装步骤或当前能力清单。当前入口见 [文档索引](README.md)；[归档正文](archive/0.5/release-0.5.4.md)。
+
+<!-- historical-body -->
 # 0.5.4：完整 MCP checkpoint 的平台识别修复
 
 0.5.3 的 Windows 原生平台层已修复，但 `remote_mcp.Server` 仍自行拼接 `sys.platform` 与 `platform.machine()`。`ContentServer` 的构造会进入这条默认 checkpoint 路径；Python 3.11 最小环境下仍会得到空架构并抛出 `Unsupported client checkpoint`。只验证 helper 或 `--bootstrap-check` 不能覆盖这个遗漏。

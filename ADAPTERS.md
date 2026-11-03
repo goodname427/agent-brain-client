@@ -1,5 +1,7 @@
 # 自开发适配器约束
 
+> 参考状态：本文件混合早期适配／签名组件候选与旧版本记录，各节版本限制仅适用于所述基线。当前平台边界见 [多平台开发](docs/MULTIPLATFORM-DEVELOPMENT.md)，当前工具合同见 [协议](PROTOCOL.md)，实际安装先读 [BOOTSTRAP](BOOTSTRAP.md)。历史 `model_loaded:false` 不替代当前不可观测时的 `unknown`。
+
 当前 Mac/Codex/HTTPS 用户入口统一见 [安装、使用、卸载与再次安装](docs/FIRST-INSTALL-MAC.md)。下文保留 SSH 迁移、历史签名组件候选的技术资料；其中尚未部署、签名/Team/access-group 及候选状态只适用于对应历史路线，不能用于判断已验收的 HTTPS 0.2.5。
 先查实际 Harness 的官方加载入口、权限、规则/Skill 发现与启动/会话接口。不要根据目录存在或模型名称宣称已加载；缺文档或执行接口时保留实验状态，报告具体未完成项。
 

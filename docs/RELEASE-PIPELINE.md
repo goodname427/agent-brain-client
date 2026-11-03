@@ -1,5 +1,7 @@
 # 固定发布入口
 
+> 状态：当前维护。适用：0.5.9 起的现有发布工具；执行发布仍需该动作授权。文档核对日期：2026-11-03；验收范围见 [0.5 交付状态](releases/0.5-status.md)。
+
 `tools/release_client.py` 复用现有 `build_client.release`、HTTPS 文件清单、manifest、公开扫描和离线 self-check。本轮只接通现有 Windows AMD64／ARM64 stable，Mac 渠道不提升；没有新增 Server 管理入口或权限政策。功能开发、代码评审、用户桌面验收仍各自完成，不能将实际代码修复耗时归为发布脚本问题。
 
 审计基线是已发布的 0.5.8：仓库原来只有 `client-checks.yml` 和单包构建工具，没有正式发布工作流。安装器全源码归档、两架构包、SHA256SUMS、运行包 Git 提交、两个 GitHub Release、latest、Windows 渠道及五个实际下载核验均由仓外临时脚本串联；脚本还嵌入当版版本、tag 和批准断言。`releases/manifest.json` 是历史包资料，不能用来推断源码版本。新入口从冻结的 Windows 渠道确定版本和兼容边界，不改它或每版增加工具清单、测试例外。

@@ -1,5 +1,7 @@
 # HTTPS 安装事务与恢复
 
+> 参考状态：0.2.5 既有邀请安装事务与恢复合同，保留旧设备兼容；不是当前首次安装向导。当前 Mac／Windows 均先走 [地址与长期密钥](ADDRESS-KEY-INSTALL.md)，平台步骤见 [安装索引](installation/README.md)。下文版本、21 文件和未测范围均按历史语境理解。
+
 独立 Client 的 0.2.5 已完成现有设备验收；本说明是维护者安装事务参考。普通用户只按 [Mac 安装、使用、卸载与再次安装](FIRST-INSTALL-MAC.md) 操作。`main` 提供安装/生命周期源码；活动运行包仍来自受信发布渠道。现有 SSH 0.2.1 与 `releases/personal-stable` 保持有效；HTTPS 必须使用单独审核的 Git origin、完整 ref、anchor commit、21 文件 manifest 和 SHA 固定的私有运行政策。
 
 安装前准备一个审核包：21 文件 HTTPS 审核版本、单独固定字节及 Swift 源码摘要的普通 login Keychain helper、无凭据的私有 HTTPS profile、覆盖当前与未来 Memory/Rule/Skill 的 personal-owner read/put 内容政策（旧 31 项精确授权保持兼容）、固定发布政策，以及 `content_install.py plan` 产生的原生配置前像计划。helper 固定在设备本地稳定路径，不随普通包升级替换。个人端点和路径只留本机；计划、profile、政策都是 0600。

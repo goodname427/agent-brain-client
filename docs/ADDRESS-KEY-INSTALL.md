@@ -1,5 +1,7 @@
 # HTTPS 地址与长期接入密钥
 
+> 状态：当前维护。适用：Mac／Windows 正常首次接入与原身份恢复。文档核对日期：2026-11-03；验收范围见 [0.5 交付状态](releases/0.5-status.md)。
+
 正常首次安装只填写两个值：你选择的 Server HTTPS 地址，以及 Server 生成的长期接入密钥。地址可由本机终端询问或 `--server`（Windows `-Server`）指定；密钥只能由本机隐藏输入填写，不传给聊天或执行 Agent。Mac 使用独立 login Keychain 项，Windows 使用当前用户 Credential Manager；没有明文落盘、命令行或环境变量回退。没有本机交互能力时停止，不能改为聊天收集密钥。
 
 从干净官方 main 运行 [Mac](FIRST-INSTALL-MAC.md) 或 [Windows](FIRST-INSTALL-WINDOWS.md) 的正常入口。执行 Agent 先检查 status：已安装就按原策略 check-update/update；已卸载就恢复原身份；状态异常时保留事务和队列。首次无参数运行会在本机询问地址和密钥。服务发行者须先启用 Server 的地址／密钥协议，并通过其既有安全渠道交付密钥；公开仓库不含实际服务地址、用户密钥或管理员入口。
