@@ -6,7 +6,7 @@
 
 当前安装、架构合同、开发发布、验收分别放入 `installation/`、`reference/`、`development/`、`acceptance/`；版本状态放入 `releases/`，历史记录放入 `archive/<版本>/`。从 [文档索引](README.md) 查找正文。只在权威正文修改内容，分类索引只作导航，不复制正文。
 
-新文件使用小写英文 kebab-case 与 `.md`，目录索引使用 `README.md`。发布说明采用 `releases/<版本>-<主题>.md`，设备验收采用 `acceptance/<版本>-<平台>-<YYYY-MM-DD>.md`。开头标明当前维护／参考／历史、适用版本及核对日期；产品编号、源码、安装器、活动包、worker 分开记录。历史说明保留当时事实，不将历史“未测”或一次用户验收外推为当前全场景结论。
+新文件使用小写英文 kebab-case 与 `.md`，目录索引使用 `README.md`。发布说明采用 `releases/<版本>-<主题>.md`，设备验收采用 `acceptance/<版本>-<平台>-<YYYY-MM-DD>.md`。开头标明当前维护／参考／历史、适用版本及核对日期；阶段编号、源码、安装器、活动包、worker 分开记录。历史说明保留当时事实，不将历史“未测”或一次用户验收外推为当前全场景结论。
 
 ## 入口与迁移
 
@@ -18,7 +18,7 @@
 
 已发布的 0.5.9 安装器源码 tag 保留迁移前的文件和相对引用；历史 tag／提交的地址不因删除 main 上的导读页而改变。无法从本仓库确认外部是否有人保存过指向 main 旧文件的链接，不宣称这些入链不存在；此类旧 main 地址在删除后不再兼容。当前使用从根安装入口或文档索引开始。
 
-[connection.example.json](connection.example.json) 是无凭据连接格式合同，根 [FREEZE-4.0.json](../FREEZE-4.0.json) 是既有不可变基线，[运行 manifest](../releases/manifest.json) 是既有数据，三者保留路径和原字节，不归档、不因文案更新改值。记忆内容、组织、受管 Rule/Skill 与生产 catalog 不属于本次整理范围。
+[connection.example.json](connection.example.json) 是无凭据连接格式合同，根 [历史冻结映射](../FREEZE-4.0.json) 是既有不可变基线，[运行 manifest](../releases/manifest.json) 是既有数据，三者保留路径和原字节，不归档、不因文案更新改值。记忆内容、组织、受管 Rule/Skill 与生产 catalog 不属于本次整理范围。
 
 ## 检查与交付
 
