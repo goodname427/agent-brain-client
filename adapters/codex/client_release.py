@@ -38,9 +38,14 @@ HTTPS_CONTENT_CLIENT_FILES=tuple(n for n in CONTENT_CLIENT_FILES if n!='native/D
 LEGACY_030_HTTPS_CONTENT_CLIENT_FILES=tuple(
     HTTPS_CONTENT_CLIENT_FILES[:11]+('adapters/codex/codex_notify_mux.py',)+HTTPS_CONTENT_CLIENT_FILES[11:]
 )
+WINDOWS_HTTPS_CONTENT_CLIENT_FILES=tuple(n for n in HTTPS_CONTENT_CLIENT_FILES if n!='native/CredentialStore.swift')+('scripts/brain_windows.py',)
+
+def https_files(target):
+    return WINDOWS_HTTPS_CONTENT_CLIENT_FILES if target in WINDOWS_PLATFORMS else HTTPS_CONTENT_CLIENT_FILES
+
 HTTPS_CONTENT_CAPABILITIES=['codex-stdio-mcp','personal-content-explicit','https-system-credential']
-CHECK_UPDATE_COMMAND='sh tools/install-mac.sh --action check-update'
-UPDATE_COMMAND='sh tools/install-mac.sh --action update'
+CHECK_UPDATE_COMMAND='& ./tools/install-windows.ps1 -Action check-update' if os.name == 'nt' else 'sh tools/install-mac.sh --action check-update'
+UPDATE_COMMAND='& ./tools/install-windows.ps1 -Action update' if os.name == 'nt' else 'sh tools/install-mac.sh --action update'
 UPDATE_GUIDANCE=('For Agent Brain software updates, use the public Client repository entry: '+CHECK_UPDATE_COMMAND+' then '+UPDATE_COMMAND+'. Both reuse the verified installed release policy; main/tags are not the installed release channel. Status and repeating install only verify the local registration. The active package, running worker and latest channel release are separate states. A changed active package requires a normal new MCP worker; never claim it is loaded from the package version alone. Confirm client_runtime.running_worker_version before continuing Onboard. Record this run\'s version and actual results; prior read/timeout counts are history, not a new test.')
 DEPENDENCY_RUNTIME={'dependency_policy','dependency_policy_sha256'}
 HTTPS_CONTENT_RUNTIME={'https_profile','https_profile_sha256','credential_source_sha256','content_policy','content_policy_sha256','device_home','codex_home','content_cache'}
@@ -92,7 +97,7 @@ def validate_release_policy(policy):
     content=policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES)
     ssh=policy['capabilities']==SSH_CONTENT_CAPABILITIES
     https=policy['capabilities']==HTTPS_CONTENT_CAPABILITIES
-    files=HTTPS_CONTENT_CLIENT_FILES if https else SSH_CONTENT_CLIENT_FILES if ssh else CONTENT_CLIENT_FILES if content else CLIENT_FILES
+    files=https_files(policy['platform']) if https else SSH_CONTENT_CLIENT_FILES if ssh else CONTENT_CLIENT_FILES if content else CLIENT_FILES
     allowed_file_policies=[list(files)]
     if https:allowed_file_policies.append(list(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES))
     if policy['channel']!='stable' or policy['file_prefixes'] not in allowed_file_policies:
@@ -113,7 +118,7 @@ def validate_release_policy(policy):
         raise UpdateBlocked('Separate client source and package cache required')
     runtime=policy['runtime']
     if content:
-        https_runtime=HTTPS_CONTENT_RUNTIME-{'credential_source_sha256'} if policy['platform'] in WINDOWS_PLATFORMS else HTTPS_CONTENT_RUNTIME
+        https_runtime=HTTPS_CONTENT_RUNTIME
         scopes=(https_runtime,https_runtime|LEGACY_PRESERVATION,https_runtime|DEPENDENCY_RUNTIME) if https else (SSH_CONTENT_RUNTIME,SSH_CONTENT_RUNTIME|LEGACY_PRESERVATION) if ssh else (CONTENT_RUNTIME,)
         if not isinstance(runtime,dict) or set(runtime) not in scopes:raise UpdateBlocked('Fixed content runtime required')
         for name,value in runtime.items():
@@ -139,7 +144,7 @@ class ClientPackage:
         self.content=bool(policy and policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES))
         self.ssh=bool(policy and policy['capabilities']==SSH_CONTENT_CAPABILITIES)
         self.https=bool(policy and policy['capabilities']==HTTPS_CONTENT_CAPABILITIES)
-        self.files=HTTPS_CONTENT_CLIENT_FILES if self.https else SSH_CONTENT_CLIENT_FILES if self.ssh else CONTENT_CLIENT_FILES if self.content else CLIENT_FILES
+        self.files=https_files(policy['platform']) if self.https else SSH_CONTENT_CLIENT_FILES if self.ssh else CONTENT_CLIENT_FILES if self.content else CLIENT_FILES
         self.legacy_030_https_policy=bool(self.https and policy and policy['file_prefixes']==list(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES))
         self.component_source_sha=policy['runtime']['component_source_sha256'] if self.content and not self.ssh and not self.https else None
 
@@ -154,7 +159,7 @@ class ClientPackage:
             files=LEGACY_030_HTTPS_CONTENT_CLIENT_FILES
         if set(manifest['files'])!=set(files) or manifest['migrations']:
             raise UpdateBlocked('Client file membership/migration change requires review')
-        if self.https and manifest['files'].get('native/CredentialStore.swift')!=self.credential_source_sha:raise UpdateBlocked('Credential helper source changed; helper/profile review required')
+        if self.https and manifest['files'].get('scripts/brain_windows.py' if 'scripts/brain_windows.py' in self.files else 'native/CredentialStore.swift')!=self.credential_source_sha:raise UpdateBlocked('Credential helper source changed; helper/profile review required')
         if self.content and not self.ssh and not self.https and manifest['files'].get('native/DeviceComponent.swift')!=self.component_source_sha:raise UpdateBlocked('Native component source changed; signed component/plan review required')
         for name in files:
             path=package/name
@@ -189,7 +194,7 @@ class ClientReleases:
         require_platform('release-update',self.policy['platform'])
         active=self.engine.active()
         if active and self.policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES):
-            receipt=json.loads((Path(active['package'])/'verified.json').read_text())
+            receipt=json.loads((Path(active['package'])/'verified.json').read_text(encoding='utf-8'))
             self.engine.adapter.preflight(Path(active['package']),receipt['manifest'],allow_legacy_030_active=True)
         return active
 
@@ -263,10 +268,13 @@ def runtime_environment(python, git, core, *, windows=False, system_paths=()):
     paths = [path_type(v) for v in values]
     if any(not p.is_absolute() or '..' in p.parts for p in paths):
         raise UpdateBlocked('Absolute runtime paths required')
-    return {'PATH': separator.join(str(p) for p in (paths[0].parent, paths[1].parent, *paths[3:])),
+    result = {'PATH': separator.join(str(p) for p in (paths[0].parent, paths[1].parent, *paths[3:])),
             'GIT_EXEC_PATH': str(paths[2]), 'GIT_CONFIG_NOSYSTEM': '1',
             'GIT_CONFIG_GLOBAL': 'NUL' if windows else '/dev/null',
             'GIT_TERMINAL_PROMPT': '0', 'GIT_CONFIG_COUNT': '0'}
+    if windows and os.name == 'nt':
+        result.update(SystemRoot=os.environ['SystemRoot'])
+    return result
 
 
 def dependency_environment(policy, *, runtime_check=True):
@@ -288,13 +296,11 @@ def dependency_environment(policy, *, runtime_check=True):
             if not executable.is_absolute() or executable.is_symlink() or not executable.is_file() or not os.access(executable, os.X_OK) or digest(executable.read_bytes()) != value[name+'_sha256']:
                 raise UpdateBlocked('Prepared executable changed')
         python, git, core = (Path(value[n]) for n in ('python','git','git_exec_path'))
-        if not core.is_absolute() or core.is_symlink() or not (core/'git-remote-https').is_file():
+        if not core.is_absolute() or core.is_symlink() or not any((core/n).is_file() for n in ('git-remote-https','git-remote-https.exe')):
             raise UpdateBlocked('Git HTTPS transport required')
         if runtime_check and Path(sys.executable).resolve() != python:
             raise UpdateBlocked('Prepared Python runtime required')
-        # Current policy_file/platform validation remains Mac-only. Windows paths
-        # can be tested independently, never widening the actual device grant.
-        return runtime_environment(str(python), str(git), str(core), system_paths=('/usr/bin','/bin'))
+        return runtime_environment(str(python), str(git), str(core), windows=os.name=='nt', system_paths=(str(Path(os.environ['SystemRoot'])/'System32'),os.environ['SystemRoot']) if os.name=='nt' else ('/usr/bin','/bin'))
     if set(value)!={'schema','root','files'} or value['schema']!=1:raise UpdateBlocked('Dependency scope changed')
     root=Path(value['root'])
     if Path(runtime['device_home']) not in root.parents or not root.is_absolute() or any(p.is_symlink() for p in (root,*root.parents)):raise UpdateBlocked('Device-local dependencies required')
@@ -302,7 +308,7 @@ def dependency_environment(policy, *, runtime_check=True):
     python=root/'python/bin/python3';git=root/'git/bin/git';core=root/'git/libexec/git-core'
     if not python.is_file() or not git.is_file() or not core.is_dir() or not os.access(python,os.X_OK) or not os.access(git,os.X_OK):raise UpdateBlocked('Bundled Python and Git required')
     if runtime_check and Path(sys.executable).resolve()!=python.resolve():raise UpdateBlocked('Pinned Python runtime required')
-    return runtime_environment(str(python), str(git), str(core), system_paths=('/usr/bin','/bin'))
+    return runtime_environment(str(python), str(git), str(core), windows=os.name=='nt', system_paths=(str(Path(os.environ['SystemRoot'])/'System32'),os.environ['SystemRoot']) if os.name=='nt' else ('/usr/bin','/bin'))
 
 
 def tree_files(root):

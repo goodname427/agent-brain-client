@@ -3,9 +3,12 @@
 import argparse
 from contextlib import contextmanager
 import http.client
+import io
 import json
+import math
 from pathlib import Path
 import re
+import select
 import sys
 import threading
 import time
@@ -196,7 +199,76 @@ def _resolve_address(address):
     return result[0]
 
 
+def _wait_read_socket(sock, control, deadline, *, write=False):
+    # Winsock can keep a blocking recv/select asleep after another thread calls
+    # shutdown/close. Poll readiness without entering a long native receive.
+    while True:
+        control.check()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:raise TimeoutError('Read transport deadline exceeded')
+        try:
+            readable, writable, _ = select.select(
+                [] if write else [sock], [sock] if write else [], [], min(.05, remaining)
+            )
+        except (OSError, ValueError):
+            control.check()
+            raise
+        control.check()
+        if readable or writable:return
+
+
+class _ReadSocketFile(io.RawIOBase):
+    """Nonblocking HTTP/TLS receive with an owned socket makefile lifetime."""
+    def __init__(self, sock, control):
+        super().__init__()
+        self.sock, self.control = sock, control
+        self.timeout = sock.gettimeout()
+        # Keep the descriptor alive when urllib closes the connection object
+        # after headers. Releasing this lease closes it just like socket.makefile.
+        self.lease = sock.makefile('rb', buffering=0)
+        sock.setblocking(False)
+
+    def readable(self):return True
+
+    def readinto(self, buffer):
+        if self.closed:raise ValueError('Read file is closed')
+        deadline = self.control.deadline
+        if self.timeout is not None:deadline = min(deadline, time.monotonic() + self.timeout)
+        while True:
+            self.control.check()
+            try:return self.sock.recv_into(buffer)
+            except ssl.SSLWantWriteError:
+                _wait_read_socket(self.sock, self.control, deadline, write=True)
+            except (BlockingIOError, ssl.SSLWantReadError):
+                _wait_read_socket(self.sock, self.control, deadline)
+            except OSError:
+                self.control.check()
+                raise
+
+    def close(self):
+        try:
+            lease = getattr(self, 'lease', None)
+            if not self.closed and lease is not None:lease.close()
+        finally:super().close()
+
+
+class _ReadResponseSocket:
+    def __init__(self, sock, control):self.sock, self.control = sock, control
+
+    def makefile(self, mode):
+        if mode != 'rb':raise ValueError('Read-only response required')
+        return io.BufferedReader(_ReadSocketFile(self.sock, self.control))
+
+
+class ReadHTTPResponse(http.client.HTTPResponse):
+    def __init__(self, sock, *args, **kwargs):
+        control = current_request()
+        if control is not None:sock = _ReadResponseSocket(sock, control)
+        super().__init__(sock, *args, **kwargs)
+
+
 class ReadHTTPConnection(http.client.HTTPConnection):
+    response_class = ReadHTTPResponse
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._create_connection = _read_socket
@@ -207,6 +279,7 @@ class ReadHTTPConnection(http.client.HTTPConnection):
 
 
 class ReadHTTPSConnection(http.client.HTTPSConnection):
+    response_class = ReadHTTPResponse
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._create_connection = _read_socket
@@ -295,7 +368,23 @@ class RemoteClient:
         if self.data_mode=='personal':req.add_header('X-Agent-Brain-Data-Mode','personal')
         if self.write_receipt is not None and request.get('method') in ('remember','forget','content_put','content_remove'):
             req.add_header('X-Agent-Brain-Write-Receipt',self.write_receipt)
-        write=request.get('method') in ('remember','forget','content_put','content_remove')
+        write=request.get('method') in ('remember','forget','content_put','content_remove','memory_event_submit','memory_extract')
+        core=(request.get('method') in ('memory_event_submit','memory_extract') or request.get('method')=='memory_query'
+              and isinstance(request.get('params'),dict) and 'context' in request['params'])
+        def response_json(raw):
+            if not core:return json.loads(raw)
+            def unique(items):
+                value={}
+                for key,item in items:
+                    if key in value:raise ValueError('Duplicate Core response field')
+                    value[key]=item
+                return value
+            def reject_constant(value):raise ValueError('Nonfinite Core response number')
+            def finite_float(value):
+                number=float(value)
+                if not math.isfinite(number):raise ValueError('Nonfinite Core response number')
+                return number
+            return json.loads(raw,object_pairs_hook=unique,parse_constant=reject_constant,parse_float=finite_float)
         def failed(code,stage,retryable=False,**metadata):
             return {'request_id':rid,'error':{'code':code,'retryable':retryable,'stage':stage,**metadata},'persistence':{'durable':False}}
         try:
@@ -305,7 +394,7 @@ class RemoteClient:
             check_request()
             if len(value) > 262144:
                 return failed('response_too_large','response-parse',write)
-            try:result = json.loads(value)
+            try:result = response_json(value)
             except (ValueError,UnicodeError):return failed('invalid_response_json','response-parse',write)
             if not isinstance(result, dict):return failed('invalid_response_shape','response-validation',write)
             if result.get('request_id') != rid:return failed('response_id_mismatch','response-validation',write)
@@ -316,6 +405,16 @@ class RemoteClient:
                 metadata={'http_status':status} if type(status) is int else {}
                 return failed(error['code'],'http',error['retryable'],**metadata)
             if write and 'error' not in result:
+                if request.get('method')=='memory_extract':
+                    p=result.get('persistence',{});r=result.get('result',{})
+                    valid=(isinstance(p,dict) and p.get('state')=='core-extracted' and p.get('durable') is False
+                           and p.get('receipt_ledger_durable') is True and p.get('preimage_retained') is True
+                           and isinstance(r,dict) and r.get('state')=='succeeded' and r.get('stages')==['L1','L2','L3']
+                           and type(r.get('http_requests')) is int and r['http_requests']==3 and isinstance(r.get('job_id'),str) and re.fullmatch(r'abj-[a-f0-9]{64}',r['job_id']))
+                    return result if valid else failed('invalid_extraction_receipt','response-validation',False)
+                if request.get('method')=='memory_event_submit':
+                    from content_contract import core_receipt
+                    return result if core_receipt(result,request) else failed('invalid_write_receipt','response-validation',True)
                 receipt=result.get('persistence',{})
                 local=(self.write_receipt=='local-durable-v1' and isinstance(receipt,dict)
                        and receipt.get('state')=='local-confirmed' and receipt.get('durable') is False
@@ -329,7 +428,12 @@ class RemoteClient:
             # Redirects are never followed with the bearer credential.
             status=error.code
             try:
-                result = json.loads(error.read(262144))
+                raw=error.read(262145 if core else 262144)
+                if core and len(raw)>262144:return failed('response_too_large','response-parse',write,http_status=status)
+                try:result=response_json(raw)
+                except (ValueError,UnicodeError):
+                    if core:return failed('invalid_response_json','response-parse',write,http_status=status)
+                    raise
                 if isinstance(result, dict) and result.get('request_id') in (None, rid) and isinstance(result.get('error'), dict):
                     error=result['error'];code=error.get('code')
                     if isinstance(code,str) and re.fullmatch(r'[a-z][a-z0-9_]{0,63}',code) and type(error.get('retryable'))==bool:

@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from client_release import ClientReleases,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES,LEGACY_PRESERVATION,DEPENDENCY_RUNTIME,version
-from brain_lock import locked,require_platform,private_mode,PlatformUnsupported
+from brain_lock import file_mode,private_directory,locked,require_platform,private_mode,PlatformUnsupported
 
 OUTBOX_MIN_VERSION='0.2.1'
 
@@ -53,11 +53,13 @@ def serve_content(command,active,policy,status):
     cache=Path(policy['runtime']['content_cache'])
     try:
         if cache.is_symlink():raise ValueError('Linked content cache')
-        cache.mkdir(parents=True,exist_ok=True,mode=0o700)
+        private_directory(cache)
         private_mode(cache,directory=True,owner=True)
         path=cache/'.content-runtime.lock'
         try:
-            fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600);os.close(fd)
+            fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+            try: file_mode(fd,0o600)
+            finally: os.close(fd)
         except FileExistsError:pass
         if path.is_symlink():raise ValueError('Content lease changed')
         private_mode(path,owner=True)
@@ -70,7 +72,7 @@ def serve_content(command,active,policy,status):
             blocked=content_runtime_blocker(active,policy)
             if blocked:return blocked
             return {'status':status,'served':True,
-                    'exit_code':subprocess.run(command,pass_fds=(lease.fileno(),)).returncode}
+                    'exit_code':subprocess.run(command,**({} if os.name=='nt' else {'pass_fds':(lease.fileno(),)})).returncode}
     except RuntimeError:
         return {'status':'content-runtime-in-use','served':False,'native_changed':False,
                 'next_action':'An incompatible content worker still owns this cache. Preserve it and retry after that worker exits; no worker or local ledger is stopped, removed or reset.'}
@@ -79,12 +81,13 @@ def serve_content(command,active,policy,status):
                 'next_action':'Preserve the content cache and its persistent lease; inspect ownership or access before serving.'}
 
 
-def startup(policy_path, policy_sha256, check_only=False, installation_check=False, bootstrap_check=False):
+def startup(policy_path, policy_sha256, check_only=False, installation_check=False, bootstrap_check=False,event_hook=None):
     releases=ClientReleases(policy_path,policy_sha256)
     if bootstrap_check:
         active=releases.verified_active()
         if not active:return {'status':'client-bootstrap-review-required','served':False,'native_changed':False}
         return {'status':'client-bootstrap-verified','active_package_version':active['version'],
+                'active_package_commit':active.get('commit'),'active_package':active.get('package'),
                 'native_changed':False,'network_used':False,'device_credentials_accessed':False}
     # During the exact 0.3.0-to-0.3.1 bridge, the new command becomes visible
     # before its transaction's second postcheck. A concurrently launched worker
@@ -100,7 +103,18 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
             return {'status':'client-bootstrap-handover-in-progress','served':False,
                     'native_changed':False,
                     'next_action':'A verified bootstrap handover is in progress. Retry after the official update command completes; do not replace or remove its recovery plan.'}
-    result=releases.update()
+    if isinstance(device_home,str):
+        handover=Path(device_home)/'.config/agent-brain-client/launcher-handover.json'
+        if handover.exists() or handover.is_symlink():
+            return {'status':'client-bootstrap-handover-in-progress','served':False,'native_changed':False,
+                    'next_action':'Resume the public Windows install/update entry with its saved launcher transaction.'}
+    if event_hook:
+        # Per-turn capture must never install, refresh or move an active release.
+        # Constructor and verified_active retain the normal release trust chain.
+        if event_hook and (check_only or installation_check or bootstrap_check):raise ValueError('Distinct hook mode required')
+        active=releases.verified_active()
+        result={'status':'current','active':active}
+    else:result=releases.update()
     if result.get('diagnostic') and not check_only:
         print(json.dumps(result['diagnostic']),file=sys.stderr)
     active=result.get('active')
@@ -120,6 +134,9 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
         for name,value in runtime.items():
             if name not in LEGACY_PRESERVATION|DEPENDENCY_RUNTIME:command.extend(['--'+name.replace('_','-').replace('content-cache','cache'),value])
         if installation_check:command.append('--installation-check')
+        if event_hook:
+            if releases.policy['capabilities']!=HTTPS_CONTENT_CAPABILITIES:raise ValueError('Existing HTTPS device runtime required')
+            command.extend(['--event-hook','--event-hook-policy',str(event_hook[0]),'--event-hook-policy-sha256',event_hook[1]])
         if installation_check:return {'status':result['status'],'served':True,'exit_code':subprocess.run(command).returncode}
         return serve_content(command,active,releases.policy,result['status'])
     if installation_check:return {'status':'content-runtime-review-required','served':False}
@@ -139,13 +156,28 @@ def main():
     parser.add_argument('--check-only',action='store_true')
     parser.add_argument('--installation-check',action='store_true',help='Read-only content protocol/authentication check; no native mapping.')
     parser.add_argument('--bootstrap-check',action='store_true',help='Offline check of this launcher and the active verified package; no activation or credential access.')
+    parser.add_argument('--event-hook',action='store_true')
+    parser.add_argument('--event-hook-policy',type=Path);parser.add_argument('--event-hook-policy-sha256')
     args=parser.parse_args()
-    try:result=startup(args.policy_file,args.policy_sha256,args.check_only,args.installation_check,args.bootstrap_check)
+    try:
+        if bool(args.event_hook_policy)!=bool(args.event_hook_policy_sha256) or args.event_hook!=bool(args.event_hook_policy):raise ValueError('Exact finite hook policy required')
+        result=startup(args.policy_file,args.policy_sha256,args.check_only,args.installation_check,args.bootstrap_check,(args.event_hook_policy,args.event_hook_policy_sha256) if args.event_hook else None)
     except PlatformUnsupported as error:result=error.result(served=False,native_changed=False)
     except Exception:
         result={'status':'startup-review-required','served':False,'next_action':'Inspect the approved fixed bootstrap, policy digest and isolated client paths; preserve existing packages.'}
     if args.check_only or args.bootstrap_check:print(json.dumps(result))
     elif not result.get('served'):print(json.dumps(result),file=sys.stderr)
+    if args.event_hook:
+        # A capture failure must not block UserPromptSubmit or force another
+        # model continuation. Keep failure/pending evidence, return no context.
+        if not result.get('served'):print('{}')
+        elif result.get('exit_code',0)!=0:
+            # The host sees success by design. Preserve a bounded indication
+            # that dispatch reached this launcher but its worker failed, even
+            # when that worker could not emit its own startup diagnostic.
+            print(json.dumps({'stage':'event-hook-worker',
+                              'error_code':'hook_worker_failed'}),file=sys.stderr)
+        return 0
     checked=args.check_only and result['status'] in ('current','updated','offline') and bool(result.get('active'))
     bootstrap_checked=args.bootstrap_check and result['status']=='client-bootstrap-verified'
     return result.get('exit_code',0 if checked or bootstrap_checked else 2)

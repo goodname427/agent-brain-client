@@ -4,6 +4,8 @@ The embedding approved transport owns authentication. Refresh at startup/tool
 boundaries is automatic when this candidate is wired; no new daemon is created.
 """
 import base64
+from contextlib import ExitStack,contextmanager
+from contextvars import ContextVar
 import hashlib
 import itertools
 import json
@@ -19,8 +21,8 @@ BASE=Path(__file__).resolve().parent
 ROOT=BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 import content_contract as contract
-from codex_connect import atomic
-from brain_lock import locked,require_platform,private_mode,sync_directory
+from codex_connect import atomic,host_atomic,host_plan,host_apply,host_restore
+from brain_lock import locked,require_platform,private_mode,sync_directory,private_directory
 from remote_http import check_request,RequestStopped
 
 BEGIN='<!-- agent-brain-content:begin -->';END='<!-- agent-brain-content:end -->'
@@ -33,6 +35,170 @@ REVIEW_DECISIONS={'shareable':{'safe-cross-project-personal-summary'},
 
 class CacheBlocked(Exception):pass
 def sha(raw):return hashlib.sha256(raw).hexdigest()
+
+
+_operation_diagnostic:ContextVar[dict[str,str]|None]=ContextVar('content_operation_diagnostic',default=None)
+
+
+@contextmanager
+def operation_diagnostics():
+    """One call's path-free progress; never retain requests or exception text."""
+    diagnostic={'stage':'adapter-invoke'}
+    token=_operation_diagnostic.set(diagnostic)
+    try:yield diagnostic
+    finally:_operation_diagnostic.reset(token)
+
+
+@contextmanager
+def operation_stage(stage):
+    diagnostic=_operation_diagnostic.get()
+    previous=diagnostic['stage'] if diagnostic is not None else 'adapter-invoke'
+    if diagnostic is not None:diagnostic['stage']=stage
+    try:yield
+    except Exception:raise  # Retain the innermost failing stage until call exit.
+    else:
+        if diagnostic is not None:diagnostic['stage']=previous
+
+
+@contextmanager
+def operation_lock(path,stage):
+    with ExitStack() as stack:
+        with operation_stage(stage):handle=stack.enter_context(locked(path))
+        yield handle
+
+
+def _memory_link(info):
+    # Junctions, mount points and cloud placeholders need not be S_IFLNK.
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info,'st_file_attributes',0)&0x400)
+
+
+def _memory_same(before,after):
+    return (before.st_dev,before.st_ino)==(after.st_dev,after.st_ino)
+
+
+def _memory_version(info):
+    return (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+
+
+class _PosixMemoryTree:
+    """Directory-relative no-follow I/O; directory references are owned fds."""
+    def __init__(self,root):
+        self.root=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+
+    def scan(self,directory):return os.scandir(directory)
+    def info(self,directory,entry):return entry.stat(follow_symlinks=False)
+
+    def open_directory(self,directory,entry,info):
+        fd=os.open(entry.name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=directory)
+        try:
+            opened=os.fstat(fd)
+            if not stat.S_ISDIR(opened.st_mode) or not _memory_same(info,opened):raise OSError()
+            return fd
+        except BaseException:
+            os.close(fd);raise
+
+    def open_file(self,directory,entry,info):
+        return os.open(entry.name,os.O_RDONLY|os.O_NOFOLLOW|getattr(os,'O_NONBLOCK',0),dir_fd=directory)
+
+    def close_directory(self,directory):os.close(directory)
+    def close(self):pass
+
+
+class _WindowsMemoryTree:
+    """Pin every path component before path-based enumeration on Windows.
+
+    CreateFileW opens the reparse object itself, never its target. Every opened
+    object is checked for reparse attributes and disk type. Directory handles
+    stay open until the entire walk ends, with only FILE_SHARE_READ: a parent
+    cannot be renamed/replaced or changed into a junction while children are
+    opened by path. Files use the same sharing mode to exclude writers/deleters.
+    No ACL, owner, scope or source content is changed. Busy objects fail closed.
+    """
+    def __init__(self,root):
+        import ctypes as C
+        from ctypes import wintypes as W
+        self.C=C;self.W=W;self.handles=[]
+        self.kernel=getattr(C,'WinDLL')('kernel32',use_last_error=True)
+        class FileInformation(C.Structure):
+            _fields_=[('attributes',W.DWORD),('created',W.FILETIME),
+                      ('accessed',W.FILETIME),('written',W.FILETIME),
+                      ('volume',W.DWORD),('size_high',W.DWORD),('size_low',W.DWORD),
+                      ('links',W.DWORD),('index_high',W.DWORD),('index_low',W.DWORD)]
+        self.FileInformation=FileInformation
+        self.kernel.CreateFileW.argtypes=[W.LPCWSTR,W.DWORD,W.DWORD,C.c_void_p,W.DWORD,W.DWORD,W.HANDLE]
+        self.kernel.CreateFileW.restype=W.HANDLE
+        self.kernel.CloseHandle.argtypes=[W.HANDLE]
+        self.kernel.CloseHandle.restype=W.BOOL
+        self.kernel.GetFileInformationByHandle.argtypes=[W.HANDLE,C.POINTER(FileInformation)]
+        self.kernel.GetFileInformationByHandle.restype=W.BOOL
+        self.kernel.GetFileType.argtypes=[W.HANDLE]
+        self.kernel.GetFileType.restype=W.DWORD
+        root=Path(os.path.abspath(root))
+        # Reject Win32 device namespaces and ambiguous DOS names, including ADS.
+        if str(root).startswith(('\\\\?\\','\\\\.\\')):raise OSError()
+        self.root=root
+        try:
+            for path in [*reversed(root.parents),root]:
+                if path!=Path(path.anchor):self._name(path.name)
+                self.handles.append(self._open(path,True))
+        except BaseException:
+            self.close();raise
+
+    @staticmethod
+    def _name(name):
+        # Ordinary Codex filenames need none of these Win32 aliases. Refuse
+        # them rather than read a stream/device or silently trim a source name.
+        if (not name or name in ('.','..') or any(c in name for c in ':\\/') or
+                name.endswith((' ','.')) or
+                name.split('.')[0].upper() in {'CON','PRN','AUX','NUL',
+                    *(f'COM{i}' for i in range(10)),*(f'LPT{i}' for i in range(10))}):raise OSError()
+
+    def _open(self,path,directory):
+        # GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
+        # FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS.
+        handle=self.kernel.CreateFileW(str(path),0x80000000,1,None,3,0x02200000,None)
+        if handle==self.W.HANDLE(-1).value:raise OSError('Memory source unavailable or busy')
+        try:
+            info=self.FileInformation()
+            if (not self.kernel.GetFileInformationByHandle(handle,self.C.byref(info)) or
+                    self.kernel.GetFileType(handle)!=1 or info.attributes&0x400 or
+                    bool(info.attributes&0x10)!=directory):raise OSError()
+            return handle
+        except BaseException:
+            self.kernel.CloseHandle(handle);raise
+
+    def scan(self,directory):return os.scandir(directory)
+
+    def info(self,directory,entry):
+        self._name(entry.name)
+        # DirEntry.stat has zero st_ino/st_dev on Windows 3.11; os.stat has IDs.
+        return os.stat(directory/entry.name,follow_symlinks=False)
+
+    def open_directory(self,directory,entry,info):
+        path=directory/entry.name;handle=self._open(path,True)
+        try:
+            if not _memory_same(info,os.stat(path,follow_symlinks=False)):raise OSError()
+            self.handles.append(handle)
+            return path
+        except BaseException:
+            self.kernel.CloseHandle(handle);raise
+
+    def open_file(self,directory,entry,info):
+        import msvcrt
+        handle=self._open(directory/entry.name,False)
+        try:return getattr(msvcrt,'open_osfhandle')(handle,os.O_RDONLY|getattr(os,'O_BINARY',0))
+        except BaseException:
+            self.kernel.CloseHandle(handle);raise
+
+    def close_directory(self,directory):pass  # Keep all ancestors pinned.
+
+    def close(self):
+        for handle in reversed(self.handles):self.kernel.CloseHandle(handle)
+        self.handles.clear()
+
+
+def _memory_tree(root):
+    return _WindowsMemoryTree(root) if os.name=='nt' else _PosixMemoryTree(root)
 
 
 def inventory_codex_memories(codex_home, *, max_files=1024, max_file_bytes=131072,
@@ -53,27 +219,25 @@ def inventory_codex_memories(codex_home, *, max_files=1024, max_file_bytes=13107
     if not root.is_dir():
         return {'schema':1,'status':'unavailable','reason':'memory root is not a directory',
                 'sources':[],'cursor':sha(b'codex-memory-root-invalid')}
-    directory_flag=getattr(os,'O_DIRECTORY',0)
-    nofollow=getattr(os,'O_NOFOLLOW',0)
-    try:root_fd=os.open(root,os.O_RDONLY|directory_flag|nofollow)
+    try:tree=_memory_tree(root)
     except OSError:
         return {'schema':1,'status':'unavailable','reason':'memory root unavailable',
                 'sources':[],'cursor':sha(b'codex-memory-root-unavailable')}
-    pending=[(root_fd,'',0)]
+    pending=[(tree.root,'',0)]
     try:
         while pending:
             directory_fd,prefix,depth=pending.pop();directories_seen+=1
             if directories_seen>max_entries or depth>max_depth:
                 rows.append({'source_id':source_id(prefix or '.'),'source_fingerprint':None,
                              'status':'unavailable','reason':'directory traversal limit reached'})
-                os.close(directory_fd);continue
+                tree.close_directory(directory_fd);continue
             try:
-                with os.scandir(directory_fd) as scan:
+                with tree.scan(directory_fd) as scan:
                     entries=sorted(itertools.islice(scan,max_entries-entries_seen+1),key=lambda entry:entry.name,reverse=True)
             except OSError:
                 rows.append({'source_id':source_id(prefix or '.'),'source_fingerprint':None,
                              'status':'unavailable','reason':'directory unreadable'})
-                os.close(directory_fd);continue
+                tree.close_directory(directory_fd);continue
             try:
                 for entry in entries:
                     entries_seen+=1
@@ -84,15 +248,14 @@ def inventory_codex_memories(codex_home, *, max_files=1024, max_file_bytes=13107
                         return {'schema':1,'status':'incomplete','reason':'bounded directory inventory limit reached',
                                 'sources':rows,'cursor':sha(contract.encode(rows))}
                     relative=(prefix+'/'+entry.name).strip('/')
-                    try:info=entry.stat(follow_symlinks=False)
+                    try:info=tree.info(directory_fd,entry)
                     except OSError:
                         rows.append({'source_id':source_id(relative),'source_fingerprint':None,'status':'unavailable','reason':'entry unreadable'});continue
-                    if stat.S_ISLNK(info.st_mode):
-                        rows.append({'source_id':source_id(relative),'source_fingerprint':None,'status':'excluded','reason':'symlink source excluded'});continue
+                    if _memory_link(info):
+                        rows.append({'source_id':source_id(relative),'source_fingerprint':None,'status':'excluded','reason':'symlink or reparse source excluded'});continue
                     if stat.S_ISDIR(info.st_mode):
                         try:
-                            child_fd=os.open(entry.name,os.O_RDONLY|directory_flag|nofollow,dir_fd=directory_fd)
-                            if not stat.S_ISDIR(os.fstat(child_fd).st_mode):raise OSError()
+                            child_fd=tree.open_directory(directory_fd,entry,info)
                             pending.append((child_fd,relative,depth+1))
                         except OSError:
                             rows.append({'source_id':source_id(relative),'source_fingerprint':None,'status':'unavailable','reason':'directory changed or unreadable'})
@@ -105,28 +268,29 @@ def inventory_codex_memories(codex_home, *, max_files=1024, max_file_bytes=13107
                     if info.st_size>max_file_bytes or total+info.st_size>max_total_bytes:
                         rows.append({'source_id':source_id(relative),'source_fingerprint':None,'status':'excluded','reason':'bounded inventory limit exceeded'});continue
                     try:
-                        file_fd=os.open(entry.name,os.O_RDONLY|nofollow,dir_fd=directory_fd)
-                        opened=os.fstat(file_fd)
-                        if not stat.S_ISREG(opened.st_mode) or opened.st_dev!=info.st_dev or opened.st_ino!=info.st_ino:
-                            os.close(file_fd);raise OSError()
+                        file_fd=tree.open_file(directory_fd,entry,info)
                         digest=hashlib.sha256();size=0
                         with os.fdopen(file_fd,'rb') as source:
+                            opened=os.fstat(source.fileno())
+                            if not stat.S_ISREG(opened.st_mode) or _memory_link(opened) or not _memory_same(info,opened):raise OSError()
                             while True:
                                 chunk=source.read(65536)
                                 if not chunk:break
                                 size+=len(chunk);total+=len(chunk)
                                 if size>max_file_bytes or total>max_total_bytes:raise OverflowError()
                                 digest.update(chunk)
+                            if _memory_version(opened)!=_memory_version(os.fstat(source.fileno())):raise OSError()
                         rows.append({'source_id':source_id(relative),'source_fingerprint':digest.hexdigest(),'status':'not-checked','reason':'fingerprinted; semantic review required'})
                     except OverflowError:
                         rows.append({'source_id':source_id(relative),'source_fingerprint':None,'status':'excluded','reason':'bounded inventory limit exceeded'})
                     except OSError:
                         rows.append({'source_id':source_id(relative),'source_fingerprint':None,'status':'unavailable','reason':'file changed or unreadable'})
-            finally:os.close(directory_fd)
+            finally:tree.close_directory(directory_fd)
     finally:
         for directory_fd,_,_ in pending:
-            try:os.close(directory_fd)
+            try:tree.close_directory(directory_fd)
             except OSError:pass
+        tree.close()
     rows.sort(key=lambda item:item['source_id'])
     snapshot=sha(contract.encode(rows))
     counts:dict[str,int]={}
@@ -157,6 +321,10 @@ class ContentAdapter:
         native=Path(codex_home or os.environ.get('CODEX_HOME',str(self.home/'.codex'))).expanduser()
         if not native.is_absolute() or native.is_symlink():raise CacheBlocked()
         self.native_home=native.resolve();self.binding={'device_home':str(self.home),'codex_home':str(self.native_home)}
+        # Keep the configured Windows spelling for memory reads: resolving it
+        # here would hide a CODEX_HOME junction from the pinned reader. Existing
+        # canonical cache bindings and Rule/Skill mapping remain unchanged.
+        self.native_memory_home=native if os.name=='nt' else self.native_home
         self.policy=policy;self.policy_sha=sha(contract.encode({'policy':policy,'binding':self.binding}));self.health=health or (lambda:None);self.offline_denied=False
         # Bind pending writes to a service/principal, independently of source/data Git.
         self.queue_sha=sha(contract.encode({'policy_sha':self.policy_sha,'service':getattr(client,'queue_identity',getattr(client,'grant',None))}))
@@ -164,7 +332,7 @@ class ContentAdapter:
         if self.home==self.cache or self.cache in self.home.parents:raise CacheBlocked()
         if any(self.cache==self.home/name or self.home/name in self.cache.parents for name in ('.codex','.agents','.config/agent-brain-client/content')):raise CacheBlocked()
         self._safe(self.home,self.home);self._safe(self.cache,self.cache)
-        self.cache.mkdir(parents=True,exist_ok=True,mode=0o700)
+        private_directory(self.cache)
         private_mode(self.cache,directory=True,blocked=CacheBlocked)
         sync_directory(self.cache.parent)
 
@@ -173,6 +341,7 @@ class ContentAdapter:
         if path!=base and base not in path.parents:raise CacheBlocked()
         for item in [path,*path.parents]:
             if item.is_symlink():raise CacheBlocked()
+            if os.name=='nt' and item.exists() and getattr(item.lstat(),'st_file_attributes',0)&0x400:raise CacheBlocked()
             if item==base:break
 
     def _path(self,name):
@@ -196,20 +365,21 @@ class ContentAdapter:
     def methods(self):
         grant=getattr(self.client,'grant',{'scopes':['read','write'],'artifact_types':self.policy['kinds']})
         methods=contract.methods(grant['scopes']) if set(self.policy['kinds'])<=set(grant['artifact_types']) else set()
-        return methods if 'memory' in self.policy['kinds'] else methods-{'memory_query'}
+        return methods if 'memory' in self.policy['kinds'] else methods-{'memory_query','memory_event_submit'}
 
     def _load(self,name,default=None):
         require_platform('cache-storage',self.platform)
         path=self.cache/name;self._safe(path,self.cache)
         if not path.exists():return default
-        if not path.is_file() or path.stat().st_size>1048576:raise CacheBlocked()
+        limit=3*1048576 if name=='transaction.json' else 1048576
+        if not path.is_file() or path.stat().st_size>limit:raise CacheBlocked()
         private_mode(path,blocked=CacheBlocked)
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding='utf-8'))
 
     def _save(self,name,value):
         require_platform('cache-storage',self.platform)
         raw=contract.encode(value)
-        if len(raw)>1048576:raise CacheBlocked()
+        if len(raw)>(3*1048576 if name=='transaction.json' else 1048576):raise CacheBlocked()
         path=self.cache/name;self._safe(path,self.cache);atomic(path,raw,0o600)
         for directory in [path.parent,*path.parent.parents]:
             sync_directory(directory)
@@ -247,6 +417,15 @@ class ContentAdapter:
         return sorted(rows,key=lambda row:(row['created'],row['request']['request_id']))
 
     def _enqueue(self,request,reconciles=None):
+        # Serialize atomic appends separately from the content transaction,
+        # which may wait on remote I/O. Native events can become durable pending
+        # rows before that wait; existing rows are only checked, never rewritten.
+        path=self.cache/'outbox-enqueue.lock';self._safe(path,self.cache)
+        with operation_lock(path,'outbox-lock'):
+            with operation_stage('outbox-enqueue'):
+                return self._enqueue_locked(request,reconciles)
+
+    def _enqueue_locked(self,request,reconciles=None):
         self._check_write(request)
         if reconciles is None:reconciles={'request_ids':[],'source_keys':[]}
         if not isinstance(reconciles,dict) or set(reconciles)!={'request_ids','source_keys'}:raise CacheBlocked()
@@ -302,10 +481,19 @@ class ContentAdapter:
                 if item['status'] in ('conflict','inventoried'):item.update(status='reconciled',request_id=row['request']['request_id'])
             self._save('imports.json',state)
 
-    def _drain(self):
+    @staticmethod
+    def _event_allowed(request,event_gate):
+        if request['method']!='memory_event_submit' or event_gate is None:return True
+        try:return event_gate() is True
+        except Exception:return False
+
+    def _drain(self,event_request_id=None,event_gate=None):
         blocked:dict[tuple[str,str],set[str]]={}
         for row in self._queued():
             request=row['request'];params=request['params'];target=(params['kind'],params['id'])
+            # Automatic legacy refresh never uploads captured text. An exact
+            # Stop retry must pass the current finite hook policy again.
+            if request['method']=='memory_event_submit' and request['request_id']!=event_request_id:continue
             if row['state'] in ('conflict','blocked'):
                 if row['state']=='conflict' and row['remote'] is None:
                     try:
@@ -324,6 +512,7 @@ class ContentAdapter:
                         state['items'][key].update(status='blocked',request_id=request['request_id'])
                 self._save('imports.json',state)
                 blocked.setdefault(target,set()).add(request['request_id']);continue
+            if not self._event_allowed(request,event_gate):break
             try:response=self.client.request(json.loads(contract.encode(request)))
             except Exception:break
             if not isinstance(response,dict) or response.get('request_id')!=request['request_id']:break
@@ -341,7 +530,10 @@ class ContentAdapter:
                     row.update(state='blocked',response=response)
                 else:break
                 blocked.setdefault(target,set()).add(request['request_id'])
-            self._save('outbox/'+request['request_id']+'.json',row);self._finish_reconciliation(row)
+            with operation_stage('outbox-confirmation' if row['state']=='confirmed' else 'outbox-response'):
+                self._save('outbox/'+request['request_id']+'.json',row)
+            with operation_stage('outbox-reconciliation'):
+                self._finish_reconciliation(row)
 
     def queue_status(self):
         rows=self._queued()
@@ -350,6 +542,7 @@ class ContentAdapter:
     def _server_saved(self,response,request):
         if not isinstance(response,dict) or response.get('request_id')!=request['request_id'] or 'error' in response:return False
         receipt=response.get('persistence');value=response.get('result');params=request['params']
+        if request['method']=='memory_event_submit':return contract.core_receipt(response,request)
         if not isinstance(receipt,dict) or not isinstance(value,dict) or not isinstance(receipt.get('commit'),str) or not re.fullmatch(r'[a-f0-9]{40}',receipt['commit']):return False
         remote=receipt.get('state')=='remote-confirmed' and receipt.get('durable') is True and receipt.get('github_confirmed',True) is True and receipt.get('local_durable',True) is True
         local=receipt.get('state')=='local-confirmed' and receipt.get('durable') is False and receipt.get('local_durable') is True and receipt.get('github_confirmed') is False
@@ -458,7 +651,7 @@ class ContentAdapter:
         """
         require_platform('cache-storage',self.platform)
         with locked(self.cache/'content.lock'):
-            fresh=inventory_codex_memories(self.native_home)
+            fresh=inventory_codex_memories(self.native_memory_home)
             previous=self._load('memory-inventory.json',None)
             if previous is not None and (not isinstance(previous,dict) or
                     set(previous)!={'schema','binding','cursor','status','sources'} or
@@ -538,49 +731,53 @@ class ContentAdapter:
             key=sha(contract.encode([source_id,fingerprint]));row=inventory['sources'].get(key)
             if row is None or row.get('source_id')!=source_id or row.get('source_fingerprint')!=fingerprint or row.get('status') not in ('not-checked','read'):
                 raise CacheBlocked()
-            root=self.native_home/'memories';directory_flag=getattr(os,'O_DIRECTORY',0);nofollow=getattr(os,'O_NOFOLLOW',0)
-            try:root_fd=os.open(root,os.O_RDONLY|directory_flag|nofollow)
+            root=self.native_memory_home/'memories'
+            try:tree=_memory_tree(root)
             except OSError:raise CacheBlocked() from None
-            pending=[(root_fd,'',0)];entries_seen=0;directories_seen=0;file_fd=None;file_info=None
+            pending=[(tree.root,'',0)];entries_seen=0;directories_seen=0;file_fd=None
             try:
                 while pending and file_fd is None:
                     directory_fd,prefix,depth=pending.pop();directories_seen+=1
                     if directories_seen>1024 or depth>16:
-                        os.close(directory_fd);raise CacheBlocked()
+                        tree.close_directory(directory_fd);raise CacheBlocked()
                     try:
-                        with os.scandir(directory_fd) as scan:entries=sorted(itertools.islice(scan,1025-entries_seen),key=lambda e:e.name,reverse=True)
+                        with tree.scan(directory_fd) as scan:entries=sorted(itertools.islice(scan,1025-entries_seen),key=lambda e:e.name,reverse=True)
                     except OSError:
-                        os.close(directory_fd);raise CacheBlocked() from None
+                        tree.close_directory(directory_fd);raise CacheBlocked() from None
                     try:
                         for entry in entries:
                             entries_seen+=1
                             if entries_seen>1024:raise CacheBlocked()
                             relative=(prefix+'/'+entry.name).strip('/')
-                            try:info=entry.stat(follow_symlinks=False)
+                            try:info=tree.info(directory_fd,entry)
                             except OSError:raise CacheBlocked() from None
-                            if stat.S_ISLNK(info.st_mode):continue
+                            if _memory_link(info):continue
                             if stat.S_ISDIR(info.st_mode):
                                 try:
-                                    child_fd=os.open(entry.name,os.O_RDONLY|directory_flag|nofollow,dir_fd=directory_fd)
-                                    if not stat.S_ISDIR(os.fstat(child_fd).st_mode):os.close(child_fd);raise OSError()
+                                    child_fd=tree.open_directory(directory_fd,entry,info)
                                     pending.append((child_fd,relative,depth+1))
                                 except OSError:raise CacheBlocked() from None
                                 continue
                             if stat.S_ISREG(info.st_mode) and source_id=='codex-memory:'+sha(relative.encode('utf-8','surrogateescape')):
                                 if info.st_size>131072:raise CacheBlocked()
-                                try:file_fd=os.open(entry.name,os.O_RDONLY|nofollow,dir_fd=directory_fd)
+                                try:file_fd=tree.open_file(directory_fd,entry,info)
                                 except OSError:raise CacheBlocked() from None
                                 file_info=os.fstat(file_fd)
-                                if not stat.S_ISREG(file_info.st_mode) or file_info.st_dev!=info.st_dev or file_info.st_ino!=info.st_ino:
+                                if not stat.S_ISREG(file_info.st_mode) or _memory_link(file_info) or not _memory_same(info,file_info):
                                     os.close(file_fd);file_fd=None;raise CacheBlocked()
                                 break
-                    finally:os.close(directory_fd)
+                    finally:tree.close_directory(directory_fd)
+                if file_fd is None:raise CacheBlocked()
+                with os.fdopen(file_fd,'rb') as source:
+                    file_fd=None;raw=source.read(131073)
+                    if _memory_version(file_info)!=_memory_version(os.fstat(source.fileno())):raise CacheBlocked()
+            except OSError:raise CacheBlocked() from None
             finally:
+                if file_fd is not None:os.close(file_fd)
                 for directory_fd,_,_ in pending:
-                    try:os.close(directory_fd)
+                    try:tree.close_directory(directory_fd)
                     except OSError:pass
-            if file_fd is None:raise CacheBlocked()
-            with os.fdopen(file_fd,'rb') as source:raw=source.read(131073)
+                tree.close()
             if len(raw)>131072 or sha(raw)!=fingerprint:raise CacheBlocked()
             try:body=raw.decode('utf-8','strict')
             except UnicodeDecodeError:raise CacheBlocked() from None
@@ -755,7 +952,7 @@ class ContentAdapter:
     def _raw(self,name):
         path=self._path(name)
         if not path.exists():return None
-        if not path.is_file() or path.stat().st_size>262144:raise CacheBlocked()
+        if not path.is_file() or path.stat().st_nlink!=1 or path.stat().st_size>262144:raise CacheBlocked()
         return path.read_bytes()
 
     def _owned(self):
@@ -779,7 +976,17 @@ class ContentAdapter:
     def _restore(self,journal):
         require_platform('cache-recovery',self.platform)
         # Preflight all files before any restoration; preserve outside edits.
-        if set(journal)!={'phase','before','after','owned','active'} or set(journal['before'])!=set(journal['after']) or journal['owned'].get('policy_sha')!=self.policy_sha or journal['owned'].get('binding')!=self.binding:raise CacheBlocked()
+        if set(journal) not in ({'phase','before','after','owned','active'}, {'phase','before','after','owned','active','host'}) or set(journal['before'])!=set(journal['after']) or journal['owned'].get('policy_sha')!=self.policy_sha or journal['owned'].get('binding')!=self.binding:raise CacheBlocked()
+        if 'host' in journal:
+            rows=journal['host']
+            if set(rows)!={str(self._path(name)) for name in journal['before']}:raise CacheBlocked()
+            for name,old in journal['before'].items():
+                row=rows[str(self._path(name))]
+                if row['before']!=old['data'] or row['before_sha']!=old['sha'] or row['target_sha']!=journal['after'][name]:raise CacheBlocked()
+            host_restore(rows,lambda:self._save('transaction.json',journal))
+            self._save('owned.json',journal['owned']);self._save('active.json',journal['active'])
+            self._save('transaction.json',dict(journal,phase='rolled-back'))
+            return
         for name,old in journal['before'].items():
             if set(old)!={'data','sha','mode'} or type(old['mode'])!=int or old['mode']&~0o777:raise CacheBlocked()
             backup=base64.b64decode(old['data'],validate=True) if old['data'] is not None else None
@@ -789,7 +996,7 @@ class ContentAdapter:
         for name,old in journal['before'].items():
             path=self._path(name)
             if old['data'] is None:path.unlink(missing_ok=True)
-            else:atomic(path,base64.b64decode(old['data'],validate=True),old['mode'])
+            else:host_atomic(path,base64.b64decode(old['data'],validate=True),old['mode'],self._raw(name))
         self._save('owned.json',journal['owned']);self._save('active.json',journal['active'])
         self._save('transaction.json',dict(journal,phase='rolled-back'))
 
@@ -968,12 +1175,11 @@ class ContentAdapter:
                     path=self._path(name);before[name]={'data':base64.b64encode(raw).decode() if raw is not None else None,'sha':sha(raw) if raw is not None else None,'mode':path.stat().st_mode&0o777 if raw is not None else 0o600}
                     after[name]=sha(desired[name]) if name in desired else None
                 journal={'phase':'applying','before':before,'after':after,'owned':owned,'active':active}
+                journal['host']=host_plan({self._path(name):desired.get(name) for name in before})
+                if any(journal['host'][str(self._path(name))]['before_sha']!=old['sha'] for name,old in before.items()):raise CacheBlocked()
                 self._save('transaction.json',journal)
                 try:
-                    for name in before:
-                        path=self._path(name)
-                        if name in desired:atomic(path,desired[name],before[name]['mode'])
-                        else:path.unlink(missing_ok=True)
+                    host_apply(journal['host'],lambda:self._save('transaction.json',journal))
                     self._save('snapshots/'+snapshot['commit']+'.json',snapshot)
                     self._save('owned.json',{'policy_sha':self.policy_sha,'binding':self.binding,'files':{name:sha(raw) for name,raw in desired.items()}})
                     self._save('active.json',{'commit':snapshot['commit'],'snapshot_sha':sha(contract.encode(snapshot))})
@@ -985,7 +1191,7 @@ class ContentAdapter:
             except Exception:uncertain=True
             return {'status':'content-recovery-review-required' if uncertain else 'content-refresh-blocked','native_changed':None if uncertain else False,'model_loaded':'unknown','next_action':'Preserve local files and prior snapshots. Review transport, contract, content scope, dependencies, owned-file drift or interrupted recovery.'}
 
-    def invoke(self,request,reconciles=None):
+    def invoke(self,request,reconciles=None,*,event_gate=None):
         check_request()
         require_platform('cache-storage',self.platform)
         method=request.get('method');params=request.get('params');contract.validate(method,params)
@@ -1008,12 +1214,14 @@ class ContentAdapter:
         kinds=params['kinds'] if method=='content_catalog' else [params['kind']]
         if any(kind not in self.policy['kinds'] for kind in kinds) or method!='content_catalog' and not self._allows(params['kind'],params['id']):raise CacheBlocked()
         if method in contract.WRITES:
-            with locked(self.cache/'content.lock'):
+            with operation_stage('content-write'),operation_lock(self.cache/'content.lock','content-lock'):
                 row=self._enqueue(request,reconciles)  # Precedes every transport/mapping operation.
+                if not self._event_allowed(request,event_gate):
+                    return dict(self._queue_result(row),local_refresh={'status':'event-disabled','native_changed':False,'model_loaded':'unknown'})
                 if row['state']=='blocked':
                     # Only an explicit identical call retries a blocked request.
                     # Startup/refresh never discard or automatically replay it.
-                    try:response=self.client.request(request)
+                    try:response=self.client.request(request) if self._event_allowed(request,event_gate) else None
                     except Exception:response=None
                     if self._server_saved(response,request):
                         row.update(state='confirmed',response=response)
@@ -1031,7 +1239,10 @@ class ContentAdapter:
                         if self._server_saved(response,request):
                             row['response']=response;self._save('outbox/'+request['request_id']+'.json',row)
                     except Exception:pass
-                self._drain();result=self._queue_result(self._load('outbox/'+request['request_id']+'.json'))
+                with operation_stage('outbox-drain'):
+                    self._drain(request['request_id'] if method=='memory_event_submit' else None,event_gate=event_gate)
+                with operation_stage('outbox-result'):
+                    result=self._queue_result(self._load('outbox/'+request['request_id']+'.json'))
         else:
             # A live read already goes through the authenticated Server. Mapping
             # every artifact twice here turned a batch into quadratic transport.
@@ -1055,5 +1266,5 @@ class ContentAdapter:
         if method not in contract.WRITES:
             refresh={'status':'read-only','native_changed':False,'model_loaded':'unknown','next_action':'Mappings refresh at MCP startup and after confirmed writes; this read does not refresh native mappings.'}
         else:
-            refresh=self.refresh() if result.get('local_queue',{}).get('state')=='confirmed' else {'status':'content-local-changes-retained','native_changed':False,'model_loaded':'unknown','queue':self.queue_status()}
+            refresh=({'status':'event-only','native_changed':False,'model_loaded':'unknown'} if method=='memory_event_submit' else self.refresh()) if result.get('local_queue',{}).get('state')=='confirmed' else {'status':'content-local-changes-retained','native_changed':False,'model_loaded':'unknown','queue':self.queue_status()}
         return dict(result,local_refresh=refresh)

@@ -18,6 +18,18 @@ import uuid
 
 from brain_lock import locked
 
+def directory(path):
+    if os.name == "nt":
+        from brain_lock import private_directory
+        return private_directory(path)
+    Path(path).mkdir(parents=True, exist_ok=True)
+
+def replace(source, target):
+    if os.name == "nt":
+        from brain_lock import atomic_replace
+        return atomic_replace(source, target)
+    return os.replace(source, target)
+
 
 class UpdateBlocked(RuntimeError):
     pass
@@ -38,11 +50,14 @@ def migration_hash(handler):
 
 
 def atomic_json(path,value):
-    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+    path=Path(path);directory(path.parent)
     temp=path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
     with temp.open('xb') as out:
+        if os.name == 'nt':
+            from brain_lock import file_mode
+            file_mode(out.fileno(),0o600)
         out.write((json.dumps(value,sort_keys=True,ensure_ascii=False)+'\n').encode());out.flush();os.fsync(out.fileno())
-    os.replace(temp,path)
+    replace(temp,path)
 
 
 class GitReleaseSource:
@@ -133,7 +148,7 @@ class ReleaseEngine:
 
     def prepare(self,commit,manifest,read):
         release=self.local/'packages'/(manifest['version']+'-'+commit)
-        release.mkdir(parents=True,exist_ok=True)
+        directory(release)
         total=0
         for name,expected in manifest['files'].items():
             path=release/name
@@ -150,8 +165,8 @@ class ReleaseEngine:
             data=read(name);total+=len(data)
             if len(data)>2*1024*1024 or total>20*1024*1024 or digest(data)!=expected:
                 raise UpdateBlocked('Release integrity/size check failed')
-            path.parent.mkdir(parents=True,exist_ok=True)
-            temp=path.with_name(path.name+'.pending');temp.write_bytes(data);os.replace(temp,path)
+            directory(path.parent)
+            temp=path.with_name(path.name+'.pending');temp.write_bytes(data);replace(temp,path)
         for name,expected in manifest['files'].items():
             path=release/name
             if path.is_symlink() or digest(path.read_bytes())!=expected:raise UpdateBlocked('Prepared package changed')
@@ -159,7 +174,7 @@ class ReleaseEngine:
         return release
 
     def check(self):
-        self.local.mkdir(parents=True,exist_ok=True)
+        directory(self.local)
         with locked(self.local/'update.lock'), locked(self.local.parent/'python-write.lock'):
             # An interrupted target is not yet healthy. Restore its predecessor
             # before validating the active bytes, which may themselves be damaged.

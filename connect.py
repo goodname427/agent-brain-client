@@ -8,6 +8,8 @@ import uuid
 
 BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE if (BASE / 'remote_http.py').is_file() else BASE / 'adapters/codex'))
+sys.path.insert(0, str(BASE / 'scripts'))
+from brain_lock import native_platform
 from remote_http import RemoteClient
 
 
@@ -64,11 +66,8 @@ def connect(home, endpoint=None, token_file=None, apply=False, service_profile=N
     if not isinstance(probe.get('result'), dict) or probe['result'].get('core_api_version') != 1:
         return {'status': 'protocol-review-required', 'native_changed': False,
                 'next_action': 'Inspect the service Core API compatibility before registering this client.'}
-    platform = ('darwin' if sys.platform == 'darwin' else 'linux')
-    import platform as host_platform
-    machine = host_platform.machine().lower()
     updates = client.request({'request_id': uuid.uuid4().hex, 'method': 'client_updates',
-                              'params': {'adapter': 'codex', 'platform': platform + '-' + machine, 'installed_version': '0.1.0'}})
+                              'params': {'adapter': 'codex', 'platform': native_platform(), 'installed_version': '0.1.0'}})
     value = {'schema_version': 1, 'adapter': 'codex', 'endpoint': endpoint.rstrip('/'),
              'token_file': str(Path(token_file).resolve()), 'protocol_version': 1, 'state_schema_version': 1}
     written = False

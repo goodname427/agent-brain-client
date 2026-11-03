@@ -231,7 +231,7 @@ content cache; legitimate mapped hashes are accepted, external edits are blocked
 The opt-in HTTPS system-credential candidate uses the same typed contract and
 durable outbox. Its trusted adapter adds an active device Bearer internally;
 credentials are never tool arguments/results. The profile freezes read/put and either the legacy 31 exact IDs or the explicit
-personal-owner collection described in docs/PERSONAL-OWNER-SCOPE.md. No plaintext fallback, redirect, ambient proxy, SSH client identity,
+personal-owner collection described in docs/reference/personal-owner-scope.md. No plaintext fallback, redirect, ambient proxy, SSH client identity,
 Apple Team or access-group is required by this candidate.
 
 Native-only pairing saves preparing(code, nonce, profile digest) before POST
@@ -273,3 +273,53 @@ The header changes neither authorization, CAS nor the request digest.
 Memory behavior and source-coverage decisions belong to the currently loaded `agent-brain-memory` and `agent-brain-onboard` Skills. This protocol defines content method schemas, field and authorization constraints, CAS and receipt semantics only; it does not set daily memory candidate thresholds or onboarding/source-import policy. If a relevant Skill is unavailable, report that gap. `content_catalog` reports AgentBrain destination contents, not Harness-native source inventory. `memory_query` limits each retrieval to at most three results; that query bound does not define source-review or import coverage.
 
 memory_query is an additive read-only typed method: kind=memory, query string (empty for recent), since/until nullable offset-aware ISO8601, limit 1..3. It returns current authorized topic previews/revisions and server memory updated_at, never event occurrence time or historical erased preferences. Existing content_catalog may carry Memory-only query options at the MCP layer and delegates to this method, retaining the original installed tool whitelist; normal catalog calls and v1 record/envelope shapes remain unchanged. Query does not refresh/drain unrelated blocked writes; unavailable/offline query stays an error. No new credential/scope/SQL migration, background collector or raw-session access.
+
+## Explicit native event source support
+
+The source supports an explicitly invoked HTTPS `--event-hook` worker with an
+exact pinned hook policy, profile and content policy. This does not register a
+handler, trust a definition, enable capture, enroll a device or publish a release.
+Normal MCP, notify, installation, update and legacy Memory query paths retain
+their existing behavior. The internal `memory_event_submit` method is excluded
+from MCP tools and the native installation allowlist.
+
+The hook policy selects at most sixteen exact canonical cwd/project/session
+bindings and an existing private directory for its off marker. Disabled policies
+or any off marker stop processing before stdin and identity activation. Payloads
+require a turn ID and either UserPromptSubmit prompt text or a nonrecursive Stop
+final message. Text is bounded to 8192 UTF-16 units per message; the worker never
+opens a supplied transcript path or scans history. Prompt stages locally; Stop
+enqueues the same immutable two-message event before waiting on the content lock.
+Only an explicit matching Stop retries that event under the current off gate;
+normal refresh does not drain pending events. Event submission uses the existing
+HTTPS device credential and endpoint. No extraction or model task is invoked.
+
+An exact `core-accepted` receipt confirms acceptance and its receipt ledger only:
+it retains durable=false, github_confirmed=false and model_extraction_verified=false.
+Missing, ambiguous or malformed receipts retain the original pending request.
+Hook output is protocol-only, exits successfully on capture exceptions and does
+not request a model continuation. Exit 0 does not prove capture or staging. Any
+real native verification requires a separately authorized current execution window.
+
+## 0.4 bounded device task extension (unpublished source)
+
+Explicit owner tasks may use memory_extract(project_id,session_id) and a scoped
+memory_query with context. They require a pinned finite device policy binding the
+original profile, actor, device, endpoint and exact request IDs/parameters. A
+read-only task has extract_request=null and a two-batch selection; it cannot
+extract. These operations are not added to ordinary MCP methods or enrollment
+grants. Client and Server both reject changed scope/selection and ambiguous
+responses. Extraction accepts only a strict core-extracted receipt with integer
+HTTP count and the three succeeded stages; Core/Git durability is not inferred.
+Exact recall validates L0 empty, one L1/L2/L3, selection/content digests and
+committed source provenance. It does not assert model output truth. No implicit
+retry, new credential, background upload, capture registration or model call is
+introduced by installing the source.
+
+## Address and long-term access-key bootstrap (installer 0.5.1)
+
+The explicitly selected, normally verified HTTPS Server origin supplies bootstrap authority. POST `/v1/access/bootstrap` uses `Authorization: Bearer <access-key>` and body `{"device":{"adapter":"codex","platform":"<actual-platform>"}}`; only successful authentication returns `{"schema":1,"connection":<credential-free-platform-connection>}`. The connection pins the exact grant and official release origin/ref/anchor. Subsequent Git ancestry, manifest, file-scope and health checks remain required; hashes supplied alongside untrusted package bytes cannot establish trust.
+
+POST `/v1/access/enroll` uses the same authorization and device metadata plus a stable nonce, returning the existing pending device credential/nonce/device_id/grant/phase shape. The installer persists the separate device credential in the existing OS store before calling `/v1/pairing/confirm`. Lost replies reuse the nonce. Long-term keys remain in an origin-specific OS item and never authorize content/admin requests directly. Server stores only key digests with a frozen access-policy digest and revocation state; revocation also rejects linked devices. No expiry is imposed by default. Existing invitation enrollment and device protocols remain compatible.
+
+Both bootstrap requests refuse redirects and use normal TLS certificate/hostname verification. They send no key in URL, JSON body, CLI arguments, environment or plaintext state. Explicit access_denied may retire only the rejected origin key; uncertain transport outcomes preserve it. Installation success still requires the owned local transaction and read-only protocol check. Access grants do not approve source directories, hooks, native session access or unlimited collection.

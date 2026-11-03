@@ -4,12 +4,12 @@ No SSH key creation, token copying, hooks, model tests, Core or data Git.
 Legacy-only bindings always require their own migration plan.
 """
 import base64
+from contextlib import contextmanager
 import copy
 import hashlib
 import json
 import os
 from pathlib import Path
-import platform
 import re
 import subprocess
 import tempfile
@@ -17,7 +17,7 @@ import tomllib
 
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/"scripts"))
-from brain_lock import require_platform
+from brain_lock import require_platform,native_platform,MAC_PLATFORMS
 
 NAME='agent_brain_server'
 TOOLS=['topic','recall','remember','forget','client_updates']
@@ -31,9 +31,9 @@ sha=lambda data:hashlib.sha256(data).hexdigest()
 def profile(path):
     p=Path(path)
     if p.is_symlink() or not p.is_file() or p.stat().st_mode&0o077:raise ValueError('Private approved profile required')
-    value=json.loads(p.read_text())
+    value=json.loads(p.read_text(encoding='utf-8'))
     if set(value)!={'schema','adapter','platform','data_mode','ssh'} or value['schema']!=1 or value['adapter']!='codex' or value['data_mode'] not in ('synthetic-only','personal-explicit'):raise ValueError('Unsupported service profile')
-    if value['platform']!='darwin-'+platform.machine().lower():raise ValueError('Actual Mac Codex platform must match')
+    if value['platform'] not in MAC_PLATFORMS or value['platform']!=native_platform():raise ValueError('Actual Mac Codex platform must match')
     ssh=value['ssh']
     if set(ssh)!={'host','user','identity_file','known_hosts_file','known_hosts_sha256','remote_command'}:raise ValueError('Unknown SSH scope')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,252}',ssh['host']) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]{0,31}',ssh['user']):raise ValueError('Invalid SSH destination')
@@ -62,13 +62,220 @@ def probe(mcp):
 
 def atomic(path,raw,mode):
     require_platform('private-write')
-    path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    from brain_lock import private_directory,atomic_replace,file_mode
+    private_directory(path.parent)
     fd,name=tempfile.mkstemp(prefix='.client-native-',dir=path.parent)
     try:
-        with os.fdopen(fd,'wb') as file:file.write(raw);file.flush();os.fsync(file.fileno())
-        os.chmod(name,mode);os.replace(name,path)
+        with os.fdopen(fd,'wb') as file:file_mode(file.fileno(),mode);file.write(raw);file.flush();os.fsync(file.fileno())
+        if os.name != 'nt': os.chmod(name,mode)
+        atomic_replace(name,path)
     finally:
         if Path(name).exists():Path(name).unlink()
+
+
+def host_image(path):
+    """Nonsecret host preflight; never read or rewrite its security descriptor."""
+    path = Path(path)
+    if not path.is_absolute() or '..' in path.parts or any(p.is_symlink() for p in (path, *path.parents)):
+        raise ValueError('Canonical host path required')
+    if os.name == 'nt':
+        from brain_windows import canonical
+        canonical(path)
+    try: st = path.stat()
+    except FileNotFoundError: return None
+    if not path.is_file() or st.st_nlink != 1 or st.st_size > 1048576:
+        raise ValueError('Single bounded host file required')
+    metadata = getattr(st, 'st_file_attributes', 0) if os.name == 'nt' else (st.st_uid, st.st_gid, st.st_mode & 0o777)
+    return (path.read_bytes(), st.st_dev, st.st_ino, st.st_mtime_ns, metadata)
+
+
+@contextmanager
+def windows_host_file(path):
+    """Open the existing object for data I/O; allow readers, exclude writers.
+
+    OPEN_EXISTING never replaces the object or assigns a security descriptor.
+    No DELETE, WRITE_DAC, WRITE_OWNER or ACCESS_SYSTEM_SECURITY is requested.
+    """
+    import ctypes as C
+    from ctypes import wintypes as W
+    import msvcrt
+    from brain_windows import canonical, libraries
+    path = canonical(path)
+    _, kernel = libraries()
+    kernel.CreateFileW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, C.c_void_p, W.DWORD, W.DWORD, W.HANDLE]
+    kernel.CreateFileW.restype = W.HANDLE
+    kernel.CloseHandle.argtypes = [W.HANDLE]
+    handle = kernel.CreateFileW(str(path), 0xC0000000, 1, None, 3, 0x00200000, None)
+    if handle == W.HANDLE(-1).value:
+        raise ValueError('Host configuration is busy or not writable')
+    try: fd = msvcrt.open_osfhandle(handle, os.O_RDWR | getattr(os, 'O_BINARY', 0))
+    except BaseException:
+        kernel.CloseHandle(handle)
+        raise
+    with os.fdopen(fd, 'r+b', buffering=0) as file:
+        st = os.fstat(file.fileno())
+        if st.st_nlink != 1 or getattr(st, 'st_file_attributes', 0) & 0x400:
+            raise ValueError('Single non-reparse host file required')
+        yield file
+
+
+def host_write(file, raw):
+    """Write a prefix before truncating, so journaled torn writes are bounded."""
+    file.seek(0)
+    offset = 0
+    while offset < len(raw):
+        written = file.write(raw[offset:])
+        if not written: raise OSError('Host write incomplete')
+        offset += written
+    file.flush(); os.fsync(file.fileno())
+    file.truncate(len(raw))
+    file.flush(); os.fsync(file.fileno())
+
+
+@contextmanager
+def host_stage(path, raw, mode, expected):
+    """Preflight host writes without applying the private-store policy.
+
+    Windows existing files keep their object (and unknown SACL/owner/streams).
+    The caller must flush its write-ahead journal before commit. Readers may
+    observe a partial write; the kernel excludes competing writers and renames.
+    New files and POSIX writes use staged, atomic publication instead.
+    """
+    require_platform('native-install')
+    from brain_lock import atomic_replace, sync_directory
+    path = Path(path)
+    image = host_image(path)
+    if (image[0] if image is not None else None) != expected:
+        raise ValueError('Host configuration concurrently changed')
+    if os.name == 'nt' and image is not None:
+        with windows_host_file(path) as file:
+            st = os.fstat(file.fileno())
+            original = file.read(1048577)
+            if original != expected or (st.st_dev, st.st_ino) != image[1:3]:
+                raise ValueError('Host configuration concurrently changed')
+            def commit_inplace():
+                file.seek(0)
+                if file.read(1048577) != expected or host_image(path) != image:
+                    raise ValueError('Host configuration concurrently changed')
+                host_write(file, raw)
+            commit_inplace.inplace_identity = {'device': st.st_dev, 'inode': st.st_ino}
+            yield commit_inplace
+        return
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    host_image(path)
+    fd, name = tempfile.mkstemp(prefix='.client-host-', dir=path.parent)
+    pending = Path(name)
+    try:
+        with os.fdopen(fd, 'wb') as file:
+            if os.name != 'nt':
+                if image is not None:
+                    st = pending.stat()
+                    if (st.st_uid, st.st_gid) != image[4][:2]:
+                        os.fchown(file.fileno(), *image[4][:2])
+                os.fchmod(file.fileno(), mode)
+            file.write(raw); file.flush(); os.fsync(file.fileno())
+        staged = host_image(pending)
+        def commit():
+            if host_image(path) != image or host_image(pending) != staged:
+                raise ValueError('Host configuration concurrently changed')
+            if image is None:
+                if os.name == 'nt': os.rename(pending, path)
+                else: os.link(pending, path); pending.unlink()
+            else: atomic_replace(pending, path)
+            sync_directory(path.parent)
+        yield commit
+    finally:
+        pending.unlink(missing_ok=True)
+
+
+def host_atomic(path, raw, mode, expected):
+    with host_stage(path, raw, mode, expected) as commit: commit()
+
+
+def host_plan(payload):
+    """Bounded data images for nonsecret host files; journal stays private."""
+    rows = {}
+    for path, target in payload.items():
+        image = host_image(path)
+        before = image[0] if image else None
+        if target is not None and (not isinstance(target, bytes) or len(target) > 1048576):
+            raise ValueError('Bounded host target required')
+        rows[str(path)] = {'before': base64.b64encode(before).decode() if before is not None else None,
+                           'target': base64.b64encode(target).decode() if target is not None else None,
+                           'before_sha': sha(before) if before is not None else None,
+                           'target_sha': sha(target) if target is not None else None,
+                           'mode': path.stat().st_mode & 0o777 if image else 0o600}
+    return rows
+
+
+def host_row(path, row):
+    keys = {'before', 'target', 'before_sha', 'target_sha', 'mode'}
+    if not keys <= set(row) or set(row)-keys-{'identity', 'rollback'} or type(row['mode']) is not int or row['mode'] & ~0o777:
+        raise ValueError('Host journal changed')
+    before, target = (base64.b64decode(row[k], validate=True) if row[k] is not None else None for k in ('before', 'target'))
+    if any(v is not None and len(v)>1048576 for v in (before,target)) or (sha(before) if before is not None else None)!=row['before_sha'] or (sha(target) if target is not None else None)!=row['target_sha']:
+        raise ValueError('Host journal images changed')
+    image = host_image(path); current = image[0] if image else None
+    identity = row.get('identity')
+    if identity is not None:
+        if not isinstance(identity,dict) or set(identity)!={'device','inode'} or any(type(v) is not int or v<0 for v in identity.values()) or image is None or image[1:3]!=(identity['device'],identity['inode']) or before is None or target is None:
+            raise ValueError('Host recovery object changed')
+        intent = row.get('rollback')
+        if intent is not None:
+            if not isinstance(intent,dict) or set(intent)!={'data','sha'}: raise ValueError('Host rollback intent changed')
+            torn = base64.b64decode(intent['data'],validate=True)
+            if sha(torn)!=intent['sha'] or partial_prefix(before,target,torn) is None or partial_prefix(torn,before,current) is None:
+                raise ValueError('Outside host edit preserved')
+        elif partial_prefix(before,target,current) is None: raise ValueError('Outside host edit preserved')
+    elif current not in (before,target) or 'rollback' in row:
+        raise ValueError('Outside host edit preserved')
+    return before,target,current
+
+
+def partial_prefix(before, after, current):
+    if current == after: return len(after)
+    offset = 0
+    for old, new in zip(current, after):
+        if old != new: break
+        offset += 1
+    if len(current) == max(len(before),offset) and current == after[:offset]+before[offset:]: return offset
+    return None
+
+
+def host_apply(rows, persist):
+    """Persist exact intent before data writes, including Windows file identity."""
+    from contextlib import ExitStack
+    with ExitStack() as staging:
+        commits = {}
+        for name,row in rows.items():
+            path=Path(name); before,target,current=host_row(path,row)
+            if current!=before: raise ValueError('Host preimage changed')
+            if target is not None:
+                commit=staging.enter_context(host_stage(path,target,row['mode'],before))
+                if hasattr(commit,'inplace_identity'): row['identity']=commit.inplace_identity
+                commits[name]=commit
+        persist()
+        for name,row in rows.items():
+            if name in commits: commits[name]()
+            else:
+                path=Path(name)
+                if (host_image(path) or (None,))[0] != (base64.b64decode(row['before']) if row['before'] is not None else None):
+                    raise ValueError('Host removal preimage changed')
+                path.unlink(missing_ok=True)
+
+
+def host_restore(rows, persist):
+    # Callers validate their exact permitted path set and image hashes first.
+    for name,row in rows.items(): host_row(Path(name),row)
+    for name,row in rows.items():
+        path=Path(name); before,target,current=host_row(path,row)
+        if current==before: continue
+        if before is None: path.unlink(missing_ok=True)
+        else:
+            if 'identity' in row and 'rollback' not in row:
+                row['rollback']={'data':base64.b64encode(current).decode(),'sha':sha(current)}
+                persist()
+            host_atomic(path,before,row['mode'],current)
 
 
 def connect(home, profile_path=None, apply=False, approved_digest=None):
@@ -79,24 +286,24 @@ def connect(home, profile_path=None, apply=False, approved_digest=None):
     for p in (registration,config,agents,state,state.parent):
         if p.is_symlink():return {'status':'local-state-review-required','native_changed':False,'next_action':'Preserve linked native/client state and inspect ownership.'}
     override=native/'AGENTS.override.md'
-    if override.exists() and override.read_text().strip():return {'status':'native-repair-review-required','native_changed':False,'next_action':'Existing override shadows managed instructions; review before installation or reuse.'}
-    cfg=tomllib.loads(config.read_text()) if config.exists() else {}
+    if override.exists() and override.read_text(encoding='utf-8').strip():return {'status':'native-repair-review-required','native_changed':False,'next_action':'Existing override shadows managed instructions; review before installation or reuse.'}
+    cfg=tomllib.loads(config.read_text(encoding='utf-8')) if config.exists() else {}
     if profile_path is None and (state/'service-profile.json').exists():profile_path=state/'service-profile.json'
     candidate,mcp=profile(profile_path) if profile_path else (None,None)
     if registration.exists():
-        registered=json.loads(registration.read_text());installed=cfg.get('mcp_servers',{}).get(NAME)
+        registered=json.loads(registration.read_text(encoding='utf-8'));installed=cfg.get('mcp_servers',{}).get(NAME)
         if not isinstance(registered,dict) or registered.get('schema')!=1 or registered.get('data_mode') not in ('synthetic-only','personal-explicit') or registered.get('real_data_authorized') is not (registered.get('data_mode')=='personal-explicit') or registered.get('native_mcp_name')!=NAME or not installed:
             return {'status':'local-state-review-required','native_changed':False,'next_action':'Preserve unsupported client registration.'}
         if 'mcp_sha256' in registered:
             if legacy.exists():return {'status':'migration-review-required','native_changed':False,'next_action':'A later legacy registration overlaps this client; preserve both and review migration.'}
-            text=agents.read_text() if agents.is_file() else ''
+            text=agents.read_text(encoding='utf-8') if agents.is_file() else ''
             managed=MANAGED if registered['data_mode']=='synthetic-only' else PERSONAL_MANAGED
             valid=sha(json.dumps(installed,sort_keys=True).encode())==registered['mcp_sha256'] and text.count(BEGIN)==text.count(END)==1 and BLOCK.findall(text)==[managed]
         else:
             receipt_path=Path(registered.get('migration_receipt',''))
             valid=False
             if receipt_path.is_file() and not receipt_path.is_symlink() and not receipt_path.stat().st_mode&0o077:
-                receipt=json.loads(receipt_path.read_text())
+                receipt=json.loads(receipt_path.read_text(encoding='utf-8'))
                 valid=receipt.get('installation_complete') is True and receipt.get('native_registered') is True and receipt.get('new_registration_path')==str(registration)
                 owned={str(config),str(agents),str(native/'hooks.json'),str(home/'.config/agent-brain/codex/permissions-policy.json'),str(home/'.config/agent-brain/codex/integrity.json'),str(registration)}
                 valid=valid and set(receipt.get('after',{}))==owned and all(Path(p).is_file() and not Path(p).is_symlink() and sha(Path(p).read_bytes())==expected for p,expected in receipt['after'].items())
@@ -106,7 +313,7 @@ def connect(home, profile_path=None, apply=False, approved_digest=None):
         return {'status':'native-client-registered','native_changed':False,'protocol_checked':True,'model_loaded':'unknown','legacy_preserved':legacy.exists(),'updates':updates,'next_action':'Reuse this synthetic MCP. A new release source or runtime bootstrap requires its own pinned approval.'}
     if legacy.exists():return {'status':'migration-review-required','native_changed':False,'next_action':'Prepare an exact legacy migration with backups; preserve existing hooks, bindings and permissions.'}
     if candidate is None:return {'status':'server-authorization-required','native_changed':False,'next_action':'Locate the approved private SSH service profile. Do not send keys or tokens to chat.'}
-    if NAME in cfg.get('mcp_servers',{}) or (agents.exists() and (BEGIN in agents.read_text() or END in agents.read_text())):
+    if NAME in cfg.get('mcp_servers',{}) or (agents.exists() and (BEGIN in agents.read_text(encoding='utf-8') or END in agents.read_text(encoding='utf-8'))):
         return {'status':'native-repair-review-required','native_changed':False,'next_action':'Existing unowned MCP/managed block preserved; inspect its registration.'}
     updates=probe(mcp)
     config_raw=config.read_bytes() if config.exists() else b'';agents_raw=agents.read_bytes() if agents.exists() else b''
@@ -126,7 +333,7 @@ def connect(home, profile_path=None, apply=False, approved_digest=None):
     after={str(p):sha(raw) for p,raw in payload.items()};journal={'schema':1,'phase':'prepared','plan_sha256':plan,'before':before,'after':after}
     if receipt.is_symlink():raise ValueError('Linked transaction receipt preserved')
     if receipt.exists():
-        previous=json.loads(receipt.read_text())
+        previous=json.loads(receipt.read_text(encoding='utf-8'))
         if previous.get('phase')!='rolled-back' or previous.get('plan_sha256')!=plan or previous.get('before')!=before:
             return {'status':'native-repair-review-required','native_changed':False,'next_action':'Existing transaction receipt preserved; inspect before retry.'}
     atomic(receipt,(json.dumps(journal)+'\n').encode(),0o600)
