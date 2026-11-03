@@ -24,6 +24,6 @@
 
 运行 `python3 -B tools/check_docs.py` 检查全部 Markdown 相对链接与标题／显式锚点；它是离线检查，不证明所有外部 URL 或未知入链可用。当前导航使用行内／引用链接与 ATX 标题；新增其他语法须扩展检查器。`tests/test_check_docs.py` 用临时文件注入断链、坏锚点等故障，验证检查确实会失败。现有 Client checks CI 自动运行两者。
 
-改动前后查引用，更新相关正文与索引；涉及安装入口或包内根文档时，按 [开发入口](development/README.md) 隔离 HOME/CODEX_HOME 运行回归、公开扫描、源码与格式检查。固定数据若确需改变，另走合同审查。公开材料不含真实凭据、记忆、私密路径或部署地址。
+改动前后查引用，更新相关正文与索引；纯 Markdown 改动按 [CI 变更范围](development/ci-scopes.md) 运行文档与轻量回归，不要求 Mac／Windows 全盘测试。涉及代码、安装行为或固定合同数据时，按 [开发入口](development/README.md) 隔离 HOME/CODEX_HOME 运行对应回归、公开扫描、源码与格式检查。固定数据若确需改变，另走合同审查。公开材料不含真实凭据、记忆、私密路径或部署地址。
 
 提交精确文件清单并通过 PR 审核，报告准确提交、测试通过／跳过／未测和 CI。文档合入不触发封版、发版、渠道提升或生产操作；发布遵循 [现有流程](development/release-pipeline.md) 和独立授权。

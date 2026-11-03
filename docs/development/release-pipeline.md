@@ -6,7 +6,7 @@
 
 审计基线是已发布的 0.5.8：仓库原来只有 `client-checks.yml` 和单包构建工具，没有正式发布工作流。安装器全源码归档、两架构包、SHA256SUMS、运行包 Git 提交、两个 GitHub Release、latest、Windows 渠道及五个实际下载核验均由仓外临时脚本串联；脚本还嵌入当版版本、tag 和批准断言。`releases/manifest.json` 是历史包资料，不能用来推断源码版本。新入口从冻结的 Windows 渠道确定版本和兼容边界，不改它或每版增加工具清单、测试例外。
 
-正常动作：功能 PR 合入并通过 Client checks 后，在 main 的 **Client release** 工作流填精确源码 SHA，版本默认 `auto`。默认只准备；选择 `publish` 才进入独立的写权限 job。准备 job 不持有发布凭据；发布 job 只申请 contents:write/actions:read，使用已有 GitHub Actions 临时身份。无需创建 token、环境、Server 配置或安装权限。受保护分支、仓库 Actions 政策仍由 GitHub 执行。
+正常动作：功能 PR 合入并通过完整 Client checks 后，在 main 的 **Client release** 工作流填精确源码 SHA，版本默认 `auto`。按 [CI 范围规则](ci-scopes.md)，局部绿色检查不足以发布；必要时先手动运行 Client checks 全量验证最终源码树。默认只准备；选择 `publish` 才进入独立的写权限 job。准备 job 不持有发布凭据；发布 job 只申请 contents:write/actions:read，使用已有 GitHub Actions 临时身份。无需创建 token、环境、Server 配置或安装权限。受保护分支、仓库 Actions 政策仍由 GitHub 执行。
 
 本地等价入口（在干净的独立官方 checkout，Python 3.11+）：
 
@@ -23,7 +23,7 @@ python3 -B tools/release_client.py publish --output .local/release --allow-publi
 python3 -B tools/release_client.py verify --output .local/release
 ```
 
-固定顺序是重新按冻结源码构建比对计划／资产 → 核对源码属于远端 main → 验证精确源码树对应的成功 Client checks（允许合并提交和已通过 PR 使用相同树）→ 校验远端前像和已有资产 → 原子创建两个不可变 tag → 创建或续传 draft → 核验服务器摘要／大小 → 发布两个 Release → 实际下载比对五个资产 → 带前像 lease 提升 Windows 渠道 → 提升 installer latest → 再读 tag、渠道、latest 和公开下载。CI 依据为整个既有工作流成功，不复制每版测试数量或门禁白名单；取消或失败的运行不被描述为通过。两架构若不再共享相同运行树则明确停止，不能将其中一个包偷偷指向另一架构渠道。
+固定顺序是重新按冻结源码构建比对计划／资产 → 核对源码属于远端 main → 验证精确源码树对应的成功 Client checks（允许合并提交和已通过 PR 使用相同树）→ 校验远端前像和已有资产 → 原子创建两个不可变 tag → 创建或续传 draft → 核验服务器摘要／大小 → 发布两个 Release → 实际下载比对五个资产 → 带前像 lease 提升 Windows 渠道 → 提升 installer latest → 再读 tag、渠道、latest 和公开下载。CI 依据为完整工作流成功以及同次 attempt 的分类、文档、源码、Mac、Windows 两版本、汇总和完整验证标记 jobs 全部实际成功；跳过、取消、失败或缺失均不作为完整验证。不复制每版测试数量；必要 jobs 与工作流名称联动维护。两架构若不再共享相同运行树则明确停止，不能将其中一个包偷偷指向另一架构渠道。
 
 PR CI 默认检查合并树。仅当该运行的 main 基线已是 head 的祖先时，才可复用其结果证明 head 的字节；基线含有分支尚未包含的修改时，等待合并后的 main CI，不能将合并树的结果冒充独立 head 已通过。
 

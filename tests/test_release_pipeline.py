@@ -238,10 +238,12 @@ class ReleasePipeline(unittest.TestCase):
         rows = [{'head_sha': 'a' * 40, 'conclusion': 'cancelled', 'head_repository': {'full_name': rc.REPOSITORY}},
                 {'head_sha': 'b' * 40, 'conclusion': 'success', 'head_repository': {'full_name': rc.REPOSITORY},
                  'event': 'pull_request', 'pull_requests': [{'base': {'ref': 'main', 'sha': 'c' * 40}}],
-                 'id': 12, 'html_url': 'https://example.invalid/run/12'}]
+                 'id': 12, 'run_attempt': 1, 'html_url': 'https://example.invalid/run/12'}]
         def request(path):
             if '/compare/' in path:
                 return {'status': 'ahead'}
+            if '/jobs?' in path:
+                return {'jobs': [{'name': name, 'conclusion': 'success'} for name in rc.FULL_CI_JOBS]}
             return {'workflow_runs': rows} if '/actions/' in path else {'tree': {'sha': plan['source_tree']}}
         with patch.object(api, 'request', side_effect=request):
             self.assertEqual(api.ci(plan)['run_id'], 12)
@@ -254,16 +256,83 @@ class ReleasePipeline(unittest.TestCase):
         api = rc.GitHub()
         row = {'head_sha': 'b' * 40, 'conclusion': 'success', 'head_repository': {'full_name': rc.REPOSITORY},
                'event': 'pull_request', 'pull_requests': [{'base': {'ref': 'main', 'sha': 'c' * 40}}],
-               'id': 12, 'html_url': 'https://example.invalid/run/12'}
+               'id': 12, 'run_attempt': 1, 'html_url': 'https://example.invalid/run/12'}
         def request(path):
             if '/compare/' in path:
                 return {'status': 'diverged'}
+            if '/jobs?' in path:
+                return {'jobs': [{'name': name, 'conclusion': 'success'} for name in rc.FULL_CI_JOBS]}
             return {'workflow_runs': [row]} if '/actions/' in path else {'tree': {'sha': plan['source_tree']}}
         with patch.object(api, 'request', side_effect=request):
             with self.assertRaises(ValueError):
                 api.ci(plan)
             row.update(event='push', head_branch='main')
             self.assertEqual(api.ci(plan)['run_id'], 12)
+
+    def test_scoped_success_cannot_certify_a_release_or_hide_an_older_full_run(self):
+        plan, _ = fixture()
+        api = rc.GitHub()
+        row = {'head_sha': 'b' * 40, 'conclusion': 'success',
+               'head_repository': {'full_name': rc.REPOSITORY},
+               'event': 'workflow_dispatch', 'head_branch': 'main',
+               'id': 12, 'run_attempt': 2, 'html_url': 'https://example.invalid/run/12'}
+        jobs = [{'name': name, 'conclusion': 'success'} for name in rc.FULL_CI_JOBS]
+        rows = [row]
+
+        def request(path):
+            if '/jobs?' in path:
+                self.assertIn('/attempts/2/', path)
+                return {'jobs': jobs}
+            if '/actions/' in path:
+                return {'workflow_runs': rows}
+            return {'tree': {'sha': plan['source_tree']}}
+
+        with patch.object(api, 'request', side_effect=request):
+            self.assertEqual(api.ci(plan)['run_id'], 12)
+            for job in jobs:
+                for result in ('skipped', 'failure', 'cancelled', None):
+                    job['conclusion'] = result
+                    with self.subTest(job=job['name'], result=result):
+                        with self.assertRaises(ValueError):
+                            api.ci(plan)
+                job['conclusion'] = 'success'
+            removed = jobs.pop()
+            with self.assertRaises(ValueError):
+                api.ci(plan)
+            jobs.append(removed)
+            # A newer failed run for the same head must not mask actual full evidence.
+            rows.insert(0, dict(row, id=13, conclusion='failure'))
+            self.assertEqual(api.ci(plan)['run_id'], 12)
+            row['head_branch'] = 'unmerged-branch'
+            with self.assertRaises(ValueError):
+                api.ci(plan)
+
+    def test_ci_rejects_other_tree_and_incomplete_or_duplicate_job_evidence(self):
+        plan, _ = fixture()
+        api = rc.GitHub()
+        row = {'id': 12, 'run_attempt': 1, 'head_sha': 'b' * 40, 'conclusion': 'success',
+               'head_repository': {'full_name': rc.REPOSITORY}, 'event': 'push',
+               'head_branch': 'main', 'html_url': 'https://example.invalid/run/12'}
+        jobs = [{'name': name, 'conclusion': 'success'} for name in rc.FULL_CI_JOBS]
+        tree = plan['source_tree']
+
+        def request(path):
+            if '/jobs?' in path:
+                return {'jobs': jobs}
+            if '/actions/' in path:
+                return {'workflow_runs': [row]}
+            return {'tree': {'sha': tree}}
+
+        with patch.object(api, 'request', side_effect=request):
+            tree = 'f' * 40
+            with self.assertRaises(ValueError):
+                api.ci(plan)
+            tree = plan['source_tree']
+            jobs.append(jobs[0])
+            with self.assertRaises(ValueError):
+                api.ci(plan)
+        with patch.object(api, 'request', return_value={'jobs': [{'name': 'other', 'conclusion': 'success'}] * 100}):
+            self.assertFalse(api.full_ci_jobs(row))
 
 
 if __name__ == '__main__':

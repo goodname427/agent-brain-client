@@ -19,7 +19,7 @@ sh -n tools/install-mac.sh
 git diff --check
 ```
 
-Windows CI 同时隔离 USERPROFILE；原生 API／凭据／DACL 测试必须在 Windows 执行。文档链接检查及故障注入测试也由现有 CI 自动执行。具体平台、lint、类型检查以 [Client checks](../../.github/workflows/client-checks.yml) 为准；平台跳过须分别报告，不作为通过的实测项。
+Windows CI 同时隔离 USERPROFILE；原生 API／凭据／DACL 测试必须在 Windows 执行。普通提交按 [CI 变更范围表](ci-scopes.md) 选择检查：纯 Markdown 不触发 Mac／Windows 全盘测试，公共／未知改动和手动运行全量。具体平台、lint、类型检查以 [Client checks](../../.github/workflows/client-checks.yml) 为准；平台跳过须分别报告，不作为通过的实测项。
 
 ## 本地候选构建
 

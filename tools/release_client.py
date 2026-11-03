@@ -30,6 +30,11 @@ CHANNEL = 'refs/heads/releases/personal-https-windows-stable'
 TRACKING = 'refs/remotes/origin/releases/personal-https-windows-stable'
 PLATFORMS = ('win32-amd64', 'win32-arm64')
 API = 'https://api.github.com/repos/' + REPOSITORY
+FULL_CI_JOBS = frozenset({
+    'changes', 'documentation', 'source-checks', 'isolated-client',
+    'windows-contracts (3.11)', 'windows-contracts (3.13)',
+    'Client checks required', 'Client full validation',
+})
 
 
 def sha(raw):
@@ -295,14 +300,10 @@ class GitHub:
         raise ValueError('Release pagination limit reached')
 
     def ci(self, plan):
-        seen = set()
         for page in range(1, 11):
             result = self.request(f'/actions/workflows/client-checks.yml/runs?per_page=100&page={page}')
             for row in result['workflow_runs']:
                 head = row['head_sha']
-                if head in seen:
-                    continue
-                seen.add(head)
                 if row['conclusion'] != 'success' or (row.get('head_repository') or {}).get('full_name') != REPOSITORY:
                     continue
                 candidate = self.request('/git/commits/' + head)
@@ -317,13 +318,34 @@ class GitHub:
                     # the base contributes no bytes beyond the recorded head.
                     if not comparison or comparison['status'] not in ('ahead', 'identical'):
                         continue
-                elif row['event'] != 'push' or row['head_branch'] != 'main':
+                elif row['event'] not in ('push', 'workflow_dispatch') or row['head_branch'] != 'main':
+                    continue
+                # A green scoped workflow may have skipped both platforms. Read
+                # this exact attempt's jobs, not statuses from a different run.
+                if not self.full_ci_jobs(row):
                     continue
                 return {'run_id': row['id'], 'url': row['html_url'], 'head': head,
                         'source_tree': plan['source_tree'], 'conclusion': 'success'}
             if len(result['workflow_runs']) < 100:
                 break
-        raise ValueError('Successful Client checks for the exact source tree required (PR or main)')
+        raise ValueError('Successful full Client checks for the exact source tree required (PR, main or manual main run)')
+
+    def full_ci_jobs(self, row):
+        jobs = []
+        for page in range(1, 11):
+            result = self.request(f"/actions/runs/{row['id']}/attempts/{row['run_attempt']}/jobs?per_page=100&page={page}")
+            if not result:
+                return False
+            jobs.extend(result['jobs'])
+            if len(result['jobs']) < 100:
+                break
+        else:
+            return False
+        for name in FULL_CI_JOBS:
+            matches = [job for job in jobs if job['name'] == name]
+            if len(matches) != 1 or matches[0]['conclusion'] != 'success':
+                return False
+        return True
 
 
 def assets_for(plan, kind):
