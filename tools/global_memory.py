@@ -210,15 +210,23 @@ def recall(value, local, session, query='personal preferences and task progress'
                 return [dict(item,offline_cache=True,remote_confirmation=False) for item in saved['items']]
         raise ValueError('Global recall unavailable')
     data = response['result']
-    if set(data) != {'schema', 'namespace_results'} or data['schema'] != 1 or not isinstance(data['namespace_results'], list) or len(data['namespace_results']) > 2:
+    # A pool has at most 17 enrolled devices: two local namespaces plus one
+    # personal namespace for each of the 16 peers. Empty groups still count.
+    if set(data) != {'schema', 'namespace_results'} or data['schema'] != 1 or not isinstance(data['namespace_results'], list) or len(data['namespace_results']) > 18:
         raise ValueError('Bounded global recall required')
     from content_contract import core_recall
     selected = select(value['scope'], local)
     ids = {namespace(client.actor, value['scope']['profile_id']), namespace(client.actor, source_id(value['scope'], local, selected['sharing']))}
     items = []
     for group in data['namespace_results']:
-        if set(group) != {'project_id', 'sharing', 'recall'} or group['project_id'] not in ids or group['sharing'] not in ('personal', 'project'):
+        if set(group) not in ({'project_id', 'sharing', 'recall'}, {'project_id', 'sharing', 'recall', 'source_device_id'}) or group['project_id'] not in ids or group['sharing'] not in ('personal', 'project'):
             raise ValueError('Global recall namespace changed')
+        device = group.get('source_device_id', client.device)
+        if not isinstance(device, str) or not re.fullmatch('[a-f0-9]{32}', device):
+            raise ValueError('Global recall source device changed')
+        peer = device != client.device
+        if peer and (group['sharing'] != 'personal' or group['project_id'] != namespace(client.actor, value['scope']['profile_id']) or not value['scope']['recall_personal']):
+            raise ValueError('Only the approved personal pool can return peer memory')
         context = {'project_id': group['project_id'], 'session_id': session, 'cross_session': True}
         core_recall({'content_api_version': 1, 'method': 'core-recall', 'source': 'core', 'scope': context, 'recall': group['recall']}, context)
         found = group['recall']
@@ -229,10 +237,13 @@ def recall(value, local, session, query='personal preferences and task progress'
                 proof = row.get('provenance', {}); sources = proof.get('sources', [])
                 if (proof.get('status') != 'verified-native-generation-graph' or not proof.get('generation_ids') or not sources
                         or set(proof.get('event_ids', [])) != {s.get('event_id') for s in sources}
-                        or any(s.get('state') != 'committed' or s.get('identity', {}).get('device_id') != client.device or s.get('identity', {}).get('project_id') != group['project_id'] for s in sources)):
+                        or any(s.get('state') != 'committed' or s.get('identity', {}).get('device_id') != device or s.get('identity', {}).get('project_id') != group['project_id'] for s in sources)):
                     raise ValueError('Global recall provenance changed')
                 context = row.get('source_context')
-                if not isinstance(context, dict) or source_context(context.get('origins', []), local) != context or any(select(value['scope'], x) is None for x in context['origins']):
+                # The authenticated Server checks a peer's own approved origins.
+                # Client paths describe this device and cannot authorize a peer's
+                # filesystem. Retain structural/applicability checks for both.
+                if not isinstance(context, dict) or source_context(context.get('origins', []), local) != context or not peer and any(select(value['scope'], x) is None for x in context['origins']):
                     raise ValueError('Verified origin applicability required')
                 if old.private_content(row['content']) or restricted(row['content']): continue
                 items.append({'scope': group['sharing'], 'layer': layer, 'content': row['content'], 'source_context': context,
@@ -254,7 +265,25 @@ def hook_context(kind, items):
     return {'hookSpecificOutput': {'hookEventName': kind, 'additionalContext': CONTEXT_POLICY + '\n' + '\n'.join(json.dumps(x, ensure_ascii=False) for x in items)}}
 
 
-def hook(value):
+def recall_observation(value):
+    """Read only the content-free receipt, never a cached memory payload."""
+    file = settings_path(value['device_home']).parent / 'last-recall.json'
+    if not file.exists(): return {'status': 'unobserved', 'model_used': 'unknown'}
+    saved = old.private_json(file)
+    fields = {'schema', 'at', 'stage', 'status', 'layer_counts', 'item_count', 'context_bytes', 'offline_cache', 'model_used'}
+    counts = saved.get('layer_counts', {})
+    if (set(saved) != fields or saved['schema'] != 1 or saved['stage'] != 'agentbrain-global-recall'
+            or saved['status'] not in ('context-prepared', 'empty') or saved['model_used'] != 'unknown'
+            or not isinstance(counts, dict) or set(counts) != {'L1', 'L2', 'L3'}
+            or any(type(n) is not int or not 0 <= n <= 3 for n in counts.values())
+            or type(saved['item_count']) is not int or saved['item_count'] != sum(counts.values()) or saved['item_count'] > 3
+            or type(saved['context_bytes']) is not int or not 0 <= saved['context_bytes'] <= 131072
+            or type(saved['offline_cache']) is not bool or type(saved['at']) not in (int, float) or not math.isfinite(saved['at'])):
+        raise ValueError('Invalid content-free recall receipt')
+    return saved
+
+
+def hook(value, *, observe=None):
     local = eligible(value, os.getcwd())
     if local is None: return {}
     raw = sys.stdin.buffer.read(1048577)
@@ -274,8 +303,16 @@ def hook(value):
         with locked(directory / 'prompt-recall.lock'):
             if stamp.exists(): return {}
             items = recall(value, local, payload['session_id'], question[:1024])
+            result = hook_context(kind, items)
+            receipt = {'schema': 1, 'at': time.time(), 'stage': 'agentbrain-global-recall',
+                       'status': 'context-prepared' if result else 'empty',
+                       'layer_counts': {layer: sum(item.get('layer') == layer for item in items) for layer in ('L1', 'L2', 'L3')},
+                       'item_count': len(items), 'context_bytes': len(result.get('hookSpecificOutput', {}).get('additionalContext', '').encode()),
+                       'offline_cache': any(item.get('offline_cache') is True for item in items), 'model_used': 'unknown'}
+            old.write(directory / 'last-recall.json', receipt)
             old.write(stamp, {'at': time.time()})
-        return hook_context(kind, items)
+        if observe is not None: observe(receipt)
+        return result
     # Recall waits for the actual question rather than injecting unrelated project
     # constraints from a generic startup query. No transcript or file scan.
     return {}
@@ -317,6 +354,7 @@ def main():
     p.add_argument('--operator'); p.add_argument('--operator-sha256')
     p.add_argument('--query', default='personal preferences and task progress')
     a = p.parse_args()
+    observation = {}
     try:
         if a.action in ('global-install', 'global-uninstall'):
             from global_memory_install import install, uninstall
@@ -331,12 +369,13 @@ def main():
                 from remote_http import RequestControl
                 control=RequestControl(110)
                 try:
-                    with control.activate(): result=hook(value)
+                    with control.activate(): result=hook(value, observe=observation.update)
                 finally: control.close()
             elif a.action == 'global-status':
                 from global_memory_install import installation_status
                 installed=installation_status(value)
                 result = {'global_entry_installed': installed, 'expanded_sources_enabled': installed and approved(value),
+                          'recall_observation': recall_observation(value),
                           'scope': value['scope'], 'legacy_project_roots': [r['root'] for r in value['legacy_projects']],
                           'cloud_orchestration_supported': False, 'native_delivery': 'unobserved', 'credentials_accessed': False, 'default_sharing': 'cross-project', 'applicability': 'origin-and-current-question', 'legacy_capture_migrated': [r['root'] for r in value['legacy_projects'] if not r.get('capture_delegated', True)]}
             elif a.action in ('global-stop', 'global-resume'):
@@ -360,7 +399,10 @@ def main():
                 local = eligible(value, os.getcwd())
                 if local is None: raise ValueError('Current origin not approved')
                 result = {'items': recall(value, local, 'global-reader-' + os.urandom(12).hex(), a.query), 'native_hook_verified': False}
-        print(json.dumps(result, ensure_ascii=False)); return 0
+        print(json.dumps(result, ensure_ascii=False), flush=True)
+        if a.action == 'global-hook' and observation:
+            print(json.dumps(dict(observation, status='hook-output-written', recall_status=observation['status'])), file=sys.stderr)
+        return 0
     except Exception:
         if a.action == 'global-hook':
             print('{}'); print('{"stage":"agentbrain-global-memory","status":"review-required"}', file=sys.stderr); return 0

@@ -93,7 +93,7 @@ base=Path(sys.argv[1]);mode=sys.argv[2]
 policy=json.loads((base/'policy.json').read_bytes())
 class Source:
  def latest(self):
-  count=base/'checks.json'
+  count=base/'cache'/'checks.json'
   atomic_json(count,{'count':json.loads(count.read_bytes())['count']+1 if count.exists() else 1})
   (base/'entered').touch()
   deadline=time.monotonic()+15
@@ -199,7 +199,7 @@ else:
         second = self.spawn()
         self.ready(second)
         self.assertEqual(
-            json.loads((self.base / "checks.json").read_bytes())["count"], 1
+            json.loads((self.engine.local / "checks.json").read_bytes())["count"], 1
         )
         self.assertEqual(self.engine.serving_active(), self.old)
 
@@ -210,7 +210,7 @@ else:
         self.ready(first)
         self.ready(second)
         self.assertEqual(
-            json.loads((self.base / "checks.json").read_bytes())["count"], 1
+            json.loads((self.engine.local / "checks.json").read_bytes())["count"], 1
         )
         (self.base / "release").touch()
         self.assertEqual(self.read(onboarding)["status"], "updated")
