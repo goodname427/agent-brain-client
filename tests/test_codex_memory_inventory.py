@@ -1,6 +1,9 @@
 """Synthetic persistent-memory inventory; never reads native session files."""
 import json
 import io
+import os
+from unittest.mock import patch
+from types import SimpleNamespace
 import sys
 import tempfile
 import unittest
@@ -8,6 +11,7 @@ from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'adapters/codex'))
+import content_cache
 from content_cache import ContentAdapter,inventory_codex_memories,CacheBlocked,contract,locked
 sys.path.insert(0,str(ROOT/'tests'))
 import test_content_outbox as base
@@ -15,6 +19,108 @@ from content_mcp import ContentParameterError, ContentServer, serve
 
 
 class CodexMemoryInventory(unittest.TestCase):
+    def make_symlink(self,link,target):
+        try:link.symlink_to(target)
+        except OSError as exc:
+            if os.name=='nt' and getattr(exc,'winerror',None)==1314:
+                self.skipTest('Windows symlink privilege unavailable')
+            raise
+
+    def test_unicode_paths_keep_source_ids_and_fingerprints_and_ignore_v2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home=Path(tmp)/'合成用户';memories=home/'memories'
+            (memories/'中文目录').mkdir(parents=True)
+            raw='合成记忆：本周调整了说明牌。'.encode('utf-8')
+            (memories/'中文目录'/'经历.md').write_bytes(raw)
+            for name in ('sessions','memories_v2'):
+                (home/name).mkdir();(home/name/'never-read').write_bytes(b'out of scope')
+            row=inventory_codex_memories(home)['sources'][0]
+            self.assertEqual(row['source_id'],'codex-memory:'+content_cache.sha('中文目录/经历.md'.encode('utf-8')))
+            self.assertEqual(row['source_fingerprint'],content_cache.sha(raw))
+            self.assertEqual(len(inventory_codex_memories(home)['sources']),1)
+
+    def test_reparse_attribute_is_excluded_even_for_regular_file_or_directory(self):
+        for mode in (content_cache.stat.S_IFREG,content_cache.stat.S_IFDIR):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as tmp:
+                memories=Path(tmp)/'memories';memories.mkdir();(memories/'placeholder').touch()
+                fake=SimpleNamespace(st_mode=mode,st_file_attributes=0x400)
+                backend=content_cache._WindowsMemoryTree if os.name=='nt' else content_cache._PosixMemoryTree
+                with patch.object(backend,'info',return_value=fake),patch.object(backend,'open_file',side_effect=AssertionError('must not open')),patch.object(backend,'open_directory',side_effect=AssertionError('must not traverse')):
+                    result=inventory_codex_memories(tmp)
+                self.assertEqual(result['counts'],{'excluded':1})
+                self.assertIsNone(result['sources'][0]['source_fingerprint'])
+
+    def test_file_replaced_between_stat_and_open_is_unavailable(self):
+        backend=content_cache._WindowsMemoryTree if os.name=='nt' else content_cache._PosixMemoryTree
+        original=backend.open_file
+        with tempfile.TemporaryDirectory() as tmp:
+            home=Path(tmp);memories=home/'memories';memories.mkdir()
+            target=memories/'one.md';target.write_bytes(b'synthetic before')
+            replacement=home/'replacement';replacement.write_bytes(b'synthetic after')
+            def replace(tree,directory,entry,info):
+                os.replace(replacement,target)
+                return original(tree,directory,entry,info)
+            with patch.object(backend,'open_file',replace):result=inventory_codex_memories(home)
+            self.assertEqual(result['counts'],{'unavailable':1})
+            self.assertEqual(result['status'],'incomplete')
+
+    def test_read_file_replaced_between_stat_and_open_keeps_source_unread(self):
+        helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        helper.setUp();self.addCleanup(helper.doCleanups)
+        root=helper.home/'.codex/memories';root.mkdir(parents=True)
+        source=root/'one.md';source.write_bytes(b'synthetic source')
+        row=helper.adapter.inventory_memory_sources()['sources'][0]
+        replacement=helper.home/'replacement';replacement.write_bytes(b'synthetic replacement')
+        backend=content_cache._WindowsMemoryTree if os.name=='nt' else content_cache._PosixMemoryTree
+        original=backend.open_file
+        def replace(tree,directory,entry,info):
+            os.replace(replacement,source)
+            return original(tree,directory,entry,info)
+        with patch.object(backend,'open_file',replace),self.assertRaises(CacheBlocked):
+            helper.adapter.read_memory_source(row['source_id'],row['source_fingerprint'])
+        saved=helper.adapter._load('memory-inventory.json')
+        self.assertEqual(next(iter(saved['sources'].values()))['status'],'not-checked')
+        self.assertEqual(helper.cloud.calls,[])
+
+    def test_selected_source_replaced_by_symlink_never_reads_target(self):
+        helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        helper.setUp();self.addCleanup(helper.doCleanups)
+        root=helper.home/'.codex/memories';root.mkdir(parents=True)
+        source=root/'one.md';source.write_bytes(b'synthetic source')
+        row=helper.adapter.inventory_memory_sources()['sources'][0]
+        outside=helper.home/'outside';outside.write_bytes(b'synthetic source')
+        source.unlink();self.make_symlink(source,outside)
+        with self.assertRaises(CacheBlocked):helper.adapter.read_memory_source(row['source_id'],row['source_fingerprint'])
+        self.assertEqual(helper.adapter.inventory_memory_sources()['counts'],{'excluded':1})
+
+    def test_replacement_and_content_change_require_new_fingerprint_before_read(self):
+        helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        helper.setUp();self.addCleanup(helper.doCleanups)
+        memories=helper.home/'.codex/memories';memories.mkdir(parents=True)
+        source=memories/'经历.md';source.write_bytes('合成原文'.encode('utf-8'))
+        row=helper.adapter.inventory_memory_sources()['sources'][0]
+        replacement=helper.home/'replacement';replacement.write_bytes('合成新文'.encode('utf-8'))
+        os.replace(replacement,source)
+        with self.assertRaises(CacheBlocked):helper.adapter.read_memory_source(row['source_id'],row['source_fingerprint'])
+        fresh=helper.adapter.inventory_memory_sources()['sources'][0]
+        self.assertEqual(fresh['source_id'],row['source_id'])
+        self.assertNotEqual(fresh['source_fingerprint'],row['source_fingerprint'])
+        self.assertEqual(helper.adapter.read_memory_source(fresh['source_id'],fresh['source_fingerprint'])['text'],'合成新文')
+        source.write_bytes(b'changed in place')
+        with self.assertRaises(CacheBlocked):helper.adapter.read_memory_source(fresh['source_id'],fresh['source_fingerprint'])
+        self.assertEqual(helper.cloud.calls,[])
+
+    def test_read_rejects_invalid_utf8_and_oversize_after_inventory(self):
+        helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        helper.setUp();self.addCleanup(helper.doCleanups)
+        memories=helper.home/'.codex/memories';memories.mkdir(parents=True)
+        source=memories/'one.md';source.write_bytes(b'\xff')
+        row=helper.adapter.inventory_memory_sources()['sources'][0]
+        with self.assertRaises(CacheBlocked):helper.adapter.read_memory_source(row['source_id'],row['source_fingerprint'])
+        source.write_bytes(b'x'*131073)
+        with self.assertRaises(CacheBlocked):helper.adapter.read_memory_source(row['source_id'],row['source_fingerprint'])
+        self.assertEqual(helper.adapter.inventory_memory_sources()['counts'],{'excluded':1})
+
     def test_fingerprints_only_memory_tree_and_produces_stable_change_cursor(self):
         with tempfile.TemporaryDirectory() as tmp:
             home=Path(tmp);memories=home/'memories';memories.mkdir()
@@ -37,7 +143,7 @@ class CodexMemoryInventory(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home=Path(tmp);memories=home/'memories';memories.mkdir()
             target=home/'outside';target.write_text('synthetic')
-            (memories/'link').symlink_to(target)
+            self.make_symlink(memories/'link',target)
             result=inventory_codex_memories(home)
             self.assertEqual(result['counts'],{'excluded':1})
             self.assertEqual(result['sources'][0]['status'],'excluded')
@@ -66,6 +172,7 @@ class CodexMemoryInventory(unittest.TestCase):
         self.assertFalse(exact['data_transferred'])
         helper.adapter.review_memory_source(row['source_id'],row['source_fingerprint'],'shareable','safe-cross-project-personal-summary')
         staged=helper.adapter.stage_memory_import(row['source_id'],row['source_fingerprint'],'memory','synthetic-topic',record)
+        self.assertFalse(staged['data_transferred'])
         self.assertEqual(helper.adapter.import_status()['source_inventory']['counts'],{'inventoried':1})
         helper.adapter.refresh()
         self.assertEqual(helper.cloud.puts,0)
@@ -488,7 +595,7 @@ class CodexMemoryInventory(unittest.TestCase):
         helper.setUp();self.addCleanup(helper.doCleanups)
         memories=helper.home/'.codex/memories';memories.mkdir(parents=True)
         outside=helper.home/'outside';outside.write_text('synthetic')
-        (memories/'link').symlink_to(outside)
+        self.make_symlink(memories/'link',outside)
         row=helper.adapter.inventory_memory_sources()['sources'][0]
         self.assertIsNone(row['source_fingerprint'])
         plan={'schema':1,'binding':helper.adapter.binding,'sources':[],

@@ -10,6 +10,20 @@ memory_query(kind=memory,query='',since=null,until=null,limit=3)只读当前有�
 
 已有安装的旧MCP whitelist可能仍是catalog/read/put；0.5.6新计划按同源工具契约启用既有grant允许的工具，不静默改写旧注册。因此content_catalog的Memory-only查询别名（kinds=[memory]，附query/since/until/limit）转到同一memory_query，不改注册、凭据、scope或安装信任；新工具名也有统一MCP声明，允许该名字的调用方可直接用。普通catalog形状/调用不变；旧后端明确不可用而非假空结果。Mac/Windows共享Core/MCP结构，不把纯协议测试宣称为Windows系统凭据/裸机支持。
 
+## Codex 原生持久记忆导入（Mac / Windows）
+
+`content_sources_inventory` 只盘点当前绑定的 `CODEX_HOME/memories` 树，返回既有 `codex-memory:<相对路径 SHA-256>` 来源 ID、文件内容 SHA-256 和状态，不返回正文或本地路径。中文目录和文件名使用 UTF-8 计算 ID，子目录分隔符统一为 `/`；两平台使用同一格式。默认限制为 1024 个目录条目、1024 个文件、16 层子目录、单文件 128 KiB、总正文 16 MiB。缺少原生目录返回 `unavailable`，遍历受限或文件不可读返回 `incomplete`，不冒称已完成账户覆盖。
+
+Windows 使用 `CreateFileW` 的 `OPEN_EXISTING`、`FILE_FLAG_OPEN_REPARSE_POINT` 和 `FILE_FLAG_BACKUP_SEMANTICS`，检查实际句柄类型和 reparse 属性；Windows 记忆入口保留配置路径，避免绑定路径规范化掩盖 `CODEX_HOME` junction；从路径锚点到原生目录的各级目录在整个操作期间保持打开，仅共享读取。junction、符号链接、挂载点和其他 reparse 来源不跟随；正文句柄同样排斥写入和删除。目录或文件正忙、枚举后对象被替换或无法验证时返回不可用，不降级为普通路径读取。句柄会在成功、失败或触及遍历限制后释放。此实现不修改原生文件、DACL、设备来源授权或安装信任。
+
+调用者明确选择一条来源后，`content_sources_read` 重新进行有界遍历，核对打开对象与枚举对象身份，再核对读取前后元数据、大小和内容指纹，严格按 UTF-8 解码。正文只返回本地 MCP 调用者；盘点和审阅账本不保留原文。文件替换或内容变化后，旧指纹不能读取新正文；重新盘点得到新指纹后重新读取与审阅。
+
+后续继续使用既有 `content_sources_review`、`content_sources_stage` 和 `content_put` CAS / outbox / 持久化回执流程。读取后才可审阅，只有 `shareable` 来源可以暂存；暂存本身不上传。显式 `content_put` 离线时保留同一请求 ID，重启重放并收到服务器持久化回执后才报告远端确认。
+
+`memories_v2`、原生记忆 SQLite 和聊天 `sessions` 不属于此导入契约，不自动回退或扩大扫描范围。若某个 Codex 版本只写 `memories_v2`，需先另行确认其原生持久记忆契约；本实现仍只报告 `memories` 的实际可用状态。原生历史导入与未来 Hook 自动采集是两个独立状态；支持导入不会开启 Hook。
+
+回归检查：隔离 `HOME` / `USERPROFILE` / `CODEX_HOME` 后运行 `python -B -m unittest test_codex_memory_inventory test_windows_native`（`PYTHONPATH` 包含 `scripts`、`adapters/codex`、`tools`、`tests`）。现有 Windows CI 已选择 `test_windows_native`；其中原生记忆测试继承完整共享导入套件，并增加 junction、竞争写入、目录固定及中文原生路径离线重启检查。Windows 原生 API 测试在其他系统跳过；Windows 缺少符号链接权限时仅跳过需要该权限的测试，junction 测试仍需执行。
+
 ## 本批边界
 
 源码测试不写生产 Rule/Skill/Memory，不采集新来源或执行真实生命周期验收。未来新增短记或纠正复用 content_put；既有 read/put 不增加 delete/admin/activation。行为指引与查询的源码实现、发布、部署和实际运行验收分别报告。
