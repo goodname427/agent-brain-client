@@ -279,8 +279,9 @@ class LauncherClosure(unittest.TestCase):
         self.addCleanup(self.f.doCleanups)
         self.f.publish("0.5.3")
         self.f.package = Path(self.f.channel.update()["active"]["package"])
+        self.original_plan = self.f.plan()
         self.assertTrue(
-            ci.apply(self.f.plan(), self.f.digest(self.f.plan()), lambda p: None)[
+            ci.apply(self.original_plan, self.f.digest(self.original_plan), lambda p: None)[
                 "installed"
             ]
         )
@@ -320,6 +321,34 @@ class LauncherClosure(unittest.TestCase):
         self.assertNotEqual(meta['package'], self.meta['package'])
         self.assertEqual(meta['release_policy_sha256'], self.meta['release_policy_sha256'])
         self.assertEqual(ci.inspect(self.f.home)['installation_state'], 'verified-disabled')
+
+    def test_handover_archives_only_proven_completed_reinstall_marker(self):
+        state = self.f.home / '.config/agent-brain-client/first-install'
+        state.mkdir(mode=0o700)
+        plan = state / 'synthetic-reinstall-plan.json'
+        ci.save(plan, self.original_plan)
+        marker = state / 'reinstall-current.json'
+        value = {'schema': 1, 'removed_plan_sha256': 'a' * 64,
+                 'plan': str(plan), 'plan_sha256': self.meta['plan_sha256']}
+        ci.save(marker, value)
+        self.assertTrue(self.handover())
+        self.assertFalse(marker.exists())
+        archived = list(state.glob('prior-reinstall-current-*.json'))
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(ci.private_json(archived[0]), value)
+
+    def test_handover_preserves_unconfirmed_reinstall_attempt(self):
+        state = self.f.home / '.config/agent-brain-client/first-install'
+        state.mkdir(mode=0o700)
+        marker = state / 'reinstall-current.json'
+        value = {'schema': 1, 'removed_plan_sha256': 'a' * 64,
+                 'plan': str(state / 'unconfirmed.json'), 'plan_sha256': 'b' * 64}
+        ci.save(marker, value)
+        before = self.f.config.read_bytes()
+        with self.assertRaises(ValueError):
+            self.handover()
+        self.assertEqual(ci.private_json(marker), value)
+        self.assertEqual(self.f.config.read_bytes(), before)
 
     def test_normal_install_retry_dispatches_applying_launcher_before_original_plan(
         self,

@@ -801,6 +801,31 @@ def pinned_update_runtime(home, action, policy, mcp, native, runner):
                    '--action', action], env=environment, stdin=subprocess.DEVNULL).returncode
 
 
+def retire_completed_reinstall(home, meta):
+    """Archive a proven completed reinstall before replacing its registration."""
+    import content_install as ci
+    from content_mcp import pinned
+    state = safe(Path(home) / '.config/agent-brain-client/first-install')
+    current_path = safe(state / 'reinstall-current.json')
+    if not current_path.exists():
+        return
+    current = private_json(current_path)
+    if (set(current) != {'schema', 'removed_plan_sha256', 'plan', 'plan_sha256'}
+            or current['schema'] != 1 or current['plan_sha256'] != meta['plan_sha256']):
+        raise ValueError('Unconfirmed reinstall marker preserved')
+    plan = pinned(current['plan'], current['plan_sha256'])
+    ci.validate_install_scope(plan)
+    if (plan['device_home'] != str(home) or plan['package'] != meta['package']
+            or plan['release_policy'] != meta['release_policy']
+            or plan['release_policy_sha256'] != meta['release_policy_sha256']
+            or not ci.inspect(home).get('registration_verified')):
+        raise ValueError('Completed reinstall binding changed')
+    same_private(state / ('prior-reinstall-current-' + sha(canonical(current)) + '.json'), current)
+    if private_json(current_path) != current:
+        raise ValueError('Completed reinstall marker changed')
+    current_path.unlink()
+
+
 def windows_launcher_handover(home, *, channel_factory=None, channel=None, before=None, meta=None):
     """Repair a stale fixed launcher on either platform through a verified transaction.
 
@@ -839,6 +864,7 @@ def windows_launcher_handover(home, *, channel_factory=None, channel=None, befor
         saved={'schema':1,'plan':plan,'active':before,'target_commit':row['commit']}
         # Confirm offline compatibility before making even a pending marker.
         probe_launcher(plan,before)
+        retire_completed_reinstall(home, meta)
         ci.save(marker,saved)
     plan = saved["plan"]
     target = safe(plan["package"])
