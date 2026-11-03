@@ -119,6 +119,41 @@ class WriteFailures(unittest.TestCase):
         self.assertEqual(self.invoke()["local_queue"]["state"], "confirmed")
         self.assertEqual(self.f.cloud.puts, 33)
 
+    def test_failed_error_response_save_is_not_a_server_confirmation(self):
+        original = self.f.cloud.request
+        save = self.f.adapter._save
+        for code in ("invalid_request", "revision_conflict"):
+            with self.subTest(code=code):
+
+                def deny(request):
+                    if request["method"] == "content_put":
+                        return {
+                            "request_id": request["request_id"],
+                            "error": {"code": code, "retryable": False},
+                            "persistence": {"durable": False},
+                        }
+                    return original(request)
+
+                def fail_response(name, value):
+                    if name.startswith("outbox/") and value.get("state") in (
+                        "blocked",
+                        "conflict",
+                    ):
+                        raise OSError("SYNTHETIC_PRIVATE_PATH_TOKEN_BODY")
+                    return save(name, value)
+
+                with (
+                    patch.object(self.f.cloud, "request", side_effect=deny),
+                    patch.object(self.f.adapter, "_save", side_effect=fail_response),
+                ):
+                    result = self.invoke()
+                self.assertEqual(result["error"]["stage"], "outbox-response")
+                self.assertEqual(result["error"]["exception_type"], "OSError")
+                self.assertFalse(result["persistence"]["durable"])
+                self.assertNotIn("SYNTHETIC_PRIVATE", json.dumps(result))
+                self.assertEqual(self.f.cloud.puts, 0)
+                self.assertEqual(self.f.adapter.queue_status()["pending"], 1)
+
     def test_unknown_exception_name_and_message_are_not_exposed_or_reclassified_as_parameters(
         self,
     ):

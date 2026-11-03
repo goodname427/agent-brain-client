@@ -530,7 +530,7 @@ class ContentAdapter:
                     row.update(state='blocked',response=response)
                 else:break
                 blocked.setdefault(target,set()).add(request['request_id'])
-            with operation_stage('outbox-confirmation'):
+            with operation_stage('outbox-confirmation' if row['state']=='confirmed' else 'outbox-response'):
                 self._save('outbox/'+request['request_id']+'.json',row)
             with operation_stage('outbox-reconciliation'):
                 self._finish_reconciliation(row)
