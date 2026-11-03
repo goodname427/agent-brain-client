@@ -44,6 +44,7 @@ jobs:
         with:
           name: client-release-${{ github.run_id }}-${{ github.run_attempt }}
           path: .local/release/
+          include-hidden-files: true
           retention-days: 14
           if-no-files-found: error
       - name: Job summary
@@ -81,6 +82,7 @@ jobs:
         with:
           name: client-publication-${{ github.run_id }}-${{ github.run_attempt }}
           path: .local/release/
+          include-hidden-files: true
           retention-days: 14
       - name: Job summary
         if: always()
