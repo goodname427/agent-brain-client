@@ -307,6 +307,10 @@ def executor_identity():
 def build_platforms(source, baselines, selected, groups, installer_tag=None):
     payload, modes = source_payload(source)
     executor, executor_tree = executor_identity()
+    highest = max(version(json.loads(git('show', parent + ':releases/manifest.json'))['version'])
+                  for parent in baselines.values())
+    if version(selected) < highest:
+        raise ValueError('Shared installer version must not be below the highest frozen platform version')
     for parent in dict.fromkeys(baselines.values()):
         message = git('show', '-s', '--format=%B', parent)
         recorded = re.findall(r'^Source-Commit: ([a-f0-9]{40})$', message, re.M)

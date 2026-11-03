@@ -450,6 +450,8 @@ class PlatformRelease(unittest.TestCase):
         def git(*args, **kwargs):
             if '--format=%B' in args:
                 return 'Source-Commit: ' + source
+            if args[0] == 'show' and ':releases/manifest.json' in args[-1]:
+                return json.dumps({'version': '1.2.4' if args[-1].startswith(baselines[rc.CHANNEL]) else '1.2.3'})
             if args[0] == 'rev-parse' and 'refs/tags/' in args[-1]:
                 return source
             return '2' * 40
@@ -466,6 +468,20 @@ class PlatformRelease(unittest.TestCase):
         self.assertEqual(plan['tags']['installer'], 'installer-1.2.4-windows-setup')
         self.assertEqual(set(plan['channels']), set(rc.MAC_CHANNELS))
         self.assertFalse(any('windows' in name for name in assets))
+
+    def test_partial_version_below_unselected_platform_cannot_build_or_lower_latest(self):
+        source = '1' * 40
+        baselines = {rc.CHANNEL: '3' * 40, rc.MAC_CHANNELS[0]: '4' * 40, rc.MAC_CHANNELS[1]: '5' * 40}
+        def git(*args, **kwargs):
+            if args[0] == 'show' and ':releases/manifest.json' in args[-1]:
+                return json.dumps({'version': '1.2.5' if args[-1].startswith(baselines[rc.CHANNEL]) else '1.2.3'})
+            return 'Source-Commit: ' + source
+        with patch.object(rc, 'source_payload', return_value=({}, {})), \
+                patch.object(rc, 'executor_identity', return_value=('a' * 40, 'b' * 40)), \
+                patch.object(rc, 'git', side_effect=git), patch.object(rc, 'runtime_artifacts') as build:
+            with self.assertRaisesRegex(ValueError, 'highest frozen platform'):
+                rc.build_platforms(source, baselines, '1.2.4', ['macos'])
+            build.assert_not_called()
 
     def test_both_platforms_publish_before_atomic_channel_promotion(self):
         plan, assets = platform_fixture()

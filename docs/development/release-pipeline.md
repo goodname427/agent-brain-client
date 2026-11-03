@@ -8,7 +8,7 @@
 
 Windows 保留 `refs/heads/releases/personal-https-windows-stable`。Mac 保留生产登记的 `refs/heads/releases/personal-https-stable`，以及已有设备实际固定的 `refs/heads/releases/personal-https-candidate-0.4.0-install-fix-ce9f72b`；不根据名字把设备切换到别的 ref。Mac 两个既有 ref 消费同一 Mac 运行树，新提交将两个旧 tip 分别保留为直接父节点。既有锚点、政策、权限、凭据 helper 和服务器配置不变。
 
-`auto` 从所有冻结渠道的最高版本取下一补丁。正常发布包含两个平台组；`targets:macos` 或 `windows` 仅用于补齐部分交付，仍同时构建和校验两端 manifest。显式版本必须高于所有要提升的渠道版本。安装器版本已存在时只能复用完全相同的源码、tag 和资产，不得以新 tag 为同一安装器版本换源码。
+`auto` 从所有冻结渠道的最高版本取下一补丁。正常发布包含两个平台组；`targets:macos` 或 `windows` 仅用于补齐部分交付，仍同时构建和校验两端 manifest。显式版本必须高于所有要提升的渠道版本，且不得低于任何未选平台的冻结版本；补齐旧平台不能降低共用 installer latest。安装器版本已存在时只能复用完全相同的源码、tag 和资产，不得以新 tag 为同一安装器版本换源码。
 
 运行包 tag 分别为 `client-VERSION-windows` 和 `client-VERSION-macos`；每个平台组各有两架构归档及 SHA256SUMS。新共用安装器使用 `installer-VERSION-setup`。补齐已有 Windows 版本时复用原 `installer-VERSION-windows-setup` 及其原始资产，不重新上传 Windows 运行包或已公开的安装器。旧 tag、Release、附件和 schema-1 Windows bundle 保持可核验及可恢复。
 
