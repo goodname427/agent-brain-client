@@ -123,6 +123,7 @@ class ReleasePipeline(unittest.TestCase):
             with patch.object(rc, 'commit', return_value=plan['baseline']), \
                     patch.object(rc, 'git', side_effect=fake_git), \
                     patch.object(rc, 'build', return_value=(plan, assets)) as build, \
+                    patch.object(rc, 'source_payload'), \
                     patch.object(rc, 'validate'):
                 rc.prepare(output, plan['source'], 'auto')
                 frozen = (output / 'plan.json').read_bytes()
@@ -135,6 +136,28 @@ class ReleasePipeline(unittest.TestCase):
                 (output / 'assets' / name).write_bytes(b'changed')
                 with self.assertRaises(ValueError):
                     rc.prepare(output, plan['source'], 'auto')
+
+    def test_source_checks_accept_official_checkout_url_and_reject_blob_drift(self):
+        source = '1' * 40
+        raw = b'synthetic source\n'
+        def fake_git(*args):
+            if args[0] == 'remote':
+                return rc.ORIGIN.removesuffix('.git')
+            if args[0] == 'status':
+                return ''
+            return source
+        def fake_run(args):
+            return b'100644 blob ' + b'2' * 40 + b'\tfixture.py\0' if args[1] == 'ls-tree' else raw
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / 'fixture.py'
+            path.write_bytes(raw)
+            with patch.object(rc, 'ROOT', root), patch.object(rc, 'git', side_effect=fake_git), \
+                    patch.object(rc, 'run', side_effect=fake_run):
+                self.assertEqual(rc.source_payload(source)[0], {'fixture.py': raw})
+                path.write_bytes(b'local drift')
+                with self.assertRaises(ValueError):
+                    rc.source_payload(source)
 
     def test_public_download_corruption_is_rejected_without_auth_header(self):
         plan, assets = fixture()

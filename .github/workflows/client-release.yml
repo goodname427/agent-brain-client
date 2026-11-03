@@ -22,6 +22,8 @@ concurrency:
 jobs:
   prepare:
     runs-on: macos-15
+    outputs:
+      bundle: client-release-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -40,7 +42,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: client-release-${{ github.run_id }}
+          name: client-release-${{ github.run_id }}-${{ github.run_attempt }}
           path: .local/release/
           retention-days: 14
           if-no-files-found: error
@@ -67,7 +69,7 @@ jobs:
           python-version: '3.12'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: client-release-${{ github.run_id }}
+          name: ${{ needs.prepare.outputs.bundle }}
           path: .local/release
       - name: Publish, promote and read back exact bytes
         env:

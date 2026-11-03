@@ -101,7 +101,7 @@ def locked(output):
 def source_payload(source):
     if commit('HEAD') != source or git('status', '--porcelain'):
         raise ValueError('A clean checkout of the exact source commit is required')
-    if git('remote', 'get-url', 'origin') != ORIGIN:
+    if git('remote', 'get-url', 'origin') not in (ORIGIN, ORIGIN.removesuffix('.git')):
         raise ValueError('Official credential-free Client origin required')
     payload, modes = {}, {}
     rows = run(['git', 'ls-tree', '-rz', source]).split(b'\0')
@@ -164,6 +164,8 @@ def runtime_commit(payload, baseline, source, selected):
 def build(source, baseline, selected):
     payload, modes = source_payload(source)
     before = json.loads(git('show', baseline + ':releases/manifest.json'))
+    baseline_source = commit('refs/tags/installer-' + before['version'] + '-windows-setup')
+    git('merge-base', '--is-ancestor', baseline_source, source)
     if version(selected) <= version(before['version']):
         raise ValueError('New version must be greater than the frozen channel baseline')
     artifacts, manifests, packages = {}, [], []
@@ -196,6 +198,7 @@ def build(source, baseline, selected):
     manifest_sha = sha(json.dumps(manifests[0], sort_keys=True).encode())
     plan = {'schema': 1, 'repository': REPOSITORY, 'source': source,
             'source_tree': git('rev-parse', source + '^{tree}'), 'baseline': baseline,
+            'baseline_source': baseline_source,
             'version': selected, 'runtime': runtime, 'channel': CHANNEL,
             'manifest_sha256': manifest_sha, 'platforms': list(PLATFORMS),
             'tags': {'runtime': f'client-{selected}-windows',
@@ -216,8 +219,9 @@ def validate(output):
                     [sys.executable, '-B', 'tools/check_source.py'],
                     ['git', 'diff', '--check'])
         for index, command in enumerate(commands):
-            result = subprocess.run(command, env=env, cwd=ROOT, capture_output=True, timeout=600)
-            (output / f'check-{index}.log').write_bytes(result.stdout + result.stderr)
+            with (output / f'check-{index}.log').open('wb') as log:
+                result = subprocess.run(command, env=env, cwd=ROOT, stdout=log,
+                                        stderr=subprocess.STDOUT, timeout=600)
             if result.returncode:
                 raise ValueError(f'Local check {index} failed; inspect check-{index}.log')
 
@@ -249,6 +253,7 @@ def prepare(output, source, selected):
     immutable(output / 'release-notes.md', notes.encode())
     report(output, 'validating', source=source, version=selected)
     validate(output)
+    source_payload(source)
     report(output, 'prepared', source=source, version=selected, runtime=plan['runtime'],
            published=False, production_catalog='not-checked')
 
@@ -448,6 +453,8 @@ def main():
     parser.add_argument('--version', default='auto', help='auto increments the frozen Windows channel patch')
     parser.add_argument('--allow-publish', action='store_true')
     args = parser.parse_args()
+    if sys.version_info < (3, 11):
+        parser.error('Python 3.11+ required')
     output = args.output.resolve()
     if args.action == 'publish' and not args.allow_publish:
         parser.error('publish requires --allow-publish; prepare is the offline/dry-run path')
