@@ -174,6 +174,27 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), before)
         self.assertEqual(old.private_json(self.file), self.value)
 
+    def test_retained_removal_requires_authenticated_journal_and_exact_block(self):
+        import client_lifecycle as lifecycle
+        outside, previous = hooks.split_owned(self.config.read_bytes())
+        self.config.write_bytes(outside.encode())
+        with self.assertRaises((ValueError, OSError)):
+            hooks.refresh(self.home)
+        for phase, block, accepted in (('applying', previous, False),
+                                        ('complete', 'Changed block', False),
+                                        ('complete', previous, True),
+                                        ('reinstalled', previous, True)):
+            with (patch.object(lifecycle, 'read_removal', return_value={'phase': phase, 'hook_block': block}),
+                  patch.object(lifecycle, 'validate_journal') as authenticate):
+                if accepted:
+                    self.assertEqual(hooks.refresh(self.home)['status'], 'global-hook-not-installed')
+                else:
+                    with self.assertRaises(ValueError):
+                        hooks.refresh(self.home)
+                authenticate.assert_called_once()
+        self.assertEqual(self.config.read_bytes(), outside.encode())
+        self.assertEqual(old.private_json(self.file), self.value)
+
     def test_interrupted_settings_write_is_recovered_before_retry(self):
         apply = host.host_apply
 

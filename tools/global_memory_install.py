@@ -100,6 +100,16 @@ def recover_pending(home, native):
     return True
 
 
+def verified_removal(home, previous, record):
+    """Recognize only the exact Hook removed by an authenticated lifecycle journal."""
+    if previous is not None: return False
+    from client_lifecycle import read_removal, validate_journal
+    removal = read_removal(home)
+    validate_journal(home, removal)
+    return (removal.get('phase') in ('complete', 'reinstalled')
+            and removal.get('hook_block') == record.get('block'))
+
+
 def transact(native, directory, owned, *, remove=False):
     from brain_lock import locked
     file = old.canonical(native / 'config.toml', existing=True)
@@ -115,10 +125,7 @@ def transact(native, directory, owned, *, remove=False):
             if previous not in candidates:
                 # A verified normal uninstall removes the owned inline block
                 # while retaining this private receipt and device settings.
-                from client_lifecycle import read_removal,validate_journal
-                removal=read_removal(Path(directory).parents[2])
-                validate_journal(Path(directory).parents[2],removal)
-                if previous is not None or removal.get('phase') not in ('complete','reinstalled') or removal.get('hook_block')!=record.get('block'):
+                if not verified_removal(Path(directory).parents[2], previous, record):
                     raise ValueError('Outside edit to owned global Hook preserved')
         elif previous is not None: raise ValueError('Unowned global Hook block preserved')
         if remove and previous is None: return {'status': 'global-hook-not-installed', 'native_changed': False}
@@ -308,8 +315,12 @@ def refresh(home, *, check_only=False):
         if previous is not None: raise ValueError('Unowned global Hook preserved')
         return absent
     record = read_receipt(receipt)
-    if record.get('phase') not in ('complete', 'rolled-back') or previous != record.get('block'):
+    if record.get('phase') not in ('complete', 'rolled-back'):
         raise ValueError('Outside edit to owned global Hook preserved')
+    if previous != record.get('block'):
+        if not verified_removal(home, previous, record):
+            raise ValueError('Outside edit to owned global Hook preserved')
+        return absent
     if previous is None: return absent  # Explicit uninstall remains uninstalled.
     pins = {name: old.digest((ROOT / name).read_bytes()) for name in FILES}
     target = dict(value, code_sha256=pins)
