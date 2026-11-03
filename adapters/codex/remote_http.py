@@ -3,10 +3,12 @@
 import argparse
 from contextlib import contextmanager
 import http.client
+import io
 import json
 import math
 from pathlib import Path
 import re
+import select
 import sys
 import threading
 import time
@@ -197,7 +199,76 @@ def _resolve_address(address):
     return result[0]
 
 
+def _wait_read_socket(sock, control, deadline, *, write=False):
+    # Winsock can keep a blocking recv/select asleep after another thread calls
+    # shutdown/close. Poll readiness without entering a long native receive.
+    while True:
+        control.check()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:raise TimeoutError('Read transport deadline exceeded')
+        try:
+            readable, writable, _ = select.select(
+                [] if write else [sock], [sock] if write else [], [], min(.05, remaining)
+            )
+        except (OSError, ValueError):
+            control.check()
+            raise
+        control.check()
+        if readable or writable:return
+
+
+class _ReadSocketFile(io.RawIOBase):
+    """Nonblocking HTTP/TLS receive with an owned socket makefile lifetime."""
+    def __init__(self, sock, control):
+        super().__init__()
+        self.sock, self.control = sock, control
+        self.timeout = sock.gettimeout()
+        # Keep the descriptor alive when urllib closes the connection object
+        # after headers. Releasing this lease closes it just like socket.makefile.
+        self.lease = sock.makefile('rb', buffering=0)
+        sock.setblocking(False)
+
+    def readable(self):return True
+
+    def readinto(self, buffer):
+        if self.closed:raise ValueError('Read file is closed')
+        deadline = self.control.deadline
+        if self.timeout is not None:deadline = min(deadline, time.monotonic() + self.timeout)
+        while True:
+            self.control.check()
+            try:return self.sock.recv_into(buffer)
+            except ssl.SSLWantWriteError:
+                _wait_read_socket(self.sock, self.control, deadline, write=True)
+            except (BlockingIOError, ssl.SSLWantReadError):
+                _wait_read_socket(self.sock, self.control, deadline)
+            except OSError:
+                self.control.check()
+                raise
+
+    def close(self):
+        try:
+            lease = getattr(self, 'lease', None)
+            if not self.closed and lease is not None:lease.close()
+        finally:super().close()
+
+
+class _ReadResponseSocket:
+    def __init__(self, sock, control):self.sock, self.control = sock, control
+
+    def makefile(self, mode):
+        if mode != 'rb':raise ValueError('Read-only response required')
+        return io.BufferedReader(_ReadSocketFile(self.sock, self.control))
+
+
+class ReadHTTPResponse(http.client.HTTPResponse):
+    def __init__(self, sock, *args, **kwargs):
+        control = current_request()
+        if control is not None:sock = _ReadResponseSocket(sock, control)
+        super().__init__(sock, *args, **kwargs)
+
+
 class ReadHTTPConnection(http.client.HTTPConnection):
+    response_class = ReadHTTPResponse
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._create_connection = _read_socket
@@ -208,6 +279,7 @@ class ReadHTTPConnection(http.client.HTTPConnection):
 
 
 class ReadHTTPSConnection(http.client.HTTPSConnection):
+    response_class = ReadHTTPResponse
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._create_connection = _read_socket

@@ -481,6 +481,22 @@ class HTTPRequests(unittest.TestCase):
         self.assertFalse(output.get()["result"]["isError"])
         self.assertEqual(self.seen, ["synthetic-1", "synthetic-24"])
 
+    def test_cancel_does_not_require_shutdown_to_wake_native_receive(self):
+        # Model the Windows CI failure: cross-thread socket abort does not wake
+        # the native receive. The executor itself must observe cancellation.
+        with patch('remote_http._watch_socket'):
+            source, output = self.start(request_timeout=2)
+            source.send(call(1))
+            self.assertTrue(self.started.wait(1))
+            started = time.monotonic()
+            source.send({'jsonrpc': '2.0', 'method': 'notifications/cancelled',
+                         'params': {'requestId': 1}})
+            self.assertEqual(output.get()['error']['code'], -32800)
+            self.assertLess(time.monotonic() - started, 0.7)
+            source.send(call(24))
+            self.assertFalse(output.get()['result']['isError'])
+            self.assertEqual(self.seen, ['synthetic-1', 'synthetic-24'])
+
     def test_verified_tls_read_cancellation_keeps_certificate_checks(self):
         openssl = shutil.which('openssl')
         if openssl is None:

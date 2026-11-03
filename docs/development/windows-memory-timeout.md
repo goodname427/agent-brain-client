@@ -35,6 +35,24 @@ JSON-RPC 取消／超时错误保留原 code 和 message，增加 `error.data.st
 不能区分 DNS、连接、凭据助手、Server 处理或响应传输。既有 HTTP 错误的
 transport / http 阶段仍按原合同返回，不把超时伪装为空结果或正文缺失。
 
+## Windows CI 证实的传输取消缺陷
+
+PR 首次提交 `67da2f3` 的 Windows 3.11 / 3.13 CI 中，新队列回归通过，
+但既有 HTTP 和 TLS 活动读取取消失败：合成 Server 的 3 秒阻塞结束后才恢复，
+超出测试的取消上界。Mac 上相同套件通过，因此不能用 Mac 结果替代 Windows。
+
+旧读取依赖另一线程 shutdown / close socket 唤醒阻塞的原生 receive。Windows
+CI 已证明这个唤醒不可靠。新增回归模拟 socket abort 不唤醒 receive：旧传输
+仍等待 socket 超时，新实现由 executor 自己观察取消，不依赖该唤醒。
+
+有 RequestControl 的 HTTP 响应改用非阻塞 socket 接收与最多 50ms 的 readiness
+轮询。每次等待检查取消及截止时间，HTTP 解析和 TLS 验证仍使用标准库。
+原生 makefile lease 保持 descriptor 生命周期，避免 urllib 在收到 headers 后
+关闭连接对象时提前关闭正文读取。响应结束或失败仍释放 lease / socket；
+没有额外读取线程或迟到的 adapter 操作。不在请求控制内的写入传输保持原语义。
+该修复覆盖已复现的 headers / body 等待；不以它推断用户设备的 DNS、连接、
+TLS 握手或 Server 根因。
+
 ## 回归与剩余不确定性
 
 - 阻塞写入期间，搜索、读取、目录及排队写入均能独立返回截止时间错误。
