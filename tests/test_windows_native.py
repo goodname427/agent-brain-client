@@ -660,5 +660,120 @@ class WindowsNative(unittest.TestCase):
         private_mode(cache / 'active.json', owner=True)
         self.assertEqual([r for r in cloud.calls if r['method']=='content_put'], [request, request])
 
+# This module is already selected by Windows CI. Inherit the complete synthetic
+# inventory/review/stage/CAS/outbox suite so native readers cannot be omitted.
+import test_codex_memory_inventory as memory_inventory
+
+
+@unittest.skipUnless(os.name == 'nt', 'Native Windows memory reader required')
+class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
+    def junction(self,link,target):
+        result=subprocess.run(['cmd','/d','/c','mklink','/J',str(link),str(target)],capture_output=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.addCleanup(lambda:link.rmdir() if link.exists() else None)
+
+    def test_junction_roots_ancestors_and_children_never_follow_target(self):
+        from content_cache import inventory_codex_memories
+        with tempfile.TemporaryDirectory() as tmp:
+            home=Path(tmp);outside=home/'outside';outside.mkdir()
+            (outside/'never-read.md').write_bytes(b'synthetic outside memory')
+            root=home/'codex';root.mkdir()
+            link=root/'memories';self.junction(link,outside)
+            try:self.assertEqual(inventory_codex_memories(root)['status'],'unavailable')
+            finally:link.rmdir()
+            link.mkdir();child=link/'linked';self.junction(child,outside)
+            try:
+                result=inventory_codex_memories(root)
+                self.assertEqual(result['counts'],{'excluded':1})
+                self.assertIsNone(result['sources'][0]['source_fingerprint'])
+            finally:child.rmdir()
+            physical=home/'physical';(physical/'memories').mkdir(parents=True)
+            (physical/'memories'/'never-read.md').write_bytes(b'synthetic junction ancestor')
+            ancestor=home/'alias';self.junction(ancestor,physical)
+            try:self.assertEqual(inventory_codex_memories(ancestor)['status'],'unavailable')
+            finally:ancestor.rmdir()
+
+    def test_junction_substituted_after_stat_is_unavailable_and_read_is_blocked(self):
+        from unittest.mock import patch
+        import content_cache as cache
+        helper=memory_inventory.base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        helper.setUp();self.addCleanup(helper.doCleanups)
+        root=helper.home/'.codex/memories';group=root/'group';group.mkdir(parents=True)
+        (group/'one.md').write_bytes(b'synthetic approved tree')
+        row=helper.adapter.inventory_memory_sources()['sources'][0]
+        outside=helper.home/'outside';outside.mkdir();(outside/'one.md').write_bytes(b'synthetic outside tree')
+        original=cache._WindowsMemoryTree.open_directory
+        def replace(tree,directory,entry,info):
+            group.rename(root/'retained')
+            self.junction(group,outside)
+            return original(tree,directory,entry,info)
+        try:
+            with patch.object(cache._WindowsMemoryTree,'open_directory',replace):
+                result=cache.inventory_codex_memories(helper.adapter.native_home)
+            changed=next(item for item in result['sources'] if item['status']=='unavailable')
+            self.assertIsNone(changed['source_fingerprint'])
+            with self.assertRaises(cache.CacheBlocked):helper.adapter.read_memory_source(row['source_id'],row['source_fingerprint'])
+        finally:
+            if group.exists():group.rmdir()
+
+    def test_pinned_directories_and_files_exclude_replacement_and_writers(self):
+        import content_cache as cache
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'memories';group=root/'group';group.mkdir(parents=True)
+            target=group/'one.md';target.write_bytes(b'synthetic before')
+            tree=cache._WindowsMemoryTree(root)
+            try:
+                with tree.scan(root) as scan:entry=next(scan)
+                directory=tree.open_directory(root,entry,tree.info(root,entry))
+                tree.close_directory(root)  # Parent remains pinned after traversal.
+                with self.assertRaises(OSError):root.rename(Path(tmp)/'moved-root')
+                with self.assertRaises(OSError):group.rename(root/'moved-group')
+                with tree.scan(directory) as scan:entry=next(scan)
+                fd=tree.open_file(directory,entry,tree.info(directory,entry))
+                with os.fdopen(fd,'rb') as source:
+                    with self.assertRaises(OSError):target.write_bytes(b'competing writer')
+                    replacement=Path(tmp)/'replacement';replacement.write_bytes(b'replacement')
+                    with self.assertRaises(OSError):os.replace(replacement,target)
+                    self.assertEqual(source.read(),b'synthetic before')
+                target.write_bytes(b'after close')
+                # A pre-existing writer causes a sharing violation, rather than
+                # returning an unstable inventory fingerprint.
+                with target.open('r+b'):
+                    result=cache.inventory_codex_memories(Path(tmp))
+                    self.assertEqual(result['counts'],{'unavailable':1})
+            finally:tree.close()
+            group.rename(root/'released-group')
+            root.rename(Path(tmp)/'released-root')
+
+    def test_unicode_codex_home_full_review_and_offline_restart_use_existing_outbox(self):
+        from content_cache import ContentAdapter
+        from content_mcp import ContentServer
+        helper=memory_inventory.base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        helper.setUp();self.addCleanup(helper.doCleanups)
+        native=helper.home/'中文 Codex 目录';root=native/'memories'/'中文目录';root.mkdir(parents=True)
+        (root/'经历.md').write_bytes('合成事实：本周更正了指示牌。'.encode('utf-8'))
+        def restart():return ContentAdapter(helper.home,helper.cache,memory_inventory.base.POLICY,helper.cloud,codex_home=native)
+        adapter=restart();server=ContentServer(adapter)
+        row=server.invoke('content_sources_inventory',{})['structuredContent']['sources'][0]
+        params={'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint']}
+        body=server.invoke('content_sources_read',params)['structuredContent']
+        self.assertEqual(body['text'],'合成事实：本周更正了指示牌。')
+        self.assertFalse(body['data_transferred']);self.assertEqual(helper.cloud.calls,[])
+        server.invoke('content_sources_review',dict(params,decision='shareable',reason_code='safe-cross-project-personal-summary'))
+        record={'title':'Synthetic progress','description':'Synthetic Windows fixture','body':'Synthetic normalized experience','type':'feedback'}
+        staged=server.invoke('content_sources_stage',dict(params,id='synthetic-topic',record=record))['structuredContent']
+        self.assertFalse(staged['data_transferred']);self.assertEqual(helper.cloud.calls,[])
+        helper.cloud.offline=True
+        saved=server.invoke('content_put',{'kind':'memory','id':'synthetic-topic','record':record,'expected_revision':'missing',
+            'request_id':'synthetic_windows_memory_001','reconciles':{'request_ids':[],'source_keys':[staged['source_key']]}})
+        self.assertEqual(saved['structuredContent']['local_queue']['state'],'pending')
+        self.assertFalse(saved['structuredContent']['persistence']['durable'])
+        helper.cloud.offline=False;restored=restart();restored.refresh()
+        self.assertEqual(helper.cloud.puts,1)
+        self.assertEqual(helper.cloud.records[('memory','synthetic-topic')],record)
+        self.assertEqual(restored.import_status()['counts'],{'reconciled':1})
+        self.assertEqual(restored.queue_status()['confirmed'],1)
+        self.assertNotIn(body['text'],(helper.cache/'memory-inventory.json').read_text(encoding='utf-8'))
+
 
 if __name__ == '__main__': unittest.main()
