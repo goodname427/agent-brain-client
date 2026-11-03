@@ -1,0 +1,113 @@
+{
+  "schema": 1,
+  "product": "Agent Brain Client",
+  "stage_version": "0.5",
+  "freeze_date": "2026-11-03",
+  "scope": "Client only; independent of Server freeze or software version",
+  "source": {
+    "implementation_and_documentation_base_commit": "b2e5b9abcbd2ff6dc5cdac827301cbc62f9b5de4",
+    "freeze_ref": "refs/tags/agent-brain-client-0.5-freeze-20261103",
+    "final_commit_resolution": "agent-brain-client-0.5-freeze-20261103^{commit}",
+    "final_commit_note": "The annotated tag fixes the final merged source including this record; its annotation records the exact commit. No self-referential commit hash is embedded in this file.",
+    "documentation_prs": [
+      79,
+      80
+    ]
+  },
+  "installer": {
+    "version": "0.5.9",
+    "source_commit": "c898f4f52b1194c2d9c2ea9cbd846af820e4adb8",
+    "tag": "installer-0.5.9-windows-setup"
+  },
+  "windows_runtime": {
+    "version": "0.5.9",
+    "commit": "db623a805e726e8f1cbc980254c56f3a45bb1e4e",
+    "tag": "client-0.5.9-windows",
+    "channel_ref_observed": "refs/heads/releases/personal-https-windows-stable",
+    "manifest_sha256": "3dca189ee399bdb326272a9ae35ebf10e346460cf218525c1b2898e760ab8eca",
+    "manifest_file_count": 21,
+    "platforms": [
+      "win32-amd64",
+      "win32-arm64"
+    ]
+  },
+  "compatibility": {
+    "core_api": 1,
+    "state_schema": 1,
+    "python_min": "3.11"
+  },
+  "ci": {
+    "workflow": "Client checks",
+    "baseline_run_id": 41592591088,
+    "baseline_head_sha": "b2e5b9abcbd2ff6dc5cdac827301cbc62f9b5de4",
+    "baseline_conclusion": "success",
+    "baseline_jobs": [
+      "isolated-client",
+      "windows-contracts (3.11)",
+      "windows-contracts (3.13)"
+    ],
+    "final_gate": "Freeze tag is created only after the documentation PR has passed checks, has no blocking review, is merged, and final main Client checks succeeds. The annotated tag records the final CI URL."
+  },
+  "acceptance": {
+    "windows_installation": "User confirmed installation and acceptance passed; device architecture and itemized stage/model evidence were not supplied.",
+    "server_catalog": "Prior authorized verification reported win32-amd64 and win32-arm64 catalogs each matched 21 files for 0.5.9; not rerun by this Client freeze.",
+    "arm64_hardware": "Not tested",
+    "all_scenarios_accepted": false
+  },
+  "known_issues": [
+    {
+      "id": "windows-memory-read-timeout",
+      "status": "open",
+      "description": "Windows memory_query and content_read previously timed out at 120 seconds; root cause unknown; subsequent installation acceptance does not establish resolution."
+    },
+    {
+      "id": "mac-memory-save-error",
+      "status": "open",
+      "description": "User reported a Mac save error and requested a later fix; no resolution claimed."
+    }
+  ],
+  "deferred_candidates": [
+    {
+      "id": "onboarding-content-balance",
+      "status": "paused-by-user",
+      "description": "Onboarding content leaned toward long-term themes; user requested no change for now."
+    }
+  ],
+  "unchanged": {
+    "mac_channels": "All existing channel refs retained; no promotion",
+    "legacy_freeze": "FREEZE-4.0.json and agent-brain-product-4.0-* tags retain original bytes and names; historical 4.0 means stage 0.4",
+    "production": "No redeploy, release publication, latest pointer or runtime channel update; no Server mutation"
+  },
+  "assets": [
+    {
+      "name": "agent-brain-client-installer-0.5.9-source.tar.gz",
+      "size": 429969,
+      "sha256": "7093789489f3ad8d33c85bd3c6111b4d72539dd60cb88832d7608bd42a6c845e",
+      "url": "https://github.com/goodname427/agent-brain-client/releases/download/installer-0.5.9-windows-setup/agent-brain-client-installer-0.5.9-source.tar.gz"
+    },
+    {
+      "name": "installer-0.5.9-SHA256SUMS.txt",
+      "size": 115,
+      "sha256": "1c3933f7cbe4baded723e6a19c509acbfd14a5dd11017d4a239521ea870f2299",
+      "url": "https://github.com/goodname427/agent-brain-client/releases/download/installer-0.5.9-windows-setup/installer-0.5.9-SHA256SUMS.txt"
+    },
+    {
+      "name": "agent-brain-client-runtime-windows-amd64-0.5.9.tar.gz",
+      "size": 127076,
+      "sha256": "afd033e8d61568cc9a95eff8da233d4a316e52c5826e16dc42403341b3ba9a5b",
+      "url": "https://github.com/goodname427/agent-brain-client/releases/download/client-0.5.9-windows/agent-brain-client-runtime-windows-amd64-0.5.9.tar.gz"
+    },
+    {
+      "name": "agent-brain-client-runtime-windows-arm64-0.5.9.tar.gz",
+      "size": 127071,
+      "sha256": "795075f36f7418c576bf27a45020d1dcfcd4167eda6be38800ce7700cab1de55",
+      "url": "https://github.com/goodname427/agent-brain-client/releases/download/client-0.5.9-windows/agent-brain-client-runtime-windows-arm64-0.5.9.tar.gz"
+    },
+    {
+      "name": "runtime-0.5.9-SHA256SUMS.txt",
+      "size": 240,
+      "sha256": "023b3480aa629a712ed4b501de43a45daa3f5431a319c094f02a9ce4be3a07ad",
+      "url": "https://github.com/goodname427/agent-brain-client/releases/download/client-0.5.9-windows/runtime-0.5.9-SHA256SUMS.txt"
+    }
+  ]
+}
