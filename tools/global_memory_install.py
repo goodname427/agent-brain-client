@@ -264,11 +264,13 @@ def freeze_code(directory, pins):
     from codex_connect import atomic
     from global_memory import ROOT
     root = directory / 'code' / old.digest(json.dumps(pins, sort_keys=True).encode())
+    old.canonical(root)  # Reject linked ancestors before creating any cache.
     for parent in (directory / 'code', root):
         private_directory(parent)
         private_mode(parent, directory=True, owner=True)
     for name, pin in pins.items():
         target = root / name
+        old.canonical(target)
         private_directory(target.parent)
         private_mode(target.parent, directory=True, owner=True)
         if target.exists():

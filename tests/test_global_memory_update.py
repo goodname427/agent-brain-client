@@ -277,6 +277,19 @@ class GlobalMemoryUpdate(unittest.TestCase):
         with self.assertRaises(ValueError):
             hooks.refresh(self.home)
 
+    def test_linked_code_cache_is_rejected_without_writing_outside(self):
+        outside = private_directory(self.home / "outside-cache")
+        try:
+            (self.file.parent / "code").symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest("Native token cannot create synthetic directory links")
+        before = self.config.read_bytes()
+        with self.assertRaises(ValueError):
+            hooks.refresh(self.home)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(old.private_json(self.file), self.value)
+
 
 if __name__ == "__main__":
     unittest.main()
