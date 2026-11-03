@@ -19,10 +19,10 @@
     "adapters/codex/content_cache.py": "09871d0a3ffcff7f9e8bd8b38be659c562c9ed158d10e5de3204676f165d7d92",
     "adapters/codex/content_contract.py": "d31b506060ffe5f19d97f59a59fbc00797e9df72600bc0f9ee1fa2ddbe1dc1af",
     "adapters/codex/content_install.py": "2f250e21fb6ccf8455ee033bdc40a23ca98803e66529fcea0628fe87c210cf80",
-    "adapters/codex/content_mcp.py": "bd6ff0658b06e5abaa30c8e0b96a5bdbc814c0462c2f3e7b8f984b7e9bcb0707",
+    "adapters/codex/content_mcp.py": "def00ec341af1537b172721cfe2ff6de25514e601cc9d3317a47e9097804f465",
     "adapters/codex/https_content.py": "ebb2346be885fcc8b20be995f5444a6f39a20a185292d762969675096984c769",
     "adapters/codex/remote_http.py": "cc216a95f16f31e3b423fbfdbd29e847c03bbd849f34829626530d8d6762ce69",
-    "adapters/codex/remote_mcp.py": "87ec652505609976b24acaae0fe9ca6426a199d3498bf501cff4897b6877a772",
+    "adapters/codex/remote_mcp.py": "0b30b93923f53f6afb03f91e3091cafd8e91339d8d044a04827ca16617e1d3a7",
     "adapters/codex/system_credentials.py": "2b41da8aabf72557071919e7aee392ece36d485430e3597fbd266b38853e0e2c",
     "connect.py": "1604bcecdd5f8787f28c4cd151dec5179ddbb52f569a56f1fb5047eaa6b944a0",
     "native/CredentialStore.swift": "aecf2f86ff6412ed77485dd40e056c2a4a40483a11569de500d172345b65c100",
@@ -33,5 +33,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.6.0"
+  "version": "0.6.1"
 }

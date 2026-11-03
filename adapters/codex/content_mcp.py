@@ -13,7 +13,7 @@ import threading
 import uuid
 from typing import Any
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from remote_mcp import Server,ProtocolError,keys,pairs,MAX_MESSAGE
+from remote_mcp import Server,ProtocolError,keys,pairs,MAX_MESSAGE,write_response
 from content_cache import CacheBlocked,ContentAdapter,contract,validate_policy,operation_diagnostics,ROOT as CLIENT_ROOT
 from client_pairing import ComponentClient
 from brain_lock import LockTimeout,PlatformUnsupported,require_platform,private_mode,locked
@@ -463,7 +463,7 @@ def serve(server, source, output, *, request_timeout=90, max_pending=256):
         with output_lock:
             if disconnected.is_set():return
             try:
-                output.write(json.dumps(response,ensure_ascii=False)+'\n');output.flush()
+                write_response(output,response)
                 return
             except (OSError,ValueError):disconnected.set()
         # A closed output cannot acknowledge more work. Keep active durable
