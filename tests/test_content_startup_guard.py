@@ -24,7 +24,7 @@ class StartupGuard(unittest.TestCase):
 
     def call(self,**options):
         result={'status':self.status,'active':copy.deepcopy(self.active)}
-        fixed=SimpleNamespace(policy=self.policy,update=lambda:result,verified_active=lambda:self.active)
+        fixed=SimpleNamespace(policy=self.policy,update=lambda:result,verified_active=lambda **kwargs:self.active,startup_check=lambda:None)
         with patch.object(startup,'ClientReleases',return_value=fixed),patch.object(startup.subprocess,'run') as serve,patch('content_install.inspect',return_value={'installed':True}):
             serve.return_value=SimpleNamespace(returncode=0)
             value=startup.startup('unused-policy','a'*64,**options)
@@ -109,7 +109,7 @@ class StartupGuard(unittest.TestCase):
 
     def test_removed_registration_after_initial_inspect_cannot_launch_worker(self):
         self.active['version']='0.2.5'
-        fixed=SimpleNamespace(policy=self.policy,update=lambda:{'status':'current','active':self.active},verified_active=lambda:self.active)
+        fixed=SimpleNamespace(policy=self.policy,update=lambda:{'status':'current','active':self.active},verified_active=lambda **kwargs:self.active,startup_check=lambda:None)
         with patch.object(startup,'ClientReleases',return_value=fixed),patch.object(startup.subprocess,'run') as serve,patch('content_install.inspect',side_effect=[{'installed':True},{'installed':False}]):
             result=startup.startup('unused-policy','a'*64)
         self.assertEqual(result['status'],'content-native-install-pending');self.assertFalse(result['served']);serve.assert_not_called()

@@ -1,4 +1,4 @@
-"""Fixed approved SSH MCP startup: check pinned client releases, then serve.
+"""Fixed approved MCP startup: serve a verified snapshot, coordinate one check.
 
 Deploy this bootstrap and its dependencies in a reviewed fixed directory; pass
 the policy digest through the forced SSH command. No daemon or native rewriting.
@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from client_release import ClientReleases,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES,LEGACY_PRESERVATION,DEPENDENCY_RUNTIME,version
@@ -112,9 +113,16 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
         # Per-turn capture must never install, refresh or move an active release.
         # Constructor and verified_active retain the normal release trust chain.
         if event_hook and (check_only or installation_check or bootstrap_check):raise ValueError('Distinct hook mode required')
-        active=releases.verified_active()
+        active=releases.verified_active(serving=True)
         result={'status':'current','active':active}
-    else:result=releases.update()
+    elif check_only or installation_check:result=releases.update()
+    else:
+        try:active=releases.verified_active(serving=True)
+        except Exception:
+            return {'status':'client-startup-retry-required','served':False,
+                    'diagnostic':{'stage':'release-snapshot','error_code':'verified-snapshot-unavailable'},
+                    'next_action':'Retry the normal MCP connection after the update completes; preserve the release transaction and packages.'}
+        result={'status':'current','active':active}
     if result.get('diagnostic') and not check_only:
         print(json.dumps(result['diagnostic']),file=sys.stderr)
     active=result.get('active')
@@ -122,10 +130,20 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
         if check_only:return result
         return {'status':result['status'],'served':False,'next_action':'A verified compatible client is required before serving MCP.'}
     # ReleaseEngine.active rechecks every package hash before execution.
-    active=releases.verified_active();runtime=releases.policy['runtime']
+    if check_only or installation_check:active=releases.verified_active()
+    elif event_hook:active=releases.verified_active(serving=True)
+    runtime=releases.policy['runtime']
     blocked=content_runtime_blocker(active,releases.policy)
     if blocked:return dict(result,**blocked)
     if check_only:return result
+    if not installation_check and not event_hook:
+        # The selected package is immutable. A later successful update affects
+        # only future workers; this thread performs no native registration.
+        try:
+            threading.Thread(target=releases.startup_check,daemon=True,
+                             name='agentbrain-startup-check').start()
+        except RuntimeError:
+            print(json.dumps({'stage':'release-check','error_code':'background-check-not-started'}),file=sys.stderr)
     if releases.policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES):
         if not installation_check:
             from content_install import inspect

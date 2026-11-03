@@ -454,7 +454,7 @@ def inspect(home):
             if set(owned)!={'policy_sha','binding','files'} or owned['binding']!=binding or owned['policy_sha']!=sha(contract.encode({'policy':content,'binding':binding})) or owned['files'].get('.codex/AGENTS.md')!=current or BEGIN.encode() in raw(path) or END.encode() in raw(path):raise InstallBlocked('Mapped instruction ownership drift')
         if receipt.get('phase')!='complete' or receipt.get('plan_sha256')!=meta['plan_sha256'] or package_sha!=meta['package_sha256'] or meta.get('mcp_sha256')!=registered_mcp_digest(mcp) or tomllib.loads(raw(native/'config.toml').decode()).get('mcp_servers',{}).get(NAME)!=mcp:raise InstallBlocked('Installed ownership drift')
         stage='active-release-review-required'
-        active=ClientReleases(meta['release_policy'],meta['release_policy_sha256'],inspection=True).verified_active()
+        active=ClientReleases(meta['release_policy'],meta['release_policy_sha256'],inspection=True).verified_active(serving=True)
         if active is None:raise InstallBlocked('Verified client version missing')
         enabled=mcp.get('enabled') is True
         return {'status':'content-native-client-installed' if enabled else 'content-native-client-disabled','installed':enabled,'registration_verified':True,'installation_present':True,'installation_state':'verified' if enabled else 'verified-disabled','native_changed':False,'protocol_checked':True,'model_loaded':'unknown','installed_version':active['version'],'update_checkpoint':'approved-MCP-startup'}

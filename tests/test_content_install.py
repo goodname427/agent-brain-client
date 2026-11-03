@@ -63,7 +63,7 @@ class ContentInstall(unittest.TestCase):
         with patch.object(sys,'argv',['connect.py','--agent','codex','--content-install-plan',str(path),'--plan-sha256',self.digest(plan)]),patch.object(sys,'stdout',output):
             self.assertEqual(remote_connect.main(),0)
         self.assertEqual(json.loads(output.getvalue())['status'],'content-native-install-ready')
-        fixed=SimpleNamespace(policy=self.policy,verified_active=lambda:self.active,update=lambda:{'status':'current','active':self.active})
+        fixed=SimpleNamespace(policy=self.policy,verified_active=lambda **kwargs:self.active,startup_check=lambda:None,update=lambda:{'status':'current','active':self.active})
         with patch.object(client_startup,'ClientReleases',return_value=fixed),patch.object(client_startup.subprocess,'run') as launch:
             self.assertEqual(client_startup.startup(self.policy_path,self.policy_sha)['status'],'content-native-install-pending');launch.assert_not_called()
 
