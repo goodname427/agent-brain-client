@@ -1,0 +1,92 @@
+name: Client release
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Exact merged Client source SHA (40 characters)
+        required: true
+        type: string
+      version:
+        description: auto selects the next Windows patch; otherwise major.minor.patch
+        default: auto
+        type: string
+      publish:
+        description: Publish immutable releases and advance the Windows channel
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: client-windows-release
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: macos-15
+    outputs:
+      bundle: client-release-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Prepare and validate without publication credentials
+        env:
+          RELEASE_SOURCE: ${{ inputs.source }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: python -B tools/release_client.py prepare --source "$RELEASE_SOURCE" --version "$RELEASE_VERSION" --output .local/release
+      - name: Preserve bundle and diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: client-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/release/
+          include-hidden-files: true
+          retention-days: 14
+          if-no-files-found: error
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -f .local/release/progress.json ]; then
+            cat .local/release/progress.json >> "$GITHUB_STEP_SUMMARY"
+          fi
+  publish:
+    if: inputs.publish && github.ref == 'refs/heads/main'
+    needs: prepare
+    runs-on: macos-15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.source }}
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ needs.prepare.outputs.bundle }}
+          path: .local/release
+      - name: Publish, promote and read back exact bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -B tools/release_client.py publish --output .local/release --allow-publish
+      - name: Preserve publication evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: client-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/release/
+          include-hidden-files: true
+          retention-days: 14
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -f .local/release/progress.json ]; then
+            cat .local/release/progress.json >> "$GITHUB_STEP_SUMMARY"
+          fi
