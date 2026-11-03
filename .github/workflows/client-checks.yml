@@ -137,8 +137,7 @@ jobs:
           $env:USERPROFILE = "$testRoot/home"
           $env:CODEX_HOME = "$testRoot/codex"
           $env:PYTHONPATH = '.;scripts;adapters/codex;tools;tests'
-          python -B -m unittest test_startup_concurrency
-          python -B -m unittest test_global_memory_update
+          python -B -m unittest test_startup_concurrency test_global_memory_update
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -B -m unittest test_install_contracts.Contracts test_install_contracts.PlatformMainContracts test_windows_native test_source_paths test_access_install test_bootstrap_main test_pending_install_recovery test_platform_checkpoint
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
