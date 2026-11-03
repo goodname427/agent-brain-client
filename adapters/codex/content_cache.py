@@ -289,6 +289,10 @@ class ContentAdapter:
         native=Path(codex_home or os.environ.get('CODEX_HOME',str(self.home/'.codex'))).expanduser()
         if not native.is_absolute() or native.is_symlink():raise CacheBlocked()
         self.native_home=native.resolve();self.binding={'device_home':str(self.home),'codex_home':str(self.native_home)}
+        # Keep the configured Windows spelling for memory reads: resolving it
+        # here would hide a CODEX_HOME junction from the pinned reader. Existing
+        # canonical cache bindings and Rule/Skill mapping remain unchanged.
+        self.native_memory_home=native if os.name=='nt' else self.native_home
         self.policy=policy;self.policy_sha=sha(contract.encode({'policy':policy,'binding':self.binding}));self.health=health or (lambda:None);self.offline_denied=False
         # Bind pending writes to a service/principal, independently of source/data Git.
         self.queue_sha=sha(contract.encode({'policy_sha':self.policy_sha,'service':getattr(client,'queue_identity',getattr(client,'grant',None))}))
@@ -611,7 +615,7 @@ class ContentAdapter:
         """
         require_platform('cache-storage',self.platform)
         with locked(self.cache/'content.lock'):
-            fresh=inventory_codex_memories(self.native_home)
+            fresh=inventory_codex_memories(self.native_memory_home)
             previous=self._load('memory-inventory.json',None)
             if previous is not None and (not isinstance(previous,dict) or
                     set(previous)!={'schema','binding','cursor','status','sources'} or
@@ -691,7 +695,7 @@ class ContentAdapter:
             key=sha(contract.encode([source_id,fingerprint]));row=inventory['sources'].get(key)
             if row is None or row.get('source_id')!=source_id or row.get('source_fingerprint')!=fingerprint or row.get('status') not in ('not-checked','read'):
                 raise CacheBlocked()
-            root=self.native_home/'memories'
+            root=self.native_memory_home/'memories'
             try:tree=_memory_tree(root)
             except OSError:raise CacheBlocked() from None
             pending=[(tree.root,'',0)];entries_seen=0;directories_seen=0;file_fd=None

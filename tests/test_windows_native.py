@@ -693,6 +693,27 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
             try:self.assertEqual(inventory_codex_memories(ancestor)['status'],'unavailable')
             finally:ancestor.rmdir()
 
+    def test_configured_codex_home_junction_cannot_be_hidden_by_binding_resolution(self):
+        from content_cache import ContentAdapter, CacheBlocked, inventory_codex_memories
+        helper=memory_inventory.base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        helper.setUp();self.addCleanup(helper.doCleanups)
+        physical=helper.home/'physical';root=physical/'memories';root.mkdir(parents=True)
+        (root/'one.md').write_bytes(b'synthetic physical source')
+        alias=helper.home/'configured-codex';self.junction(alias,physical)
+        adapter=ContentAdapter(helper.home,helper.cache,memory_inventory.base.POLICY,helper.cloud,codex_home=alias)
+        self.assertEqual(adapter.native_home,physical.resolve())
+        self.assertEqual(adapter.binding['codex_home'],str(physical.resolve()))
+        self.assertEqual(adapter.inventory_memory_sources()['status'],'unavailable')
+        row=inventory_codex_memories(physical)['sources'][0]
+        # Even an existing ledger bound to the same canonical path must not
+        # bypass the original configured-path reparse check on body reads.
+        key=memory_inventory.contract.encode([row['source_id'],row['source_fingerprint']])
+        from content_cache import sha
+        adapter._save('memory-inventory.json',{'schema':1,'binding':adapter.binding,'cursor':'synthetic',
+            'status':'complete','sources':{sha(key):row}})
+        with self.assertRaises(CacheBlocked):adapter.read_memory_source(row['source_id'],row['source_fingerprint'])
+        self.assertEqual(helper.cloud.calls,[])
+
     def test_directory_swap_attempt_fails_closed_and_later_junction_read_is_blocked(self):
         from unittest.mock import patch
         import content_cache as cache

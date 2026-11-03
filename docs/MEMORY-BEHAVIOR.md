@@ -14,7 +14,7 @@ memory_query(kind=memory,query='',since=null,until=null,limit=3)只读当前有�
 
 `content_sources_inventory` 只盘点当前绑定的 `CODEX_HOME/memories` 树，返回既有 `codex-memory:<相对路径 SHA-256>` 来源 ID、文件内容 SHA-256 和状态，不返回正文或本地路径。中文目录和文件名使用 UTF-8 计算 ID，子目录分隔符统一为 `/`；两平台使用同一格式。默认限制为 1024 个目录条目、1024 个文件、16 层子目录、单文件 128 KiB、总正文 16 MiB。缺少原生目录返回 `unavailable`，遍历受限或文件不可读返回 `incomplete`，不冒称已完成账户覆盖。
 
-Windows 使用 `CreateFileW` 的 `OPEN_EXISTING`、`FILE_FLAG_OPEN_REPARSE_POINT` 和 `FILE_FLAG_BACKUP_SEMANTICS`，检查实际句柄类型和 reparse 属性；从路径锚点到原生目录的各级目录在整个操作期间保持打开，仅共享读取。junction、符号链接、挂载点和其他 reparse 来源不跟随；正文句柄同样排斥写入和删除。目录或文件正忙、枚举后对象被替换或无法验证时返回不可用，不降级为普通路径读取。句柄会在成功、失败或触及遍历限制后释放。此实现不修改原生文件、DACL、设备来源授权或安装信任。
+Windows 使用 `CreateFileW` 的 `OPEN_EXISTING`、`FILE_FLAG_OPEN_REPARSE_POINT` 和 `FILE_FLAG_BACKUP_SEMANTICS`，检查实际句柄类型和 reparse 属性；Windows 记忆入口保留配置路径，避免绑定路径规范化掩盖 `CODEX_HOME` junction；从路径锚点到原生目录的各级目录在整个操作期间保持打开，仅共享读取。junction、符号链接、挂载点和其他 reparse 来源不跟随；正文句柄同样排斥写入和删除。目录或文件正忙、枚举后对象被替换或无法验证时返回不可用，不降级为普通路径读取。句柄会在成功、失败或触及遍历限制后释放。此实现不修改原生文件、DACL、设备来源授权或安装信任。
 
 调用者明确选择一条来源后，`content_sources_read` 重新进行有界遍历，核对打开对象与枚举对象身份，再核对读取前后元数据、大小和内容指纹，严格按 UTF-8 解码。正文只返回本地 MCP 调用者；盘点和审阅账本不保留原文。文件替换或内容变化后，旧指纹不能读取新正文；重新盘点得到新指纹后重新读取与审阅。
 
