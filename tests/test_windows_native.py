@@ -693,7 +693,7 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
             try:self.assertEqual(inventory_codex_memories(ancestor)['status'],'unavailable')
             finally:ancestor.rmdir()
 
-    def test_junction_substituted_after_stat_is_unavailable_and_read_is_blocked(self):
+    def test_directory_swap_attempt_fails_closed_and_later_junction_read_is_blocked(self):
         from unittest.mock import patch
         import content_cache as cache
         helper=memory_inventory.base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
@@ -712,9 +712,16 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
                 result=cache.inventory_codex_memories(helper.adapter.native_home)
             changed=next(item for item in result['sources'] if item['status']=='unavailable')
             self.assertIsNone(changed['source_fingerprint'])
+            # Windows may reject the rename itself while the parent is pinned.
+            # Once the scan releases its handles, also exercise an actual
+            # junction substitution between inventory and explicit body read.
+            if not cache._memory_link(group.lstat()):
+                group.rename(root/'retained')
+                self.junction(group,outside)
+            self.assertTrue(cache._memory_link(group.lstat()))
             with self.assertRaises(cache.CacheBlocked):helper.adapter.read_memory_source(row['source_id'],row['source_fingerprint'])
         finally:
-            if group.exists():group.rmdir()
+            if group.exists() and cache._memory_link(group.lstat()):group.rmdir()
 
     def test_pinned_directories_and_files_exclude_replacement_and_writers(self):
         import content_cache as cache
