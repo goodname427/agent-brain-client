@@ -177,6 +177,14 @@ def pairs(items):
     return result
 
 
+def write_response(output, response):
+    # MCP is UTF-8 JSON, but redirected Python stdout may use GBK/cp1252.
+    # Escape only the outer envelope: ASCII is valid UTF-8 on all supported
+    # code pages, and JSON decoding restores every nested Unicode value.
+    output.write(json.dumps(response, ensure_ascii=True) + '\n')
+    output.flush()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--endpoint', required=True)
@@ -207,7 +215,7 @@ def main():
             response = {'jsonrpc': '2.0', 'id': response_id, 'error': {'code': error.code, 'message': error.message}}
         except Exception:
             response = {'jsonrpc': '2.0', 'id': response_id, 'error': {'code': -32700, 'message': 'Invalid JSON message.'}}
-        print(json.dumps(response, ensure_ascii=False), flush=True)
+        write_response(sys.stdout, response)
         if len(raw) > MAX_MESSAGE:
             break
 
