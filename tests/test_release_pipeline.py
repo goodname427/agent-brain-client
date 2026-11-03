@@ -237,14 +237,33 @@ class ReleasePipeline(unittest.TestCase):
         api = rc.GitHub()
         rows = [{'head_sha': 'a' * 40, 'conclusion': 'cancelled', 'head_repository': {'full_name': rc.REPOSITORY}},
                 {'head_sha': 'b' * 40, 'conclusion': 'success', 'head_repository': {'full_name': rc.REPOSITORY},
+                 'event': 'pull_request', 'pull_requests': [{'base': {'ref': 'main', 'sha': 'c' * 40}}],
                  'id': 12, 'html_url': 'https://example.invalid/run/12'}]
         def request(path):
+            if '/compare/' in path:
+                return {'status': 'ahead'}
             return {'workflow_runs': rows} if '/actions/' in path else {'tree': {'sha': plan['source_tree']}}
         with patch.object(api, 'request', side_effect=request):
             self.assertEqual(api.ci(plan)['run_id'], 12)
             rows[1]['conclusion'] = 'failure'
             with self.assertRaises(ValueError):
                 api.ci(plan)
+
+    def test_pr_merge_with_base_changes_cannot_certify_the_head_tree(self):
+        plan, _ = fixture()
+        api = rc.GitHub()
+        row = {'head_sha': 'b' * 40, 'conclusion': 'success', 'head_repository': {'full_name': rc.REPOSITORY},
+               'event': 'pull_request', 'pull_requests': [{'base': {'ref': 'main', 'sha': 'c' * 40}}],
+               'id': 12, 'html_url': 'https://example.invalid/run/12'}
+        def request(path):
+            if '/compare/' in path:
+                return {'status': 'diverged'}
+            return {'workflow_runs': [row]} if '/actions/' in path else {'tree': {'sha': plan['source_tree']}}
+        with patch.object(api, 'request', side_effect=request):
+            with self.assertRaises(ValueError):
+                api.ci(plan)
+            row.update(event='push', head_branch='main')
+            self.assertEqual(api.ci(plan)['run_id'], 12)
 
 
 if __name__ == '__main__':

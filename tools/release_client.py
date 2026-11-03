@@ -303,12 +303,24 @@ class GitHub:
                 if head in seen:
                     continue
                 seen.add(head)
-                if row['conclusion'] != 'success' or row['head_repository']['full_name'] != REPOSITORY:
+                if row['conclusion'] != 'success' or (row.get('head_repository') or {}).get('full_name') != REPOSITORY:
                     continue
                 candidate = self.request('/git/commits/' + head)
-                if candidate['tree']['sha'] == plan['source_tree']:
-                    return {'run_id': row['id'], 'url': row['html_url'], 'head': head,
-                            'source_tree': plan['source_tree'], 'conclusion': 'success'}
+                if candidate['tree']['sha'] != plan['source_tree']:
+                    continue
+                if row['event'] == 'pull_request':
+                    prs = row.get('pull_requests', [])
+                    if len(prs) != 1 or prs[0]['base']['ref'] != 'main':
+                        continue
+                    comparison = self.request('/compare/' + prs[0]['base']['sha'] + '...' + head)
+                    # PR checkout tests a synthetic merge. Only reuse it when
+                    # the base contributes no bytes beyond the recorded head.
+                    if not comparison or comparison['status'] not in ('ahead', 'identical'):
+                        continue
+                elif row['event'] != 'push' or row['head_branch'] != 'main':
+                    continue
+                return {'run_id': row['id'], 'url': row['html_url'], 'head': head,
+                        'source_tree': plan['source_tree'], 'conclusion': 'success'}
             if len(result['workflow_runs']) < 100:
                 break
         raise ValueError('Successful Client checks for the exact source tree required (PR or main)')
