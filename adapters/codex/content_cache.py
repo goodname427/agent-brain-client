@@ -4,6 +4,8 @@ The embedding approved transport owns authentication. Refresh at startup/tool
 boundaries is automatic when this candidate is wired; no new daemon is created.
 """
 import base64
+from contextlib import ExitStack,contextmanager
+from contextvars import ContextVar
 import hashlib
 import itertools
 import json
@@ -33,6 +35,36 @@ REVIEW_DECISIONS={'shareable':{'safe-cross-project-personal-summary'},
 
 class CacheBlocked(Exception):pass
 def sha(raw):return hashlib.sha256(raw).hexdigest()
+
+
+_operation_diagnostic:ContextVar[dict[str,str]|None]=ContextVar('content_operation_diagnostic',default=None)
+
+
+@contextmanager
+def operation_diagnostics():
+    """One call's path-free progress; never retain requests or exception text."""
+    diagnostic={'stage':'adapter-invoke'}
+    token=_operation_diagnostic.set(diagnostic)
+    try:yield diagnostic
+    finally:_operation_diagnostic.reset(token)
+
+
+@contextmanager
+def operation_stage(stage):
+    diagnostic=_operation_diagnostic.get()
+    previous=diagnostic['stage'] if diagnostic is not None else 'adapter-invoke'
+    if diagnostic is not None:diagnostic['stage']=stage
+    try:yield
+    except Exception:raise  # Retain the innermost failing stage until call exit.
+    else:
+        if diagnostic is not None:diagnostic['stage']=previous
+
+
+@contextmanager
+def operation_lock(path,stage):
+    with ExitStack() as stack:
+        with operation_stage(stage):handle=stack.enter_context(locked(path))
+        yield handle
 
 
 def _memory_link(info):
@@ -389,8 +421,9 @@ class ContentAdapter:
         # which may wait on remote I/O. Native events can become durable pending
         # rows before that wait; existing rows are only checked, never rewritten.
         path=self.cache/'outbox-enqueue.lock';self._safe(path,self.cache)
-        with locked(path):
-            return self._enqueue_locked(request,reconciles)
+        with operation_lock(path,'outbox-lock'):
+            with operation_stage('outbox-enqueue'):
+                return self._enqueue_locked(request,reconciles)
 
     def _enqueue_locked(self,request,reconciles=None):
         self._check_write(request)
@@ -497,7 +530,10 @@ class ContentAdapter:
                     row.update(state='blocked',response=response)
                 else:break
                 blocked.setdefault(target,set()).add(request['request_id'])
-            self._save('outbox/'+request['request_id']+'.json',row);self._finish_reconciliation(row)
+            with operation_stage('outbox-confirmation'):
+                self._save('outbox/'+request['request_id']+'.json',row)
+            with operation_stage('outbox-reconciliation'):
+                self._finish_reconciliation(row)
 
     def queue_status(self):
         rows=self._queued()
@@ -1178,7 +1214,7 @@ class ContentAdapter:
         kinds=params['kinds'] if method=='content_catalog' else [params['kind']]
         if any(kind not in self.policy['kinds'] for kind in kinds) or method!='content_catalog' and not self._allows(params['kind'],params['id']):raise CacheBlocked()
         if method in contract.WRITES:
-            with locked(self.cache/'content.lock'):
+            with operation_stage('content-write'),operation_lock(self.cache/'content.lock','content-lock'):
                 row=self._enqueue(request,reconciles)  # Precedes every transport/mapping operation.
                 if not self._event_allowed(request,event_gate):
                     return dict(self._queue_result(row),local_refresh={'status':'event-disabled','native_changed':False,'model_loaded':'unknown'})
@@ -1203,7 +1239,10 @@ class ContentAdapter:
                         if self._server_saved(response,request):
                             row['response']=response;self._save('outbox/'+request['request_id']+'.json',row)
                     except Exception:pass
-                self._drain(request['request_id'] if method=='memory_event_submit' else None,event_gate=event_gate);result=self._queue_result(self._load('outbox/'+request['request_id']+'.json'))
+                with operation_stage('outbox-drain'):
+                    self._drain(request['request_id'] if method=='memory_event_submit' else None,event_gate=event_gate)
+                with operation_stage('outbox-result'):
+                    result=self._queue_result(self._load('outbox/'+request['request_id']+'.json'))
         else:
             # A live read already goes through the authenticated Server. Mapping
             # every artifact twice here turned a batch into quadratic transport.
