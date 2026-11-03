@@ -6,6 +6,8 @@
 
 ## 隔离检查
 
+二三级记忆的入口、跨设备合同与无正文回执见 [L2/L3 召回验收](layered-recall.md)。
+
 ```sh
 TEST_ROOT=$(mktemp -d)
 mkdir -p "$TEST_ROOT/home" "$TEST_ROOT/codex"
