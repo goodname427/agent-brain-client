@@ -68,6 +68,10 @@ def changed_paths(base, head, root=ROOT):
         if old[1:] not in ('000000', '100644', '100755') or new not in ('000000', '100644', '100755'):
             raise ValueError('Linked or external change')
         name = fields[index + 1].decode('utf-8')
+        # Root Markdown is part of fixed package/entrypoint file sets. Text-only
+        # edits remain documentation-only; structural changes need build coverage.
+        if name.endswith('.md') and '/' not in name and status in ('A', 'D'):
+            raise ValueError('Root documentation file set changed')
         if name.endswith('.md') and any(mode not in ('000000', '100644') for mode in (old[1:], new)):
             raise ValueError('Executable documentation change')
         paths.append(name)

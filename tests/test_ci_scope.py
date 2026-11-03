@@ -70,6 +70,7 @@ class GitHistory(unittest.TestCase):
         self.git('config', 'user.name', 'Synthetic CI')
         self.git('config', 'user.email', 'ci@example.invalid')
         self.write('README.md', 'Synthetic documentation.\n')
+        self.write('docs/page.md', 'Synthetic documentation page.\n')
         self.write('tools/install-windows.ps1', '# Synthetic Windows\n')
         self.write('native/CredentialStore.swift', '// Synthetic Mac\n')
         self.base = self.commit()
@@ -103,7 +104,7 @@ class GitHistory(unittest.TestCase):
 
     def test_renames_include_both_names_even_code_to_markdown(self):
         for old, new, expected in (
-            ('README.md', 'docs/renamed.md', (False, False)),
+            ('docs/page.md', 'docs/renamed.md', (False, False)),
             ('tools/install-windows.ps1', 'docs/windows.md', (False, True)),
             ('native/CredentialStore.swift', 'tools/install-windows.ps1', (True, True)),
         ):
@@ -117,6 +118,23 @@ class GitHistory(unittest.TestCase):
                 self.assertIn(new, paths)
                 plan = self.push()
                 self.assertEqual((plan['mac'], plan['windows']), expected)
+
+    def test_root_markdown_file_set_changes_need_full_package_validation(self):
+        for action in ('delete', 'rename', 'add'):
+            with self.subTest(action=action):
+                self.git('reset', '--hard', self.base)
+                if action == 'delete':
+                    (self.root / 'README.md').unlink()
+                elif action == 'rename':
+                    os.replace(self.root / 'README.md', self.root / 'docs/renamed.md')
+                else:
+                    self.write('NEW.md', 'Synthetic root documentation.\n')
+                self.commit()
+                self.assertTrue(self.push()['full'])
+        self.git('reset', '--hard', self.base)
+        (self.root / 'docs/page.md').unlink()
+        self.commit()
+        self.assertFalse(self.push()['code'])
 
     def test_pr_uses_merge_base_not_only_last_commit_or_updated_base(self):
         self.git('checkout', '-qb', 'synthetic-pr')

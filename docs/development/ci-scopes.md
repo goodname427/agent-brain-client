@@ -6,14 +6,15 @@
 
 | 变更 | 轻量文档检查 | 源码检查／lint／类型 | Mac 完整标准库测试与 helper 自检 | Windows 原生合同（3.11、3.13） |
 | --- | --- | --- | --- | --- |
-| 根目录或 docs 下的 `.md`，含删除、同类改名 | 是 | 跳过 | 跳过 | 跳过 |
+| 根目录 `.md` 正文修改、docs 下 `.md`（含删除／改名） | 是 | 跳过 | 跳过 | 跳过 |
+| 根目录 Markdown 文件新增／删除／改名，涉及固定包或入口集合 | 是 | 是 | 是 | 是 |
 | 明确的 Mac 专用文件：三个 native Swift、helper 构建器、install-mac.sh、memory.sh | 是 | 是 | 是 | 跳过 |
 | 明确的 Windows 专用文件：brain_windows.py、access_windows.py、三个 PowerShell 入口、test_windows_native.py | 是 | 是 | 跳过 | 是 |
 | 公共代码、其他测试／fixture、依赖、构建／发布、工作流、固定 JSON、新文件或未知路径 | 是 | 是 | 是 | 是 |
 | 混合改动／跨平台改名 | 是 | 按范围并集 | 按范围并集 | 按范围并集 |
 | 手动 Run workflow、merge queue、基准缺失／不可判定 | 是 | 是 | 是 | 是 |
 
-平台专用路径是短小的精确白名单，新增文件默认走全量，确认边界和测试覆盖后才加入白名单。`tools/mac_first_install.py` 虽然带 mac 名称，实际也承接 Windows 安装，因此归公共代码；`windows_install_complete.py` 及 POSIX 故障注入 fixture 同样保守覆盖两端。依赖和 CI 配置不按目录名猜测。docs 下的连接 JSON 是合同，仍跑全量。Markdown 变成可执行文件、符号链接或子模块等特殊变更走全量。
+平台专用路径是短小的精确白名单，新增文件默认走全量，确认边界和测试覆盖后才加入白名单。`tools/mac_first_install.py` 虽然带 mac 名称，实际也承接 Windows 安装，因此归公共代码；`windows_install_complete.py` 及 POSIX 故障注入 fixture 同样保守覆盖两端。依赖和 CI 配置不按目录名猜测。docs 下的连接 JSON 是合同，仍跑全量。根目录 Markdown 的文件集合改变一律走全量，保护 README／BOOTSTRAP／PROTOCOL／ADAPTERS 等固定包文件；仅改标点不改变集合。Markdown 变成可执行文件、符号链接或子模块等特殊变更走全量。
 
 ## 基准和结果
 
