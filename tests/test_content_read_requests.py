@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import queue
+import shutil
 import subprocess
 import sys
 import ssl
@@ -347,7 +348,7 @@ class HTTPRequests(unittest.TestCase):
                 request = json.loads(
                     self.rfile.read(int(self.headers["Content-Length"]))
                 )
-                identity = request["params"]["id"]
+                identity = request["params"].get("id", "synthetic-1")
                 fixture.seen.append(identity)
                 raw = json.dumps(
                     {
@@ -393,11 +394,14 @@ class HTTPRequests(unittest.TestCase):
         self.client = RemoteClient(
             "http://127.0.0.1:" + str(self.http.server_port), self.token
         )
+        # This suite exercises transport and cancellation, not native credential
+        # storage. Windows does not expose POSIX token-file permission bits.
+        self.client._token = lambda: "SYNTHETIC_ONLY_TOKEN_FIXTURE_1234567890"
         client = self.client
 
         class Adapter:
             def methods(self):
-                return {"content_read"}
+                return {"content_read", "memory_query"}
 
             def invoke(self, request):
                 return client.request(request)
@@ -460,12 +464,27 @@ class HTTPRequests(unittest.TestCase):
         started = time.monotonic()
         response = output.get()
         self.assertEqual(response["error"]["code"], -32001)
+        self.assertEqual(response["error"]["data"]["stage"], "execution")
         self.assertLess(time.monotonic() - started, 0.7)
         source.send(call(24))
         self.assertFalse(output.get()["result"]["isError"])
         self.assertEqual(self.seen, ["synthetic-2", "synthetic-24"])
 
+    def test_active_memory_query_server_delay_is_bounded_and_next_read_progresses(self):
+        source, output = self.start(request_timeout=0.15)
+        source.send(call(1, "memory_query", {"query": "synthetic"}))
+        self.assertTrue(self.started.wait(1))
+        response = output.get()
+        self.assertEqual(response["error"]["code"], -32001)
+        self.assertEqual(response["error"]["data"]["stage"], "execution")
+        source.send(call(24))
+        self.assertFalse(output.get()["result"]["isError"])
+        self.assertEqual(self.seen, ["synthetic-1", "synthetic-24"])
+
     def test_verified_tls_read_cancellation_keeps_certificate_checks(self):
+        openssl = shutil.which('openssl')
+        if openssl is None:
+            self.skipTest('OpenSSL executable required for synthetic TLS certificate')
         base = Path(self.tmp.name)
         cert = base / "synthetic-cert.pem"
         key = base / "synthetic-key.pem"
@@ -475,7 +494,7 @@ class HTTPRequests(unittest.TestCase):
         )
         subprocess.run(
             [
-                "/usr/bin/openssl",
+                openssl,
                 "req",
                 "-x509",
                 "-newkey",
