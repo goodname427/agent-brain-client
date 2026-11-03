@@ -24,7 +24,7 @@ class InstallBoundaries(unittest.TestCase):
         return plan
 
     def startup(self):
-        fixed=SimpleNamespace(policy=self.f.policy,verified_active=lambda:self.f.active,update=lambda:{'status':'current','active':self.f.active})
+        fixed=SimpleNamespace(policy=self.f.policy,verified_active=lambda **kwargs:self.f.active,startup_check=lambda:None,update=lambda:{'status':'current','active':self.f.active})
         with patch.object(client_startup,'ClientReleases',return_value=fixed),patch.object(client_startup.subprocess,'run',return_value=SimpleNamespace(returncode=0)) as launch:
             result=client_startup.startup(self.f.policy_path,self.f.policy_sha)
         return result,launch.call_count
@@ -131,7 +131,7 @@ class InstallBoundaries(unittest.TestCase):
         self.apply();self.f.config.write_text(self.f.config.read_text().replace('synthetic-fixture','synthetic-model-changed'))
         fixed=self.f.base/'synthetic-fixed-bootstrap';shutil.copytree(self.f.package,fixed)
         payload={'fixed':str(fixed),'home':str(self.f.home),'active':self.f.active,'policy':self.f.policy,'policy_file':str(self.f.policy_path),'policy_sha':self.f.policy_sha}
-        code="""import json,platform,sys\nfrom pathlib import Path\nfrom types import SimpleNamespace\np=json.loads(sys.stdin.read());sys.path.insert(0,str(Path(p['fixed'])/'adapters/codex'));sys.path.insert(0,str(Path(p['fixed'])/'scripts'));sys.platform='darwin';platform.machine=lambda:'arm64'\nimport client_startup,content_install\ncommands=[]\nclient_startup.ClientReleases=lambda *a:SimpleNamespace(policy=p['policy'],verified_active=lambda:p['active'],update=lambda:{'status':'current','active':p['active']})\nclient_startup.subprocess.run=lambda command,**kw:commands.append(command) or SimpleNamespace(returncode=0)\nresult=client_startup.startup(p['policy_file'],p['policy_sha'])\nprint(json.dumps({'served':result.get('served',False),'dependency_is_fixed_package':Path(content_install.__file__).parent==Path(p['fixed'])/'adapters/codex','launch_count':len(commands),'model_preserved':'synthetic-model-changed' in (Path(p['home'])/'.codex/config.toml').read_text()}))\n"""
+        code="""import json,platform,sys\nfrom pathlib import Path\nfrom types import SimpleNamespace\np=json.loads(sys.stdin.read());sys.path.insert(0,str(Path(p['fixed'])/'adapters/codex'));sys.path.insert(0,str(Path(p['fixed'])/'scripts'));sys.platform='darwin';platform.machine=lambda:'arm64'\nimport client_startup,content_install\ncommands=[]\nclient_startup.ClientReleases=lambda *a:SimpleNamespace(policy=p['policy'],verified_active=lambda **kwargs:p['active'],startup_check=lambda:None,update=lambda:{'status':'current','active':p['active']})\nclient_startup.subprocess.run=lambda command,**kw:commands.append(command) or SimpleNamespace(returncode=0)\nresult=client_startup.startup(p['policy_file'],p['policy_sha'])\nprint(json.dumps({'served':result.get('served',False),'dependency_is_fixed_package':Path(content_install.__file__).parent==Path(p['fixed'])/'adapters/codex','launch_count':len(commands),'model_preserved':'synthetic-model-changed' in (Path(p['home'])/'.codex/config.toml').read_text()}))\n"""
         run=subprocess.run([sys.executable,'-I','-B','-c',code],input=json.dumps(payload),capture_output=True,text=True,timeout=15)
         self.assertEqual(run.returncode,0,run.stderr)
         self.assertEqual(json.loads(run.stdout),{'served':True,'dependency_is_fixed_package':True,'launch_count':1,'model_preserved':True})

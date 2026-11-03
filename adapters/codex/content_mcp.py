@@ -21,6 +21,14 @@ from remote_http import RequestControl,RequestStopped
 from client_release import UPDATE_GUIDANCE
 
 
+RECALL_EVIDENCE_GUIDANCE = (
+    'This is the approved content service; synthetic sandbox tools are a separate test service and cannot prove production capture or recall. '
+    'For a record from the current test or turn, match its source event/session, occurrence time or unique marker; an older matching topic or memory_updated_at alone is not evidence for this run. '
+    'If current evidence is missing, report it as unconfirmed; do not substitute an older result. '
+    'Hook core-accepted/committed confirms event receipt only. pipeline_state=unverified or model_extraction_verified=false does not confirm model extraction or searchable memory. '
+)
+
+
 class ContentParameterError(ProtocolError):
     def __init__(self,message):
         super().__init__(-32602,message)
@@ -41,6 +49,10 @@ def local_tools(kinds, memory_sources):
 
 
 LOCAL_TOOLS = frozenset(tool['name'] for tool in local_tools([], True))
+
+
+class ContentToolUnavailable(ContentParameterError):
+    pass
 
 
 def memory_sources_authorized(policy, grant):
@@ -83,7 +95,7 @@ def worker_commit(client_version):
 class ContentServer(Server):
     def __init__(self,adapter,client_version='0.2.0'):
         super().__init__(None,client_version);self.adapter=adapter
-        self.client_runtime={'running_worker_version':client_version,'running_worker_commit':worker_commit(client_version)}
+        self.client_runtime={'running_worker_version':client_version,'running_worker_commit':worker_commit(client_version),'service_mode':'approved-content'}
 
     def _memory_source_tools_authorized(self):
         policy=getattr(self.adapter,'policy',None)
@@ -131,7 +143,7 @@ class ContentServer(Server):
                 if not isinstance(arguments,dict) or set(arguments)!=expected:raise ContentParameterError('Stage requires one locally read source and a normalized AgentBrain Memory record.')
                 result=self.adapter.stage_memory_import(arguments['source_id'],arguments['source_fingerprint'],'memory',arguments['id'],arguments['record'])
                 return {'isError':False,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
-            if name in contract.HOOK_METHODS or name not in self.adapter.methods():raise ContentParameterError('Unknown or unavailable content tool; inspect tools/list.')
+            if name in contract.HOOK_METHODS or name not in self.adapter.methods():raise ContentToolUnavailable('Tool is not exposed by this worker. Inspect tools/list and the installed tool grant; retry the normal MCP connection if it failed to initialize. Tool absence alone does not prove a remote outage.')
             if not isinstance(arguments,dict):raise ContentParameterError('Content tool arguments must be an object.')
             if name=='content_catalog' and set(arguments)&{'query','since','until','limit'}:
                 if arguments.get('kinds')!=['memory']:raise ContentParameterError('Catalog query options are a Memory-only retrieval alias. For complete coverage pass kinds only.')
@@ -205,6 +217,7 @@ class ContentServer(Server):
                 if name=='content_put':properties['reconciles']={'type':'object','description':'Local-only references to staged source plans or write conflicts; never sent to Server. A still-inventoried source plan can be reconciled only by the exact staged record; a conflicted plan may be reconciled by an explicit merge of the source and remote versions. Only durable confirmation resolves them.','properties':{'request_ids':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256},'source_keys':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256}},'required':['request_ids','source_keys'],'additionalProperties':False}
                 description='Approved cloud content only. Server is the sole write boundary; retain CAS revision and request_id on write retries. Transport failures may return a verified stale snapshot with local_cache.stale=true; cache misses never prove remote absence. Local cache refresh does not reload existing model context. '
                 if name=='content_catalog':description+='AgentBrain destination records only; this does not discover Harness-native sources. Pass kinds only for the complete authorized target inventory; there is no pagination limit. Query/since/until/limit selects a Memory-only retrieval alias capped at 3. '
+                if name in ('memory_query','content_read','content_catalog'):description+=RECALL_EVIDENCE_GUIDANCE
                 description+='Running worker version: '+self.client_version+'. '+UPDATE_GUIDANCE
                 tools.append({'name':name,'description':description,'inputSchema':{'type':'object','properties':properties,'required':required,'additionalProperties':False},'annotations':{'readOnlyHint':name not in contract.WRITES,'destructiveHint':name=='content_remove','idempotentHint':True}})
             tools.extend(local_tools(kinds, self._memory_source_tools_authorized()))
@@ -214,7 +227,7 @@ class ContentServer(Server):
             mapping=self.adapter.refresh()
             result['content_mapping']=mapping
             result['serverInfo']['name']='agent-brain-content-codex-candidate'
-            result['instructions']=contract.MEMORY_GUIDANCE+'content_catalog lists authorized AgentBrain destination records only; it does not discover Harness-native sources. '+'Writes require the current expected_revision and stable request_id; retain exact request arguments on retries. '+'Pending/local-confirmed/remote-confirmed and durable fields distinguish client, Server and backup status. '+'Rules/Skills retain enabled state; refreshing mappings does not reload an already running model. '+'Only granted methods and IDs are exposed; pairing and publication remain separate. '+'Native mapping result: '+json.dumps(mapping,sort_keys=True)+'. '+UPDATE_GUIDANCE
+            result['instructions']=RECALL_EVIDENCE_GUIDANCE+contract.MEMORY_GUIDANCE+'content_catalog lists authorized AgentBrain destination records only; it does not discover Harness-native sources. '+'Writes require the current expected_revision and stable request_id; retain exact request arguments on retries. '+'Pending/local-confirmed/remote-confirmed and durable fields distinguish client, Server and backup status. '+'Rules/Skills retain enabled state; refreshing mappings does not reload an already running model. '+'Only granted methods and IDs are exposed; pairing and publication remain separate. '+'Native mapping result: '+json.dumps(mapping,sort_keys=True)+'. '+UPDATE_GUIDANCE
         return result
 
 def pinned(path,digest):
@@ -512,7 +525,9 @@ def serve(server, source, output, *, request_timeout=90, max_pending=256):
             except RequestStopped as error:stopped(rid,error)
             except ProtocolError as error:
                 payload:dict[str,Any]={'code':error.code,'message':error.message}
-                if isinstance(error,ContentParameterError):payload['data']={'stage':'parameters','client_runtime':server.client_runtime}
+                if isinstance(error,ContentToolUnavailable):payload['data']={'stage':'tools-ready','error_code':'tool-not-exposed','client_runtime':server.client_runtime}
+                elif isinstance(error,ContentParameterError):payload['data']={'stage':'parameters','client_runtime':server.client_runtime}
+                elif error.code==-32002:payload['data']={'stage':'handshake','error_code':'mcp-not-ready'}
                 emit(rid,error=payload)
             except Exception:emit(rid,error={'code':-32700,'message':'Invalid JSON message.'})
             finally:

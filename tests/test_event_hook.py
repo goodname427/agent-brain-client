@@ -68,6 +68,10 @@ class EventHook(unittest.TestCase):
         self.assertEqual(event['messages'],[{'role':'user','content':self.payload['prompt']},{'role':'assistant','content':'Synthetic final answer'}])
         self.assertEqual(event['event_id'],request['params']['id']);self.assertEqual(len(event['event_id']),60)
         self.assertFalse(result['persistence']['durable']);self.assertFalse(result['local_queue']['github_confirmed'])
+        # Outbox confirmation is only the event receipt, never extraction proof.
+        self.assertEqual(result['persistence']['state'],'core-accepted')
+        self.assertEqual(result['result']['pipeline_state'],'unverified')
+        self.assertIs(result['result']['model_extraction_verified'],False)
         raw=(self.fixture.cache/'outbox'/(request['request_id']+'.json')).read_text()
         self.assertNotIn('transcript',raw);self.assertNotIn('/forbidden',raw)
         self.assertFalse((self.fixture.home/'.codex/AGENTS.md').exists())

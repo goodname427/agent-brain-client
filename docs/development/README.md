@@ -34,3 +34,5 @@ python3 -B tools/build_credential_helper.py --output .local/credential-helper
 Swift helper 构建仅适用 Mac 工具链。SSH 历史兼容候选可使用 `--mode personal-content-ssh` 与其独立版本／政策；不能把本地候选代替既有发布源。文件范围、能力、manifest 与凭据源码 pin 均沿现有合同校验。
 
 正式发布只使用 [固定发布入口](release-pipeline.md) 与 [发布工作流](../../.github/workflows/client-release.yml)，按最终精确提交、CI 证据和明确发布授权执行。本次文档整理不运行发布、不创建封版 tag、不提升渠道。提交使用精确文件清单，遵守 [文档维护规则](../maintenance.md)。
+
+并发 MCP 启动协调、采集回执及本轮来源核对的实现与验证边界见 [并发启动与采集证据](startup-capture.md)。

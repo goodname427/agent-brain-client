@@ -110,7 +110,7 @@ class StartupDiagnostics(unittest.TestCase):
         )
         self.assertNotIn("SYNTHETIC_SECRET", output.getvalue())
 
-    def test_normal_startup_emits_bounded_release_diagnostic(self):
+    def test_normal_startup_never_waits_for_the_release_check(self):
         diagnostic = {
             "stage": "release-check",
             "error_class": "OSError",
@@ -146,9 +146,27 @@ class StartupDiagnostics(unittest.TestCase):
             result = client_startup.startup("synthetic-policy", "synthetic-digest")
 
         self.assertTrue(result["served"])
-        self.assertEqual(result["status"], "release-review-required")
-        lines = [json.loads(line) for line in output.getvalue().splitlines()]
-        self.assertIn(diagnostic, lines)
+        self.assertEqual(result["status"], "current")
+        releases.update.assert_not_called()
+        releases.verified_active.assert_called_once_with(serving=True)
+        self.assertEqual(output.getvalue(), "")
+        self.assertNotIn("SYNTHETIC_SECRET", output.getvalue())
+
+    def test_background_thread_failure_does_not_block_verified_worker(self):
+        releases = mock.Mock()
+        releases.verified_active.return_value = {"version": "0.6.1", "package": "/synthetic/package"}
+        releases.policy = {"platform": "synthetic-platform", "capabilities": ["codex-stdio-mcp", "synthetic-only"],
+                           "runtime": {"endpoint": "https://synthetic.invalid", "token_file": "/synthetic/unused"}}
+        output = io.StringIO()
+        with (
+            mock.patch.object(client_startup, "ClientReleases", return_value=releases),
+            mock.patch.object(client_startup.threading.Thread, "start", side_effect=RuntimeError("SYNTHETIC_SECRET_THREAD")),
+            mock.patch.object(client_startup.subprocess, "run", return_value=mock.Mock(returncode=0)),
+            mock.patch("sys.stderr", output),
+        ):
+            result = client_startup.startup("synthetic-policy", "synthetic-digest")
+        self.assertTrue(result["served"])
+        self.assertEqual(json.loads(output.getvalue())["error_code"], "background-check-not-started")
         self.assertNotIn("SYNTHETIC_SECRET", output.getvalue())
 
     def test_locked_timeout_raises_specific_lock_timeout(self):
@@ -205,7 +223,7 @@ class StartupDiagnostics(unittest.TestCase):
             mock.patch.object(client_startup, "ClientReleases", return_value=releases_for_startup),
             mock.patch("sys.stderr", output),
         ):
-            startup_result = client_startup.startup("synthetic-policy", "synthetic-digest")
+            startup_result = client_startup.startup("synthetic-policy", "synthetic-digest", installation_check=True)
         self.assertFalse(startup_result["served"])
         self.assertEqual(startup_result["status"], "release-review-required")
 

@@ -89,7 +89,7 @@ import content_install
 content_install.inspect=lambda home:{'installed':True}
 active={'version':version,'commit':'a'*40,'package':str(base/('legacy-package' if version=='0.2.0' else 'modern-package'))}
 policy={'capabilities':startup.SSH_CONTENT_CAPABILITIES,'runtime':{'device_home':str(base/'home'),'codex_home':str(base/'native'),'content_cache':str(base/'cache')}}
-fixed=SimpleNamespace(policy=policy,update=lambda:{'status':'offline','active':active},verified_active=lambda:active)
+fixed=SimpleNamespace(policy=policy,update=lambda:{'status':'offline','active':active},verified_active=lambda **kwargs:active,startup_check=lambda:None)
 startup.ClientReleases=lambda *args:fixed
 result=startup.startup('synthetic-unused-policy','b'*64)
 print(json.dumps(result),flush=True)
