@@ -11,12 +11,13 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import subprocess
 import sys
+import time
 from urllib.parse import urlsplit
 
 BASE = Path(__file__).resolve().parent
 ROOT = BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
 sys.path.insert(0, str(ROOT/'scripts'))
-from brain_release import GitReleaseSource, ReleaseEngine, UpdateBlocked, digest, version
+from brain_release import GitReleaseSource, ReleaseEngine, UpdateBlocked, atomic_json, digest, version
 from brain_lock import locked,require_platform,platform_paths,WINDOWS_PLATFORMS,private_mode,PlatformUnsupported,LockTimeout
 
 CLIENT_FILES = ('README.md', 'BOOTSTRAP.md', 'PROTOCOL.md', 'ADAPTERS.md', '.gitignore',
@@ -187,12 +188,12 @@ class ClientReleases:
         self.policy=policy_file(path,expected_sha,runtime_check=not inspection)
         repo=Path(self.policy['repository'])
         if not (repo/'.git').is_dir():raise UpdateBlocked('Approved client-only release checkout required; no silent clone')
-        # Bound remote discovery inside the existing 30s MCP startup budget.
+        # Bound each Git discovery command; MCP negotiation does not wait for it.
         self.engine=ReleaseEngine(self.policy['cache'],self.policy,GitReleaseSource(repo,self.policy,timeout=5),ClientPackage(self.policy),{})
 
-    def verified_active(self):
+    def verified_active(self, *, serving=False):
         require_platform('release-update',self.policy['platform'])
-        active=self.engine.active()
+        active=self.engine.serving_active() if serving else self.engine.active()
         if active and self.policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES):
             receipt=json.loads((Path(active['package'])/'verified.json').read_text(encoding='utf-8'))
             self.engine.adapter.preflight(Path(active['package']),receipt['manifest'],allow_legacy_030_active=True)
@@ -221,11 +222,27 @@ class ClientReleases:
         except (OSError,ValueError,KeyError,TypeError,RuntimeError,subprocess.TimeoutExpired):
             return {'status':'release-unavailable','releases':[], 'next_action':'Restore access to the pinned release checkout; keep the current client and do not copy credentials.'}
 
-    def update(self):
+    def startup_check(self):
+        """One best-effort check per startup burst; never blocks MCP negotiation."""
+        try:
+            with locked(self.engine.local/'startup-check.lock',timeout=0):
+                marker=self.engine.local/'startup-check.json';now=time.time()
+                policy_sha=digest(json.dumps(self.policy,sort_keys=True).encode())
+                if marker.exists():
+                    previous=json.loads(marker.read_bytes())
+                    if previous.get('policy_sha256')==policy_sha and 0<=now-previous['checked_at']<60:return
+                atomic_json(marker,{'policy_sha256':policy_sha,'checked_at':now})
+                result=self.update(lock_timeout=0)
+                if result.get('diagnostic'):print(json.dumps(result['diagnostic']),file=sys.stderr)
+        except LockTimeout:pass
+        except Exception:
+            print(json.dumps({'stage':'release-check','error_code':'background-check-failed'}),file=sys.stderr)
+
+    def update(self, *, lock_timeout=None):
         try:
             if getattr(self,'inspection',False):raise UpdateBlocked('Read-only inspection cannot update')
             require_platform('release-update',self.policy['platform'])
-            result=self.engine.check()
+            result=self.engine.check() if lock_timeout is None else self.engine.check(lock_timeout=lock_timeout)
             result['active']=self.verified_active()
             result['next_action']='Use the verified active client; native permissions and data are unchanged.'
             return result
