@@ -626,6 +626,12 @@ class WindowsNative(unittest.TestCase):
         self.assertEqual(adapter.refresh()['status'],'content-refreshed')
         args=SimpleNamespace(device_home=str(self.home),profile_id=None,operator=None,operator_sha256=None)
         hooks.install(args);self.assertFalse(gm.approved(gm.load(self.home)))
+        source_before=gm.load(self.home)
+        with patch.object(backend,'load',side_effect=AssertionError('Update must not activate credentials')):
+            refreshed=wizard.manage_update(self.home,'update',channel_factory=channel)
+        self.assertEqual(refreshed['status'],'client-update-updated',refreshed)
+        self.assertEqual(refreshed['global_hook']['status'],'global-hook-updated')
+        self.assertEqual(gm.load(self.home),source_before)
         self.assertEqual(host_security(config),file_security);self.assertEqual(host_security(native),directory_security);self.assertEqual(config.stat().st_ino,inode)
         # Pause only this MCP before owned removal. Identity, source settings,
         # snapshots and the original file object survive normal uninstall.
@@ -637,6 +643,14 @@ class WindowsNative(unittest.TestCase):
         options['secure_input']=lambda:self.fail('No new credential input on reinstall')
         again=wizard.run(self.home,native,connection,wizard.sha(wizard.canonical(connection)),updater=update,**options)
         self.assertTrue(again['installed'],again)
+        # Native uninstall intentionally retains the old Hook ownership receipt.
+        # Public update must authenticate that removal and leave it absent until
+        # the normal install closure explicitly reinstalls it.
+        absent_hook=wizard.manage_update(self.home,'update',channel_factory=channel)
+        self.assertEqual(absent_hook['status'],'client-update-current',absent_hook)
+        self.assertTrue(absent_hook['native_changed'])
+        self.assertEqual(absent_hook['global_hook']['status'],'global-hook-not-installed')
+        self.assertNotIn(hooks.BEGIN,config.read_text(encoding='utf-8'))
         self.assertEqual(adapter.refresh()['status'],'content-refreshed')
         hooks.install(args)
         self.assertTrue(hooks.installation_status(gm.load(self.home)))

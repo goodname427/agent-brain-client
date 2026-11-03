@@ -56,6 +56,8 @@ Set-Location $checkout
 
 升级复用现有 policy、凭据、信任锚、缓存和幂等队列；不重新配对。不确定/冲突回执保留，断网读明确标为旧缓存，恢复后重放原 request_id。卸载前正常停止该 MCP worker，再移除 owned Hook；普通卸载不清凭据和记忆。显示 `review-required` 时保留原材料，用 status/repair 处理未完成事务。安装目录或 Python/Git 被移动/升级而摘要变化时，需要精确依赖迁移，不能替换摘要掩盖漂移。
 
+正常 update 同时交接旧固定启动器，并刷新已安装全局 Hook 的代码及命令。Hook 代码保存在设备私有缓存，保留原采集范围、批准、暂停、路由及身份；未安装或已卸载的 Hook 不会新增。按 Codex 正常提示审核更新后的 Hook，再重新加载 Agent Brain。check-update 仅报告候选和 Hook 待刷新状态。Hook 刷新未确认时即使活动包已更新也退出非零；重试同一 update 入口恢复事务，不重复批准来源或配对。
+
 Windows 凭据使用用户 Credential Manager；私有状态检查 DACL、owner 和 reparse point，锁使用 LockFileEx。没有轮询聊天目录的本地常驻采集器；后台提取消费在 Server，MCP worker 由 Codex 管理生命周期。0.5.9 已包含 Mac／Windows 的有界原生 `CODEX_HOME/memories` 导入，具体边界见 [现有接口说明](../reference/memory-behavior.md)；该能力不包含 `memories_v2`、SQLite 或聊天历史，也不代替未来 Hook 来源批准。未实现 DeepSeek Harness；DeepSeek 当前只是提取 provider。
 
 协议依据：[Codex Hooks](https://learn.chatgpt.com/docs/hooks)、[Windows Sandbox](https://learn.chatgpt.com/docs/windows/windows-sandbox)、[Win32 Credential](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、[LockFileEx](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfileex)。

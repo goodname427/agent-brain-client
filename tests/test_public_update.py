@@ -7,12 +7,15 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import test_client_uninstall as fixtures
 import mac_first_install as wizard
 import prepare_install_runtime as bootstrap
+import global_memory as gm
+import global_memory_install as hooks
 
 
 class PublicUpdate(unittest.TestCase):
@@ -35,6 +38,7 @@ class PublicUpdate(unittest.TestCase):
 
         class Channel:
             def __init__(self, policy, digest):
+                self.engine = SimpleNamespace(local=test.home / 'synthetic-packages')
                 meta = json.loads(test.registration)
                 test.assertEqual(
                     (policy, digest),
@@ -63,6 +67,11 @@ class PublicUpdate(unittest.TestCase):
                 return {"status": test.update_status}
 
         self.channel = Channel
+        # This fixture isolates channel reporting. Actual launcher transactions
+        # have their own synthetic package/registration integration tests.
+        handover = patch.object(wizard, 'windows_launcher_handover', return_value=False)
+        handover.start()
+        self.addCleanup(handover.stop)
 
     def action(self, action):
         before_env = dict(os.environ)
@@ -120,6 +129,59 @@ class PublicUpdate(unittest.TestCase):
                 self.assertIsNone(result["latest_channel_version"])
                 self.assertFalse(result["channel_checked"])
                 self.assertEqual(self.active["commit"], "a" * 40)
+
+    def test_current_channel_still_refreshes_existing_hook_through_public_update(self):
+        hooks.install(SimpleNamespace(device_home=str(self.home), profile_id=None, operator=None, operator_sha256=None))
+        original = gm.load(self.home)
+        self.latest = {'manifest': {'version': self.active['version']}, 'commit': self.active['commit']}
+        self.discovery_status = 'current'
+        self.update_status = 'current'
+        with patch.object(self.f.f.backend, 'load', side_effect=AssertionError('No credential access')):
+            checked = wizard.manage_update(self.home, 'check-update', channel_factory=self.channel)
+            self.assertTrue(checked['global_hook']['update_available'], checked)
+            updated = wizard.manage_update(self.home, 'update', channel_factory=self.channel)
+        self.assertEqual(updated['status'], 'client-update-updated', updated)
+        self.assertEqual(updated['global_hook']['status'], 'global-hook-updated')
+        self.assertFalse(updated['active_package_changed'])
+        self.assertTrue(updated['native_changed'])
+        self.assertTrue(updated['reload_required'])
+        self.assertEqual(gm.load(self.home), original)
+
+    def test_hook_failure_reports_partial_update_and_nonzero_exit(self):
+        with patch.object(hooks, 'refresh', side_effect=ValueError('Synthetic Hook drift')):
+            result = wizard.manage_update(self.home, 'update', channel_factory=self.channel)
+        self.assertEqual(result['reason'], 'global-hook-refresh-required', result)
+        self.assertEqual(result['active_package_version'], '0.2.11')
+        self.assertTrue(result['active_package_changed'])
+        self.assertIsNone(result['native_changed'])
+        self.assertEqual(wizard.lifecycle_exit('update', result), 2)
+
+    def test_public_update_recovers_torn_hook_before_registration_inspection(self):
+        from test_windows_install_closure import torn_hook
+        hooks.install(SimpleNamespace(device_home=str(self.home), profile_id=None, operator=None, operator_sha256=None))
+        torn_hook(self, self.home, self.f.native)
+        torn = self.f.f.config.read_bytes()
+        calls = []
+        def runner(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 2)
+        with patch.object(sys, 'executable', str(self.home / 'synthetic-other-python')):
+            self.assertEqual(wizard.reexec_update_runtime(self.home, 'update', runner=runner), 2)
+        self.assertEqual(calls[0][0][0], self.f.f.materials['dependencies']['python'])
+        self.assertEqual(calls[0][1]['env']['CODEX_HOME'], str(self.f.native))
+        self.assertEqual(self.f.f.config.read_bytes(), torn)
+        checked = wizard.manage_update(self.home, 'check-update', channel_factory=self.channel)
+        self.assertEqual(checked['reason'], 'global-hook-recovery-required', checked)
+        output = io.StringIO()
+        with (patch.object(Path, 'home', return_value=self.home),
+              patch.object(sys, 'argv', ['mac_first_install.py', '--action', 'update']),
+              patch.object(wizard, 'ClientReleases', self.channel),
+              patch.object(sys, 'stdout', output)):
+            code = wizard.main()
+        value = json.loads(output.getvalue())
+        self.assertEqual(code, 0, value)
+        self.assertEqual(value['status'], 'client-update-updated', value)
+        self.assertTrue(hooks.installation_status(gm.load(self.home)))
 
     def test_cli_does_not_resolve_connection_pair_or_install(self):
         output = io.StringIO()
