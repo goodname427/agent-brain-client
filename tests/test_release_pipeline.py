@@ -2,7 +2,9 @@
 import copy
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -333,6 +335,216 @@ class ReleasePipeline(unittest.TestCase):
                 api.ci(plan)
         with patch.object(api, 'request', return_value={'jobs': [{'name': 'other', 'conclusion': 'success'}] * 100}):
             self.assertFalse(api.full_ci_jobs(row))
+
+
+def platform_fixture(groups=('windows', 'macos')):
+    assets, release_assets, tags, runtimes, channels = {}, {}, {}, {}, {}
+    baselines = {rc.CHANNEL: '3' * 40, rc.MAC_CHANNELS[0]: '4' * 40, rc.MAC_CHANNELS[1]: '5' * 40}
+    for index, group in enumerate(groups, 6):
+        kind = 'runtime_' + group
+        release_assets[kind] = [f'runtime-{group}-{arch}.tar.gz' for arch in ('one', 'two')]
+        release_assets[kind].append(f'runtime-{group}-SHA256SUMS.txt')
+        tags[kind] = 'client-1.2.4-' + group
+        runtimes[group] = str(index) * 40
+        for ref in rc.GROUPS[group]['channels']:
+            channels[ref] = {'baseline': baselines[ref], 'runtime': runtimes[group]}
+    release_assets['installer'] = ['installer-source.tar.gz', 'installer-SHA256SUMS.txt']
+    tags['installer'] = 'installer-1.2.4-setup'
+    for names in release_assets.values():
+        assets.update({name: ('synthetic ' + name).encode() for name in names})
+    plan = {'schema': 2, 'source': '1' * 40, 'source_tree': '2' * 40,
+            'executor_source': 'a' * 40, 'executor_tree': 'b' * 40,
+            'version': '1.2.4', 'groups': list(groups), 'baselines': baselines,
+            'channels': channels, 'runtimes': runtimes, 'tags': tags,
+            'manifests': {group: '8' * 64 for group in groups},
+            'release_assets': release_assets,
+            'assets': {name: {'sha256': rc.sha(raw), 'size': len(raw)} for name, raw in assets.items()}}
+    return plan, assets
+
+
+class PlatformRemote(Remote):
+    def __init__(self, plan, assets):
+        super().__init__({'baseline': '0' * 40}, assets)
+        self.plan = plan
+        self.refs = dict(plan['baselines'])
+        self.ci_trees = []
+
+    def ci(self, plan):
+        self.ci_trees.append(plan['source_tree'])
+        return {'conclusion': 'success', 'source_tree': plan['source_tree']}
+
+    def assert_public(self):
+        for kind in rc.targets(self.plan):
+            row = self.find_release(self.plan['tags'][kind])
+            assert row and not row['draft']
+            rc.check_assets(row, rc.assets_for(self.plan, kind), complete=True)
+
+    def git(self, *args, **kwargs):
+        if args[0] != 'push':
+            return ''
+        self.events.append(('push', args))
+        leases = [value for value in args if value.startswith('--force-with-lease=')]
+        if leases:
+            assert '--atomic' in args
+            if self.race:
+                self.refs[rc.MAC_CHANNELS[0]] = 'f' * 40
+            for lease in leases:
+                ref, baseline = lease.removeprefix('--force-with-lease=').split(':')
+                if self.refs[ref] != baseline:
+                    raise ValueError('Concurrent channel advance')
+            self.assert_public()
+        for value in args:
+            if ':' in value and not value.startswith('--'):
+                target, ref = value.split(':', 1)
+                self.refs[ref] = target
+        return ''
+
+    def request(self, path, method='GET', value=None, raw=None, upload=False):
+        if method == 'PATCH' and value.get('make_latest') == 'true':
+            assert all(self.refs[ref] == row['runtime'] for ref, row in self.plan['channels'].items())
+            self.events.append((method, path))
+            row = self.releases[int(path.split('/')[2])]
+            row.update(value)
+            self.latest = row['tag_name']
+            return copy.deepcopy(row)
+        return super().request(path, method, value, raw, upload)
+
+
+class PlatformRelease(unittest.TestCase):
+    setup_output = ReleasePipeline.setup_output
+    publish_case = ReleasePipeline.publish_case
+    def test_mac_credential_source_pin_is_checked_independently(self):
+        before = {'schema': 1, 'channel': 'stable', 'core_api': 1, 'state_schema': 1,
+                  'python_min': '3.11', 'capabilities': ['fixture'], 'migrations': [],
+                  'files': {'native/CredentialStore.swift': 'a' * 64, 'fixture.py': 'b' * 64}}
+        after = copy.deepcopy(before)
+        after['files']['fixture.py'] = 'c' * 64
+        rc.compatible(before, after, 'native/CredentialStore.swift')
+        after['files']['native/CredentialStore.swift'] = 'd' * 64
+        with self.assertRaises(ValueError):
+            rc.compatible(before, after, 'native/CredentialStore.swift')
+
+    def test_real_runtime_commit_preserves_both_existing_mac_histories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = dict(os.environ, GIT_AUTHOR_NAME='Synthetic', GIT_COMMITTER_NAME='Synthetic',
+                       GIT_AUTHOR_EMAIL='synthetic@example.invalid', GIT_COMMITTER_EMAIL='synthetic@example.invalid')
+            def git(*args, data=None):
+                return subprocess.check_output(['git', *args], cwd=root, env=env, input=data).decode().strip()
+            git('init', '-q')
+            tree = git('mktree', data=b'')
+            first = git('commit-tree', tree, data=b'Synthetic first history\n')
+            second = git('commit-tree', tree, data=b'Synthetic second history\n')
+            source = git('commit-tree', tree, '-p', first, data=b'Synthetic source\n')
+            with patch.object(rc, 'ROOT', root):
+                runtime = rc.runtime_commit({'fixture.py': b'pass\n'}, (first, second), source, '1.2.4', 'macOS')
+                self.assertEqual(runtime, rc.runtime_commit({'fixture.py': b'pass\n'}, (first, second), source, '1.2.4', 'macOS'))
+            self.assertEqual(git('show', '-s', '--format=%P', runtime).split(), [first, second])
+            for parent in (first, second):
+                git('merge-base', '--is-ancestor', parent, runtime)
+            self.assertEqual(git('show', runtime + ':fixture.py'), 'pass')
+
+    def test_mac_catchup_builds_both_manifests_and_reuses_exact_published_installer(self):
+        source = '1' * 40
+        baselines = {ref: str(index) * 40 for index, ref in enumerate((rc.CHANNEL, *rc.MAC_CHANNELS), 3)}
+        def git(*args, **kwargs):
+            if '--format=%B' in args:
+                return 'Source-Commit: ' + source
+            if args[0] == 'rev-parse' and 'refs/tags/' in args[-1]:
+                return source
+            return '2' * 40
+        def packages(payload, parents, source, selected, group, *, advance):
+            return {f'runtime-{group}-{selected}.tar.gz': b'synthetic'}, ('7' * 40 if advance else None), '8' * 64
+        with patch.object(rc, 'source_payload', return_value=({'fixture.py': b'pass\n'}, {'fixture.py': 0o644})), \
+                patch.object(rc, 'executor_identity', return_value=('a' * 40, 'b' * 40)), \
+                patch.object(rc, 'git', side_effect=git), patch.object(rc, 'run', return_value=(source + '\n').encode()), \
+                patch.object(rc, 'git_tag_exists', return_value=True), \
+                patch.object(rc, 'runtime_artifacts', side_effect=packages) as build:
+            plan, assets = rc.build_platforms(source, baselines, '1.2.4', ['macos'])
+        self.assertEqual([(call.args[4], call.kwargs['advance']) for call in build.call_args_list], [('windows', False), ('macos', True)])
+        self.assertEqual(set(plan['validated_groups']), {'windows', 'macos'})
+        self.assertEqual(plan['tags']['installer'], 'installer-1.2.4-windows-setup')
+        self.assertEqual(set(plan['channels']), set(rc.MAC_CHANNELS))
+        self.assertFalse(any('windows' in name for name in assets))
+
+    def test_both_platforms_publish_before_atomic_channel_promotion(self):
+        plan, assets = platform_fixture()
+        remote = PlatformRemote(plan, assets)
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            self.setup_output(output, assets)
+            self.publish_case(remote, output)
+            self.assertEqual(remote.ci_trees, [plan['source_tree'], plan['executor_tree']])
+            self.assertTrue(all(remote.refs[ref] == row['runtime'] for ref, row in plan['channels'].items()))
+            self.assertEqual(remote.latest, plan['tags']['installer'])
+            writes = [args for event, args in remote.events if event == 'push' and any('--force-with-lease=' in value for value in args)]
+            self.assertEqual(len(writes), 1)
+            self.assertEqual(sum(value.startswith('--force-with-lease=') for value in writes[0]), 3)
+
+    def test_platform_prepare_retry_keeps_frozen_version_channels_and_assets(self):
+        plan, assets = platform_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            with patch.object(rc, 'commit', return_value='3' * 40), \
+                    patch.object(rc, 'git', return_value=json.dumps({'version': '1.2.3'})), \
+                    patch.object(rc, 'build_platforms', return_value=(plan, assets)) as build, \
+                    patch.object(rc, 'validate'), patch.object(rc, 'source_payload'):
+                rc.prepare_platforms(output, plan['source'], 'auto', 'all')
+                frozen = (output / 'plan.json').read_bytes()
+                rc.prepare_platforms(output, plan['source'], 'auto', 'all')
+                self.assertEqual((output / 'plan.json').read_bytes(), frozen)
+                self.assertEqual(build.call_args.args[1:], (plan['baselines'], plan['version'], plan['groups'], plan['tags']['installer']))
+                with self.assertRaises(ValueError):
+                    rc.prepare_platforms(output, plan['source'], 'auto', 'macos')
+                name = next(iter(assets))
+                (output / 'assets' / name).write_bytes(b'changed')
+                with self.assertRaises(ValueError):
+                    rc.prepare_platforms(output, plan['source'], 'auto', 'all')
+
+    def test_mac_catchup_retains_windows_and_does_not_upload_existing_installer(self):
+        plan, assets = platform_fixture(('macos',))
+        plan['tags']['installer'] = 'installer-1.2.4-windows-setup'
+        remote = PlatformRemote(plan, assets)
+        remote.releases[1] = {'id': 1, 'tag_name': plan['tags']['installer'], 'draft': False,
+                              'assets': [{'name': name, 'size': row['size'], 'digest': 'sha256:' + row['sha256']}
+                                         for name, row in rc.assets_for(plan, 'installer').items()]}
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            self.setup_output(output, assets)
+            self.publish_case(remote, output)
+            self.assertEqual(remote.refs[rc.CHANNEL], plan['baselines'][rc.CHANNEL])
+            uploads = [path for event, path in remote.events if event == 'POST' and '/assets?' in path]
+            self.assertEqual(len(uploads), len(plan['release_assets']['runtime_macos']))
+            self.assertFalse(any('/releases/1/assets?' in path for path in uploads))
+            self.publish_case(remote, output)
+            self.assertEqual(len([path for event, path in remote.events if event == 'POST' and '/assets?' in path]), len(uploads))
+
+    def test_mac_alias_race_is_atomic_and_never_promotes_latest(self):
+        plan, assets = platform_fixture(('macos',))
+        remote = PlatformRemote(plan, assets)
+        remote.race = True
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            self.setup_output(output, assets)
+            with self.assertRaises(ValueError):
+                self.publish_case(remote, output)
+            self.assertEqual(remote.refs[rc.MAC_CHANNELS[1]], plan['baselines'][rc.MAC_CHANNELS[1]])
+            self.assertIsNone(remote.latest)
+
+    def test_executor_ci_or_unselected_platform_drift_stops_before_writes(self):
+        for failure in ('executor-ci', 'windows-drift'):
+            plan, assets = platform_fixture(('macos',))
+            remote = PlatformRemote(plan, assets)
+            if failure == 'executor-ci':
+                remote.ci = lambda p: (_ for _ in ()).throw(ValueError('Executor CI missing')) if p['source_tree'] == plan['executor_tree'] else {}
+            else:
+                remote.refs[rc.CHANNEL] = 'f' * 40
+            with tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp)
+                self.setup_output(output, assets)
+                with self.assertRaises(ValueError):
+                    self.publish_case(remote, output)
+                self.assertEqual(remote.events, [])
 
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-"""Repeatable Windows release preparation, explicit publication and readback.
+"""Repeatable Mac/Windows release preparation, publication and readback.
 
 Preparation needs only this clean Client checkout. Publication uses the existing
 Git authentication and GH_TOKEN, never provisions credentials or changes policy.
@@ -20,15 +20,21 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
-from build_client import release
 from publication_check import require_publishable
 
 ROOT = Path(__file__).resolve().parents[1]
+TOOL_ROOT = ROOT
 REPOSITORY = 'goodname427/agent-brain-client'
 ORIGIN = 'https://github.com/' + REPOSITORY + '.git'
 CHANNEL = 'refs/heads/releases/personal-https-windows-stable'
 TRACKING = 'refs/remotes/origin/releases/personal-https-windows-stable'
 PLATFORMS = ('win32-amd64', 'win32-arm64')
+MAC_CHANNELS = ('refs/heads/releases/personal-https-stable',
+                'refs/heads/releases/personal-https-candidate-0.4.0-install-fix-ce9f72b')
+GROUPS = {'windows': {'platforms': PLATFORMS, 'channels': (CHANNEL,),
+                      'credential': 'scripts/brain_windows.py', 'label': 'Windows'},
+          'macos': {'platforms': ('darwin-arm64', 'darwin-x86_64'), 'channels': MAC_CHANNELS,
+                    'credential': 'native/CredentialStore.swift', 'label': 'macOS'}}
 API = 'https://api.github.com/repos/' + REPOSITORY
 FULL_CI_JOBS = frozenset({
     'changes', 'documentation', 'source-checks', 'isolated-client',
@@ -45,8 +51,8 @@ def encoded(value):
     return (json.dumps(value, sort_keys=True, indent=2) + '\n').encode()
 
 
-def run(args, *, data=None, env=None, cwd=ROOT):
-    result = subprocess.run(args, input=data, capture_output=True, cwd=cwd,
+def run(args, *, data=None, env=None, cwd=None):
+    result = subprocess.run(args, input=data, capture_output=True, cwd=ROOT if cwd is None else cwd,
                             env=env, timeout=600)
     if result.returncode:
         # Subprocess stderr can contain credential-helper output or private paths.
@@ -137,18 +143,18 @@ def archive(payload, prefix, modes=None):
     return result.getvalue()
 
 
-def compatible(before, after):
+def compatible(before, after, credential='scripts/brain_windows.py'):
     for key in ('schema', 'channel', 'core_api', 'state_schema', 'python_min',
                 'capabilities', 'migrations'):
         if before[key] != after[key]:
             raise ValueError('Release contract change requires review: ' + key)
     if set(before['files']) != set(after['files']):
         raise ValueError('Release file scope change requires review')
-    if before['files']['scripts/brain_windows.py'] != after['files']['scripts/brain_windows.py']:
+    if before['files'][credential] != after['files'][credential]:
         raise ValueError('Credential component change requires policy review')
 
 
-def runtime_commit(payload, baseline, source, selected):
+def runtime_commit(payload, baseline, source, selected, label='Windows'):
     with tempfile.TemporaryDirectory(prefix='client-release-index-') as tmp:
         env = dict(os.environ, GIT_INDEX_FILE=str(Path(tmp) / 'index'))
         git('read-tree', '--empty', env=env)
@@ -162,8 +168,45 @@ def runtime_commit(payload, baseline, source, selected):
                GIT_COMMITTER_NAME='Agent Brain Release',
                GIT_COMMITTER_EMAIL='release@example.invalid',
                GIT_AUTHOR_DATE=timestamp, GIT_COMMITTER_DATE=timestamp)
-    message = f'Windows runtime {selected}\n\nSource-Commit: {source}\n'
-    return git('commit-tree', tree, '-p', baseline, data=message.encode(), env=env)
+    message = f'{label} runtime {selected}\n\nSource-Commit: {source}\n'
+    parents = (baseline,) if isinstance(baseline, str) else tuple(dict.fromkeys(baseline))
+    return git('commit-tree', tree, *(arg for parent in parents for arg in ('-p', parent)),
+               data=message.encode(), env=env)
+
+
+def runtime_artifacts(payload, baselines, source, selected, group, *, advance=True):
+    """The same build/integrity path with each platform's existing credential pin."""
+    definition = GROUPS[group]
+    before = [json.loads(git('show', parent + ':releases/manifest.json')) for parent in baselines]
+    if advance and any(version(selected) <= version(manifest['version']) for manifest in before):
+        raise ValueError('New version must exceed every selected channel baseline')
+    artifacts, manifests, packages = {}, [], []
+    with tempfile.TemporaryDirectory(prefix='client-release-build-') as tmp:
+        for platform in definition['platforms']:
+            target = Path(tmp) / platform
+            # Execute the frozen product checkout's own builder. Its independent
+            # repository guard and contract imports remain intact.
+            manifest = json.loads(run([sys.executable, '-B', str(ROOT / 'tools/build_client.py'),
+                                       '--output', str(target), '--version', selected,
+                                       '--mode', 'personal-content-https', '--platform', platform]))
+            for previous in before:
+                compatible(previous, manifest, definition['credential'])
+            package = {p.relative_to(target).as_posix(): p.read_bytes()
+                       for p in target.rglob('*') if p.is_file()}
+            for name, digest in manifest['files'].items():
+                if package[name] != payload[name] or sha(package[name]) != digest:
+                    raise ValueError('Runtime source integrity failed: ' + name)
+            run([sys.executable, '-I', '-B', str(target / 'adapters/codex/content_mcp.py'), '--self-check'])
+            archive_payload = {name: raw for name, raw in package.items() if name != 'export-manifest.json'}
+            arch = platform.split('-', 1)[1]
+            name = f'agent-brain-client-runtime-{group}-{arch}-{selected}'
+            artifacts[name + '.tar.gz'] = archive(archive_payload, name)
+            manifests.append(manifest)
+            packages.append(package)
+    if any(manifest != manifests[0] for manifest in manifests) or any(package != packages[0] for package in packages):
+        raise ValueError('Architectures require distinct reviewed channel payloads')
+    runtime = runtime_commit(packages[0], baselines, source, selected, definition['label']) if advance else None
+    return artifacts, runtime, sha(json.dumps(manifests[0], sort_keys=True).encode())
 
 
 def build(source, baseline, selected):
@@ -173,34 +216,13 @@ def build(source, baseline, selected):
     git('merge-base', '--is-ancestor', baseline_source, source)
     if version(selected) <= version(before['version']):
         raise ValueError('New version must be greater than the frozen channel baseline')
-    artifacts, manifests, packages = {}, [], []
-    with tempfile.TemporaryDirectory(prefix='client-release-build-') as tmp:
-        for platform in PLATFORMS:
-            target = Path(tmp) / platform
-            manifest = release(ROOT, target, selected, 'personal-content-https', platform)
-            compatible(before, manifest)
-            package = {p.relative_to(target).as_posix(): p.read_bytes()
-                       for p in target.rglob('*') if p.is_file()}
-            for name, digest in manifest['files'].items():
-                if package[name] != payload[name] or sha(package[name]) != digest:
-                    raise ValueError('Runtime source integrity failed: ' + name)
-            run([sys.executable, '-I', '-B', str(target / 'adapters/codex/content_mcp.py'), '--self-check'])
-            archive_payload = {n: raw for n, raw in package.items() if n != 'export-manifest.json'}
-            arch = platform.split('-', 1)[1]
-            name = f'agent-brain-client-runtime-windows-{arch}-{selected}'
-            artifacts[name + '.tar.gz'] = archive(archive_payload, name)
-            manifests.append(manifest)
-            packages.append(package)
-    if manifests[0] != manifests[1] or packages[0] != packages[1]:
-        raise ValueError('Windows architectures require distinct reviewed channel payloads')
+    artifacts, runtime, manifest_sha = runtime_artifacts(payload, (baseline,), source, selected, 'windows')
     name = f'agent-brain-client-installer-{selected}-source'
     artifacts[name + '.tar.gz'] = archive(payload, name, modes)
     for kind in ('installer', 'runtime'):
         sums = ''.join(sha(raw) + '  ' + name + '\n' for name, raw in sorted(artifacts.items())
                        if name.endswith('.tar.gz') and kind in name)
         artifacts[f'{kind}-{selected}-SHA256SUMS.txt'] = sums.encode()
-    runtime = runtime_commit(packages[0], baseline, source, selected)
-    manifest_sha = sha(json.dumps(manifests[0], sort_keys=True).encode())
     plan = {'schema': 1, 'repository': REPOSITORY, 'source': source,
             'source_tree': git('rev-parse', source + '^{tree}'), 'baseline': baseline,
             'baseline_source': baseline_source,
@@ -260,6 +282,125 @@ def prepare(output, source, selected):
     validate(output)
     source_payload(source)
     report(output, 'prepared', source=source, version=selected, runtime=plan['runtime'],
+           published=False, production_catalog='not-checked')
+
+
+@contextmanager
+def source_root(path):
+    global ROOT
+    previous, ROOT = ROOT, path
+    try:
+        yield
+    finally:
+        ROOT = previous
+
+
+def executor_identity():
+    # The release executor and the product source can be different reviewed
+    # commits when completing an already published version on another platform.
+    with source_root(TOOL_ROOT):
+        source = commit('HEAD')
+        source_payload(source)
+        return source, git('rev-parse', source + '^{tree}')
+
+
+def build_platforms(source, baselines, selected, groups, installer_tag=None):
+    payload, modes = source_payload(source)
+    executor, executor_tree = executor_identity()
+    for parent in dict.fromkeys(baselines.values()):
+        message = git('show', '-s', '--format=%B', parent)
+        recorded = re.findall(r'^Source-Commit: ([a-f0-9]{40})$', message, re.M)
+        if recorded:
+            if len(recorded) != 1:
+                raise ValueError('Ambiguous prior source provenance')
+            git('merge-base', '--is-ancestor', recorded[0], source)
+    # The reviewed legacy Mac channels predate Source-Commit metadata. The
+    # current Windows source floor still prevents rolling shared source back.
+    if not re.search(r'^Source-Commit: [a-f0-9]{40}$',
+                     git('show', '-s', '--format=%B', baselines[CHANNEL]), re.M):
+        raise ValueError('Current Windows source provenance required')
+    if not groups or len(set(groups)) != len(groups) or set(groups) - set(GROUPS):
+        raise ValueError('Explicit supported platform groups required')
+    artifacts, channels, runtimes, manifests, checks, release_assets, tags = {}, {}, {}, {}, {}, {}, {}
+    for group, definition in GROUPS.items():
+        parents = tuple(baselines[ref] for ref in definition['channels'])
+        packages, runtime, manifest_sha = runtime_artifacts(
+            payload, parents, source, selected, group, advance=group in groups)
+        checks[group] = {'platforms': list(definition['platforms']), 'manifest_sha256': manifest_sha}
+        if group not in groups:
+            continue
+        kind = 'runtime_' + group
+        sums = ''.join(sha(raw) + '  ' + name + '\n' for name, raw in sorted(packages.items()))
+        packages[f'runtime-{group}-{selected}-SHA256SUMS.txt'] = sums.encode()
+        release_assets[kind] = sorted(packages)
+        artifacts.update(packages)
+        tags[kind] = f'client-{selected}-{group}'
+        runtimes[group], manifests[group] = runtime, manifest_sha
+        for ref in definition['channels']:
+            channels[ref] = {'baseline': baselines[ref], 'runtime': runtime}
+    name = f'agent-brain-client-installer-{selected}-source.tar.gz'
+    raw = archive(payload, name.removesuffix('.tar.gz'), modes)
+    artifacts[name] = raw
+    sums_name = f'installer-{selected}-SHA256SUMS.txt'
+    artifacts[sums_name] = (sha(raw) + '  ' + name + '\n').encode()
+    release_assets['installer'] = [name, sums_name]
+    legacy_tag = f'installer-{selected}-windows-setup'
+    if installer_tag is None:
+        legacy = run(['git', 'rev-parse', '--verify', '--quiet', 'refs/tags/' + legacy_tag + '^{commit}']) if git_tag_exists(legacy_tag) else b''
+        if legacy and legacy.decode().strip() != source:
+            raise ValueError('Existing installer version has another source; choose a new shared version')
+        installer_tag = legacy_tag if legacy else f'installer-{selected}-setup'
+        if git_tag_exists(installer_tag) and commit('refs/tags/' + installer_tag) != source:
+            raise ValueError('Existing installer version has another source; never replace it')
+    tags['installer'] = installer_tag
+    return {'schema': 2, 'repository': REPOSITORY, 'source': source,
+            'source_tree': git('rev-parse', source + '^{tree}'),
+            'executor_source': executor, 'executor_tree': executor_tree,
+            'version': selected, 'groups': list(groups), 'baselines': baselines,
+            'channels': channels, 'runtimes': runtimes, 'manifests': manifests,
+            'validated_groups': checks, 'tags': tags, 'release_assets': release_assets,
+            'assets': {name: {'sha256': sha(raw), 'size': len(raw)} for name, raw in sorted(artifacts.items())}}, artifacts
+
+
+def git_tag_exists(tag):
+    return subprocess.run(['git', 'show-ref', '--verify', '--quiet', 'refs/tags/' + tag],
+                          cwd=ROOT, capture_output=True, timeout=30).returncode == 0
+
+
+def prepare_platforms(output, source, selected, target):
+    existing = output / 'plan.json'
+    groups = list(GROUPS) if target == 'all' else [target]
+    if existing.exists():
+        old = json.loads(existing.read_bytes())
+        if old.get('schema') != 2 or old['source'] != source or old['groups'] != groups or selected not in ('auto', old['version']):
+            raise ValueError('Output belongs to another source/platform/version')
+        baselines, selected, installer_tag = old['baselines'], old['version'], old['tags']['installer']
+    else:
+        baselines = {ref: commit(ref.replace('refs/heads/', 'refs/remotes/origin/', 1))
+                     for definition in GROUPS.values() for ref in definition['channels']}
+        versions = [version(json.loads(git('show', parent + ':releases/manifest.json'))['version'])
+                    for parent in baselines.values()]
+        if selected == 'auto':
+            major, minor, patch = max(versions)
+            selected = f'{major}.{minor}.{patch + 1}'
+        installer_tag = None
+    report(output, 'building', source=source, version=selected, groups=groups)
+    plan, artifacts = build_platforms(source, baselines, selected, groups, installer_tag)
+    immutable(existing, encoded(plan))
+    for name, raw in artifacts.items():
+        immutable(output / 'assets' / name, raw)
+    notes = (f'Agent Brain Client {selected}\n\nSource: {source}\n'
+             f"Release executor: {plan['executor_source']}\n\n"
+             + '\n'.join(f'{group}: {runtime}; manifest SHA256: {plan["manifests"][group]}'
+                         for group, runtime in plan['runtimes'].items())
+             + '\n\nBoth platform manifests built and checked at the same component version. '
+             + 'Only selected existing channels are advanced; their ancestry, file scope and credential pins are retained. '
+             + 'Desktop and worker/model reload acceptance are separate.\n')
+    immutable(output / 'release-notes.md', notes.encode())
+    report(output, 'validating', source=source, version=selected, groups=groups)
+    validate(output)
+    source_payload(source)
+    report(output, 'prepared', source=source, version=selected, runtimes=plan['runtimes'],
            published=False, production_catalog='not-checked')
 
 
@@ -349,6 +490,8 @@ class GitHub:
 
 
 def assets_for(plan, kind):
+    if plan.get('schema') == 2:
+        return {name: plan['assets'][name] for name in plan['release_assets'][kind]}
     return {name: row for name, row in plan['assets'].items() if kind in name}
 
 
@@ -374,7 +517,11 @@ def remote_ref(ref):
 
 def load_bundle(output):
     saved = json.loads((output / 'plan.json').read_bytes())
-    plan, artifacts = build(saved['source'], saved['baseline'], saved['version'])
+    if saved.get('schema') == 2:
+        plan, artifacts = build_platforms(saved['source'], saved['baselines'], saved['version'],
+                                         saved['groups'], saved['tags']['installer'])
+    else:
+        plan, artifacts = build(saved['source'], saved['baseline'], saved['version'])
     if saved != plan:
         raise ValueError('Prepared plan differs from rebuilt source')
     for name, raw in artifacts.items():
@@ -384,12 +531,25 @@ def load_bundle(output):
 
 
 def targets(plan):
+    if plan.get('schema') == 2:
+        return {**{'runtime_' + group: runtime for group, runtime in plan['runtimes'].items()},
+                'installer': plan['source']}
     return {'runtime': plan['runtime'], 'installer': plan['source']}
 
 
+def channel_targets(plan):
+    return plan['channels'] if plan.get('schema') == 2 else {
+        CHANNEL: {'baseline': plan['baseline'], 'runtime': plan['runtime']}}
+
+
 def preflight_remote(plan):
-    if remote_ref(CHANNEL) not in (plan['baseline'], plan['runtime']):
-        raise ValueError('Channel advanced elsewhere; keep this bundle, prepare a new version')
+    selected = channel_targets(plan)
+    for ref, row in selected.items():
+        if remote_ref(ref) not in (row['baseline'], row['runtime']):
+            raise ValueError('Channel advanced elsewhere; keep this bundle, prepare a new version')
+    for ref, baseline in plan.get('baselines', {}).items():
+        if ref not in selected and remote_ref(ref) != baseline:
+            raise ValueError('Unselected platform advanced; do not regress the shared installer')
     for kind, target in targets(plan).items():
         actual = remote_ref('refs/tags/' + plan['tags'][kind])
         if actual not in (None, target):
@@ -417,13 +577,15 @@ def verify(output, api, plan):
         if row is None:
             raise ValueError('Published release not found')
         download_assets(plan, row, kind)
-    if remote_ref(CHANNEL) != plan['runtime']:
-        raise ValueError('Published channel target unconfirmed')
+    for ref, row in channel_targets(plan).items():
+        if remote_ref(ref) != row['runtime']:
+            raise ValueError('Published channel target unconfirmed')
     latest = api.request('/releases/latest')
     if latest is None or latest['tag_name'] != plan['tags']['installer']:
         raise ValueError('Latest installer pointer unconfirmed')
     report(output, 'published-and-verified', source=plan['source'], version=plan['version'],
-           runtime=plan['runtime'], public_assets_verified=len(plan['assets']),
+           **({'runtimes': plan['runtimes']} if plan.get('schema') == 2 else {'runtime': plan['runtime']}),
+           public_assets_verified=len(plan['assets']),
            releases={kind: f'https://github.com/{REPOSITORY}/releases/tag/{tag}'
                      for kind, tag in plan['tags'].items()},
            production_catalog='not-checked', desktop_acceptance='not-checked')
@@ -432,8 +594,12 @@ def verify(output, api, plan):
 def publish(output, api, plan):
     git('fetch', '--no-tags', 'origin', 'main')
     git('merge-base', '--is-ancestor', plan['source'], 'FETCH_HEAD')
+    if plan.get('schema') == 2:
+        git('merge-base', '--is-ancestor', plan['executor_source'], 'FETCH_HEAD')
     preflight_remote(plan)
     ci = api.ci(plan)
+    if plan.get('schema') == 2 and plan['executor_tree'] != plan['source_tree']:
+        ci['executor'] = api.ci({'source_tree': plan['executor_tree']})
     (output / 'ci.json').write_bytes(encoded(ci))
     notes = (output / 'release-notes.md').read_bytes()
     require_publishable({'release-notes.md': notes})
@@ -453,7 +619,7 @@ def publish(output, api, plan):
         if row is None:
             row = api.request('/releases', 'POST', {
                 'tag_name': plan['tags'][kind], 'target_commitish': target,
-                'name': f"Agent Brain Client {plan['version']} {kind} (Windows)",
+                'name': f"Agent Brain Client {plan['version']} {kind.replace('_', ' ')}" + (' (Windows)' if plan.get('schema') != 2 else ''),
                 'body': notes.decode(), 'draft': True, 'prerelease': False, 'make_latest': 'false'})
         if row['draft']:
             names = {item['name'] for item in row['assets']}
@@ -468,25 +634,39 @@ def publish(output, api, plan):
         releases[kind] = row
     report(output, 'promoting-channel', version=plan['version'])
     preflight_remote(plan)
-    if remote_ref(CHANNEL) != plan['runtime']:
+    channels = channel_targets(plan)
+    pending = {ref: row for ref, row in channels.items() if remote_ref(ref) != row['runtime']}
+    if plan.get('schema') == 2 and pending:
+        # All selected refs move together; each retains its own frozen parent.
+        git('push', '--atomic',
+            *('--force-with-lease=' + ref + ':' + row['baseline'] for ref, row in pending.items()),
+            'origin', *(row['runtime'] + ':' + ref for ref, row in pending.items()))
+    elif pending:
         # The generated commit is a direct child of baseline. The lease rejects
         # a concurrent publisher; no unrelated channel commit can be discarded.
         git('push', '--force-with-lease=' + CHANNEL + ':' + plan['baseline'],
             'origin', plan['runtime'] + ':' + CHANNEL)
-    if remote_ref(CHANNEL) != plan['runtime']:
+    preflight_remote(plan)
+    if any(remote_ref(ref) != row['runtime'] for ref, row in channels.items()):
         raise ValueError('Channel changed before latest promotion; review required')
     api.request(f"/releases/{releases['installer']['id']}", 'PATCH', {'make_latest': 'true'})
     verify(output, api, plan)
 
 
 def main():
+    global ROOT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('prepare', 'publish', 'verify'))
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--source', help='Exact 40-character source SHA (prepare only)')
-    parser.add_argument('--version', default='auto', help='auto increments the frozen Windows channel patch')
+    parser.add_argument('--source-root', type=Path, help='Clean official checkout of the product source; executor is separately verified')
+    parser.add_argument('--targets', choices=('all', 'windows', 'macos'), default='all',
+                        help='all publishes both platforms; a single group completes a partial delivery')
+    parser.add_argument('--version', default='auto', help='auto increments the highest frozen platform patch')
     parser.add_argument('--allow-publish', action='store_true')
     args = parser.parse_args()
+    if args.source_root:
+        ROOT = args.source_root.resolve()
     if sys.version_info < (3, 11):
         parser.error('Python 3.11+ required')
     output = args.output.resolve()
@@ -499,7 +679,7 @@ def main():
     with locked(output):
         try:
             if args.action == 'prepare':
-                prepare(output, args.source, args.version)
+                prepare_platforms(output, args.source, args.version, args.targets)
             else:
                 plan = load_bundle(output)
                 if args.action == 'publish':
