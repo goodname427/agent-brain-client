@@ -62,6 +62,35 @@ class InstallBoundaries(unittest.TestCase):
                 result,calls=self.startup();self.assertEqual(result['status'],'content-native-install-pending');self.assertEqual(calls,0)
         self.f.config.write_bytes(original)
 
+    def test_inflight_damaged_candidate_keeps_real_registered_predecessor_usable(self):
+        from brain_lock import locked
+        from brain_release import atomic_json, digest
+        self.apply()
+        engine = self.f.channel.engine
+        manifest = json.loads((self.f.package / 'verified.json').read_bytes())['manifest']
+        manifest = dict(manifest, version='0.2.1')
+        package = engine.prepare('b' * 40, manifest, lambda name: (self.f.package / name).read_bytes())
+        candidate = {'commit': 'b' * 40, 'version': '0.2.1', 'package': str(package),
+                     'manifest_sha256': digest(json.dumps(manifest, sort_keys=True).encode())}
+        (package / 'adapters/codex/remote_mcp.py').write_bytes(b'Synthetic damaged candidate')
+        before = self.f.native_files()
+        with locked(engine.local / 'update.lock', timeout=0), \
+                patch.object(client_startup, 'ClientReleases', return_value=self.f.channel), \
+                patch.object(self.f.channel, 'startup_check'), \
+                patch.object(client_startup.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as launch:
+            for phase in ('applying', 'activated'):
+                atomic_json(engine.journal, {'phase': phase, 'before': self.f.active, 'target': candidate})
+                engine.set_active(candidate)
+                journal, pointer = engine.journal.read_bytes(), engine.pointer.read_bytes()
+                inspected = install.inspect(self.f.home)
+                self.assertTrue(inspected['installed'], inspected)
+                result = client_startup.startup(self.f.policy_path, self.f.policy_sha)
+                self.assertTrue(result['served'], result)
+                self.assertIn(str(self.f.package / 'adapters/codex/content_mcp.py'), launch.call_args.args[0])
+                self.assertEqual(engine.journal.read_bytes(), journal)
+                self.assertEqual(engine.pointer.read_bytes(), pointer)
+                self.assertEqual(self.f.native_files(), before)
+
     def test_registration_and_policy_bindings_remain_strict(self):
         self.apply();reg=self.f.home/'.config/agent-brain-client/codex-mcp.json';original=reg.read_bytes()
         for key,value in {'mcp_sha256':'a'*64,'package_sha256':'b'*64,'release_policy_sha256':'c'*64,'plan_sha256':'d'*64}.items():

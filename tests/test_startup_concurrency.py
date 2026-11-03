@@ -288,6 +288,73 @@ else:
             with self.assertRaises(UpdateBlocked):
                 self.engine.serving_active()
 
+    def test_installation_inspection_uses_snapshot_and_keeps_ownership_checks(self):
+        import content_install as install
+        from brain_lock import locked
+
+        home, native = self.base / "home", self.base / "codex"
+        state = home / ".config" / "agent-brain-client"
+        private_directory(state)
+        registration = state / "codex-mcp.json"
+        config = native / "config.toml"
+        mcp = {"command": "synthetic-worker", "enabled": True}
+        config.write_bytes(install.render(b"", mcp, False))
+        meta = {
+            "content_candidate": True,
+            "release_policy": "synthetic-policy",
+            "release_policy_sha256": "a" * 64,
+            "package_sha256": "b" * 64,
+            "plan_sha256": "c" * 64,
+            "mcp_sha256": install.registered_mcp_digest(mcp),
+            "owned_install_paths": [str(config), str(registration)],
+        }
+        install.save(registration, meta)
+        install.save(
+            state / "content-install-receipt.json",
+            {
+                "phase": "complete",
+                "plan_sha256": meta["plan_sha256"],
+                "after": {
+                    str(config): digest(config.read_bytes()),
+                    str(registration): digest(registration.read_bytes()),
+                },
+            },
+        )
+        target = dict(self.manifest, version="0.6.2")
+        package = self.engine.prepare("b" * 40, target, self.payload.__getitem__)
+        candidate = {
+            "commit": "b" * 40,
+            "version": "0.6.2",
+            "package": str(package),
+            "manifest_sha256": digest(json.dumps(target, sort_keys=True).encode()),
+        }
+        (package / "adapters/codex/remote_mcp.py").write_bytes(b"damaged candidate")
+        atomic_json(
+            self.engine.journal,
+            {"phase": "activated", "before": self.old, "target": candidate},
+        )
+        self.engine.set_active(candidate)
+        release = object.__new__(ClientReleases)
+        release.policy, release.engine = self.policy, self.engine
+        # Only context derivation is supplied here. The full Mac fixture below
+        # verifies a real installed registration/profile/bootstrap; this shared
+        # test exercises native locks, receipt/MCP ownership and release hashes.
+        context = (self.policy, mcp, meta["package_sha256"], native)
+        with (
+            locked(self.engine.local / "update.lock", timeout=0),
+            patch.object(install, "registered_context", return_value=context),
+            patch.object(install, "ClientReleases", return_value=release),
+        ):
+            result = install.inspect(home)
+            self.assertTrue(result["installed"], result)
+            self.assertEqual(result["installed_version"], "0.6.1")
+            config.write_bytes(
+                install.render(
+                    config.read_bytes(), dict(mcp, command="synthetic-drift"), True
+                )
+            )
+            self.assertFalse(install.inspect(home)["installed"])
+
     def test_failed_health_restores_previous_package_and_redacts_failure(self):
         target = dict(self.manifest, version="0.6.2")
         self.engine.source = Mock()
