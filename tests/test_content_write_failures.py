@@ -1,4 +1,4 @@
-"""Synthetic Mac write failures; no device credentials, real memories or network."""
+"""Synthetic content write failures; no device credentials, real memories or network."""
 
 from contextlib import contextmanager, redirect_stderr
 import io

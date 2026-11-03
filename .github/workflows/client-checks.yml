@@ -145,6 +145,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -B tools/check_source.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B -m unittest test_content_write_failures
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd 'tools/install-windows.ps1'), [ref]$null, [ref]$errors) | Out-Null
           if ($errors.Count) { throw ($errors | Out-String) }
