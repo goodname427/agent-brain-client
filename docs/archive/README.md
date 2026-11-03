@@ -8,6 +8,7 @@
 | 0.2 / 0.2.5 | [跨平台配对验收](0.2/platform-pairing-acceptance.md) | Windows 尚未实现时期的设计／拒绝边界 |
 | 0.2 / 0.2.5 | [Mac 首次安装收敛](0.2/mac-first-install-acceptance.md) | 当时测试、UI 与依赖验收缺口 |
 | 0.4 本地候选 | [Client 040](0.4/client-040.md) | 受限任务、本地构建／计划流程，非普通首次安装 |
+| Client 0.5 阶段 / Windows 0.5.9 | [Client 0.5 封板](0.5/client-0.5-freeze.md) | Client 独立快照、组件与验收边界；Server 不在封板范围 |
 | 0.4 阶段 / Client 0.4.8 | [0.4 阶段](0.4/release-0.4.md) | 既有封板范围、恢复与不可变基线 |
 | 0.5 阶段 / Client 0.5.0 | [Windows 引入](0.5/release-0.5-windows.md) | 初始 Windows 发布和当时支持边界 |
 | 安装器 0.5.1 | [地址与密钥](0.5/release-installer-0.5.1.md) | 首次接入入口变更 |

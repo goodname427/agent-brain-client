@@ -54,4 +54,4 @@ python3 -B tools/check_source.py
 
 - [多平台架构与 Harness 边界](docs/reference/multiplatform-development.md)。
 - [开发检查与候选构建](docs/development/README.md)；[固定发布入口](docs/development/release-pipeline.md)。
-- [历史版本与阶段](docs/archive/README.md)；既有 0.4 阶段不可变映射仍在 [历史冻结文件](FREEZE-4.0.json)，不是 0.5 封版清单。
+- [历史版本与阶段](docs/archive/README.md)；既有 0.4 阶段不可变映射仍在 [历史冻结文件](FREEZE-4.0.json)；Client 0.5 阶段见 [封板清单](FREEZE-0.5.json) 与 [封板记录](docs/archive/0.5/client-0.5-freeze.md)。

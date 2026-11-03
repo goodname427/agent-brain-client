@@ -10,7 +10,7 @@
 | 架构与合同 | [参考索引](reference/README.md) | 公共协议、owner 范围、平台／宿主边界与兼容数据 |
 | 开发与发布 | [开发索引](development/README.md) | 隔离检查、候选构建、正式发布流程 |
 | 验收 | [验收索引](acceptance/README.md) | 按轮次记录与证据范围 |
-| 当前版本 | [0.5 交付状态](releases/0.5-status.md) | 0.5.8／0.5.9 补记、基线核对、封版准备 |
+| 当前版本 | [0.5 交付状态](releases/0.5-status.md) | 0.5.8／0.5.9 补记、Client 0.5 封板与已知问题 |
 | 历史归档 | [归档索引](archive/README.md) | 按版本保留历史发布、候选和验收语境 |
 | 维护规则 | [维护与命名](maintenance.md) | 状态、命名、兼容路径、验证与变更清单 |
 
