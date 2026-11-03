@@ -83,7 +83,7 @@ for exclusion or left outside approved personal roots.
 
 The normal `& ./tools/install-windows.ps1` flow now installs the owned inline Hook
 and offers explicit local source selection and scope approval. See
-[Windows installation stages](docs/WINDOWS-INSTALL-CLOSURE.md). Deferring selection
+[Windows installation stages](docs/installation/windows-stages.md). Deferring selection
 keeps the Hook inert before reading its input. An unadmitted device receives a
 metadata packet and a concrete Server-operator/activation task; no Mac source
 approval is imported and no Server privileges are created.

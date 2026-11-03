@@ -50,5 +50,5 @@ function Resolve-AgentBrainPython {
             }
         } catch { continue }
     }
-    throw 'No usable Python 3.11+ with TLS roots and a readable executable was found. Install Python for this user, then rerun the same entry. See docs/FIRST-INSTALL-WINDOWS.md.'
+    throw 'No usable Python 3.11+ with TLS roots and a readable executable was found. Install Python for this user, then rerun the same entry. See docs/installation/windows.md.'
 }
