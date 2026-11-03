@@ -20,10 +20,10 @@ class DocumentationChecks(unittest.TestCase):
     def write(self, name, text):
         (self.root / name).write_text(text, encoding='utf-8')
 
-    def test_valid_links_unicode_fragment_and_compatibility_anchor(self):
-        self.write('docs/OLD.md', '# Old\n\n<a id="旧章节"></a>\n\n'
+    def test_valid_links_unicode_fragment_and_explicit_anchor(self):
+        self.write('docs/section.md', '# Section\n\n<a id="旧章节"></a>\n\n'
                    '[Continue](installation/mac.md#状态与使用)\n')
-        self.write('README.md', '# Entry\n\n[Old](docs/OLD.md#旧章节)\n'
+        self.write('README.md', '# Entry\n\n[Section](docs/section.md#旧章节)\n'
                    '[Encoded](docs/installation/mac.md#%E7%8A%B6%E6%80%81%E4%B8%8E%E4%BD%BF%E7%94%A8)\n')
         self.assertEqual(check_docs.check(self.root)['local_links'], 4)
 
@@ -37,9 +37,9 @@ class DocumentationChecks(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'missing anchor'):
             check_docs.check(self.root)
 
-    def test_removed_legacy_anchor_breaks_old_external_entry(self):
-        self.write('README.md', '[Old](docs/OLD.md#旧章节)\n')
-        self.write('docs/OLD.md', '# Old\n\n[Continue](installation/mac.md)\n')
+    def test_removed_anchor_breaks_incoming_link(self):
+        self.write('README.md', '[Section](docs/section.md#旧章节)\n')
+        self.write('docs/section.md', '# Section\n\n[Continue](installation/mac.md)\n')
         with self.assertRaisesRegex(ValueError, 'missing anchor'):
             check_docs.check(self.root)
 

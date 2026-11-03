@@ -11,6 +11,6 @@
 | [Client 记忆接口](memory-behavior.md) | 当前工具、来源和回执，正文与记忆政策本轮不调整 |
 | [适配器历史参考](../../ADAPTERS.md) | 含旧签名组件、SSH、Notify 候选；不能整体视为当前合同 |
 | [无凭据连接示例](../connection.example.json) | 合成旧格式，不是可用信任锚 |
-| [既有 4.0 固定映射](../../FREEZE-4.0.json) | 不可变产品／组件映射，不是 0.5 新冻结文件 |
+| [既有 0.4 阶段固定映射](../../FREEZE-4.0.json) | 不可变阶段／组件映射，不是 0.5 新冻结文件；[历史标识说明](../releases/0.5-status.md#历史标识) |
 
 [项目记忆入口](../../AUTOMATIC_MEMORY.md) 与 [全局记忆入口](../../GLOBAL_MEMORY.md) 维持原位置。本轮仅整理文档，不调整内容记忆组织、受管 Rule/Skill 或生产目录。
