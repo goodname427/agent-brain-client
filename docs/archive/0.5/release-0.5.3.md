@@ -1,6 +1,5 @@
-> 历史记录：仅描述本文所列版本／当时验收范围，不能作为当前安装步骤或当前能力清单。当前入口见 [文档索引](../../README.md)；[旧路径完整兼容正文](../../RELEASE-0.5.3.md)。
+> 历史归档：仅适用于本文版本与当时证据；当前操作见 [文档索引](../../README.md)。
 
-<!-- historical-body -->
 # 0.5.3 Windows 安装兼容性修复
 
 Python 3.11 的 Windows `platform.machine()` 依赖 `PROCESSOR_*` 环境变量；安装检查使用严格环境时这些变量不存在，0.5.0 因而返回 unreviewed-platform。这不是 Python 3.11 普遍不支持 Windows。平台层改为通过 IsWow64Process2 取得实际宿主架构，保留 x64／ARM64 和原生 OS 拒绝边界。

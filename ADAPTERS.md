@@ -1,8 +1,8 @@
 # 自开发适配器约束
 
-> 参考状态：本文件混合早期适配／签名组件候选与旧版本记录，各节版本限制仅适用于所述基线。当前平台边界见 [多平台开发](docs/MULTIPLATFORM-DEVELOPMENT.md)，当前工具合同见 [协议](PROTOCOL.md)，实际安装先读 [BOOTSTRAP](BOOTSTRAP.md)。历史 `model_loaded:false` 不替代当前不可观测时的 `unknown`。
+> 参考状态：本文件混合早期适配／签名组件候选与旧版本记录，各节版本限制仅适用于所述基线。当前平台边界见 [多平台开发](docs/reference/multiplatform-development.md)，当前工具合同见 [协议](PROTOCOL.md)，实际安装先读 [BOOTSTRAP](BOOTSTRAP.md)。历史 `model_loaded:false` 不替代当前不可观测时的 `unknown`。
 
-当前 Mac/Codex/HTTPS 用户入口统一见 [安装、使用、卸载与再次安装](docs/FIRST-INSTALL-MAC.md)。下文保留 SSH 迁移、历史签名组件候选的技术资料；其中尚未部署、签名/Team/access-group 及候选状态只适用于对应历史路线，不能用于判断已验收的 HTTPS 0.2.5。
+当前 Mac/Codex/HTTPS 用户入口统一见 [安装、使用、卸载与再次安装](docs/installation/mac.md)。下文保留 SSH 迁移、历史签名组件候选的技术资料；其中尚未部署、签名/Team/access-group 及候选状态只适用于对应历史路线，不能用于判断已验收的 HTTPS 0.2.5。
 先查实际 Harness 的官方加载入口、权限、规则/Skill 发现与启动/会话接口。不要根据目录存在或模型名称宣称已加载；缺文档或执行接口时保留实验状态，报告具体未完成项。
 
 薄适配器负责请求转换、获授权 token、生命周期和 Agent 可见状态；不复制 Core、数据 Git、记忆索引、主题格式或事务逻辑。遵守 PROTOCOL.md 的 revision、幂等和持久确认；不接受客户端任意路径或 actor 扩权，不 quiet 吞掉阻碍。使用原生记忆和工具的正常接口，不接管数据库或替换原生工作流。
@@ -93,7 +93,7 @@ HTTPS 只是当前候选传输；协调接口不绑定具体部署形式，可�
 
 配对确认明确返回 `pairing_expired` 或 `device_revoked` 时，候选返回 `pairing-reenrollment-review-required`，保留当前记录。已批准的组件可用 `--reset-enrollment --profile <私密profile> --profile-sha256 <固定摘要>`：它先确认服务端终止状态，再显示原生确认框，仅清除与刚读取记录一致的持久引用；当前有效、未知、漂移或并发替换的记录均保留。成功后才提示重新获取短期码并走安全输入流程。Agent 不能用模型工具静默清除或自动确认该 UI。本轮仅合成检查及编译，没有真实 Keychain 删除。
 
-独立 content candidate 包含上述配对候选，再增加中立的 content contract、`content_cache.py`、`content_mcp.py` 和 `content_install.py`，共 19 个 payload 加导出 manifest。可在私有／合成源准备 `--data-mode personal-content --release-version <版本>` 清单；这不发布或自动批准源。这是历史 19 文件签名组件候选；当前已验收 HTTPS 0.2.5 为 21 文件，采用普通 login Keychain，见 docs/FIRST-INSTALL-MAC.md。
+独立 content candidate 包含上述配对候选，再增加中立的 content contract、`content_cache.py`、`content_mcp.py` 和 `content_install.py`，共 19 个 payload 加导出 manifest。可在私有／合成源准备 `--data-mode personal-content --release-version <版本>` 清单；这不发布或自动批准源。这是历史 19 文件签名组件候选；当前已验收 HTTPS 0.2.5 为 21 文件，采用普通 login Keychain，见 [Mac 安装步骤](docs/installation/mac.md)。
 
 适配器的显式政策固定 Codex、内容协议、类型、Rule/Skill ID 和允许依赖；Memory 可在批准的个人范围使用 ID 通配。传输由调用方注入，不查找凭据或私库。读取目录、各条正文和再次目录检查得到同一已确认版本后，才准备本地映射；云端发生并发变化时保留原快照。Memory 是可重建文本缓存，Rule 保留启用与 always/on-demand/conditional 触发语义，Skill 只向自有 `.agents/skills/<id>/` 映射文本包。未验证 Python 模块依赖明确阻碍同步；不导入模块、安装依赖、执行 Skill 脚本或读取原生会话。
 
@@ -129,7 +129,7 @@ component_source_sha256 固定已批准的签名组件源码关联。候选源�
 
 `ssh_content.py` 只调用固定 `/usr/bin/ssh -F /dev/null -T` 和已批准私密 profile。它不读取私钥原值；OpenSSH 使用现有 identity。固定 host/user/port/known-host hash、固定 sudo 服务账户命令、冻结类型与 IDs；模型不能传 endpoint、token、命令、actor 或任意文件参数。请求只能是四个 typed content 方法及固定 Mac 平台/version 的只读 client_updates 发现，超限、漂移、越权先拒绝；写入仍需 Server 的 durable=true。代理只允许回环 8765，Server 凭据记录的 SHA/范围/账号必须与独立固定 policy 匹配；拒绝旧操作、签发请求、凭据响应和重定向。
 
-这一路径使模型接口不接触 API 原值，且 Mac 不存 API 凭据。它不承诺阻止同 OS 用户任意进程使用现有 SSH 身份或服务账户读取其私密文件。普通系统 Keychain 也可由原生程序负责 I/O、不向模型输出原值，不因此必需付费 Team；当前 HTTPS 0.2.5 已实现普通 login Keychain；用户操作统一参见 docs/FIRST-INSTALL-MAC.md。独立 team-keychain 候选继续保留原 codesign/Team/access-group 门禁，不用 ad-hoc 冒充它；其 entitlement dry-run 只检查摘要固定的二进制与签名声明，不能证明真实 Keychain 授权。
+这一路径使模型接口不接触 API 原值，且 Mac 不存 API 凭据。它不承诺阻止同 OS 用户任意进程使用现有 SSH 身份或服务账户读取其私密文件。普通系统 Keychain 也可由原生程序负责 I/O、不向模型输出原值，不因此必需付费 Team；当前 HTTPS 0.2.5 已实现普通 login Keychain；用户操作统一参见 [Mac 安装步骤](docs/installation/mac.md)。独立 team-keychain 候选继续保留原 codesign/Team/access-group 门禁，不用 ad-hoc 冒充它；其 entitlement dry-run 只检查摘要固定的二进制与签名声明，不能证明真实 Keychain 授权。
 
 `brain_activation_plan.py` 在私有 Core 中生成分阶段参数计划；`brain_credential_delivery.py` 只在服务账户、私密预建目录和精确部署计划 SHA 下生成/复用 authority key并内部交付设备记录。不设置管理员 issuer，不需要把原值发给用户／Mac。文件不覆盖未知记录，确认响应丢失从 pending 恢复；缺失/漂移或不可确认返回 review-required，保留状态，不自动重配。未知客户端仍 adapter-review-required。
 

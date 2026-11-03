@@ -2,7 +2,7 @@
 
 > 当前维护；Client 源码独立构建。安装器／Windows 核对基线 0.5.9，Mac 运行渠道另行固定。
 
-先读根目录 [AGENTS](../../AGENTS.md) 和 [多平台开发](../MULTIPLATFORM-DEVELOPMENT.md)。测试只使用合成资料；不跨仓导入 Server/Core，不读取生产 Data、配置、凭据或聊天会话。
+先读根目录 [AGENTS](../../AGENTS.md) 和 [多平台开发](../reference/multiplatform-development.md)。测试只使用合成资料；不跨仓导入 Server/Core，不读取生产 Data、配置、凭据或聊天会话。
 
 ## 隔离检查
 
@@ -19,7 +19,7 @@ sh -n tools/install-mac.sh
 git diff --check
 ```
 
-Windows CI 同时隔离 USERPROFILE；原生 API／凭据／DACL 测试必须在 Windows 执行。具体平台、lint、类型检查以 [Client checks](../../.github/workflows/client-checks.yml) 为准；平台跳过须分别报告，不作为通过的实测项。
+Windows CI 同时隔离 USERPROFILE；原生 API／凭据／DACL 测试必须在 Windows 执行。文档链接检查及故障注入测试也由现有 CI 自动执行。具体平台、lint、类型检查以 [Client checks](../../.github/workflows/client-checks.yml) 为准；平台跳过须分别报告，不作为通过的实测项。
 
 ## 本地候选构建
 
@@ -33,4 +33,4 @@ python3 -B tools/build_credential_helper.py --output .local/credential-helper
 
 Swift helper 构建仅适用 Mac 工具链。SSH 历史兼容候选可使用 `--mode personal-content-ssh` 与其独立版本／政策；不能把本地候选代替既有发布源。文件范围、能力、manifest 与凭据源码 pin 均沿现有合同校验。
 
-正式发布只使用 [固定发布入口](../RELEASE-PIPELINE.md) 与 [发布工作流](../../.github/workflows/client-release.yml)，按最终精确提交、CI 证据和明确发布授权执行。本次文档整理不运行发布、不创建封版 tag、不提升渠道。提交使用精确文件清单，遵守 [文档维护规则](../maintenance.md)。
+正式发布只使用 [固定发布入口](release-pipeline.md) 与 [发布工作流](../../.github/workflows/client-release.yml)，按最终精确提交、CI 证据和明确发布授权执行。本次文档整理不运行发布、不创建封版 tag、不提升渠道。提交使用精确文件清单，遵守 [文档维护规则](../maintenance.md)。

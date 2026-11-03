@@ -1,4 +1,4 @@
-> 历史记录：0.5.7 宿主写入设计及当时的验证／发布审批语境；当前技术正文见 [稳定入口](../../WINDOWS-HOST-CONFIG-WRITES.md)，当前发布按 [发布流程](../../RELEASE-PIPELINE.md)。
+> 历史记录：0.5.7 宿主写入设计及当时的验证／发布审批语境；当前技术正文见 [稳定入口](../../reference/windows-host-config-writes.md)，当前发布按 [发布流程](../../development/release-pipeline.md)。
 
 # Windows 宿主配置写入与恢复
 

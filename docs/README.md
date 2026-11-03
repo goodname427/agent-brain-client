@@ -2,7 +2,7 @@
 
 > 状态：当前维护；核对基线为 2026-11-03 的安装器／Windows 运行包 0.5.9。当前说明、版本证据与历史记录分开维护。
 
-安装 Agent 继续先读根目录 [README](../README.md)、[AGENTS](../AGENTS.md)、[BOOTSTRAP](../BOOTSTRAP.md)，无需先遍历本文档树。既有稳定路径保留完整正文，分类目录提供导航；归档的旧路径也保留全文，避免只读单文件的安装 Agent 得到无效跳转。
+安装 Agent 继续先读根目录 [README](../README.md)、[AGENTS](../AGENTS.md)、[BOOTSTRAP](../BOOTSTRAP.md)，无需先遍历本文档树。完整正文已移入分类目录，每个主题只维护一份。22 个旧 docs 路径仅保留导读和原锚点；根安装入口已直接引用新正文，安装 Agent 无需经过兼容页。
 
 | 分类 | 入口 | 用途 |
 | --- | --- | --- |
@@ -20,4 +20,4 @@
 
 [connection.example.json](connection.example.json) 是无凭据旧连接格式示例，包含合成端点和占位锚，只供合同说明／旧事务兼容，不能直接安装；[FREEZE-4.0.json](../FREEZE-4.0.json) 是既有 4.0 不可变基线。二者及本地 [运行 manifest](../releases/manifest.json) 保留原字节与路径，不随文档归档或版本文案重写。
 
-[文档兼容清单](documentation-contract.json) 登记全部 22 个旧 docs Markdown 路径、历史全文映射和上述数据摘要，由 `python3 -B tools/check_docs.py` 离线检查。它是文档维护元数据，不是安装器读取的新授权配置。
+`python3 -B tools/check_docs.py` 离线检查所有文档与兼容页的相对链接／锚点；现有 Client checks CI 自动运行它及故障注入测试。维护规则见 [文档维护](maintenance.md)。

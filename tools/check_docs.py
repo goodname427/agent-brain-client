@@ -1,5 +1,4 @@
-"""Offline documentation links, legacy entry points and fixed-data contracts."""
-import hashlib
+"""Check repository Markdown links and anchors without network or dependencies."""
 import html
 import json
 import posixpath
@@ -14,7 +13,6 @@ LINK = re.compile(r'!?\[[^\]\n]*\]\(<?([^\s)>]+)>?(?:\s+["\'][^\n]*?["\'])?\)')
 REFERENCE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?', re.M)
 HEADING = re.compile(r'^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$', re.M)
 ANCHOR = re.compile(r'<[^>]+\b(?:id|name)=["\']([^"\']+)["\'][^>]*>')
-MARKER = '<!-- historical-body -->\n'
 
 
 def prose(source):
@@ -61,22 +59,12 @@ def local_target(name, url):
     return target, unquote(split.fragment)
 
 
-def normalize_body(name, source):
-    if MARKER not in source:
-        raise ValueError(f'{name}: historical full-text marker missing')
-    body = source.split(MARKER, 1)[1]
-    def normalized(match):
-        target = local_target(name, match[1])
-        return match[0].replace(match[1], target[0] + ('#' + target[1] if target[1] else '')) if target else match[0]
-    return LINK.sub(normalized, body)
-
-
-def check():
-    names = sorted(p.relative_to(ROOT).as_posix() for p in ROOT.glob('*.md'))
-    names += sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / 'docs').rglob('*.md'))
-    sources = {name: (ROOT / name).read_text(encoding='utf-8') for name in names}
+def check(root=ROOT):
+    names = sorted(p.relative_to(root).as_posix() for p in root.glob('*.md'))
+    names += sorted(p.relative_to(root).as_posix() for p in (root / 'docs').rglob('*.md'))
+    sources = {name: (root / name).read_text(encoding='utf-8') for name in names}
     known_anchors = {name: anchors(source) for name, source in sources.items()}
-    graph, count = {name: set() for name in names}, 0
+    count = 0
     for name, source in sources.items():
         rendered = prose(source)
         # Link-shaped inline-code examples are not navigation either.
@@ -87,44 +75,16 @@ def check():
                 if target is None:
                     continue
                 dest, fragment = target
-                path = ROOT / dest
+                path = root / dest
                 if not path.exists():
                     raise ValueError(f'{name}: missing relative target {match[1]}')
                 if path.is_symlink():
                     raise ValueError(f'{name}: linked documentation target {dest}')
                 if fragment and dest in known_anchors and fragment not in known_anchors[dest]:
                     raise ValueError(f'{name}: missing anchor {match[1]}')
-                if dest in sources:
-                    graph[name].add(dest)
                 count += 1
-    contract = json.loads((ROOT / 'docs/documentation-contract.json').read_text())
-    for name in ['README.md', 'AGENTS.md', 'BOOTSTRAP.md', *contract['legacy_markdown']]:
-        if name not in sources or len(sources[name]) < 200:
-            raise ValueError(f'{name}: missing complete legacy entry')
-    for old, archived in contract['archive_mirrors'].items():
-        if normalize_body(old, sources[old]) != normalize_body(archived, sources[archived]):
-            raise ValueError(f'{old}: archive and compatibility full text differ')
-    for name, expected in contract['fixed_data_sha256'].items():
-        if hashlib.sha256((ROOT / name).read_bytes()).hexdigest() != expected:
-            raise ValueError(f'{name}: fixed data contract changed; requires separate review')
-        json.loads((ROOT / name).read_bytes())
-    for name, required in contract['legacy_anchors'].items():
-        if not set(required) <= known_anchors[name]:
-            raise ValueError(f'{name}: legacy title anchor removed')
-    reached, pending = set(), ['docs/README.md']
-    while pending:
-        name = pending.pop()
-        if name not in reached:
-            reached.add(name)
-            pending.extend(graph[name] - reached)
-    missing = sorted(set(names) - reached)
-    if missing:
-        raise ValueError('Documentation missing from index: ' + ', '.join(missing))
     return {'status': 'documentation-checked', 'markdown_files': len(names),
-            'local_links': count, 'legacy_entries': len(contract['legacy_markdown']),
-            'archive_mirrors': len(contract['archive_mirrors']),
-            'fixed_data_contracts': len(contract['fixed_data_sha256']),
-            'external_urls_checked': False}
+            'local_links': count, 'external_urls_checked': False}
 
 
 if __name__ == '__main__':

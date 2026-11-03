@@ -1,4 +1,4 @@
-> 历史记录：0.2.5 时代首次安装收敛与当时未测范围；当前验收模板见 [稳定入口](../../MAC-FIRST-INSTALL-ACCEPTANCE.md)。
+> 历史记录：0.2.5 时代首次安装收敛与当时未测范围；当前验收模板见 [稳定入口](../../acceptance/mac-install-onboard.md)。
 
 # Mac 首次安装收敛验收
 

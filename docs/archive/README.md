@@ -4,6 +4,7 @@
 
 | 时期／版本 | 归档正文 | 用途 |
 | --- | --- | --- |
+| 0.2 / 0.2.5 | [HTTPS 安装事务](0.2/https-install.md) | 旧邀请安装事务与恢复参考 |
 | 0.2 / 0.2.5 | [跨平台配对验收](0.2/platform-pairing-acceptance.md) | Windows 尚未实现时期的设计／拒绝边界 |
 | 0.2 / 0.2.5 | [Mac 首次安装收敛](0.2/mac-first-install-acceptance.md) | 当时测试、UI 与依赖验收缺口 |
 | 0.4 本地候选 | [Client 040](0.4/client-040.md) | 受限任务、本地构建／计划流程，非普通首次安装 |
@@ -19,4 +20,4 @@
 
 0.5.8／0.5.9 没有旧平铺发布说明，本轮按已存在的 tag／提交补入 [0.5 状态](../releases/0.5-status.md)，不虚构历史验收。
 
-历史平铺文件的完整内容仍在旧路径，映射详见 [文档合同清单](../documentation-contract.json)。维护归档时同步旧路径全文，离线检查器比较实际链接目标与正文，防止两份漂移。归档不包括 [connection 示例](../connection.example.json)、[4.0 JSON 基线](../../FREEZE-4.0.json) 或运行 manifest；这些仍是契约数据。
+历史正文只在上述版本目录维护；旧平铺地址仅保留导读与原锚点，链接直达这些正文，不保存全文镜像。归档不包括 [connection 示例](../connection.example.json)、[4.0 JSON 基线](../../FREEZE-4.0.json) 或运行 manifest；这些仍是契约数据。

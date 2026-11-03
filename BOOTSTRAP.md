@@ -4,7 +4,7 @@
 
 先读 README.md 和 PROTOCOL.md。安装使用审核后固定的发布源、manifest、运行配置、设备范围和安装计划；保留原生工具工作流，不读取原生会话或数据库。不要运行旧混合仓的 brain.py/sync，也不要从旧仓拉取源码。
 
-1. 识别实际执行环境。原生 Windows 读 [Windows 固定步骤](docs/FIRST-INSTALL-WINDOWS.md)，Mac 读 [Mac 安装、使用、卸载与再次安装](docs/FIRST-INSTALL-MAC.md)。WSL 和云端编排不能按原生 Windows 本地 Hook 流程处理。
+1. 识别实际执行环境。原生 Windows 读 [Windows 固定步骤](docs/installation/windows.md)，Mac 读 [Mac 安装、使用、卸载与再次安装](docs/installation/mac.md)。WSL 和云端编排不能按原生 Windows 本地 Hook 流程处理。
 2. 依照平台文档取得独立、干净的官方 `main` checkout，并记录源码 SHA；不从用户旧目录执行入口。正常准备 Python 3.11+ 和 Git。先执行平台入口的 `status`，它只检查本地安装，不发邀请或读取设备凭据。
 3. 已有经过核验的安装时，执行 `check-update`，成功检查后执行 `update`；不把重复 `install` 当作升级。复用现有策略、凭据、信任锚和队列，保留原有启用／关闭状态，不重新配对。Windows 命令如下；Mac 使用文档中的同名 action。
 
@@ -24,4 +24,4 @@ Windows 的正常安装入口还会继续受信 launcher 交接、有限 Rule/Sk
 逐项查看 `installation_stages`；MCP 可列工具不等于映射或 Hook 已生效。
 让用户在本机流程中选择来源并批准展示的范围；未选择或 Server 尚未准入时，保留具体待办，
 不扫描、不沿用其他设备授权。正常重载和新会话加载由宿主完成。
-操作说明见 [Windows installation stages](docs/WINDOWS-INSTALL-CLOSURE.md)。
+操作说明见 [Windows installation stages](docs/installation/windows-stages.md)。
