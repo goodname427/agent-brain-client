@@ -1,5 +1,6 @@
 """Opt-in signed-device content MCP candidate; stable five-tool bridge unchanged."""
 import argparse
+from collections import deque
 import hashlib
 import json
 import os
@@ -8,15 +9,14 @@ import ssl
 from urllib.error import HTTPError
 from pathlib import Path
 import sys
-import queue
 import threading
 import uuid
 from typing import Any
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from remote_mcp import Server,ProtocolError,keys,pairs,MAX_MESSAGE
-from content_cache import CacheBlocked,ContentAdapter,contract,validate_policy,ROOT as CLIENT_ROOT
+from content_cache import CacheBlocked,ContentAdapter,contract,validate_policy,operation_diagnostics,ROOT as CLIENT_ROOT
 from client_pairing import ComponentClient
-from brain_lock import PlatformUnsupported,require_platform,private_mode,locked
+from brain_lock import LockTimeout,PlatformUnsupported,require_platform,private_mode,locked
 from remote_http import RequestControl,RequestStopped
 from client_release import UPDATE_GUIDANCE
 
@@ -151,11 +151,23 @@ class ContentServer(Server):
             message='Invalid '+name+' arguments; use the exact fields and types in this tool input schema.'
             if name in contract.WRITES:message+=' Writes require a stable request_id and the expected_revision obtained from content_read.'
             raise ContentParameterError(message) from None
-        try:
-            request={'request_id':rid,'method':name,'params':params}
-            result=self.adapter.invoke(request,reconciles=reconciles) if reconciles is not None else self.adapter.invoke(request)
-        except RequestStopped:raise
-        except Exception:result={'request_id':rid,'error':{'code':'content_adapter_blocked','retryable':False,'stage':'content-validation'},'persistence':{'durable':False}}
+        with operation_diagnostics() as diagnostic:
+            try:
+                request={'request_id':rid,'method':name,'params':params}
+                result=self.adapter.invoke(request,reconciles=reconciles) if reconciles is not None else self.adapter.invoke(request)
+            except RequestStopped:raise
+            except Exception as error:
+                # A busy local lock is transient. Keep the original CAS request
+                # and ID for an explicit retry; do not replay anything here.
+                busy=isinstance(error,LockTimeout)
+                known=(CacheBlocked,LockTimeout,OSError,PermissionError,FileNotFoundError,
+                       FileExistsError,NotADirectoryError,IsADirectoryError,TimeoutError,
+                       ValueError,TypeError,KeyError,RuntimeError,json.JSONDecodeError,
+                       UnicodeDecodeError,UnicodeEncodeError)
+                exception_type=type(error).__name__ if type(error) in known else 'Exception'
+                result={'request_id':rid,'error':{'code':'content_busy' if busy else 'content_adapter_blocked',
+                        'retryable':busy,'stage':diagnostic['stage'],'exception_type':exception_type},
+                        'persistence':{'durable':False}}
         result=dict(result,client_runtime=self.client_runtime)
         return {'isError':'error' in result,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
 
@@ -440,9 +452,10 @@ def serve(server, source, output, *, request_timeout=90, max_pending=256):
     timeout: its HTTP socket/helper is aborted and its late result is discarded.
     Active writes finish their durable transaction; retries keep the original ID.
     """
-    work:queue.Queue=queue.Queue(max_pending)
+    work:deque=deque()
     pending:dict[str|int,RequestControl]={}
-    state_lock=threading.Lock();output_lock=threading.Lock();disconnected=threading.Event()
+    state_lock=threading.Lock();available=threading.Condition(state_lock)
+    output_lock=threading.Lock();disconnected=threading.Event();receiving=True
 
     def emit(rid, *, result=None, error=None):
         response={'jsonrpc':'2.0','id':rid}
@@ -458,17 +471,32 @@ def serve(server, source, output, *, request_timeout=90, max_pending=256):
         with state_lock:controls=list(pending.values())
         for control in controls:control.cancel()
 
-    def stopped(rid,error):
+    def stopped(rid,error,stage='execution'):
         code=-32800 if error.reason=='request_cancelled' else -32001
-        emit(rid,error={'code':code,'message':error.reason})
+        emit(rid,error={'code':code,'message':error.reason,'data':{'stage':stage}})
+
+    def stop_queued(item):
+        # Cancellation must acknowledge and remove queued work even while a
+        # durable write owns the executor. Never detach active adapter work.
+        _,rid,control=item
+        with available:
+            if item not in work:return
+            work.remove(item)
+            if pending.get(rid) is control:pending.pop(rid)
+        control.close()
+        stopped(rid,RequestStopped(control.reason),'queue')
 
     def execute():
         while True:
-            item=work.get()
-            if item is None:
-                return
+            with available:
+                while not work and receiving:available.wait()
+                if not work:return
+                item=work.popleft()
             request,rid,control=item
             try:
+                if disconnected.is_set():
+                    if control is not None:control.cancel()
+                    continue
                 if control is not None:control.check()
                 params=request.get('params',{}) if isinstance(request,dict) else {}
                 read_only=(request.get('method')=='tools/call' and isinstance(params,dict)
@@ -491,7 +519,7 @@ def serve(server, source, output, *, request_timeout=90, max_pending=256):
                 if control is not None:
                     control.close()
                     with state_lock:
-                        if rid is not None:pending.pop(rid,None)
+                        if rid is not None and pending.get(rid) is control:pending.pop(rid)
 
     worker=threading.Thread(target=execute,name='content-mcp-executor')
     worker.start()
@@ -511,13 +539,18 @@ def serve(server, source, output, *, request_timeout=90, max_pending=256):
                         with state_lock:target=pending.get(params['requestId'])
                         if target is not None:target.cancel()
                     continue
-                with state_lock:
+                with available:
+                    if disconnected.is_set():break
                     if rid is not None:
                         if rid in pending:raise ProtocolError(-32600,'Request ID already pending.')
                         if len(pending)>=max_pending:raise ProtocolError(-32000,'MCP request queue full; retry after active work completes.')
                         control=RequestControl(request_timeout);pending[rid]=control
-                try:work.put_nowait((request,rid,control))
-                except queue.Full:raise ProtocolError(-32000,'MCP request queue full; retry after active work completes.') from None
+                    if len(work)>=max_pending:raise ProtocolError(-32000,'MCP request queue full; retry after active work completes.')
+                    item=(request,rid,control)
+                    work.append(item);available.notify()
+                if control is not None:
+                    try:control.register(lambda item=item:stop_queued(item))
+                    except RequestStopped:pass  # The queued callback or executor replied.
             except (ProtocolError,ValueError,UnicodeError) as error:
                 if control is not None:
                     control.close()
@@ -527,7 +560,8 @@ def serve(server, source, output, *, request_timeout=90, max_pending=256):
                 else:emit(rid,error={'code':-32700,'message':'Invalid JSON message.'})
             if len(raw)>MAX_MESSAGE:break
     finally:
-        work.put(None)
+        with available:
+            receiving=False;available.notify()
         worker.join()
 
 _STARTUP_STAGE='arguments'
