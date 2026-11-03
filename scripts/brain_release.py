@@ -98,9 +98,10 @@ class ReleaseEngine:
         self.migrations=migrations
         self.pointer=self.local/'active.json';self.journal=self.local/'journal.json'
 
-    def active(self):
-        if not self.pointer.exists():return None
-        value=json.loads(self.pointer.read_text(encoding='utf-8'))
+    def active(self, value=None):
+        if value is None:
+            if not self.pointer.exists():return None
+            value=json.loads(self.pointer.read_text(encoding='utf-8'))
         if set(value)!={'commit','version','package','manifest_sha256'} or not re.fullmatch(r'[a-f0-9]{40}',value['commit']):
             raise UpdateBlocked('Invalid active runtime pointer')
         version(value['version'])
@@ -116,6 +117,28 @@ class ReleaseEngine:
             target=expected/path
             if target.is_symlink() or digest(target.read_bytes())!=sha:raise UpdateBlocked('Active package integrity failed')
         return value
+
+    def serving_active(self):
+        """Read a health-checked immutable snapshot without waiting for discovery.
+
+        A legacy updater publishes its candidate before health completes. Its
+        journal's predecessor remains the only eligible worker in that window.
+        Read both files twice so crossing a transaction boundary fails closed.
+        """
+        def read(path):
+            try:return path.read_bytes()
+            except FileNotFoundError:return None
+        journal=read(self.journal);pointer=read(self.pointer)
+        value=json.loads(pointer) if pointer is not None else None
+        if journal is not None:
+            state=json.loads(journal)
+            if state['phase'] in ('applying','activated'):value=state['before']
+            elif state['phase'] not in ('complete','rolled-back','rolled-back-interrupted'):
+                raise UpdateBlocked('Release transaction requires recovery')
+        active=self.active(value) if value is not None else None
+        if journal!=read(self.journal) or pointer!=read(self.pointer):
+            raise UpdateBlocked('Release snapshot changed; retry startup')
+        return active
 
     def validate(self,manifest,current):
         keys={'schema','version','channel','core_api','state_schema','python_min','capabilities','files','migrations'}
@@ -173,9 +196,9 @@ class ReleaseEngine:
         atomic_json(release/'verified.json',{'commit':commit,'manifest':manifest})
         return release
 
-    def check(self):
+    def check(self, *, lock_timeout=20):
         directory(self.local)
-        with locked(self.local/'update.lock'), locked(self.local.parent/'python-write.lock'):
+        with locked(self.local/'update.lock',timeout=lock_timeout), locked(self.local.parent/'python-write.lock',timeout=lock_timeout):
             # An interrupted target is not yet healthy. Restore its predecessor
             # before validating the active bytes, which may themselves be damaged.
             if self.journal.exists():
