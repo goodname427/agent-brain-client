@@ -97,7 +97,7 @@ sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action check-update
 sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action update
 ```
 
-不传新 connection 或邀请。两项动作复用已验证登记中的原 policy、渠道、信任锚和固定依赖，不重新配对或访问设备凭据。普通更新不改原生 MCP 设置；0.3.0 的一次性兼容桥接例外见下文。check-update 可以下载并校验候选缓存，但不激活、不运行候选健康检查；update 使用既有健康检查及回滚机制切换活动包。维护所需工具/解释器缺失或漂移时停止审核，不重新准备或改写其绑定。重复 install 的已安装分支只核验登记，不检查或应用软件更新，输出会指向上述入口。
+不传新 connection 或邀请。两项动作复用已验证登记中的原 policy、渠道、信任锚和固定依赖，不重新配对或访问设备凭据。update 通过既有安装事务交接旧固定启动器，再用既有健康检查及回滚机制切换活动包；保留 MCP 暂停状态及其他宿主设置。0.3.0 的专用兼容桥接见下文。已安装的全局 Hook 同时刷新代码到设备私有缓存，保留范围、批准、暂停和身份；未安装的 Hook 不会新增。宿主提示时按正常流程审核 Hook。check-update 可以下载并校验候选缓存，但不激活、不运行候选健康检查、不刷新 Hook。维护所需工具/解释器缺失或漂移时停止审核，不重新准备或改写其绑定。重复 install 的已安装分支只核验登记，不检查或应用软件更新，输出会指向上述入口。
 
 check-update 成功返回 client-update-available/current 与 channel_checked:true；update 成功返回 client-update-updated/current。网络不可达、健康失败或信任/范围审核受阻均退出非零并保留恢复材料；不要把旧活动包版本称为已确认最新版，不通过改摘要或信任锚跳过审核。status 不访问渠道。
 

@@ -33,8 +33,9 @@ def split_owned(raw):
     return text[:start] + text[end:], text[start:end]
 
 
-def block(value):
+def block(value, *, root=None):
     from global_memory import ROOT, MARKER
+    ROOT = Path(root) if root is not None else ROOT
     pins = value['code_sha256']
     guard = ('import hashlib,pathlib,runpy,sys; r=pathlib.Path(' + repr(str(ROOT)) + '); p=' + repr(pins)
              + '; assert all(hashlib.sha256((r/n).read_bytes()).hexdigest()==h for n,h in p.items()); '
@@ -216,3 +217,128 @@ def installation_status(value):
     record=read_receipt(receipt)
     _, owned=split_owned((native/'config.toml').read_bytes())
     return record.get('phase')=='complete' and owned is not None and owned==record.get('block')
+
+
+def recover_code(home):
+    """Restore an interrupted code-pin write, preserving every approval field."""
+    from codex_connect import host_restore
+    from global_memory import settings_path, validate_settings
+    file = settings_path(home)
+    journal = file.parent / 'code-refresh.json'
+    if not journal.exists(): return False
+    record = read_receipt(journal)
+    if (set(record) != {'schema', 'phase', 'device_home', 'host'}
+            or record['schema'] != 1 or record['device_home'] != str(home)
+            or record['phase'] not in ('applying', 'complete', 'rolled-back')
+            or set(record['host']) != {str(file)}):
+        raise ValueError('Global code recovery binding changed')
+    row = record['host'][str(file)]
+    before, target = (validate_settings(json.loads(base64.b64decode(row[k], validate=True), object_pairs_hook=old.unique), home)
+                      for k in ('before', 'target'))
+    if {k: v for k, v in before.items() if k != 'code_sha256'} != {k: v for k, v in target.items() if k != 'code_sha256'}:
+        raise ValueError('Global code recovery must preserve source approval')
+    if record['phase'] != 'applying': return False
+    old.registration(home)  # Metadata only; no credential activation.
+    host_restore(record['host'], lambda: old.write(journal, record))
+    old.write(journal, dict(record, phase='rolled-back'))
+    return True
+
+
+def recover_update(home, *, check_only=False):
+    """Recover owned Hook writes before the normal registration TOML inspection."""
+    from brain_lock import locked
+    from global_memory import settings_path
+    directory = settings_path(home).parent
+    pending = any(p.exists() and read_receipt(p).get('phase') == 'applying'
+                  for p in (directory / 'code-refresh.json', directory / 'hook-install.json'))
+    if not pending or check_only: return pending
+    with locked(directory / 'code-refresh.lock'):
+        recover_code(home)
+        _, registered = old.registration(home)
+        recover_pending(home, Path(registered['runtime']['codex_home']))
+    return True
+
+
+def freeze_code(directory, pins):
+    """Keep executable Hook code in a private immutable cache, never a checkout."""
+    from codex_connect import atomic
+    from global_memory import ROOT
+    root = directory / 'code' / old.digest(json.dumps(pins, sort_keys=True).encode())
+    for parent in (directory / 'code', root):
+        private_directory(parent)
+        private_mode(parent, directory=True, owner=True)
+    for name, pin in pins.items():
+        target = root / name
+        private_directory(target.parent)
+        private_mode(target.parent, directory=True, owner=True)
+        if target.exists():
+            old.canonical(target, existing=True)
+            private_mode(target, owner=True)
+            if target.stat().st_nlink != 1 or old.digest(target.read_bytes()) != pin:
+                raise ValueError('Frozen global code changed')
+            continue
+        raw = (ROOT / name).read_bytes()
+        if old.digest(raw) != pin: raise ValueError('Global update source changed')
+        atomic(target, raw, 0o600)
+    return root
+
+
+def refresh(home, *, check_only=False):
+    """Refresh an already owned Hook; never choose, approve or resume sources."""
+    from brain_lock import locked
+    from codex_connect import host_plan, host_apply, host_restore
+    from global_memory import settings_path, validate_settings, FILES, ROOT
+    home = old.canonical(home, existing=True)
+    file = settings_path(home)
+    absent = {'status': 'global-hook-not-installed', 'native_changed': False, 'update_available': False}
+    if not file.exists(): return absent
+    if recover_update(home, check_only=check_only) and check_only:
+        raise ValueError('Global Hook recovery required')
+    private_mode(file.parent, directory=True, owner=True)
+    value = validate_settings(old.private_json(file), home)
+    original = file.read_bytes()
+    if json.loads(original, object_pairs_hook=old.unique) != value: raise ValueError('Global settings changed')
+    _, registered = old.registration(home)
+    native = Path(registered['runtime']['codex_home'])
+    _, previous = split_owned((native / 'config.toml').read_bytes())
+    receipt = file.parent / 'hook-install.json'
+    if not receipt.exists():
+        if previous is not None: raise ValueError('Unowned global Hook preserved')
+        return absent
+    record = read_receipt(receipt)
+    if record.get('phase') not in ('complete', 'rolled-back') or previous != record.get('block'):
+        raise ValueError('Outside edit to owned global Hook preserved')
+    if previous is None: return absent  # Explicit uninstall remains uninstalled.
+    pins = {name: old.digest((ROOT / name).read_bytes()) for name in FILES}
+    target = dict(value, code_sha256=pins)
+    root = file.parent / 'code' / old.digest(json.dumps(pins, sort_keys=True).encode())
+    owned = block(target, root=root)
+    available = value != target or previous != owned
+    result = {'status': 'global-hook-update-available' if available else 'global-hook-current',
+              'update_available': available, 'native_changed': False,
+              'sources_changed': False, 'model_calls': 0,
+              'trust': 'normal-host-review-required-if-not-already-trusted'}
+    if check_only: return result
+    with locked(file.parent / 'code-refresh.lock'):
+        recover_code(home)
+        if file.read_bytes() != original: raise ValueError('Global settings changed before refresh')
+        freeze_code(file.parent, pins)
+        if not available: return result
+        journal = file.parent / 'code-refresh.json'
+        record = {'schema': 1, 'phase': 'applying', 'device_home': str(home),
+                  'host': host_plan({file: (json.dumps(target, ensure_ascii=False, indent=2) + '\n').encode()})}
+        if record['host'][str(file)]['before_sha'] != old.digest(original):
+            raise ValueError('Global settings changed before transaction')
+        # New command + old settings fail closed during this short transition.
+        # Each write has its own journal and preserves outside edits on retry.
+        old.write(journal, record)
+        try:
+            changed = transact(native, file.parent, owned)
+            host_apply(record['host'], lambda: old.write(journal, record))
+            old.write(journal, dict(record, phase='complete'))
+        except Exception:
+            host_restore(record['host'], lambda: old.write(journal, record))
+            old.write(journal, dict(record, phase='rolled-back'))
+            raise
+    return dict(result, status='global-hook-updated', update_available=False,
+                native_changed=changed['native_changed'])

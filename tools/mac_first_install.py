@@ -726,6 +726,24 @@ def reexec_update_runtime(home, action, *, runner=subprocess.run):
         if action != 'update':
             return None
         import content_install
+        # A torn inline Hook can make live TOML unreadable. Authenticate its
+        # exact saved MCP preimage to select the original interpreter before
+        # manage_update performs any recovery writes.
+        from global_memory import settings_path
+        import global_memory_install as hooks
+        hook_receipt = settings_path(home).parent / 'hook-install.json'
+        if hook_receipt.exists():
+            record = hooks.read_receipt(hook_receipt)
+            if record.get('phase') == 'applying':
+                import base64
+                _, hook_policy = hooks.old.registration(home)
+                native = Path(hook_policy['runtime']['codex_home'])
+                if set(record.get('host', {})) != {str(native / 'config.toml')}:
+                    raise ValueError('Hook recovery binding changed')
+                before = base64.b64decode(record['host'][str(native / 'config.toml')]['before'], validate=True)
+                meta = private_json(safe(Path(home) / '.config/agent-brain-client/codex-mcp.json'))
+                policy, mcp, _, native = registered_context(home, meta, config_image=before)
+                return pinned_update_runtime(home, action, policy, mcp, native, runner)
         handover = safe(Path(home)/'.config/agent-brain-client/bootstrap-handover-plan.json')
         launcher=safe(Path(home)/'.config/agent-brain-client/launcher-handover.json')
         if launcher.exists():
@@ -768,6 +786,11 @@ def reexec_update_runtime(home, action, *, runner=subprocess.run):
             return None
     meta = private_json(safe(Path(home) / '.config/agent-brain-client/codex-mcp.json'))
     policy, mcp, _, native = registered_context(home, meta)
+    return pinned_update_runtime(home, action, policy, mcp, native, runner)
+
+
+def pinned_update_runtime(home, action, policy, mcp, native, runner):
+    """Re-execute only the registered interpreter with its original bindings."""
     if not DEPENDENCY_RUNTIME <= set(policy['runtime']):
         return None
     environment = dependency_environment(policy, runtime_check=False)
@@ -779,7 +802,7 @@ def reexec_update_runtime(home, action, *, runner=subprocess.run):
 
 
 def windows_launcher_handover(home, *, channel_factory=None, channel=None, before=None, meta=None):
-    """Repair a stale fixed Windows launcher through a verified package transaction.
+    """Repair a stale fixed launcher on either platform through a verified transaction.
 
     The exact active checkpoint, policy, target package and native preimages are
     persisted before handover. No credentials, policy expansion or worker kill.
@@ -894,9 +917,16 @@ def manage_update(home, action, *, channel_factory=None):
         'next_action': 'Preserve the existing installation. Verify its registration, policy and bootstrap; do not replace trust metadata or re-pair.',
     }
     bootstrap_migrated = False
+    hook_changed = False
     try:
         if action not in ('check-update', 'update'):
             raise ValueError('Known maintenance action required')
+        import global_memory_install as hooks
+        if hooks.recover_update(home, check_only=action == 'check-update'):
+            if action == 'check-update':
+                return dict(result, reason='global-hook-recovery-required', native_changed=None)
+            hook_changed = True
+            result['native_changed'] = True
         launcher_path=safe(Path(home)/'.config/agent-brain-client/launcher-handover.json')
         if launcher_path.exists():
             if action != "update":
@@ -999,8 +1029,10 @@ def manage_update(home, action, *, channel_factory=None):
                 row = rows[0]
                 latest_version, latest_commit = row['manifest']['version'], row['commit']
                 available = before.get('commit') != latest_commit
-                launcher_update = (policy['platform'].startswith('win32-') and meta['package'] != str(Path(channel.engine.local)/'packages'/(latest_version+'-'+latest_commit)))
-                available = available or launcher_update
+                launcher_update = meta['package'] != str(Path(channel.engine.local)/'packages'/(latest_version+'-'+latest_commit))
+                hook = hooks.refresh(home, check_only=True)
+                result['global_hook'] = hook
+                available = available or launcher_update or hook['update_available']
                 result['launcher_update_available']=launcher_update
                 if channel.verified_active() != before:
                     return dict(result, reason='active-package-changed-during-check')
@@ -1010,9 +1042,10 @@ def manage_update(home, action, *, channel_factory=None):
                               next_action=('Run '+UPDATE_COMMAND+' to apply this trusted candidate. ' if available else 'The local active package matches the trusted channel. ')+
                                           'The CLI cannot observe the running worker. Confirm MCP client_runtime; a normal host reload starts a new worker when needed.')
                 return result
-            if policy['platform'].startswith('win32-') and not bootstrap_migrated:
+            legacy_bridge = (before['version'] == '0.3.0' and channel.engine.adapter.legacy_030_https_policy)
+            if not legacy_bridge and not bootstrap_migrated:
                 bootstrap_migrated=windows_launcher_handover(home,channel=channel,before=before,meta=meta)
-                result['native_changed']=bootstrap_migrated
+                result['native_changed']=bootstrap_migrated or hook_changed
             if (not bootstrap_migrated and before['version'] == '0.3.0'
                     and channel.engine.adapter.legacy_030_https_policy):
                 # Switch the owned MCP command to the verified candidate
@@ -1075,13 +1108,27 @@ def manage_update(home, action, *, channel_factory=None):
                           native_changed=bootstrap_migrated,
                           reload_required=True if changed or bootstrap_migrated else None,
                           next_action='The verified local package is ready. Normally reload only Agent Brain through the host so a new MCP worker loads it; do not kill in-flight work. Confirm client_runtime.running_worker_version matches latest_channel_version, then continue Onboard with fresh results. This command does not import real memories.')
+            # A current channel may still have an older global Hook command.
+            # Update only its executable code, preserving all source decisions.
+            try:
+                hook = hooks.refresh(home)
+            except Exception:
+                return dict(result, status='client-update-review-required',
+                            reason='global-hook-refresh-required', native_changed=None,
+                            update_available=None,
+                            next_action='The verified package is ready but the global Hook refresh is unconfirmed. Retry the same public update entry; preserve source approval and review the normal host Hook prompt.')
+            hook_changed = hook_changed or hook['native_changed']
+            result.update(global_hook=hook, native_changed=bootstrap_migrated or hook_changed,
+                          reload_required=True if changed or bootstrap_migrated or hook_changed else None)
+            if hook['status'] == 'global-hook-updated':
+                result['status'] = 'client-update-updated'
             return result
         finally:
             os.environ.clear()
             os.environ.update(previous)
     except Exception:
         pending=(Path(home)/'.config/agent-brain-client/launcher-handover.json').exists()
-        return dict(result,native_changed=None if pending else bootstrap_migrated,
+        return dict(result,native_changed=None if pending else bootstrap_migrated or hook_changed,
                     reason='launcher-handover-recovery-required' if pending else 'verified-update-or-launcher-required')
 
 

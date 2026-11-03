@@ -303,6 +303,24 @@ class LauncherClosure(unittest.TestCase):
                 self.f.home, channel=self.channel, before=self.before, meta=self.meta
             )
 
+    def test_mac_public_update_hands_over_stale_launcher_before_activation(self):
+        self.assertTrue(self.channel.engine.policy['platform'].startswith('darwin-'))
+        config = self.f.config.read_text().replace('enabled = true', 'enabled = false')
+        self.f.config.write_text(config)
+        # This portable fixture uses content-device capabilities. Substitute
+        # only the public entry's HTTPS gate; package validation, policy pins,
+        # native transaction, offline child probe and activation remain real.
+        with patch.object(wizard, 'HTTPS_CONTENT_CAPABILITIES', self.channel.engine.policy['capabilities']):
+            value = wizard.manage_update(self.f.home, 'update', channel_factory=lambda *a: self.channel)
+        self.assertEqual(value['status'], 'client-update-updated', value)
+        self.assertTrue(value['native_changed'])
+        self.assertTrue(value['reload_required'])
+        self.assertEqual(value['active_package_version'], '0.5.8')
+        meta = ci.private_json(self.f.home / '.config/agent-brain-client/codex-mcp.json')
+        self.assertNotEqual(meta['package'], self.meta['package'])
+        self.assertEqual(meta['release_policy_sha256'], self.meta['release_policy_sha256'])
+        self.assertEqual(ci.inspect(self.f.home)['installation_state'], 'verified-disabled')
+
     def test_normal_install_retry_dispatches_applying_launcher_before_original_plan(
         self,
     ):

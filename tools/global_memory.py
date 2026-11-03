@@ -29,17 +29,24 @@ def settings_path(home):
     return Path(home) / '.config/agent-brain-client/global-memory/settings.json'
 
 
+def validate_settings(value, home):
+    """Validate persisted approval without executing an older pinned runtime."""
+    keys = {'schema', 'enabled', 'scope', 'approved_scope_sha256', 'server_scope_sha256',
+            'device_home', 'legacy_projects', 'code_sha256', 'operator', 'operator_sha256'}
+    if not isinstance(value, dict) or set(value) != keys or value['schema'] != 1 or type(value['enabled']) is not bool or value['device_home'] != str(Path(home)):
+        raise ValueError('Exact global memory settings required')
+    validate(value['scope'])
+    pins = value['code_sha256']
+    if not isinstance(pins, dict) or set(pins) != set(FILES) or any(not isinstance(p, str) or not re.fullmatch('[a-f0-9]{64}', p) for p in pins.values()):
+        raise ValueError('Complete global code pin required')
+    return value
+
+
 def load(home):
     file = settings_path(home)
     directory=old.canonical(file.parent,existing=True)
     old.private_mode(directory,directory=True,owner=True)
-    value = old.private_json(file)
-    keys = {'schema', 'enabled', 'scope', 'approved_scope_sha256', 'server_scope_sha256',
-            'device_home', 'legacy_projects', 'code_sha256', 'operator', 'operator_sha256'}
-    if set(value) != keys or value['schema'] != 1 or type(value['enabled']) is not bool or value['device_home'] != str(Path(home)):
-        raise ValueError('Exact global memory settings required')
-    validate(value['scope'])
-    if set(value['code_sha256']) != set(FILES): raise ValueError('Complete global code pin required')
+    value = validate_settings(old.private_json(file), home)
     for name, pin in value['code_sha256'].items():
         if old.digest((ROOT / name).read_bytes()) != pin: raise ValueError('Global source code changed; refresh owned installation')
     old.registration(home)  # Metadata only; never activates a credential.
