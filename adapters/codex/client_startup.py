@@ -113,7 +113,7 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
         # Per-turn capture must never install, refresh or move an active release.
         # Constructor and verified_active retain the normal release trust chain.
         if event_hook and (check_only or installation_check or bootstrap_check):raise ValueError('Distinct hook mode required')
-        active=releases.verified_active()
+        active=releases.verified_active(serving=True)
         result={'status':'current','active':active}
     elif check_only or installation_check:result=releases.update()
     else:
@@ -130,7 +130,8 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
         if check_only:return result
         return {'status':result['status'],'served':False,'next_action':'A verified compatible client is required before serving MCP.'}
     # ReleaseEngine.active rechecks every package hash before execution.
-    if check_only or installation_check or event_hook:active=releases.verified_active()
+    if check_only or installation_check:active=releases.verified_active()
+    elif event_hook:active=releases.verified_active(serving=True)
     runtime=releases.policy['runtime']
     blocked=content_runtime_blocker(active,releases.policy)
     if blocked:return dict(result,**blocked)

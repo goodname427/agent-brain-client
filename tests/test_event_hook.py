@@ -341,6 +341,7 @@ class EventHook(unittest.TestCase):
         with patch.object(client_startup,'ClientReleases',return_value=releases),patch('content_install.inspect',return_value={'installed':True}),patch.object(client_startup.subprocess,'run',return_value=SimpleNamespace(returncode=0)) as run:
             result=client_startup.startup('synthetic-policy','a'*64,event_hook=('synthetic-hook','b'*64))
         self.assertTrue(result['served']);releases.update.assert_not_called();self.assertGreaterEqual(releases.verified_active.call_count,2)
+        self.assertTrue(all(call.kwargs=={'serving':True} for call in releases.verified_active.call_args_list))
         command=run.call_args.args[0];self.assertIn('--event-hook',command);self.assertIn('--event-hook-policy',command)
         self.assertTrue(run.call_args.kwargs['pass_fds'])
 
