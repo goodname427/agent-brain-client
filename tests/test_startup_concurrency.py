@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from brain_lock import native_platform
+from brain_lock import native_platform, private_directory, private_mode
 from brain_release import ReleaseEngine, UpdateBlocked, atomic_json, digest
 from client_release import CAPABILITIES, ClientReleases
 from content_mcp import ContentServer, serve
@@ -26,7 +26,11 @@ class StartupConcurrency(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="synthetic-startup-")
         self.addCleanup(temp.cleanup)
-        self.base = Path(temp.name).resolve()
+        # ReleaseEngine also locks local.parent/python-write.lock. Protect the
+        # freshly created fixture root before creating any cache, lock or body.
+        self.base = Path(temp.name).resolve() / "fixture"
+        private_directory(self.base)
+        private_mode(self.base, directory=True, owner=True)
         self.processes = []
         self.addCleanup(self.close)
         for name in ("home", "codex"):
@@ -81,7 +85,7 @@ serve(ContentServer(adapter,version),sys.stdin.buffer,sys.stdout)
         (self.base / "payload.json").write_text(
             json.dumps({k: v.decode() for k, v in self.payload.items()})
         )
-        driver = """import json,sys,time
+        driver = """import json,os,sys,time
 from pathlib import Path
 from unittest.mock import Mock
 root=Path(ROOT)
@@ -102,7 +106,13 @@ class Source:
    time.sleep(.02)
   payload=json.loads((base/'payload.json').read_bytes())
   return 'b'*40,json.loads((base/'target.json').read_bytes()),lambda p:payload[p].encode()
-release=object.__new__(ClientReleases);release.policy=policy;release.inspection=False
+class Releases(ClientReleases):
+ def update(self,**options):
+  result=super().update(**options)
+  safe={key:result[key] for key in ('status','diagnostic') if key in result}
+  (base/('update-'+str(os.getpid())+'.json')).write_text(json.dumps(safe))
+  return result
+release=object.__new__(Releases);release.policy=policy;release.inspection=False
 adapter=Mock();adapter.snapshot.return_value={}
 release.engine=ReleaseEngine(base/'cache',policy,Source(),adapter,{})
 if mode=='onboard':
@@ -189,7 +199,14 @@ else:
         deadline = time.monotonic() + 5
         while not (self.base / name).exists():
             if time.monotonic() > deadline:
-                self.fail("Synthetic update barrier did not arrive")
+                diagnostics = [
+                    json.loads(path.read_bytes())
+                    for path in self.base.glob("update-*.json")
+                ]
+                self.fail(
+                    "Synthetic update barrier did not arrive: "
+                    + json.dumps(diagnostics)
+                )
             time.sleep(0.02)
 
     def test_single_session_handshakes_while_its_background_check_is_blocked(self):
