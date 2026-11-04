@@ -473,6 +473,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         import uuid
         event = 'Tool_' + uuid.uuid4().hex
         foreign = ('apps.' + event + '.enabled = false\n'
+                   'apps.' + event + '.ratios = [nan, inf, -inf]\n'
                    'hooks.' + event + ' = [{hooks=[{type="command",command="synthetic-other"}]}]\n'
                    '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype="command"\ncommand="synthetic-stop"\n').encode()
         self.config.write_bytes(self.config.read_bytes().replace(hooks.BEGIN.encode(), hooks.BEGIN.encode() + b'\n' + foreign))
@@ -483,7 +484,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertIn(foreign, self.config.read_bytes())
         self.assertTrue(hooks.installation_status(gm.load(self.home)))
         hooks.transact(self.native, self.file.parent, '', remove=True)
-        self.assertEqual(hooks.tomllib.loads(self.config.read_text()), expected)
+        self.assertTrue(hooks.typed_equal(hooks.tomllib.loads(self.config.read_text()), expected))
         self.preserved()
 
     def test_inline_hooks_and_marker_looking_string_data_are_semantic(self):
@@ -607,7 +608,7 @@ class SemanticConfigMerge(unittest.TestCase):
         target = {'command': 'new', 'enabled': False, 'env': {'z': 'keep', 'a': 'keep'}}
         for form in forms:
             with self.subTest(form=form):
-                source = ('# Unrelated root data\nmodel="synthetic"\n' + form).encode()
+                source = ('# Unrelated root data\nmodel="synthetic"\nforeign_ratio=nan\n' + form).encode()
                 before = hooks.tomllib.loads(source.decode())
                 expected = copy.deepcopy(before)
                 expected['mcp_servers']['agent_brain_server'] = target

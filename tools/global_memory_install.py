@@ -152,12 +152,8 @@ def owned_conflict(previous, candidates):
 
 
 def typed_equal(x, y):
-    import math
-    if type(x) is not type(y): return False
-    if isinstance(x, float) and math.isnan(x) and math.isnan(y): return True
-    if isinstance(x, dict): return x.keys() == y.keys() and all(typed_equal(x[k], y[k]) for k in x)
-    if isinstance(x, list): return len(x) == len(y) and all(typed_equal(u, v) for u, v in zip(x, y))
-    return x == y
+    from codex_connect import toml_equal
+    return toml_equal(x, y)
 
 
 def same_owned(left, right):
@@ -231,7 +227,7 @@ def recover_record(file, receipt, record):
               if record['schema'] == 2 else render_owned(outside, record['block']))
     if previous!=record['previous_block'] or target!=expected:
         raise ValueError('Hook recovery target changed')
-    if tomllib.loads(before.decode()).get('mcp_servers')!=tomllib.loads(target.decode()).get('mcp_servers'):
+    if not typed_equal(tomllib.loads(before.decode()).get('mcp_servers'),tomllib.loads(target.decode()).get('mcp_servers')):
         raise ValueError('Hook recovery MCP scope changed')
     host_restore(record['host'],lambda:old.write(receipt,record))
     restored=dict(record,phase='rolled-back',block=record['previous_block'])
@@ -308,12 +304,12 @@ def transact_once(native, directory, owned, *, remove=False):
         from global_memory import MARKER
         if any(any(h.get('statusMessage')==MARKER for h in group.get('hooks',[])) for groups in outside_config.get('hooks',{}).values() if isinstance(groups,list) for group in groups if isinstance(group,dict)):
             raise ValueError('Unowned duplicate global Hook preserved')
-        if old_config.get('mcp_servers') != new_config.get('mcp_servers'): raise ValueError('Global install must preserve all MCP registrations')
+        if not typed_equal(old_config.get('mcp_servers'), new_config.get('mcp_servers')): raise ValueError('Global install must preserve all MCP registrations')
         if not typed_equal(unowned_config(old_config, previous), unowned_config(new_config, None if remove else owned)):
             raise ValueError('Unowned host configuration changed')
         # Parse first; inline-table conflicts must fail before any write.
         expected = tomllib.loads(render_owned(outside, None if remove else owned).decode())
-        if new_config != expected: raise ValueError('Unexpected native configuration change')
+        if not typed_equal(new_config, expected): raise ValueError('Unexpected native configuration change')
         if before == after or (not remove and same_owned(previous, owned)):
             if record and record.get('phase')=='rolled-back':
                 old.write(receipt,{'schema':3,'phase':'complete','block':owned,'previous_block':previous,

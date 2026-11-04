@@ -45,6 +45,18 @@ def toml_literal(value):
     return json.dumps(value, ensure_ascii=False)
 
 
+def toml_equal(left, right):
+    """TOML value equality keeps types distinct and treats NaN as itself."""
+    import math
+    if type(left) is not type(right): return False
+    if isinstance(left, float) and math.isnan(left) and math.isnan(right): return True
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(toml_equal(left[key], right[key]) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(toml_equal(a, b) for a, b in zip(left, right))
+    return left == right
+
+
 def toml_key(key):
     return key if re.fullmatch(r'[A-Za-z0-9_-]+', key) else json.dumps(key)
 
@@ -181,9 +193,16 @@ def migration_config_matches(config, current, expected_sha, state, receipt):
     for name in ('native-install-receipt.json', 'content-install-receipt.json', 'global-memory/hook-install.json'):
         path = Path(state) / name
         if not path.exists(): continue
-        image = host_image(path)
-        private_mode(path, owner=True)
-        if image is not None: journals.append(json.loads(image[0]))
+        try:
+            image = host_image(path)
+            private_mode(path, owner=True)
+            if image is not None:
+                journal = json.loads(image[0])
+                if isinstance(journal, dict): journals.append(journal)
+        except (OSError, ValueError):
+            # An unusable unrelated journal is not evidence. Only the exact
+            # original image hash can authorize the semantic baseline below.
+            continue
     actual = tomllib.loads(current.decode()).get('mcp_servers', {}).get(NAME)
     for journal in journals:
         before = journal.get('before', {}).get(str(config))

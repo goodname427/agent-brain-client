@@ -19,7 +19,7 @@ from client_release import https_files,policy_file,CONTENT_CAPABILITIES,CONTENT_
 from content_mcp import pinned,pairs,enabled_tools,LOCAL_TOOLS,TOOL_CONTRACT_VERSION
 from content_cache import validate_policy,sha,contract
 from client_pairing import ComponentClient
-from codex_connect import atomic,host_stage,host_atomic,host_image,NAME,BEGIN,END,BLOCK,toml_replace,migration_config_matches
+from codex_connect import atomic,host_stage,host_atomic,host_image,NAME,BEGIN,END,BLOCK,toml_replace,migration_config_matches,toml_equal
 from brain_lock import locked,require_platform,platform_paths,private_mode,PlatformUnsupported,native_platform
 from brain_release import ReleaseEngine
 
@@ -155,7 +155,7 @@ def render(config,mcp,existing):
     text=(config or b'').decode();before=tomllib.loads(text)
     desired=toml_replace(text,('mcp_servers',NAME),mcp).encode()
     expected=copy.deepcopy(before);expected.setdefault('mcp_servers',{})[NAME]=mcp
-    if tomllib.loads(desired.decode())!=expected:raise InstallBlocked('Unrelated TOML scope changed')
+    if not toml_equal(tomllib.loads(desired.decode()),expected):raise InstallBlocked('Unrelated TOML scope changed')
     return desired
 
 

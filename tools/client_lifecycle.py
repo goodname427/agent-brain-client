@@ -114,7 +114,7 @@ def remove_table(raw):
     parsed = install.tomllib.loads(text)
     if install.NAME not in parsed.get('mcp_servers', {}):
         raise install.InstallBlocked('Owned table missing')
-    from codex_connect import toml_remove
+    from codex_connect import toml_remove, toml_equal
     desired=toml_remove(text,[('mcp_servers',install.NAME)]).encode()
     expected = copy.deepcopy(parsed)
     del expected['mcp_servers'][install.NAME]
@@ -122,7 +122,7 @@ def remove_table(raw):
     if not actual.get('mcp_servers') and not expected['mcp_servers']:
         actual.pop('mcp_servers', None)
         expected.pop('mcp_servers', None)
-    if actual != expected:
+    if not toml_equal(actual, expected):
         raise install.InstallBlocked('Unrelated TOML changed')
     return desired
 
