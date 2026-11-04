@@ -35,7 +35,7 @@ All requests retain the stable `request_id`; writes retain
 
 | Method | Params |
 | --- | --- |
-| `content_catalog` | `kinds`: nonempty unique list of supported kinds |
+| `content_catalog` | `kinds`: nonempty unique list; optional opaque `cursor` from the preceding `next_cursor` |
 | `content_read` | `kind`, `id` |
 | `content_put` | `kind`, `id`, `record`, `expected_revision` |
 | `content_remove` | `kind`, `id`, `expected_revision` |
@@ -124,12 +124,12 @@ independent digital signature or a new permission grant.
 
 Ordinary `content_catalog`/`content_read` requests fetch fresh authenticated Server
 content once, without rebuilding all native mappings before and after the read.
-Catalogs retain their complete authorized inventory and existing 256-entry bound;
+Catalogs return up to 256 authorized entries per page; follow `next_cursor` until absent. The total collection is not limited to 256 entries;
 typed records, revisions and scope checks remain required. Mapping refresh and
 outbox/import recovery still run at MCP startup and after confirmed writes.
 Read responses report `local_refresh.status:read-only` and do not claim model reload.
 
-Full inventory uses `content_catalog` with `kinds` only. The optional Memory-only
+Full inventory starts with `content_catalog` and `kinds`, then follows every `next_cursor` using the same kinds. Cursors pin the collection revision and authorization scope; a changed snapshot requires restarting without a cursor. The optional Memory-only
 query/since/until/limit alias is bounded retrieval (limit 1..3), not pagination or
 full Onboard coverage. Invalid parameters are local JSON-RPC `-32602`, with
 `data.stage:parameters`; no adapter or HTTP request is made. Read parameter
@@ -195,6 +195,22 @@ reported in local import status. This metadata never reaches Server, grants no
 permission and cannot alter the original CAS base. The merged request uses a new
 ID and the read revision. Evidence remains; only its durable confirmation resolves
 the selected conflicts. A disconnected conflict read is retried after reconnect.
+
+The local-only `content_queue_inspect` tool is offered within existing content
+write grants. Empty arguments list at most 64 path-free queue metadata entries;
+`cursor` continues the same snapshot and fails if it changes. An exact
+`request_id` returns the original request, reconciliation references, saved
+response and cached remote conflict snapshot. Inspection never drains, fetches,
+repairs or maps content. The cached conflict snapshot is not a current CAS base;
+read the current target before an explicit merge. No new Server method or queue
+schema is introduced.
+
+A confirmed reconciliation revisits earlier dependent requests in the same
+drain, retaining their original IDs and CAS bases. Unselected conflicts remain
+blocking. An unconfirmed send stops the drain; the same write call's subsequent
+mapping refresh does not resend it. Pending outcomes cannot be reconciled as
+conflicts: recover the exact original request and ID first. Restart/reconnect
+retains the existing exact-request recovery protocol.
 
 First/import-again handling accepts an explicit reviewed private normalized source
 plan selected with --import-plan and --import-plan-sha256. Inventory is persisted
@@ -343,3 +359,10 @@ The explicitly selected, normally verified HTTPS Server origin supplies bootstra
 POST `/v1/access/enroll` uses the same authorization and device metadata plus a stable nonce, returning the existing pending device credential/nonce/device_id/grant/phase shape. The installer persists the separate device credential in the existing OS store before calling `/v1/pairing/confirm`. Lost replies reuse the nonce. Long-term keys remain in an origin-specific OS item and never authorize content/admin requests directly. Server stores only key digests with a frozen access-policy digest and revocation state; revocation also rejects linked devices. No expiry is imposed by default. Existing invitation enrollment and device protocols remain compatible.
 
 Both bootstrap requests refuse redirects and use normal TLS certificate/hostname verification. They send no key in URL, JSON body, CLI arguments, environment or plaintext state. Explicit access_denied may retire only the rejected origin key; uncertain transport outcomes preserve it. Installation success still requires the owned local transaction and read-only protocol check. Access grants do not approve source directories, hooks, native session access or unlimited collection.
+
+The verified local snapshot loader and refresh path accept collections spanning
+multiple catalog pages. Refresh fetches all pages, checks revisions, and repeats
+the paged catalog before committing mappings. A page race retains the prior
+verified snapshot. Restart and offline inventory retain the complete collection
+and expose the same page shape. Snapshot byte budgets remain independent local
+resource guards; they do not impose a 256-record count limit.
