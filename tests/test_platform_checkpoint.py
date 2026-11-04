@@ -92,7 +92,8 @@ from test_package_tool_binding import old_contract
 
 class HistoricalPackageTools(unittest.TestCase):
     def setUp(self):
-        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        temporary=tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
         self.root=Path(temporary.name).resolve()
         self.grant={'scopes':['read','put'],'artifact_types':POLICY['kinds'],'ids':POLICY['ids']}
 
@@ -122,7 +123,8 @@ class HistoricalPackageTools(unittest.TestCase):
         manifest=release(ROOT,package,'0.6.2','personal-content-https',native_platform())
         old_contract(manifest,package)
         with patch.object(ci.subprocess,'run',return_value=type('Result',(),{'returncode':1,'stdout':b''})()):
-            with self.assertRaises(ci.InstallBlocked):ci.package_tools(package,POLICY,self.grant)
+            with self.assertRaises(ci.InstallBlocked):
+                ci.package_tools(package,POLICY,self.grant)
 
 
 if __name__ == '__main__':
