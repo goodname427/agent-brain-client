@@ -102,7 +102,46 @@ def worker_commit(client_version):
 class ContentServer(Server):
     def __init__(self,adapter,client_version='0.2.0'):
         super().__init__(None,client_version);self.adapter=adapter
-        self.client_runtime={'running_worker_version':client_version,'running_worker_commit':worker_commit(client_version),'service_mode':'approved-content'}
+        self.running_worker_commit = worker_commit(client_version)
+
+    @property
+    def client_runtime(self):
+        """Report this connection; local release inspection never fetches or pairs."""
+        value = {
+            'running_worker_version': self.client_version,
+            'running_worker_commit': self.running_worker_commit,
+            'service_mode': 'approved-content',
+            'tool_contract_version': TOOL_CONTRACT_VERSION,
+            'offered_tools': tool_names(self.adapter.methods(), self._memory_source_tools_authorized()),
+            'host_tool_visibility': 'unknown', 'model_loaded': 'unknown',
+            'active_package_version': None, 'active_package_commit': None,
+            'reload_required': None, 'reload_reason': 'active-package-unobserved',
+        }
+        if not isinstance(getattr(self.adapter, 'home', None), Path):
+            return value
+        try:
+            from content_install import private_json
+            from client_release import ClientReleases
+            meta = private_json(self.adapter.home/'.config/agent-brain-client/codex-mcp.json')
+            releases = ClientReleases(meta['release_policy'], meta['release_policy_sha256'], inspection=True)
+            if Path(releases.policy['runtime']['device_home']).resolve() != self.adapter.home:
+                return value
+            active = releases.verified_active(serving=True)
+            if active is None:
+                return value
+            value.update(active_package_version=active['version'], active_package_commit=active.get('commit'))
+            # A version mismatch proves this worker is old. Equality needs the
+            # exact commit too; source checkouts / legacy receipts stay unknown.
+            if active['version'] != self.client_version:
+                value.update(reload_required=True, reload_reason='running-worker-differs')
+            elif self.running_worker_commit is not None and active.get('commit') is not None:
+                same = self.running_worker_commit == active['commit']
+                value.update(reload_required=not same, reload_reason='running-worker-current' if same else 'running-worker-differs')
+            else:
+                value['reload_reason'] = 'running-worker-commit-unobserved'
+        except Exception:
+            pass  # Status failure must not block ordinary memory operations.
+        return value
 
     def _memory_source_tools_authorized(self):
         policy=getattr(self.adapter,'policy',None)
@@ -243,6 +282,7 @@ class ContentServer(Server):
                 if name=='content_put':properties['reconciles']={'type':'object','description':'Local-only references to staged source plans or write conflicts; never sent to Server. A still-inventoried source plan can be reconciled only by the exact staged record; a conflicted plan may be reconciled by an explicit merge of the source and remote versions. Only durable confirmation resolves them.','properties':{'request_ids':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256},'source_keys':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256}},'required':['request_ids','source_keys'],'additionalProperties':False}
                 description='Approved cloud content only. Server is the sole write boundary; retain CAS revision and request_id on write retries. Transport failures may return a verified stale snapshot with local_cache.stale=true; cache misses never prove remote absence. Local cache refresh does not reload existing model context. '
                 if name=='content_catalog':description+='AgentBrain destination records only; this does not discover Harness-native sources. Pass kinds only for the complete authorized target inventory; there is no pagination limit. Query/since/until/limit selects a Memory-only retrieval alias capped at 3. '
+                if name=='memory_query':description+='Canonical destination Memory topics only. For L1/L2/L3 derived memory use memory_recall when declared; an empty topic search does not establish that derived layers are absent. '
                 if name in ('memory_query','content_read','content_catalog'):description+=RECALL_EVIDENCE_GUIDANCE
                 description+='Running worker version: '+self.client_version+'. '+UPDATE_GUIDANCE
                 tools.append({'name':name,'description':description,'inputSchema':{'type':'object','properties':properties,'required':required,'additionalProperties':False},'annotations':{'readOnlyHint':name not in contract.WRITES,'destructiveHint':name=='content_remove','idempotentHint':True}})
