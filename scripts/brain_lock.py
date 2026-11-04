@@ -1,5 +1,7 @@
 """Portable lock and explicit Client platform boundaries; stdlib only."""
 from contextlib import contextmanager
+import ctypes as C
+from ctypes import wintypes as W
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import time
@@ -74,12 +76,104 @@ def require_platform(operation, target=None):
     return target
 
 
+class _WindowsFileInformation(C.Structure):
+    _fields_ = [('attributes', W.DWORD), ('created', W.FILETIME),
+                ('accessed', W.FILETIME), ('written', W.FILETIME),
+                ('volume', W.DWORD), ('size_high', W.DWORD), ('size_low', W.DWORD),
+                ('links', W.DWORD), ('index_high', W.DWORD), ('index_low', W.DWORD)]
+
+
+class _WindowsSecurityAttributes(C.Structure):
+    _fields_ = [('length', W.DWORD), ('descriptor', C.c_void_p), ('inherit', W.BOOL)]
+
+
+def _windows_open_lock(path):
+    """Create with the final owner/DACL, or open an existing item unchanged."""
+    import msvcrt
+    from brain_windows import libraries, user_sid
+    api, kernel = libraries(); descriptor = C.c_void_p(); current = user_sid()
+    sddl = 'O:' + current + 'D:P' + ''.join('(A;;FA;;;' + sid + ')' for sid in (current, 'SY', 'BA'))
+    api.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [W.LPCWSTR, W.DWORD, C.POINTER(C.c_void_p), C.c_void_p]
+    if not api.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, C.byref(descriptor), None):
+        raise ValueError('Private Windows lock security unavailable')
+    try:
+        security = _WindowsSecurityAttributes(C.sizeof(_WindowsSecurityAttributes), descriptor, False)
+        kernel.CreateFileW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, C.c_void_p, W.DWORD, W.DWORD, W.HANDLE]
+        kernel.CreateFileW.restype = W.HANDLE
+        kernel.CloseHandle.argtypes = [W.HANDLE]
+        # OPEN_ALWAYS ignores the descriptor for an existing lock. Do not share
+        # deletion: every caller must lock the same persistent filesystem item.
+        handle = kernel.CreateFileW(str(path), 0xC0000000, 3, C.byref(security), 4, 0x00200080, None)
+        if handle in (None, C.c_void_p(-1).value):
+            raise ValueError('Private Windows lock unavailable')
+        try: return msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
+        except BaseException:
+            kernel.CloseHandle(handle); raise
+    finally: kernel.LocalFree(descriptor)
+
+
+
+def _windows_private_handle(handle, *, directory=False, owner=False, blocked=ValueError):
+    from brain_windows import libraries, user_sid, sid_text
+    api, kernel = libraries()
+    kernel.GetFileInformationByHandle.argtypes = [W.HANDLE, C.POINTER(_WindowsFileInformation)]
+    kernel.GetFileInformationByHandle.restype = W.BOOL
+    kernel.GetFileType.argtypes = [W.HANDLE]
+    kernel.GetFileType.restype = W.DWORD
+    descriptor = C.c_void_p(); owner_sid = C.c_void_p(); acl = C.c_void_p()
+    api.GetSecurityInfo.argtypes = [W.HANDLE, C.c_int, W.DWORD, C.POINTER(C.c_void_p), C.c_void_p, C.POINTER(C.c_void_p), C.c_void_p, C.POINTER(C.c_void_p)]
+    api.GetSecurityInfo.restype = W.DWORD
+    api.GetAce.argtypes = [C.c_void_p, W.DWORD, C.POINTER(C.c_void_p)]
+    try:
+        info = _WindowsFileInformation()
+        if not kernel.GetFileInformationByHandle(handle, C.byref(info)) or kernel.GetFileType(handle) != 1:
+            raise blocked('Windows private metadata unavailable')
+        if info.attributes & 0x400 or bool(info.attributes & 0x10) != directory or not directory and info.links != 1:
+            raise blocked('Owned private Windows item required')
+        if api.GetSecurityInfo(handle, 1, 5, C.byref(owner_sid), None, C.byref(acl), None, C.byref(descriptor)):
+            raise blocked('Windows DACL could not be checked')
+        current = user_sid()
+        if not acl or not owner_sid or owner and sid_text(owner_sid) != current:
+            raise blocked('Owned private Windows item required')
+        # ACL header: revision(1), reserved(1), size(2), AceCount(2).
+        count = C.c_ushort.from_address(acl.value + 4).value
+        if count > 64: raise blocked('Bounded Windows DACL required')
+        for i in range(count):
+            ace = C.c_void_p()
+            if not api.GetAce(acl, i, C.byref(ace)): raise blocked('Windows DACL unavailable')
+            kind = C.c_ubyte.from_address(ace.value).value
+            flags = C.c_ubyte.from_address(ace.value + 1).value
+            if flags & 8: continue  # INHERIT_ONLY does not grant access to this item.
+            if kind == 1: continue  # DENY cannot disclose content.
+            if kind != 0 or sid_text(ace.value + 8) not in (current, 'S-1-5-18', 'S-1-5-32-544'):
+                raise blocked('Windows item accessible to another principal')
+    finally:
+        if descriptor: kernel.LocalFree(descriptor)
+
+def windows_private(path, *, directory=False, owner=False, blocked=ValueError):
+    from brain_windows import canonical, libraries
+    path = canonical(path); _, kernel = libraries()
+    # CPython's Windows stat fallback can report nlink=0 from directory data
+    # when another caller has the file open. Query full metadata and security
+    # through one shared, non-following handle; never accept unknown link counts.
+    kernel.CreateFileW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, C.c_void_p, W.DWORD, W.DWORD, W.HANDLE]
+    kernel.CreateFileW.restype = W.HANDLE
+    kernel.CloseHandle.argtypes = [W.HANDLE]
+    # FILE_READ_ATTRIBUTES | READ_CONTROL; share read/write/delete permits
+    # concurrent locks/atomic writes without granting access to another user.
+    handle = kernel.CreateFileW(str(path), 0x80 | 0x20000, 7, None, 3, 0x02000000 | 0x00200000, None)
+    if handle in (None, C.c_void_p(-1).value):
+        raise blocked('Windows private metadata unavailable')
+    try: _windows_private_handle(handle, directory=directory, owner=owner, blocked=blocked)
+    finally: kernel.CloseHandle(handle)
+    return path
+
+
 def private_mode(path, *, directory=False, owner=False, blocked=ValueError):
     """Check the native access model; mode bits never substitute for a DACL."""
     require_platform('private-metadata')
     if os.name == 'nt':
-        from brain_windows import private
-        return private(path, directory=directory, owner=owner, blocked=blocked)
+        return windows_private(path, directory=directory, owner=owner, blocked=blocked)
     path = Path(path)
     st = path.stat()
     if st.st_mode & 0o077 or not (path.is_dir() if directory else path.is_file()):
@@ -125,7 +219,14 @@ def file_mode(fd, mode):
     if os.name != 'nt': os.fchmod(fd, mode)
     else:
         from brain_windows import protect_descriptor
-        protect_descriptor(fd)
+        try: protect_descriptor(fd)
+        except ValueError as error:
+            # The pinned legacy credential module checks its new file through
+            # path stat. Recover only that incomplete-metadata postcheck and
+            # repeat the full owner/DACL/link check on the still-owned fd.
+            if str(error) != 'Owned private Windows item required': raise
+            import msvcrt
+            _windows_private_handle(msvcrt.get_osfhandle(fd), owner=True)
 
 
 def atomic_replace(source, target):
@@ -175,23 +276,25 @@ def locked(path, timeout=20, shared=False, cancel_check=None):
         from brain_windows import canonical
         canonical(path)
         private_directory(path.parent)
-        if path.exists(): private_mode(path, owner=True)
-    else: path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        handle = path.open('r+b')
-    else:
-        try:
-            if os.name == 'nt': file_mode(fd, 0o600)
+        fd = _windows_open_lock(path)
+        try: handle = os.fdopen(fd, 'r+b')
         except BaseException:
             os.close(fd); raise
-        handle = os.fdopen(fd, 'r+b')
-    if os.name == 'nt': private_mode(path, owner=True)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            handle = path.open('r+b')
+        else: handle = os.fdopen(fd, 'r+b')
     acquired = False
     try:
-        # msvcrt locks a byte range; a persistent byte makes the lock portable.
-        if path.stat().st_size == 0:
+        if os.name == 'nt':
+            import msvcrt
+            _windows_private_handle(msvcrt.get_osfhandle(handle.fileno()), owner=True)
+        # LockFileEx supports ranges beyond EOF. Writing an initialization byte
+        # before locking races another caller that already owns that byte.
+        if os.name != 'nt' and path.stat().st_size == 0:
             handle.write(b'0')
             handle.flush()
         deadline = time.monotonic() + timeout
