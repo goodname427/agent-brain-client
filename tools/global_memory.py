@@ -293,7 +293,7 @@ def recall(value, local, session, query='personal preferences and task progress'
         for layer in ('L1', 'L2', 'L3'):
             for row in [found[layer]] if layer == 'L3' else found[layer]:
                 if row.get('content') is None: continue
-                proof = row.get('provenance', {}); sources = proof.get('sources', [])
+                proof = row.get('provenance', {})
                 if not verified_memory_sources(proof,device,group['project_id'],layer=='L1'):
                     raise ValueError('Global recall provenance changed')
                 context = row.get('source_context')
