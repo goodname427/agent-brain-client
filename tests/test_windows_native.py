@@ -393,6 +393,30 @@ class WindowsNative(unittest.TestCase):
             child.stdin.close(); child.wait(timeout=10); child.stdout.close()
         with locked(file, timeout=1): pass
 
+    def test_same_id_concurrent_retry_returns_both_callers_and_uploads_once(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        from content_cache import ContentAdapter
+        from test_content_outbox import Cloud, POLICY, MEMORY
+        for index in range(10):
+            with self.subTest(iteration=index):
+                cache = self.home / ('concurrent-cache-' + str(index))
+                cloud = Cloud()
+                def adapter(): return ContentAdapter(self.home, cache, POLICY, cloud, codex_home=self.home / '.codex')
+                adapter()  # Exercise fresh lock creation, as in the reported test.
+                request = {'request_id': 'synthetic_concurrent_retry_' + str(index), 'method': 'content_put',
+                    'params': {'kind': 'memory', 'id': 'synthetic-topic', 'record': MEMORY, 'expected_revision': 'missing'}}
+                barrier = threading.Barrier(2)
+                def retry():
+                    client = adapter(); barrier.wait(timeout=10)
+                    return client.invoke(copy.deepcopy(request))
+                with ThreadPoolExecutor(max_workers=2) as workers:
+                    futures = [workers.submit(retry) for _ in range(2)]
+                    results = [future.result(timeout=60) for future in futures]
+                self.assertEqual([row['local_queue']['state'] for row in results], ['confirmed', 'confirmed'])
+                self.assertEqual(cloud.puts, 1)
+                self.assertEqual(adapter().queue_status()['confirmed'], 1)
+
     def test_hook_command_preserves_spaces_shell_symbols_unicode_and_quotes(self):
         expected = 'literal %PATH% $env:PATH & 文本 "quote"'
         command = command_line([sys.executable, '-I', '-B', '-c', 'print(' + repr(expected) + ')'])

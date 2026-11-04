@@ -28,6 +28,10 @@ PERSONAL_MANAGED=BEGIN+'\n# Explicit personal memory MCP\nUse agent_brain_server
 sha=lambda data:hashlib.sha256(data).hexdigest()
 
 
+def service_label(data_mode):
+    return 'synthetic test MCP' if data_mode=='synthetic-only' else 'explicit personal memory MCP'
+
+
 def profile(path):
     p=Path(path)
     if p.is_symlink() or not p.is_file() or p.stat().st_mode&0o077:raise ValueError('Private approved profile required')
@@ -310,14 +314,14 @@ def connect(home, profile_path=None, apply=False, approved_digest=None):
         if not valid:return {'status':'native-repair-review-required','native_changed':False,'next_action':'Preserve drifted native files and review the owned migration receipt.'}
         if mcp is not None and (installed!=mcp or registered['data_mode']!=candidate['data_mode']):return {'status':'service-change-review-required','native_changed':False,'next_action':'Review changed SSH identity, fixed command, data mode or destination.'}
         updates=probe(installed)
-        return {'status':'native-client-registered','native_changed':False,'protocol_checked':True,'model_loaded':'unknown','legacy_preserved':legacy.exists(),'updates':updates,'next_action':'Reuse this synthetic MCP. A new release source or runtime bootstrap requires its own pinned approval.'}
+        return {'status':'native-client-registered','native_changed':False,'protocol_checked':True,'model_loaded':'unknown','legacy_preserved':legacy.exists(),'updates':updates,'next_action':'Reuse this '+service_label(registered['data_mode'])+'. A new release source or runtime bootstrap requires its own pinned approval.'}
     if legacy.exists():return {'status':'migration-review-required','native_changed':False,'next_action':'Prepare an exact legacy migration with backups; preserve existing hooks, bindings and permissions.'}
     if candidate is None:return {'status':'server-authorization-required','native_changed':False,'next_action':'Locate the approved private SSH service profile. Do not send keys or tokens to chat.'}
     if NAME in cfg.get('mcp_servers',{}) or (agents.exists() and (BEGIN in agents.read_text(encoding='utf-8') or END in agents.read_text(encoding='utf-8'))):
         return {'status':'native-repair-review-required','native_changed':False,'next_action':'Existing unowned MCP/managed block preserved; inspect its registration.'}
     updates=probe(mcp)
     config_raw=config.read_bytes() if config.exists() else b'';agents_raw=agents.read_bytes() if agents.exists() else b''
-    snippet='\n# Explicit synthetic test MCP only\n[mcp_servers.'+NAME+']\n'
+    snippet='\n# '+service_label(candidate['data_mode'])+'\n[mcp_servers.'+NAME+']\n'
     for key,value in mcp.items():snippet+=key+' = '+json.dumps(value,ensure_ascii=False)+'\n'
     managed=MANAGED if candidate['data_mode']=='synthetic-only' else PERSONAL_MANAGED
     new_config=config_raw+b'\n'+snippet.encode();new_agents=agents_raw+(b'\n' if agents_raw and not agents_raw.endswith(b'\n') else b'')+managed.encode()
@@ -352,4 +356,4 @@ def connect(home, profile_path=None, apply=False, approved_digest=None):
             if old:atomic(p,base64.b64decode(old['data']),old['mode'])
             else:p.unlink()
         journal['phase']='rolled-back';atomic(receipt,(json.dumps(journal)+'\n').encode(),0o600);raise
-    return {'status':'native-client-registered','native_changed':True,'protocol_checked':True,'model_loaded':'unknown','updates':updates,'next_action':'Use the registered synthetic MCP; configuration and protocol checks completed, no extra model or GUI test required.'}
+    return {'status':'native-client-registered','native_changed':True,'protocol_checked':True,'model_loaded':'unknown','updates':updates,'next_action':'Use the registered '+service_label(candidate['data_mode'])+'; configuration and protocol checks completed. Model loading remains unknown.'}

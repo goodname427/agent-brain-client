@@ -410,6 +410,9 @@ class EvidenceDiagnostics(unittest.TestCase):
         )
         for text in (
             "synthetic sandbox",
+            "agent_brain_synthetic_sandbox",
+            "disabled plugin",
+            "temporary Client fixture",
             "older result",
             "event receipt only",
             "model_extraction_verified=false",

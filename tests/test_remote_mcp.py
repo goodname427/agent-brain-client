@@ -45,9 +45,12 @@ class RemoteMCP(unittest.TestCase):
     def test_lifecycle_and_minimal_discovery_no_core_capabilities(self):
         with self.assertRaises(bridge.ProtocolError):self.server.handle(self.message('tools/list'))
         result = self.ready();self.assertEqual(result['protocolVersion'], '2025-06-18')
+        self.assertIn('not the approved personal content service', result['instructions'])
+        self.assertIn('Client outbox/reconnection tests', result['instructions'])
         tools = self.server.handle(self.message('tools/list'))['tools']
         self.assertEqual({v['name'] for v in tools}, {'topic', 'recall', 'remember', 'forget', 'client_updates'})
         for tool in tools:
+            self.assertIn('Synthetic sandbox only', tool['description'])
             self.assertFalse(tool['inputSchema']['additionalProperties'])
             if tool['name'] in bridge.WRITES:
                 self.assertIn('request_id', tool['inputSchema']['required'])
