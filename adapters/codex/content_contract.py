@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import PurePosixPath, PureWindowsPath
 import re
+import unicodedata
 
 TYPES={'memory','rule','skill'}
 FIELDS={'memory_status':{'project_id','session_id'},'memory_resume':{'project_id','session_id'},'memory_stop':{'project_id','session_id'},'memory_revoke':{'project_id','session_id'},'memory_sync':{'project_id','session_id'},'memory_query':{'kind','query','since','until','limit'},'content_read':{'kind','id'},'content_catalog':{'kinds'},
@@ -290,6 +291,7 @@ def recall_origin(value):
     """Metadata only; no filesystem discovery or new source authorization."""
     def path(raw):
         if not isinstance(raw, str) or any(c in raw for c in ('\x00', '\r', '\n')): raise ValueError('Absolute origin required')
+        raw = unicodedata.normalize('NFC', raw)
         windows = PureWindowsPath(raw)
         if windows.drive:
             if not re.match(r'^[A-Za-z]:[\\/]', raw) or not windows.is_absolute() or '..' in windows.parts or any(':' in p for p in windows.parts[1:]): raise ValueError('Local drive origin required')
