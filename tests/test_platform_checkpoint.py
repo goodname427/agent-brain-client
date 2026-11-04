@@ -110,13 +110,14 @@ class HistoricalPackageTools(unittest.TestCase):
     def test_future_package_addition_needs_no_version_or_name_allowlist(self):
         package=self.root/'future-package'
         release(ROOT,package,'0.9.0','personal-content-https',native_platform())
+        before=set(ci.package_tools(package,POLICY,self.grant))
         file=package/'adapters/codex/content_mcp.py'
         raw=file.read_text().replace('    return tools\n',"    tools.append({'name':'synthetic_future_read'})\n    return tools\n",1)
         file.write_text(raw)
         tools=ci.package_tools(package,POLICY,self.grant)
         self.assertIn('synthetic_future_read',tools)
         self.assertIn('memory_recall',tools)
-        self.assertEqual(len(tools),11)
+        self.assertEqual(set(tools),before|{'synthetic_future_read'})
 
     def test_probe_failure_is_bounded_and_does_not_accept_updater_fallback(self):
         package=self.root/'old-package'
