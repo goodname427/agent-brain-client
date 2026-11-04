@@ -30,6 +30,6 @@
 
 独立排查确认另一个可复现缺口：旧三工具登记在只读检查时应保持不变，但 `prepare(replace_existing=True)` 也复制了旧过滤清单；若目标包已经与登记启动器相同，更新入口还会直接跳过替换。结果是正常更新和重启都无法修复这类登记。修复后，显式更新按已验证目标包及原 policy/grant 生成替换清单，同包但清单不同也执行原有事务。只读检查仍不改登记，暂停状态、身份、信任锚、外部编辑保护和待发送队列保留。
 
-`check-update` / `update` 的 `tool_discovery` 分别报告 `active_package_tools`、`registered_enabled_tools` 和 `blocked_by_registration`。同版本缺少工具时仍报告需要更新。MCP 回执的 `client_runtime.declared_tools` 报告实际 worker 声明的清单；`host_tool_discovery` 与 `model_tool_visibility` 始终为 `unknown`，不能把包声明或配置匹配冒称模型已可调用。普通 `memory_query` 的说明明确区分 topic 检索与分层召回。
+`check-update` / `update` 的 `tool_discovery` 分别报告 `active_package_tools`、`registered_enabled_tools` 和 `blocked_by_registration`。同版本缺少工具时仍报告需要更新。MCP 回执的 `client_runtime.offered_tools` 报告实际 worker 声明的清单；CLI 的 `host_tool_discovery` / `model_tool_visibility` 和 MCP 的 `host_tool_visibility` / `model_loaded` 保持 `unknown`，不能把包声明或配置匹配冒称模型已可调用。普通 `memory_query` 的说明明确区分 topic 检索与分层召回。
 
 回归覆盖旧三工具同包修复、九到十项迁移、暂停与外部编辑保护，以及待发送文件逐字节保留。源代码和实际构建包的离线 MCP checkpoint 核对计划清单、`tools/list` 与 worker 声明，在现有 Mac/Windows CI 入口执行。最终仍需在两端宿主中确认模型发现 `memory_recall` 并完成受控 L2/L3 调用；这里的合成验证不作该项声明。

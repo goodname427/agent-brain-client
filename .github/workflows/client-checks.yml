@@ -149,7 +149,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -B -m unittest test_content_write_failures
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -B -m unittest test_layered_recall
+          python -B -m unittest test_layered_recall test_runtime_reload
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd 'tools/install-windows.ps1'), [ref]$null, [ref]$errors) | Out-Null

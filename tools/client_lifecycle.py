@@ -476,7 +476,7 @@ def status(home):
                         next_action='Preserve outbox, import inventory and native mappings. Review unknown local state or file ownership before uninstall; do not delete data or reset Keychain.')
         result.update(active_package_version=result['installed_version'],running_worker_version=None,
                       latest_channel_version=None,channel_checked=False,reload_required=None)
-        result['next_action'] = ('Service is paused; maintenance does not re-enable it. ' if result['status']=='content-native-client-disabled' else '')+'Status is local only. Run '+CHECK_UPDATE_COMMAND+' to inspect the original trusted channel, then '+UPDATE_COMMAND+' to apply an available package. Repeating install only verifies registration. Confirm the running version from MCP client_runtime after a normal host reload; no new invitation.'
+        result['next_action'] = ('Service is paused; maintenance does not re-enable it. ' if result['status']=='content-native-client-disabled' else '')+'Status is local only. Run '+CHECK_UPDATE_COMMAND+' to inspect the original trusted channel, then '+UPDATE_COMMAND+' to apply an available package. Repeating install only verifies registration. Observe fresh MCP client_runtime and compare worker version and commit with the active package before deciding whether only Agent Brain MCP needs a reload. Unknown is not a restart requirement; no new invitation.'
     return result
 
 

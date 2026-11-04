@@ -102,9 +102,46 @@ def worker_commit(client_version):
 class ContentServer(Server):
     def __init__(self,adapter,client_version='0.2.0'):
         super().__init__(None,client_version);self.adapter=adapter
-        self.client_runtime={'running_worker_version':client_version,'running_worker_commit':worker_commit(client_version),'service_mode':'approved-content'}
-        self.client_runtime.update(declared_tools=tool_names(adapter.methods(),self._memory_source_tools_authorized()),
-                                   host_tool_discovery='unknown',model_tool_visibility='unknown')
+        self.running_worker_commit = worker_commit(client_version)
+
+    @property
+    def client_runtime(self):
+        """Report this connection; local release inspection never fetches or pairs."""
+        value = {
+            'running_worker_version': self.client_version,
+            'running_worker_commit': self.running_worker_commit,
+            'service_mode': 'approved-content',
+            'tool_contract_version': TOOL_CONTRACT_VERSION,
+            'offered_tools': tool_names(self.adapter.methods(), self._memory_source_tools_authorized()),
+            'host_tool_visibility': 'unknown', 'model_loaded': 'unknown',
+            'active_package_version': None, 'active_package_commit': None,
+            'reload_required': None, 'reload_reason': 'active-package-unobserved',
+        }
+        if not isinstance(getattr(self.adapter, 'home', None), Path):
+            return value
+        try:
+            from content_install import private_json
+            from client_release import ClientReleases
+            meta = private_json(self.adapter.home/'.config/agent-brain-client/codex-mcp.json')
+            releases = ClientReleases(meta['release_policy'], meta['release_policy_sha256'], inspection=True)
+            if Path(releases.policy['runtime']['device_home']).resolve() != self.adapter.home:
+                return value
+            active = releases.verified_active(serving=True)
+            if active is None:
+                return value
+            value.update(active_package_version=active['version'], active_package_commit=active.get('commit'))
+            # A version mismatch proves this worker is old. Equality needs the
+            # exact commit too; source checkouts / legacy receipts stay unknown.
+            if active['version'] != self.client_version:
+                value.update(reload_required=True, reload_reason='running-worker-differs')
+            elif self.running_worker_commit is not None and active.get('commit') is not None:
+                same = self.running_worker_commit == active['commit']
+                value.update(reload_required=not same, reload_reason='running-worker-current' if same else 'running-worker-differs')
+            else:
+                value['reload_reason'] = 'running-worker-commit-unobserved'
+        except Exception:
+            pass  # Status failure must not block ordinary memory operations.
+        return value
 
     def _memory_source_tools_authorized(self):
         policy=getattr(self.adapter,'policy',None)

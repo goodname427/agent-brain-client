@@ -248,7 +248,7 @@ def complete(home, result, *, choose=input, refresh=mapping_refresh):
         return value
     stages: dict[str, Any] = {
         "mcp_registration": "verified",
-        "worker": "host-reload-required",
+        "worker": "unobserved",
         "model_context": "reload-unobserved",
     }
     value["installation_stages"] = stages
@@ -285,7 +285,7 @@ def complete(home, result, *, choose=input, refresh=mapping_refresh):
             and stages["sources"].get("collection_enabled") is True
         )
         value["next_action"] = (
-            "Review installation_stages. Reload only Agent Brain MCP and approve its inline Hook in normal Codex settings; open a fresh conversation to load mapped Rules/Skills. Follow the sources next_action if source selection or Server admission is pending."
+            "Review installation_stages. Observe fresh MCP client_runtime version and commit before deciding whether only Agent Brain MCP needs a reload. If unobservable, report unknown. Review inline Hook trust in normal Codex settings when pending; use a fresh conversation when mapped Rules/Skills need loading. Follow the sources next_action if source selection or Server admission is pending."
         )
     except Exception:
         stages["setup"] = {"status": "pending-review-or-resume", "stage": stage}
