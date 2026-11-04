@@ -10,7 +10,6 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'tests'))
 sys.path.insert(0,str(ROOT/'adapters/codex'))
 import test_content_outbox as base
-from content_mcp import ContentServer
 
 FIXTURE=json.loads((ROOT/'tests/fixtures/agentbrain_030_acceptance.json').read_text())
 STOP={'a','an','and','are','did','do','for','how','in','is','it','of','the','to','what','was','were','which','with'}
@@ -71,13 +70,15 @@ class AgentBrain030Acceptance(unittest.TestCase):
 
     def test_ten_queries_return_the_expected_record_with_supporting_evidence(self):
         self.adapter.stage_import(self.plan);self.adapter.refresh()
-        server=ContentServer(self.adapter)
+        # The frozen 0.3.0 dataset checks the pre-cutover Content transport.
+        # Daily MCP retrieval is covered by the native memory_query fixtures.
         correct=0
         for index,item in enumerate(FIXTURE['recall']):
             with self.subTest(question=item['question']):
-                response=server.invoke('memory_query',{'kind':'memory','query':item['question'],'since':None,'until':None,'limit':3})
-                self.assertFalse(response['isError'],response)
-                topics=response['structuredContent']['result']['topics']
+                response=self.adapter.invoke({'request_id':f'legacy_recall_{index:04d}', 'method':'memory_query',
+                    'params':{'kind':'memory','query':item['question'],'since':None,'until':None,'limit':3}})
+                self.assertNotIn('error',response)
+                topics=response['result']['topics']
                 match=next((topic for topic in topics if topic['id']==item['id']),None)
                 if match and item['evidence'].lower() in match['preview'].lower():correct+=1
         self.assertGreaterEqual(correct,9)
