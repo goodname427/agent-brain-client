@@ -345,6 +345,14 @@ class GlobalMemoryUpdate(unittest.TestCase):
             gm.load(self.home)
         self.assertEqual(before, {p: p.read_bytes() for p in self.home.rglob('*') if p.is_file()})
 
+    def test_isolated_status_cli_loads_shared_toml_editor_without_pythonpath(self):
+        environment = dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.native))
+        proc = subprocess.run([sys.executable, '-I', '-B', str(gm.ROOT / 'tools/global_memory.py'),
+                               'global-status', '--device-home', str(self.home)],
+                              cwd=self.home, env=environment, capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stdout.decode() + proc.stderr.decode())
+        self.assertTrue(json.loads(proc.stdout)['global_entry_installed'])
+
     def test_retained_removal_requires_authenticated_journal_and_exact_block(self):
         import client_lifecycle as lifecycle
         outside, previous = hooks.split_owned(self.config.read_bytes())
@@ -469,6 +477,111 @@ class GlobalMemoryUpdate(unittest.TestCase):
         with self.assertRaises(ValueError):
             hooks.refresh(self.home)
 
+    def test_arbitrary_events_same_event_groups_and_dotted_keys_are_preserved(self):
+        import uuid
+        event = 'Tool_' + uuid.uuid4().hex
+        foreign = ('apps.' + event + '.enabled = false\n'
+                   'apps.' + event + '.ratios = [nan, inf, -inf]\n'
+                   'hooks.' + event + ' = [{hooks=[{type="command",command="synthetic-other"}]}]\n'
+                   '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype="command"\ncommand="synthetic-stop"\n').encode()
+        self.config.write_bytes(self.config.read_bytes().replace(hooks.BEGIN.encode(), hooks.BEGIN.encode() + b'\n' + foreign))
+        expected = hooks.unowned_config(hooks.tomllib.loads(self.config.read_text()), hooks.block(self.value))
+        self.assertTrue(hooks.installation_status(self.value))
+        self.assertTrue(hooks.refresh(self.home, check_only=True)['update_available'])
+        hooks.refresh(self.home)
+        self.assertIn(foreign, self.config.read_bytes())
+        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        hooks.transact(self.native, self.file.parent, '', remove=True)
+        self.assertTrue(hooks.typed_equal(hooks.tomllib.loads(self.config.read_text()), expected))
+        self.preserved()
+
+    def test_inline_hooks_and_marker_looking_string_data_are_semantic(self):
+        config = hooks.tomllib.loads(self.config.read_text())
+        config['hooks']['Stop'].insert(0, {'hooks': [{'type': 'command', 'command': 'synthetic-foreign'}]})
+        raw = ('# synthetic comment\u2028' + hooks.BEGIN + '\n'
+               + 'description = """\n' + hooks.BEGIN + '\n[hooks.Stop]\n' + hooks.END + '\n"""\n'
+               + 'hooks = ' + host.toml_literal(config['hooks']) + '\n'
+               + hooks.BEGIN + '\n' + hooks.END + '\n').encode()
+        self.config.write_bytes(raw)
+        expected = hooks.unowned_config(hooks.tomllib.loads(raw.decode()), hooks.block(self.value))
+        hooks.refresh(self.home)
+        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        hooks.transact(self.native, self.file.parent, '', remove=True)
+        actual = hooks.tomllib.loads(self.config.read_text())
+        self.assertEqual(hooks.unowned_config(actual, None), hooks.unowned_config(expected, None))
+        self.assertEqual(actual['description'], expected['description'])
+
+    def test_foreign_command_inside_owned_group_survives_refresh_and_removal(self):
+        foreign = (b'[[hooks.Stop.hooks]]\ntype="command"\n'
+                   b'command="synthetic-shared-group-command"\n')
+        before = self.config.read_bytes().replace(hooks.END.encode(), foreign + hooks.END.encode())
+        self.config.write_bytes(before)
+        self.assertTrue(hooks.installation_status(self.value))
+        expected = hooks.unowned_config(hooks.tomllib.loads(before.decode()), hooks.block(self.value))
+        hooks.refresh(self.home)
+        self.assertIn(foreign, self.config.read_bytes())
+        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        hooks.transact(self.native, self.file.parent, '', remove=True)
+        self.assertTrue(hooks.typed_equal(hooks.tomllib.loads(self.config.read_text()), expected))
+
+    def test_concurrent_unrelated_edit_reloads_and_merges_without_losing_pause(self):
+        stage = host.host_stage
+        attempts = []
+        off = self.file.parent / 'global.off'
+        off.write_bytes(b'paused')
+
+        @contextmanager
+        def edit_once(path, *args):
+            if path == self.config and not attempts:
+                attempts.append(True)
+                self.config.write_bytes(b'new_tool_setting = true\n' + self.config.read_bytes())
+            with stage(path, *args) as commit: yield commit
+
+        with patch.object(host, 'host_stage', side_effect=edit_once):
+            hooks.refresh(self.home)
+        self.assertIn(b'new_tool_setting = true\n', self.config.read_bytes())
+        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        self.assertEqual(off.read_bytes(), b'paused')
+        self.preserved()
+
+    def test_concurrent_managed_edit_is_preserved_and_names_exact_field(self):
+        stage = host.host_stage
+        edits = []
+
+        @contextmanager
+        def edit_once(path, *args):
+            if path == self.config and not edits:
+                self.config.write_bytes(self.config.read_bytes().replace(b'timeout = 120', b'timeout = 119'))
+                edits.append(self.config.read_bytes())
+            with stage(path, *args) as commit: yield commit
+
+        with patch.object(host, 'host_stage', side_effect=edit_once):
+            with self.assertRaisesRegex(ValueError, r'hooks.SessionStart\[0\].hooks\[0\].timeout'):
+                hooks.refresh(self.home)
+        self.assertEqual(self.config.read_bytes(), edits[0])
+        self.assertEqual(old.private_json(self.file), self.value)
+
+    @unittest.skipUnless(os.name == 'posix', 'Windows excludes competing writers while staged')
+    def test_concurrent_edit_at_commit_discards_stale_journal_and_retries(self):
+        stage = host.host_stage
+        edits = []
+
+        @contextmanager
+        def edit_at_commit(path, *args):
+            with stage(path, *args) as commit:
+                def guarded():
+                    if path == self.config and not edits:
+                        edits.append(True)
+                        self.config.write_bytes(b'commit_time_setting = true\n' + self.config.read_bytes())
+                    return commit()
+                yield guarded
+
+        with patch.object(host, 'host_stage', side_effect=edit_at_commit):
+            hooks.refresh(self.home)
+        self.assertIn(b'commit_time_setting = true', self.config.read_bytes())
+        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        self.assertEqual(hooks.read_receipt(self.file.parent / 'hook-install.json')['phase'], 'complete')
+
     def test_linked_code_cache_is_rejected_without_writing_outside(self):
         outside = private_directory(self.home / "outside-cache")
         try:
@@ -481,6 +594,63 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertEqual(list(outside.iterdir()), [])
         self.assertEqual(self.config.read_bytes(), before)
         self.assertEqual(old.private_json(self.file), self.value)
+
+
+class SemanticConfigMerge(unittest.TestCase):
+    def test_hash_only_migration_uses_authenticated_image_not_live_file_hash(self):
+        import base64
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        state = private_directory(Path(temp.name).resolve() / 'state')
+        config = state / 'config.toml'
+        original = b'model="old"\n[mcp_servers.agent_brain_server]\ncommand="fixed"\nenabled=true\n'
+        current = original.replace(b'model="old"', b'model="new"').replace(b'enabled=true', b'enabled=false')
+        pin = host.sha(original)
+        self.assertFalse(host.migration_config_matches(config, current, pin, state, {}))
+        journal = {'before': {str(config): {'data': base64.b64encode(original).decode()}}}
+        saved = state / 'native-install-receipt.json'
+        old.write(saved, journal)
+        self.assertTrue(host.migration_config_matches(config, current, pin, state, {}))
+        self.assertFalse(host.migration_config_matches(config, current.replace(b'command="fixed"', b'command="changed"'), pin, state, {}))
+        journal['before'][str(config)]['data'] = base64.b64encode(current).decode()
+        old.write(saved, journal)
+        self.assertFalse(host.migration_config_matches(config, current, pin, state, {}))
+
+    def test_equivalent_mcp_syntax_and_shared_inline_tables(self):
+        import content_install as ci
+        from client_lifecycle import remove_table
+        import uuid
+        name = 'tool_' + uuid.uuid4().hex + '\U0001f3a8'
+        forms = [
+            '["mcp_servers".\'agent_brain_server\']\ncommand="old"\n',
+            'mcp_servers.agent_brain_server.command="old"\n',
+            '[mcp_servers]\nagent_brain_server.command="old"\n',
+            'mcp_servers={agent_brain_server={command="old"}, ' + json.dumps(name, ensure_ascii=False) + '={command="other"}}\n',
+        ]
+        target = {'command': 'new', 'enabled': False, 'env': {'z': 'keep', 'a': 'keep'}}
+        for form in forms:
+            with self.subTest(form=form):
+                source = ('# Unrelated root data\nmodel="synthetic"\nforeign_ratio=nan\n' + form).encode()
+                before = hooks.tomllib.loads(source.decode())
+                expected = copy.deepcopy(before)
+                expected['mcp_servers']['agent_brain_server'] = target
+                merged = ci.render(source, target, True)
+                self.assertTrue(hooks.typed_equal(hooks.tomllib.loads(merged.decode()), expected))
+                # Serialization round-trips must produce identical plan images.
+                self.assertEqual(merged, ci.render(source, json.loads(json.dumps(target, sort_keys=True)), True))
+                removed = hooks.tomllib.loads(remove_table(merged).decode())
+                self.assertNotIn('agent_brain_server', removed.get('mcp_servers', {}))
+                self.assertEqual(removed['model'], before['model'])
+                if name in before['mcp_servers']:
+                    self.assertEqual(removed['mcp_servers'][name], before['mcp_servers'][name])
+
+    def test_multiline_strings_and_array_table_paths_are_not_confused(self):
+        source = ('text="""\n[hooks.Stop]\n# agent-brain-global-memory:begin\n"""\n'
+                  '[[arbitrary]]\nname="one"\n[[arbitrary.child]]\nvalue=1\n'
+                  '[[arbitrary]]\nname="two"\n[[arbitrary.child]]\nvalue=2\n')
+        result = host.toml_remove(source, [('arbitrary', 0)])
+        self.assertEqual(hooks.tomllib.loads(result), {'text': '[hooks.Stop]\n# agent-brain-global-memory:begin\n',
+                                                      'arbitrary': [{'name': 'two', 'child': [{'value': 2}]}]})
 
 
 if __name__ == "__main__":

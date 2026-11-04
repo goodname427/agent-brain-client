@@ -19,7 +19,7 @@ from client_release import https_files,policy_file,CONTENT_CAPABILITIES,CONTENT_
 from content_mcp import pinned,pairs,enabled_tools,LOCAL_TOOLS,TOOL_CONTRACT_VERSION
 from content_cache import validate_policy,sha,contract
 from client_pairing import ComponentClient
-from codex_connect import atomic,host_stage,host_atomic,host_image,NAME,BEGIN,END,BLOCK
+from codex_connect import atomic,host_stage,host_atomic,host_image,NAME,BEGIN,END,BLOCK,toml_replace,migration_config_matches,toml_equal
 from brain_lock import locked,require_platform,platform_paths,private_mode,PlatformUnsupported,native_platform
 from brain_release import ReleaseEngine
 
@@ -153,21 +153,9 @@ print(json.dumps({'tools':tools}))
 
 def render(config,mcp,existing):
     text=(config or b'').decode();before=tomllib.loads(text)
-    if existing:
-        pattern=re.compile(r'^\[mcp_servers\.'+NAME+r'\][ \t]*(?:#.*)?\r?\n',re.M)
-        matches=list(pattern.finditer(text))
-        if len(matches)!=1:raise InstallBlocked('Existing MCP table syntax needs review')
-        start=matches[0].start();end=matches[0].end();next_header=re.search(r'^\[',text[end:],re.M)
-        stop=end+next_header.start() if next_header else len(text)
-        hook=text.find('# agent-brain-global-memory:begin',end,stop)
-        if hook>=0:stop=hook
-        text=text[:start]+text[stop:]
-    def literal(value):
-        if isinstance(value,dict):return '{'+', '.join(json.dumps(k)+' = '+literal(value[k]) for k in sorted(value))+'}'
-        return json.dumps(value,ensure_ascii=False)
-    snippet='\n[mcp_servers.'+NAME+']\n'+''.join(k+' = '+literal(mcp[k])+'\n' for k in sorted(mcp))
-    desired=(text.rstrip()+'\n'+snippet).encode();expected=copy.deepcopy(before);expected.setdefault('mcp_servers',{})[NAME]=mcp
-    if tomllib.loads(desired.decode())!=expected:raise InstallBlocked('Unrelated TOML scope changed')
+    desired=toml_replace(text,('mcp_servers',NAME),mcp).encode()
+    expected=copy.deepcopy(before);expected.setdefault('mcp_servers',{})[NAME]=mcp
+    if not toml_equal(tomllib.loads(desired.decode()),expected):raise InstallBlocked('Unrelated TOML scope changed')
     return desired
 
 
@@ -247,7 +235,7 @@ def prepare(home,package,policy_path,policy_sha,replace_existing=False):
         metadata=private_json(registration)
         if metadata.get('schema')!=1 or metadata.get('native_mcp_name')!=NAME:raise InstallBlocked('Unknown existing registration')
         if 'mcp_sha256' in metadata:
-            if registered_mcp_digest(old)!=metadata['mcp_sha256']:raise InstallBlocked('Existing MCP drift')
+            if registered_mcp_digest(old)!=metadata['mcp_sha256']:raise InstallBlocked('Existing MCP drift: mcp_servers.'+NAME)
             if metadata.get('content_candidate') is True:
                 _,original,_,_=registered_context(home,metadata)
                 mcp['command']=original['command']
@@ -257,13 +245,16 @@ def prepare(home,package,policy_path,policy_sha,replace_existing=False):
             # contract, bounded by the same policy/grant as a fresh install.
         else:
             receipt=private_json(metadata['migration_receipt'])
-            if receipt.get('installation_complete') is not True or receipt.get('native_registered') is not True or receipt.get('new_registration_path')!=str(registration) or receipt.get('after',{}).get(str(config))!=sha(before) or receipt.get('after',{}).get(str(registration))!=sha(registered):raise InstallBlocked('Existing migration receipt drift')
+            if receipt.get('installation_complete') is not True or receipt.get('native_registered') is not True or receipt.get('new_registration_path')!=str(registration) or receipt.get('after',{}).get(str(registration))!=sha(registered):raise InstallBlocked('Existing migration receipt drift')
+            if not migration_config_matches(config,before,receipt.get('after',{}).get(str(config)),registration.parent,receipt):
+                raise InstallBlocked('Legacy MCP baseline unavailable or changed: restore the original config postimage from its transaction backup once, then rerun update; unrelated settings can be kept. No current configuration hash should be re-pinned.')
             agents=native/'AGENTS.md';agents_raw=raw(agents)
             if agents_raw is not None and (BEGIN.encode() in agents_raw or END.encode() in agents_raw):
                 text=agents_raw.decode()
                 if receipt.get('after',{}).get(str(agents))!=sha(agents_raw) or text.count(BEGIN)!=1 or text.count(END)!=1 or len(BLOCK.findall(text))!=1:raise InstallBlocked('Owned legacy instruction drift')
                 after=BLOCK.sub('',text).encode()
                 legacy_agents={'path':str(agents),'before_sha256':sha(agents_raw),'after_sha256':sha(after)}
+        if old.get('enabled') is False:mcp['enabled']=False
     elif registered is not None:raise InstallBlocked('Orphan registration preserved')
     desired=render(before,mcp,bool(old))
     plan={'schema':1,'tool_contract_version':TOOL_CONTRACT_VERSION,'adapter':'codex','platform':policy['platform'],'device_home':str(home),'codex_home':str(native),'package':str(package),'package_sha256':package_sha,
@@ -319,6 +310,30 @@ def inspect_plan(path,digest):
     plan=pinned(path,digest);home,_,_=plan_scope(plan)
     if sha(contract.encode(plan))!=digest or prepare(home,plan['package'],plan['release_policy'],plan['release_policy_sha256'],plan['replace_existing'])!=plan:raise InstallBlocked('Install plan drift')
     return {'status':'content-native-install-ready','plan_sha256':digest,'native_changed':False,'installed':False,'next_action':'Apply this exact plan within the approved signing, credential, transport and native scope. Protocol/auth checks run before and after the one-table transaction; no new model conversation required.'}
+
+
+def rebase_update_plan(plan):
+    """Refresh native preimages only, after authenticating the current binding.
+
+    Used by the already authorized updater before starting a transaction. A
+    changed package, policy, registration, command, tool filter or scope still
+    fails. A newly paused service remains paused. Applying journals are never
+    rebased: their exact recovery images remain authoritative.
+    """
+    home,native,_=plan_scope(plan)
+    receipt=home/'.config/agent-brain-client/content-install-receipt.json'
+    if receipt.exists():
+        record=private_json(receipt)
+        if record.get('phase') == 'applying' or (record.get('phase') == 'complete' and record.get('plan_sha256') == sha(contract.encode(plan))):
+            return plan
+    current=prepare(home,plan['package'],plan['release_policy'],plan['release_policy_sha256'],plan['replace_existing'])
+    expected=copy.deepcopy(plan)
+    expected['before'][str(native/'config.toml')]=current['before'][str(native/'config.toml')]
+    expected['config_after_sha256']=current['config_after_sha256']
+    if expected['mcp'].get('enabled') is True and current['mcp'].get('enabled') is False:
+        expected['mcp']['enabled']=False
+    if expected!=current:raise InstallBlocked('Update inputs changed outside config.toml; preserve the existing update plan')
+    return current
 
 def partial_prefix(before,after,current):
     """Recognize only prefix writes followed by one truncate, never arbitrary drift."""
