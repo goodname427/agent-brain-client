@@ -208,6 +208,22 @@ def registered_mcp_digest(mcp):
     return sha(json.dumps(value,sort_keys=True).encode())
 
 
+def tool_discovery(home, metadata, active):
+    """Compare verified package declarations with the authenticated host filter.
+
+    This offline observation never starts a worker or proves model visibility.
+    Callers must supply a verified active snapshot from the original channel.
+    """
+    _,registered,_,_=registered_context(home,metadata)
+    _,declared,_,_=context(home,active['package'],metadata['release_policy'],metadata['release_policy_sha256'],inspection=True,allow_legacy_030_active=True)
+    package_tools=declared['enabled_tools'];registered_tools=registered['enabled_tools']
+    missing=sorted(set(package_tools)-set(registered_tools))
+    return {'active_package_tools':package_tools,'registered_enabled_tools':registered_tools,
+            'blocked_by_registration':missing,'registration_update_required':bool(missing),
+            'service_enabled':registered['enabled'],'host_tool_discovery':'unknown',
+            'model_tool_visibility':'unknown','network_used':False,'device_credentials_accessed':False}
+
+
 INSPECTION_REASONS={
     'Verified package tool contract unavailable':('package-tool-contract-unavailable','Preserve the registered table and immutable packages. Retry the official update entry with the existing supported Python; do not replace the tool whitelist or its digest manually.'),
     'Installed MCP binding drift':('mcp-binding-changed','Preserve config and registration. Restore the original pinned Agent Brain table or obtain a reviewed replacement plan; do not edit its digest.'),
@@ -235,7 +251,9 @@ def prepare(home,package,policy_path,policy_sha,replace_existing=False):
                 _,original,_,_=registered_context(home,metadata)
                 mcp['command']=original['command']
             if old.get('enabled') is False:mcp['enabled']=False
-            if old.get('enabled_tools')==sorted(set(mcp['enabled_tools'])-LOCAL_TOOLS-{'memory_query'}):mcp['enabled_tools']=old['enabled_tools']
+            # Inspection authenticates legacy filters without changing them.
+            # An explicitly requested replacement uses the verified target's
+            # contract, bounded by the same policy/grant as a fresh install.
         else:
             receipt=private_json(metadata['migration_receipt'])
             if receipt.get('installation_complete') is not True or receipt.get('native_registered') is not True or receipt.get('new_registration_path')!=str(registration) or receipt.get('after',{}).get(str(config))!=sha(before) or receipt.get('after',{}).get(str(registration))!=sha(registered):raise InstallBlocked('Existing migration receipt drift')

@@ -16,7 +16,7 @@
 
 4. `status` 明确为 `client-not-installed` 时，运行平台安装入口。首次只提供用户明确选择的 **HTTPS Server 地址**，并让用户在本机隐藏输入中填写 Server 生成的长期接入密钥。Mac：`sh tools/install-mac.sh --server 'https://your-server.example'`；Windows：`& ./tools/install-windows.ps1 -Server 'https://your-server.example'`。省略地址时脚本会在本机询问地址。地址仅定位服务；密钥不得进入聊天、参数、环境变量或文件。Server 认证后自动返回适配平台的授权配置和发行信任锚，再完成发行校验、安全保存设备身份及本地安装事务。正常流程不要求 connection 文件、摘要、ready 回执或邀请码。服务尚未启用新协议时保留状态并报告，不拼接离线包绕过。中断重跑同一入口恢复；`client-uninstalled` 复用原身份重装，不申请新密钥。
 5. 状态为 `review-required`、归属不明或有未完成事务时，保留原文件和回执，按对应文档的 status／repair 流程处理；不能将异常当作未安装而清理、重装或重置身份。
-6. 安装／更新后正常重载 `agent_brain_server`，继续既有 Onboard 流程。分别报告已验证活动包、成功检查的渠道版本和可观察的 worker 版本；未观察模型加载时报告 unknown。首次新设备权限、未来采集目录及 Hook trust 仍需正常授权，仓库链接本身不扩大这些范围。
+6. 安装／更新后先调用现有 MCP 工具，比较 `client_runtime` 的 worker 与活动包版本及 commit；一致无需重载，不一致才正常重载 `agent_brain_server`。无法观察则报告 unknown，不因更新动作本身要求重启。核实后继续既有 Onboard 流程。分别报告已验证活动包、成功检查的渠道版本和可观察的 worker 版本；未观察模型加载时报告 unknown。首次新设备权限、未来采集目录及 Hook trust 仍需正常授权，仓库链接本身不扩大这些范围。
 
 验证源码时使用隔离 HOME 与 CODEX_HOME，测试只访问合成 localhost。构建不会证明模型已经加载 MCP、Keychain 提示通过或已部署。保留原生工具工作流；不读取原生会话或数据库。
 
