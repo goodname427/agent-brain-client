@@ -89,42 +89,17 @@ def protect_descriptor(fd):
     protect_new(path)
 
 
-class FileInformation(C.Structure):
-    _fields_ = [('attributes', W.DWORD), ('created', W.FILETIME),
-                ('accessed', W.FILETIME), ('written', W.FILETIME),
-                ('volume', W.DWORD), ('size_high', W.DWORD), ('size_low', W.DWORD),
-                ('links', W.DWORD), ('index_high', W.DWORD), ('index_low', W.DWORD)]
-
-
 def private(path, *, directory=False, owner=False, blocked=ValueError):
     path = canonical(path); api, kernel = libraries()
-    # CPython's Windows stat fallback can report nlink=0 from directory data
-    # when another caller has the file open. Query full metadata and security
-    # through one shared, non-following handle; never accept unknown link counts.
-    kernel.CreateFileW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, C.c_void_p, W.DWORD, W.DWORD, W.HANDLE]
-    kernel.CreateFileW.restype = W.HANDLE
-    kernel.GetFileInformationByHandle.argtypes = [W.HANDLE, C.POINTER(FileInformation)]
-    kernel.GetFileInformationByHandle.restype = W.BOOL
-    kernel.GetFileType.argtypes = [W.HANDLE]
-    kernel.GetFileType.restype = W.DWORD
-    kernel.CloseHandle.argtypes = [W.HANDLE]
-    # FILE_READ_ATTRIBUTES | READ_CONTROL; share read/write/delete permits
-    # concurrent locks/atomic writes without granting access to another user.
-    handle = kernel.CreateFileW(str(path), 0x80 | 0x20000, 7, None, 3, 0x02000000 | 0x00200000, None)
-    if handle in (None, C.c_void_p(-1).value):
-        raise blocked('Windows private metadata unavailable')
+    if not (path.is_dir() if directory else path.is_file()) or not directory and path.stat().st_nlink != 1:
+        raise blocked('Owned private Windows item required')
     descriptor = C.c_void_p(); owner_sid = C.c_void_p(); acl = C.c_void_p()
-    api.GetSecurityInfo.argtypes = [W.HANDLE, C.c_int, W.DWORD, C.POINTER(C.c_void_p), C.c_void_p, C.POINTER(C.c_void_p), C.c_void_p, C.POINTER(C.c_void_p)]
-    api.GetSecurityInfo.restype = W.DWORD
+    api.GetNamedSecurityInfoW.argtypes = [W.LPWSTR, C.c_int, W.DWORD, C.POINTER(C.c_void_p), C.c_void_p, C.POINTER(C.c_void_p), C.c_void_p, C.POINTER(C.c_void_p)]
+    api.GetNamedSecurityInfoW.restype = W.DWORD
     api.GetAce.argtypes = [C.c_void_p, W.DWORD, C.POINTER(C.c_void_p)]
+    if api.GetNamedSecurityInfoW(str(path), 1, 5, C.byref(owner_sid), None, C.byref(acl), None, C.byref(descriptor)):
+        raise blocked('Windows DACL could not be checked')
     try:
-        info = FileInformation()
-        if not kernel.GetFileInformationByHandle(handle, C.byref(info)) or kernel.GetFileType(handle) != 1:
-            raise blocked('Windows private metadata unavailable')
-        if info.attributes & 0x400 or bool(info.attributes & 0x10) != directory or not directory and info.links != 1:
-            raise blocked('Owned private Windows item required')
-        if api.GetSecurityInfo(handle, 1, 5, C.byref(owner_sid), None, C.byref(acl), None, C.byref(descriptor)):
-            raise blocked('Windows DACL could not be checked')
         current = user_sid()
         if not acl or not owner_sid or owner and sid_text(owner_sid) != current:
             raise blocked('Owned private Windows item required')
@@ -140,9 +115,7 @@ def private(path, *, directory=False, owner=False, blocked=ValueError):
             if kind == 1: continue  # DENY cannot disclose content.
             if kind != 0 or sid_text(ace.value + 8) not in (current, 'S-1-5-18', 'S-1-5-32-544'):
                 raise blocked('Windows item accessible to another principal')
-    finally:
-        if descriptor: kernel.LocalFree(descriptor)
-        kernel.CloseHandle(handle)
+    finally: kernel.LocalFree(descriptor)
     return path
 
 

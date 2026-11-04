@@ -12,6 +12,8 @@ Windows Client 0.6.2 的隔离验收中，常规断线、重启、补传与重�
 
 此路径用于 Windows Client 私有缓存、outbox、锁和登记资料；macOS 检查不变。`test_windows_private_metadata` 验证不完整路径 stat、失败关闭和句柄释放；`test_windows_native.WindowsNative` 包含真实 Win32 DACL、跨进程租约及十轮双调用同 ID 重试。原生测试在非 Windows 系统跳过，不能把合成 API 测试当作实机通过。
 
+实现位于已发布的共享存储模块 `brain_lock.py`；被设备固定的 `brain_windows.py` 凭据模块原始字节不变。新文件仍先调用原保护函数；只有其已知的私有项后置检查报错才用原有 fd 重新执行完整检查，DACL 设置失败继续拒绝。没有更改凭据源码 pin、发布兼容门或设备政策。
+
 ## synthetic 服务的边界
 
 验收原文显示 Agent 读取过本地 Skill／原生记忆提示，并实际调用另一个插件的 `agent_brain_synthetic_sandbox.synthetic_health`。健康结果只说明那个 synthetic 服务当次可调用，不能证明 Client outbox、生产采集或召回。现有证据不能区分宿主旧会话工具暴露、插件状态传播或外部指引残留。
