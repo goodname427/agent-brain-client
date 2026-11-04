@@ -96,13 +96,60 @@ def context(home,package,policy_path,policy_sha,*,inspection=False,allow_legacy_
         client=ComponentClient(runtime['device_plan'],runtime['device_plan_sha256'],signing)
     if client.data_mode!='personal':raise InstallBlocked('Personal content profile required')
     validate_policy(content,client.grant)
-    methods=enabled_tools(content,client.grant)
     package_sha=package_check(package,policy,allow_legacy_030_active=allow_legacy_030_active)
+    methods=package_tools(package, content, client.grant)
     mcp={'command':str(Path(sys.executable).resolve()),'args':['-I','-B',str(safe(package)/'adapters/codex/client_startup.py'),'--policy-file',str(policy_path),'--policy-sha256',policy_sha],
          'startup_timeout_sec':60,'tool_timeout_sec':120,'enabled':True,'enabled_tools':methods,'default_tools_approval_mode':'writes'}
     environment=dependency_environment(policy,runtime_check=not inspection)
     if environment is not None:mcp['env']=environment
     return policy,mcp,package_sha,native
+
+
+def package_tools(package, content, grant):
+    """Read the verified target's own tool contract, never the updater's list.
+
+    Call only after package_check. This bounded offline child imports the same
+    immutable Client code already approved for execution; it creates no client,
+    reads no credential and performs no initialization/refresh or HTTP request.
+    """
+    package=safe(package)
+    source=Path(__file__).resolve().parents[2]
+    # The usual same-source path also preserves the injectable contract used by
+    # isolated installation checks. Historical packages use their frozen code.
+    names=('content_mcp.py','content_contract.py','content_cache.py')
+    if all(raw(package/'adapters/codex'/name,1048576)==raw(source/'adapters/codex'/name,1048576) for name in names):
+        return enabled_tools(content,grant)
+    code='''import json,sys
+from pathlib import Path
+from types import SimpleNamespace
+root=Path(sys.argv[1])
+sys.path[:0]=[str(root/'scripts'),str(root/'adapters/codex')]
+import content_mcp as m
+value=json.load(sys.stdin)
+policy,grant=value['policy'],value['grant']
+if callable(getattr(m,'enabled_tools',None)):
+    tools=m.enabled_tools(policy,grant)
+else:
+    class Adapter:
+        def __init__(self):self.policy=policy;self.client=SimpleNamespace(grant=grant)
+        def methods(self):return m.contract.methods(grant['scopes'])
+    server=m.ContentServer(Adapter());server.state='ready'
+    tools=sorted(t['name'] for t in server.handle({'jsonrpc':'2.0','id':1,'method':'tools/list'})['tools'])
+print(json.dumps({'tools':tools}))
+'''
+    try:
+        run=subprocess.run([sys.executable,'-I','-B','-c',code,str(package)],
+                           input=contract.encode({'policy':content,'grant':grant}),
+                           capture_output=True,timeout=15)
+        if run.returncode or len(run.stdout)>16384:raise ValueError()
+        value=json.loads(run.stdout,object_pairs_hook=pairs)
+        tools=value['tools']
+        if (set(value)!={'tools'} or not isinstance(tools,list) or len(tools)>256
+                or any(not isinstance(name,str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}',name) for name in tools)
+                or tools!=sorted(set(tools))):raise ValueError()
+        return tools
+    except (OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired):
+        raise InstallBlocked('Verified package tool contract unavailable') from None
 
 def render(config,mcp,existing):
     text=(config or b'').decode();before=tomllib.loads(text)
@@ -162,6 +209,7 @@ def registered_mcp_digest(mcp):
 
 
 INSPECTION_REASONS={
+    'Verified package tool contract unavailable':('package-tool-contract-unavailable','Preserve the registered table and immutable packages. Retry the official update entry with the existing supported Python; do not replace the tool whitelist or its digest manually.'),
     'Installed MCP binding drift':('mcp-binding-changed','Preserve config and registration. Restore the original pinned Agent Brain table or obtain a reviewed replacement plan; do not edit its digest.'),
     'Installed interpreter unavailable':('interpreter-unavailable','Restore the originally registered Python at its original canonical path, or obtain a reviewed replacement plan. Do not redirect the registered command.'),
     'Installed interpreter dependency binding changed':('interpreter-policy-mismatch','Preserve the dependency policy and registration; review the original Python binding instead of substituting the inspecting interpreter.'),
