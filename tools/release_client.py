@@ -41,6 +41,10 @@ FULL_CI_JOBS = frozenset({
     'windows-contracts (3.11)', 'windows-contracts (3.13)',
     'Client checks required', 'Client full validation',
 })
+HYBRID_CI_JOBS = frozenset({
+    'changes', 'documentation', 'source-checks',
+    'windows-contracts (3.11)', 'windows-contracts (3.13)',
+})
 
 
 def sha(raw):
@@ -503,21 +507,68 @@ class GitHub:
         raise ValueError('Successful full Client checks for the exact source tree required (PR, main or manual main run)')
 
     def full_ci_jobs(self, row):
+        jobs = self.attempt_jobs(row)
+        return jobs is not None and self.successful_jobs(jobs, FULL_CI_JOBS)
+
+    def attempt_jobs(self, row):
         jobs = []
         for page in range(1, 11):
             result = self.request(f"/actions/runs/{row['id']}/attempts/{row['run_attempt']}/jobs?per_page=100&page={page}")
             if not result:
-                return False
+                return None
             jobs.extend(result['jobs'])
             if len(result['jobs']) < 100:
                 break
         else:
-            return False
-        for name in FULL_CI_JOBS:
+            return None
+        return jobs
+
+    @staticmethod
+    def successful_jobs(jobs, required):
+        for name in required:
             matches = [job for job in jobs if job['name'] == name]
             if len(matches) != 1 or matches[0]['conclusion'] != 'success':
                 return False
         return True
+
+    def windows_ci(self, plan):
+        """Read genuine Windows jobs; never certify the overall workflow."""
+        for page in range(1, 11):
+            result = self.request(f'/actions/workflows/client-checks.yml/runs?per_page=100&page={page}')
+            for row in result['workflow_runs']:
+                if (row.get('head_repository') or {}).get('full_name') != REPOSITORY:
+                    continue
+                head = row['head_sha']
+                candidate = self.request('/git/commits/' + head)
+                if candidate['tree']['sha'] != plan['source_tree']:
+                    continue
+                if row['event'] == 'pull_request':
+                    prs = row.get('pull_requests', [])
+                    if len(prs) != 1 or prs[0]['base']['ref'] != 'main':
+                        continue
+                    comparison = self.request('/compare/' + prs[0]['base']['sha'] + '...' + head)
+                    if not comparison or comparison['status'] not in ('ahead', 'identical'):
+                        continue
+                elif row['event'] not in ('push', 'workflow_dispatch') or row['head_branch'] != 'main':
+                    continue
+                jobs = self.attempt_jobs(row)
+                if jobs is None or not self.successful_jobs(jobs, HYBRID_CI_JOBS):
+                    continue
+                selected = [job for job in jobs if job['name'] in HYBRID_CI_JOBS]
+                if any(job.get('status') != 'completed' or type(job.get('id')) is not int
+                       for job in selected):
+                    continue
+                return {'run_id': row['id'], 'run_attempt': row['run_attempt'],
+                        'url': row['html_url'], 'head': head,
+                        'source_tree': plan['source_tree'],
+                        'workflow_status': row['status'],
+                        'workflow_conclusion': row['conclusion'],
+                        'scope': 'windows-jobs-only',
+                        'jobs': [{key: job[key] for key in ('id', 'name', 'status', 'conclusion')}
+                                 for job in sorted(selected, key=lambda job: job['name'])]}
+            if len(result['workflow_runs']) < 100:
+                break
+        raise ValueError('Successful official Windows 3.11/3.13 checks for the exact source tree required')
 
 
 def assets_for(plan, kind):
@@ -622,13 +673,16 @@ def verify(output, api, plan):
            production_catalog='not-checked', desktop_acceptance='not-checked')
 
 
-def publish(output, api, plan, *, local_checks=()):
+def publish(output, api, plan, *, local_checks=(), hybrid_checks=False):
     git('fetch', '--no-tags', 'origin', 'main')
     git('merge-base', '--is-ancestor', plan['source'], 'FETCH_HEAD')
     if plan.get('schema') == 2:
         git('merge-base', '--is-ancestor', plan['executor_source'], 'FETCH_HEAD')
     preflight_remote(plan)
-    if local_checks:
+    if hybrid_checks:
+        from client_checks import hybrid_evidence
+        ci = hybrid_evidence(local_checks, plan, api)
+    elif local_checks:
         from client_checks import release_evidence
         ci = release_evidence(local_checks, plan)
     else:
@@ -701,6 +755,8 @@ def main():
     parser.add_argument('--allow-publish', action='store_true')
     parser.add_argument('--local-check', type=Path, action='append', default=[],
                         help='Operator-retained checks.json plus sibling logs; repeat for every native check')
+    parser.add_argument('--hybrid-checks', action='store_true',
+                        help='Explicitly combine local documentation/source/macOS receipts with official same-tree Windows CI jobs')
     args = parser.parse_args()
     if args.source_root:
         ROOT = args.source_root.resolve()
@@ -713,6 +769,8 @@ def main():
         parser.error('publish requires GH_TOKEN from existing authorized authentication')
     if args.local_check and args.action != 'publish':
         parser.error('--local-check is only used for explicit local-evidence publication')
+    if args.hybrid_checks and (args.action != 'publish' or not args.local_check):
+        parser.error('--hybrid-checks requires publish and local documentation/source/macOS receipts')
     if args.action in ('prepare', 'prepare-local') and not re.fullmatch(r'[a-f0-9]{40}', args.source or ''):
         parser.error('prepare requires --source with an exact 40-character SHA')
     with locked(output):
@@ -723,7 +781,8 @@ def main():
             else:
                 plan = load_bundle(output)
                 if args.action == 'publish':
-                    publish(output, GitHub(), plan, local_checks=args.local_check)
+                    publish(output, GitHub(), plan, local_checks=args.local_check,
+                            hybrid_checks=args.hybrid_checks)
                 else:
                     verify(output, GitHub(), plan)
         except Exception as error:

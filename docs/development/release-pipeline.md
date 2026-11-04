@@ -65,6 +65,20 @@ python3.12 -B tools/release_client.py verify --output "$RELEASE_OUTPUT"
 
 本地证据是操作者保管的回执和日志，**没有签名，也不是 GitHub CI 证明**；仅应从实际运行命令的受信操作者接收。`ci.json` 明确保存本地模式和两份树的原始证据，不写 GitHub 成功状态，不修改分支保护、审批或仓库权限。正常 Actions 路径的全部 jobs 门禁保持。两种证据路径共用后续不可变 tag／资产核对、原包下载验证、渠道前像 lease 原子提升及 latest 读回。
 
+### 本地 Mac 与官方 Windows CI 混合验证
+
+GitHub 的 Mac runner 排队或不可用，但同一源码树的官方 Windows 作业已经完成时，可以显式选择 `--hybrid-checks`。它要求产品源码树与发布执行工具树各自具备三份完整本地 `documentation`、`source`、`macos` 回执及原日志；两份树相同时复用同一证据。Windows 必须来自官方 `client-checks.yml` 的同一次 run attempt，`changes`、`documentation`、`source-checks`、`windows-contracts (3.11)`、`windows-contracts (3.13)` 均须实际完成且成功。发布时在线重新读取 GitHub API，核对官方仓库、精确源码树、main push/manual main 或 main 已为 head 祖先的 PR、完整分页及每项唯一 job；缺失、跳过、失败、重复、其他树或 fork 均拒绝。不能把不同 attempt 的两个 Windows 作业拼成成功。
+
+```sh
+python3.12 -B tools/release_client.py publish --output "$RELEASE_OUTPUT" --allow-publish \
+  --hybrid-checks \
+  --local-check "$RELEASE_OUTPUT/local-checks/documentation/checks.json" \
+  --local-check "$RELEASE_OUTPUT/local-checks/source/checks.json" \
+  --local-check "$RELEASE_OUTPUT/local-checks/macos/checks.json"
+```
+
+`ci.json` 记录 `mode: hybrid`，分别保存真实本地回执、官方 Windows 的 run/attempt/job ID、实际 workflow 状态与结论。整体 workflow 可以仍在排队或因 Mac 作业未完成而失败；这里仅确认列出的官方 Windows 等作业通过，Mac 由完整本地检查覆盖，不宣称 GitHub 全量成功。三个本地 scope 或两个 Windows 版本任一缺证据均在推 tag、上传附件或提升渠道之前停止。不生成或改写 Windows 本地回执，不写 GitHub 成功状态，不修改 workflow、权限或分支保护。默认全 CI 和五份纯本地回执路径保留原门禁，只有明确传入此开关才使用混合验证。版本、包字节、信任锚、凭据 pin、main 祖先核对、原子渠道 lease 与资产读回仍沿用原流程。
+
 本地检查输出禁止覆盖。失败保留日志，在新输出目录重跑；已有正式／部分发布的原 bundle 不删除，恢复时用原 `publish` 加完整证据继续，不重新 `prepare-local` 替换既有身份。已有 Actions 成功记录也可继续用原 publish。跨版本补齐时默认仍用分离源码／工具的 Actions 路径；本地新入口专用于同 checkout 的后续版本，不放宽旧版本 pin。
 
 ## 发布顺序与恢复

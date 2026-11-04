@@ -253,6 +253,68 @@ class ReleasePipeline(unittest.TestCase):
             with self.assertRaises(ValueError):
                 api.ci(plan)
 
+    def test_hybrid_windows_uses_one_official_attempt_and_does_not_claim_workflow_success(self):
+        plan, _ = fixture()
+        api = rc.GitHub()
+        row = {'id': 12, 'run_attempt': 2, 'head_sha': 'b' * 40, 'conclusion': None,
+               'status': 'queued', 'head_repository': {'full_name': rc.REPOSITORY},
+               'event': 'push', 'head_branch': 'main', 'html_url': 'https://example.invalid/run/12'}
+        jobs = [{'id': index, 'name': name, 'status': 'completed', 'conclusion': 'success'}
+                for index, name in enumerate(sorted(rc.HYBRID_CI_JOBS))]
+        jobs.append({'id': 99, 'name': 'isolated-client', 'status': 'queued', 'conclusion': None})
+        tree = plan['source_tree']
+
+        def request(path):
+            if '/jobs?' in path:
+                self.assertIn('/attempts/2/', path)
+                return {'jobs': jobs}
+            if '/compare/' in path:
+                return {'status': 'ahead'}
+            if '/actions/' in path:
+                return {'workflow_runs': [row]}
+            return {'tree': {'sha': tree}}
+
+        with patch.object(api, 'request', side_effect=request):
+            result = api.windows_ci(plan)
+            self.assertEqual(result['run_attempt'], 2)
+            self.assertIsNone(result['workflow_conclusion'])
+            self.assertEqual(result['scope'], 'windows-jobs-only')
+            self.assertEqual(len(result['jobs']), len(rc.HYBRID_CI_JOBS))
+            for job in jobs[:-1]:
+                for failed in ('skipped', 'failure', 'cancelled', None):
+                    job['conclusion'] = failed
+                    with self.subTest(name=job['name'], failed=failed), self.assertRaises(ValueError):
+                        api.windows_ci(plan)
+                job['conclusion'] = 'success'
+                job['status'] = 'queued'
+                with self.assertRaises(ValueError):
+                    api.windows_ci(plan)
+                job['status'] = 'completed'
+            removed = jobs.pop(0)
+            with self.assertRaises(ValueError):
+                api.windows_ci(plan)
+            jobs.append(removed)
+            jobs.append(removed)
+            with self.assertRaises(ValueError):
+                api.windows_ci(plan)
+            jobs.pop()
+            tree = 'f' * 40
+            with self.assertRaises(ValueError):
+                api.windows_ci(plan)
+            tree = plan['source_tree']
+            row['head_repository']['full_name'] = 'fictional/fork'
+            with self.assertRaises(ValueError):
+                api.windows_ci(plan)
+            row['head_repository']['full_name'] = rc.REPOSITORY
+            row['head_branch'] = 'unmerged'
+            with self.assertRaises(ValueError):
+                api.windows_ci(plan)
+            row.update(event='pull_request', pull_requests=[{'base': {'ref': 'main', 'sha': 'c' * 40}}])
+            self.assertEqual(api.windows_ci(plan)['head'], 'b' * 40)
+            with patch.object(api, 'request', side_effect=lambda path: {'status': 'diverged'} if '/compare/' in path else request(path)):
+                with self.assertRaises(ValueError):
+                    api.windows_ci(plan)
+
     def test_pr_merge_with_base_changes_cannot_certify_the_head_tree(self):
         plan, _ = fixture()
         api = rc.GitHub()
