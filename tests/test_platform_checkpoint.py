@@ -85,5 +85,45 @@ print(json.dumps({'stdlib_machine_empty':True,'fixed_checkpoint':Server(None,'0.
         check_platform_boundary('scripts/brain_lock.py', 'import platform\nplatform.machine()')
 
 
+import content_install as ci
+from test_content_outbox import POLICY
+from test_package_tool_binding import old_contract
+
+
+class HistoricalPackageTools(unittest.TestCase):
+    def setUp(self):
+        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        self.root=Path(temporary.name).resolve()
+        self.grant={'scopes':['read','put'],'artifact_types':POLICY['kinds'],'ids':POLICY['ids']}
+
+    def test_target_contract_is_independent_of_newer_inspecting_source(self):
+        package=self.root/'old-package'
+        manifest=release(ROOT,package,'0.6.2','personal-content-https',native_platform())
+        old_contract(manifest,package)
+        with patch.object(ci,'enabled_tools',side_effect=AssertionError('Updater tool contract must not select old package tools')):
+            tools=ci.package_tools(package,POLICY,self.grant)
+        self.assertEqual(len(tools),9)
+        self.assertNotIn('memory_recall',tools)
+        self.assertIn('memory_query',tools)
+
+    def test_future_package_addition_needs_no_version_or_name_allowlist(self):
+        package=self.root/'future-package'
+        release(ROOT,package,'0.9.0','personal-content-https',native_platform())
+        file=package/'adapters/codex/content_mcp.py'
+        raw=file.read_text().replace('    return tools\n',"    tools.append({'name':'synthetic_future_read'})\n    return tools\n",1)
+        file.write_text(raw)
+        tools=ci.package_tools(package,POLICY,self.grant)
+        self.assertIn('synthetic_future_read',tools)
+        self.assertIn('memory_recall',tools)
+        self.assertEqual(len(tools),11)
+
+    def test_probe_failure_is_bounded_and_does_not_accept_updater_fallback(self):
+        package=self.root/'old-package'
+        manifest=release(ROOT,package,'0.6.2','personal-content-https',native_platform())
+        old_contract(manifest,package)
+        with patch.object(ci.subprocess,'run',return_value=type('Result',(),{'returncode':1,'stdout':b''})()):
+            with self.assertRaises(ci.InstallBlocked):ci.package_tools(package,POLICY,self.grant)
+
+
 if __name__ == '__main__':
     unittest.main()
