@@ -315,7 +315,8 @@ class LauncherClosure(unittest.TestCase):
             value = wizard.manage_update(self.f.home, 'update', channel_factory=lambda *a: self.channel)
         self.assertEqual(value['status'], 'client-update-updated', value)
         self.assertTrue(value['native_changed'])
-        self.assertTrue(value['reload_required'])
+        self.assertIsNone(value['reload_required'])
+        self.assertTrue(value['reload_check']['mcp_registration_changed'])
         self.assertEqual(value['active_package_version'], '0.5.8')
         meta = ci.private_json(self.f.home / '.config/agent-brain-client/codex-mcp.json')
         self.assertNotEqual(meta['package'], self.meta['package'])
@@ -566,7 +567,7 @@ class SourceClosure(unittest.TestCase):
             "source-selection-required",
         )
         self.assertEqual(
-            result["installation_stages"]["worker"], "host-reload-required"
+            result["installation_stages"]["worker"], "unobserved"
         )
         self.assertFalse(result["installation_complete"])
 

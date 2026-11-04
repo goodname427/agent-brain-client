@@ -53,7 +53,8 @@ class BindingMigration(unittest.TestCase):
             self.assertEqual(self.f.native_files(),files)
             result=wizard.manage_update(self.f.home,'update',channel_factory=factory)
         self.assertEqual(result['status'],'client-update-current',result)
-        self.assertTrue(result['native_changed']);self.assertTrue(result['reload_required'])
+        self.assertTrue(result['native_changed']);self.assertIsNone(result['reload_required'])
+        self.assertTrue(result['reload_check']['mcp_registration_changed'])
         table=ci.tomllib.loads(self.f.config.read_text())['mcp_servers'][ci.NAME]
         self.assertIn('memory_recall',table['enabled_tools']);self.assertEqual(len(table['enabled_tools']),10)
         self.assertTrue(ci.inspect(self.f.home)['registration_verified'])

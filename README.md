@@ -30,7 +30,7 @@ sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action check-update
 sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action update
 ```
 
-更新复用原 policy、凭据、信任锚、范围、依赖和队列，失败保留或恢复前版。分别报告 `active_package_version`（已验证活动包）、`latest_channel_version`（此次成功检查的候选）与 MCP 的 `client_runtime.running_worker_version`（实际 worker）；CLI 无法观察 worker 时相关字段为 null。检查失败时最新版未知。更新活动包后按宿主正常方式重载本服务；不强杀 worker，也无周期后台更新或热替换。正常 MCP 启动先选择已验证且健康的不可变包，并协调一次后台更新检查，握手不等待更新锁或发布源；后台成功更新只影响未来 worker。固定启动器及依赖需随官方更新入口交付，见 [并发启动与采集证据](docs/development/startup-capture.md)。
+更新复用原 policy、凭据、信任锚、范围、依赖和队列，失败保留或恢复前版。分别报告 `active_package_version`（已验证活动包）、`latest_channel_version`（此次成功检查的候选）与 MCP 的 `client_runtime.running_worker_version`（实际 worker）；CLI 无法观察 worker 时相关字段为 null。检查失败时最新版未知。更新后先通过新鲜 MCP 结果比较 worker 与活动包的版本和 commit；一致无需重载，不一致才按宿主正常方式重载本服务，无法观察则报告 unknown；不强杀 worker，也无周期后台更新或热替换。正常 MCP 启动先选择已验证且健康的不可变包，并协调一次后台更新检查，握手不等待更新锁或发布源；后台成功更新只影响未来 worker。固定启动器及依赖需随官方更新入口交付，见 [并发启动与采集证据](docs/development/startup-capture.md)。
 
 安装／重装成功的 `onboard_check:coverage-check-required` 仅交接当前 `agent-brain-onboard` Skill；不证明覆盖完成，也不批准扫描或上传。模型加载不可观测时报告 `model_loaded:"unknown"`。完整目录使用 `content_catalog` 的 `kinds`，省略 query/since/until/limit；Memory-only 查询别名与 `memory_query` 最多三条，不能证明全量覆盖。每轮记录实际版本、目录／读取次数和结果，历史超时单列，见 [验收模板](docs/acceptance/mac-install-onboard.md)。
 

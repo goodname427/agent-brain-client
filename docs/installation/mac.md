@@ -128,9 +128,9 @@ sh "$MAIN_CHECKOUT/tools/install-mac.sh" --action update
 
 0.3.0 的 `client_startup.py` 固定在旧 22 文件包内，无法读取 21 文件候选。`update` 会先下载并校验候选，再用离线检查确认候选启动器可验证仍活动的 0.3.0 包；随后通过既有安装 journal/回滚事务，只更新 Agent Brain 拥有的 MCP 命令，使它指向缓存中的候选启动器。其他 TOML 设置保持原样。完成此启动器交接后才切换活动包指针。若事务检查失败，原 MCP 配置、登记和 0.3.0 活动包保持不变；若后续渠道更新失败，新启动器仍能运行已验证的 0.3.0 包，之后可重试。这个交接不读取设备凭据、不重新配对，也不改写 release policy。
 
-0.2.14 的 21 文件 updater 可按原有直接更新入口使用，无需启动器交接。两条路径更新成功后仍须按上文正常重载并确认新 worker 版本。
+0.2.14 的 21 文件 updater 可按原有直接更新入口使用，无需启动器交接。两条路径更新成功后先比较 MCP worker 与活动包的版本及 commit，按实际差异决定是否重载。
 
-三个版本分别核查：active_package_version 是本地活动包，latest_channel_version 是本次成功渠道检查的候选，client_runtime.running_worker_version 是 MCP 调用所用 worker。CLI 无法观测 worker，其字段为 null；reload_required:true 表示活动包已变化，需要宿主正常新 worker，null 表示当前 worker 状态未知。通过宿主正常重载本服务，不杀进程；确认新 MCP 返回版本与渠道候选一致后再进行本轮 Onboard。即使更新回报 current，也不能据此断言旧 worker 已重载。main、tags、旧回执和映射数量都不能替代此核验。
+三个版本分别核查：active_package_version 是本地活动包，latest_channel_version 是本次成功渠道检查的候选，client_runtime.running_worker_version 是 MCP 调用所用 worker。CLI 无法观测 worker，其字段及 reload_required 为 null；reload_check 分别报告活动包、MCP 登记和 Hook 配置的变更。新鲜 MCP 结果中的 reload_required:false 表示版本及 commit 都匹配活动包，true 表示当前 worker 与活动包不同，null 表示无法核实活动包或 commit。需要时通过宿主正常重载本服务，不杀进程；无需重启整个 Codex。offered_tools 是 worker 提供的清单，需与 Agent 实际可调用工具对照；宿主过滤或缓存工具清单、Hook trust、模型上下文加载不能靠 worker 版本判断。确认后再进行本轮 Onboard。即使更新回报 current，也不能据此断言旧 worker 已重载。main、tags、旧回执和映射数量都不能替代此核验。
 
 完整当前授权目录使用 `content_catalog({"kinds":["memory"]})`（范围内也可加入 rule/skill），省略 query/since/until/limit。目录没有分页 limit；Memory-only query 别名和 memory_query 的 limit=1..3 只是检索，不证明全量。limit=100 在参数阶段拒绝，不发 HTTP。目录后按实际条目读取，记录每次结果、stage/HTTP 状态、取消/超时及重试，不把旧轮次 5 成功/18 超时或旧 3 次重试复制成本轮结果。尚未读完就报告实际剩余，不宣称已完成。
 

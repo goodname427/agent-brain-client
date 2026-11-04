@@ -925,6 +925,33 @@ def probe_launcher(plan, active):
 
 
 def manage_update(home, action, *, channel_factory=None):
+    result = _manage_update(home, action, channel_factory=channel_factory)
+    # The installer observes disk/config changes, never the active host session.
+    # A changed package can already be loaded by a new worker by this point.
+    result['reload_required'] = None
+    result['reload_reason'] = 'running-worker-unobserved'
+    result['reload_check'] = {
+        'active_package_changed': result.get('active_package_changed'),
+        'mcp_registration_changed': result.get('bootstrap_registration_changed'),
+        'hook_configuration_changed': result.get('hook_configuration_changed', result.get('global_hook', {}).get('native_changed')),
+        'host_tool_visibility': 'unknown', 'model_loaded': 'unknown',
+    }
+    if result.get('status') in ('client-update-updated', 'client-update-current', 'client-update-available'):
+        result['next_action'] = (
+            ('Run '+UPDATE_COMMAND+' to apply the trusted candidate. ' if result.get('update_available') else 'The verified local package is ready. ')
+            + 'Call an already available Agent Brain MCP tool and inspect its fresh client_runtime. '
+            'Compare running_worker_version AND running_worker_commit with active_package_version AND active_package_commit. '
+            'If both match, no MCP worker reload is needed. If they differ, normally reload only Agent Brain MCP after in-flight work completes. '
+            'If the worker or commit is unobservable, report unknown; do not request a restart merely because update ran. '
+            'offered_tools describes the worker; compare with the tools actually available in this Codex session. '
+            'If a required offered tool is missing, refresh the host tool connection using normal host controls. '
+            'Hook configuration/trust and mapped Rules/Skills have separate host loading states; review them only when changed. '
+            'Do not infer model context loading from a package or worker version.'
+        )
+    return result
+
+
+def _manage_update(home, action, *, channel_factory=None):
     """Reuse the registered updater; no pairing or worker restart.
 
     Discovery may cache verified candidates, but never changes the active pointer.
@@ -1117,7 +1144,7 @@ def manage_update(home, action, *, channel_factory=None):
                 if after is not None:
                     changed = after != before
                     result.update(active_package_version=after['version'], active_package_commit=after.get('commit'),
-                                  active_package_changed=changed, reload_required=True if changed else None)
+                                  active_package_changed=changed, reload_required=None)
                 else:
                     result.update(active_package_version=None, active_package_commit=None,
                                   active_package_changed=None, reload_required=None)
@@ -1132,8 +1159,8 @@ def manage_update(home, action, *, channel_factory=None):
                           latest_channel_version=after['version'], latest_channel_commit=after.get('commit'),
                           update_available=False, channel_checked=True, active_package_changed=changed,
                           native_changed=bootstrap_migrated,
-                          reload_required=True if changed or bootstrap_migrated else None,
-                          next_action='The verified local package is ready. Normally reload only Agent Brain through the host so a new MCP worker loads it; do not kill in-flight work. Confirm client_runtime.running_worker_version matches latest_channel_version, then continue Onboard with fresh results. This command does not import real memories.')
+                          reload_required=None,
+                          next_action='The verified local package is ready; inspect fresh MCP worker evidence before deciding whether a reload is needed. This command does not import real memories.')
             # A current channel may still have an older global Hook command.
             # Update only its executable code, preserving all source decisions.
             try:
@@ -1144,8 +1171,8 @@ def manage_update(home, action, *, channel_factory=None):
                             update_available=None,
                             next_action='The verified package is ready but the global Hook refresh is unconfirmed. Retry the same public update entry; preserve source approval and review the normal host Hook prompt.')
             hook_changed = hook_changed or hook['native_changed']
-            result.update(global_hook=hook, native_changed=bootstrap_migrated or hook_changed,
-                          reload_required=True if changed or bootstrap_migrated or hook_changed else None)
+            result.update(global_hook=hook, bootstrap_registration_changed=bootstrap_migrated, hook_configuration_changed=hook_changed, native_changed=bootstrap_migrated or hook_changed,
+                          reload_required=None)
             if hook['status'] == 'global-hook-updated':
                 result['status'] = 'client-update-updated'
             return result
