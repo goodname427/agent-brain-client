@@ -4,6 +4,16 @@
 
 `tools/memory_review.py` 只审阅调用者明确提供的非正文候选元数据，不发现来源、不授予权限、不采集、不上传。
 
+## 保存队列与冲突恢复
+
+`local_queue.saved:true` 只证明请求已保留在本机；服务器保存仍以 `persistence` 回执为准。离线或回执未确认时返回 `content_upload_queued`、`retryable:true`，恢复连接后沿用原请求正文、CAS 基线和 `request_id`。本地映射刷新不等于服务器保存，也不会重载当前模型上下文。
+
+同一目标前面存在未解决的 `conflict` 或 `blocked` 请求时，后续请求仍保留 `pending`，返回 `content_queue_blocked`、`retryable:false`；`local_queue.blocked_by` 列出实际阻塞的请求 ID 与状态，`next_action` 说明恢复步骤。这表示先解决依赖才能继续，不能把它报告成普通网络等待，也不能假定所有 pending 都来自冲突。这些诊断由现有队列计算，不改写队列格式、请求内容或 ID，不返回记忆正文或本地路径。
+
+对于 CAS 冲突，保留原始提案，使用 `content_read` 读取当前版本，并审阅本地提案和远端版本。显式确认合并后，以新的稳定 `request_id`、当前 `expected_revision` 和 `reconciles.request_ids` 指向确切冲突，提交新的 `content_put`。这是新的合并操作，不能仅换 ID 重发原写入。已有 pending 请求的参数及 reconciliation 引用不可修改。只有合并请求取得有效服务器保存回执后，旧冲突才标为 `reconciled` 并保留 `resolution_request_id`；丢失回执时沿用合并请求原 ID 恢复。后续原请求仍使用自己的 CAS 基线，过期时会明确冲突，不自动覆盖或重定基线。未选中的冲突继续阻塞。
+
+非 CAS 的 `blocked` 请求需先审阅原错误、修复原因，再显式重试完全相同的请求；刷新不会自动重试它。禁止通过删除队列或修改用户数据解除阻塞。实际设备队列的诊断和恢复验收需另行进行，合成测试不能证明 Windows 或 Mac 上已有 pending 已送达。
+
 ## 安装后的 Onboard 交接\n\n安装与再次安装成功后，Client 返回 `coverage-check-required`、`source_scan_performed:false` 和 `data_transferred:false`。执行 Agent 按当前加载的 `agent-brain-onboard` Skill 继续；这些字段仅表示 Client 未执行来源扫描或迁移。\n\n## 辅助query
 
 memory_query(kind=memory,query='',since=null,until=null,limit=3)只读当前有效Memory，复用Core中英文词汇算法与服务器更新时间；时间必须带offset，最多3条preview/title/description/revision/updated_at，time_basis明确memory_updated_at，不冒称事件发生时间。先按actor/ID/ContentPolicy过滤再读/评分，旧record四字段不变，不默认查询历史旧偏好。其他类型blocked不阻止这个独立只读路径；离线不伪报新鲜查询。
