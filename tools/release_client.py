@@ -371,7 +371,7 @@ def git_tag_exists(tag):
                           cwd=ROOT, capture_output=True, timeout=30).returncode == 0
 
 
-def prepare_platforms(output, source, selected, target):
+def prepare_platforms(output, source, selected, target, *, validate_source=True):
     existing = output / 'plan.json'
     groups = list(GROUPS) if target == 'all' else [target]
     if existing.exists():
@@ -402,10 +402,37 @@ def prepare_platforms(output, source, selected, target):
              + 'Desktop and worker/model reload acceptance are separate.\n')
     immutable(output / 'release-notes.md', notes.encode())
     report(output, 'validating', source=source, version=selected, groups=groups)
-    validate(output)
+    if validate_source:
+        validate(output)
     source_payload(source)
     report(output, 'prepared', source=source, version=selected, runtimes=plan['runtimes'],
            published=False, production_catalog='not-checked')
+
+
+def prepare_local(output, source, selected, target):
+    from client_checks import run_checks
+    if sys.platform != 'darwin' or sys.version_info[:2] != (3, 12):
+        raise ValueError('Local release preparation requires macOS / Python 3.12, as on Actions')
+    if ROOT != TOOL_ROOT:
+        raise ValueError('Local preparation requires source and executor in the same checkout')
+    source_payload(source)
+    git('fetch', '--no-tags', 'origin', 'main')
+    git('merge-base', '--is-ancestor', source, 'FETCH_HEAD')
+    for definition in GROUPS.values():
+        for ref in definition['channels']:
+            git('fetch', '--no-tags', 'origin', ref + ':' + ref.replace('refs/heads/', 'refs/remotes/origin/', 1))
+    # Keep all logs on failure; a partial local run is never publishable evidence.
+    receipts = []
+    for scope in ('documentation', 'source', 'macos'):
+        directory = output / 'local-checks' / scope
+        run_checks(scope, directory, record=True)
+        receipts.append(str(directory / 'checks.json'))
+    prepare_platforms(output, source, selected, target, validate_source=False)
+    immutable(output / 'local-preparation.json', encoded({
+        'mode': 'local', 'github_actions': 'not-used', 'source': source,
+        'receipts': receipts, 'windows_3_11': 'not-run', 'windows_3_13': 'not-run',
+        'plan_sha256': sha((output / 'plan.json').read_bytes()),
+        'native_acceptance': 'not-checked'}))
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -595,15 +622,19 @@ def verify(output, api, plan):
            production_catalog='not-checked', desktop_acceptance='not-checked')
 
 
-def publish(output, api, plan):
+def publish(output, api, plan, *, local_checks=()):
     git('fetch', '--no-tags', 'origin', 'main')
     git('merge-base', '--is-ancestor', plan['source'], 'FETCH_HEAD')
     if plan.get('schema') == 2:
         git('merge-base', '--is-ancestor', plan['executor_source'], 'FETCH_HEAD')
     preflight_remote(plan)
-    ci = api.ci(plan)
-    if plan.get('schema') == 2 and plan['executor_tree'] != plan['source_tree']:
-        ci['executor'] = api.ci({'source_tree': plan['executor_tree']})
+    if local_checks:
+        from client_checks import release_evidence
+        ci = release_evidence(local_checks, plan)
+    else:
+        ci = api.ci(plan)
+        if plan.get('schema') == 2 and plan['executor_tree'] != plan['source_tree']:
+            ci['executor'] = api.ci({'source_tree': plan['executor_tree']})
     (output / 'ci.json').write_bytes(encoded(ci))
     notes = (output / 'release-notes.md').read_bytes()
     require_publishable({'release-notes.md': notes})
@@ -660,7 +691,7 @@ def publish(output, api, plan):
 def main():
     global ROOT
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('prepare', 'publish', 'verify'))
+    parser.add_argument('action', choices=('prepare', 'prepare-local', 'publish', 'verify'))
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--source', help='Exact 40-character source SHA (prepare only)')
     parser.add_argument('--source-root', type=Path, help='Clean official checkout of the product source; executor is separately verified')
@@ -668,6 +699,8 @@ def main():
                         help='all publishes both platforms; a single group completes a partial delivery')
     parser.add_argument('--version', default='auto', help='auto increments the highest frozen platform patch')
     parser.add_argument('--allow-publish', action='store_true')
+    parser.add_argument('--local-check', type=Path, action='append', default=[],
+                        help='Operator-retained checks.json plus sibling logs; repeat for every native check')
     args = parser.parse_args()
     if args.source_root:
         ROOT = args.source_root.resolve()
@@ -678,16 +711,19 @@ def main():
         parser.error('publish requires --allow-publish; prepare is the offline/dry-run path')
     if args.action == 'publish' and not os.environ.get('GH_TOKEN'):
         parser.error('publish requires GH_TOKEN from existing authorized authentication')
-    if args.action == 'prepare' and not re.fullmatch(r'[a-f0-9]{40}', args.source or ''):
+    if args.local_check and args.action != 'publish':
+        parser.error('--local-check is only used for explicit local-evidence publication')
+    if args.action in ('prepare', 'prepare-local') and not re.fullmatch(r'[a-f0-9]{40}', args.source or ''):
         parser.error('prepare requires --source with an exact 40-character SHA')
     with locked(output):
         try:
-            if args.action == 'prepare':
-                prepare_platforms(output, args.source, args.version, args.targets)
+            if args.action in ('prepare', 'prepare-local'):
+                prepare_fn = prepare_local if args.action == 'prepare-local' else prepare_platforms
+                prepare_fn(output, args.source, args.version, args.targets)
             else:
                 plan = load_bundle(output)
                 if args.action == 'publish':
-                    publish(output, GitHub(), plan)
+                    publish(output, GitHub(), plan, local_checks=args.local_check)
                 else:
                     verify(output, GitHub(), plan)
         except Exception as error:

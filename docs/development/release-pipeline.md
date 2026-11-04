@@ -1,6 +1,6 @@
 # 固定发布入口
 
-> 状态：当前维护。适用：Mac / Windows 共用发布工具；执行发布仍需该动作授权。文档核对日期：2026-11-03。
+> 状态：当前维护。适用：Mac / Windows 共用发布工具；执行发布仍需该动作授权。文档核对日期：2026-11-04。
 
 `tools/release_client.py` 复用现有构建器、HTTPS 文件清单、公开扫描、隔离测试与离线 self-check。正常发布默认 `targets:all`，同时构建 Mac arm64/x86_64 和 Windows AMD64/ARM64，使用同一个组件版本、一个安装器源码归档及同一套发布／读回流程。Swift 与 Win32 凭据文件集合分别校验，各自凭据源码 pin 不变；构建不授予新的平台权限。
 
@@ -27,6 +27,45 @@ python3 -B "$RELEASE_TOOLS/tools/release_client.py" verify --source-root "$SOURC
 ```
 
 prepare 不访问网络、凭据或设备，不推送、不安装；先正常 fetch 渠道快照。它冻结源码树、执行工具、各渠道前像、版本、平台、安装器 tag 和确定性资产，运行完整隔离测试、源码／公开扫描及 diff 检查。审阅输出的 plan.json、release-notes.md 和检查日志后再发布。本地 publish 仅消费已有授权会话的 GH_TOKEN 和原 Git 推送身份；没有授权时停止，不另建凭据。
+
+## Actions 额度耗尽时
+
+实际工作流只有 `client-checks.yml` 与 `client-release.yml`。检查工作流的文档、源码扫描、固定版本 lint/type check、Mac 全量测试／Swift helper self-check、Windows 原生矩阵在 [client_checks.py](../../tools/client_checks.py) 有完整本地对应命令，回归测试逐项核对工作流中的命令未被遗漏；原 Actions 配置保持不变。发布工作流的 prepare、publish、verify 仍使用同一个 [release_client.py](../../tools/release_client.py)。分类及汇总是 Actions 调度逻辑，本地正式发布总是要求全部检查，不把文档或单平台绿色当全量。GitHub 仓库、refs、Release 和既有授权仍须可访问；这不是全站离线模式。
+
+在独立、干净、官方 origin 的已提交 Client checkout 中操作。用隔离 Python 环境安装 `ruff==0.14.0 mypy==1.18.2`，Mac 准备使用 Python 3.12 和现有 Swift 工具链。输出保存在 Git 外私有目录；日志可能含本机路径，不上传为公开附件。所有检查子进程隔离 HOME、USERPROFILE、CODEX_HOME，移除发布 token，不安装／升级真实设备、不访问 Keychain 密钥或执行模型调用。
+
+```sh
+python3.12 -B tools/release_client.py prepare-local \
+  --source "$SOURCE_SHA" --targets all --output "$RELEASE_OUTPUT"
+```
+
+`prepare-local` 要求产品与执行工具为同一 checkout；重新读取官方 main 并验证源码已合入，刷新三个既有渠道前像，执行 documentation、source、macos 全部对应检查，然后使用原构建器生成确定性双平台／四架构运行包及共用安装器。检查前后核对精确提交、干净状态和 Git blob 字节；任何检查失败不写成功回执，也不开始构建。不提供跳过检查开关。原 `prepare` 继续提供不联网打包路径，默认 publish 仍核验 Actions；不能因 bundle 可构建就声称可发布。
+
+输出 `local-checks/{documentation,source,macos}/checks.json` 及同目录逐命令日志；`local-preparation.json` 明确标记 `github_actions: not-used`、Windows 两版本 `not-run`。本机 Mac 结果不能替代 Windows 检查。需在**独立的原生 Windows checkout** 切到相同源码树，使用现有 Git、PowerShell 7（`pwsh`）与 Python 3.11、3.13 分别执行（PowerShell）：
+
+```powershell
+py -3.11 -B tools/client_checks.py windows --record --output C:\private\checks-3.11
+py -3.13 -B tools/client_checks.py windows --record --output C:\private\checks-3.13
+```
+
+Windows 命令复用原生凭据／DACL、生命周期、安装／离线恢复、路径、MCP、队列、写失败、召回／重载回归与两个 PowerShell 脚本解析检查。仅在 Windows 对应 Python 版本生成回执；不能在 Mac 用被跳过的 Windows 测试补造证据。既有测试对当前 token 无权核验的个别 Windows 安全描述符仍可能跳过，应检查原始日志；不通过提升 token 权限消除跳过。架构包是源码归档，四架构构建和 self-check 不代表四架构硬件、真实凭据 UI 或用户验收。
+
+将两个 Windows 证据目录（含全部日志）保留到操作者的私有证据目录，在 Mac 显式选择本地证据发布：
+
+```sh
+python3.12 -B tools/release_client.py publish --output "$RELEASE_OUTPUT" --allow-publish \
+  --local-check "$RELEASE_OUTPUT/local-checks/documentation/checks.json" \
+  --local-check "$RELEASE_OUTPUT/local-checks/source/checks.json" \
+  --local-check "$RELEASE_OUTPUT/local-checks/macos/checks.json" \
+  --local-check "$WINDOWS_311/checks.json" --local-check "$WINDOWS_313/checks.json"
+python3.12 -B tools/release_client.py verify --output "$RELEASE_OUTPUT"
+```
+
+发布前逐项核验源码树与执行工具树的完整五份回执、原生 OS／Python 版本、当前本地命令清单、每条命令退出码和日志摘要；不完整、重复、错树、日志被改或检查命令过期均在任何远端写入前拒绝。没有 Windows 主机时可以完成 Mac 检查和包准备，正式本地发布保持阻塞，不能宣称全量通过。单独开发验证可使用 `client_checks.py <scope> --output <新目录>`；只有 `--record` 对干净已提交源码记录可供发布的证据。
+
+本地证据是操作者保管的回执和日志，**没有签名，也不是 GitHub CI 证明**；仅应从实际运行命令的受信操作者接收。`ci.json` 明确保存本地模式和两份树的原始证据，不写 GitHub 成功状态，不修改分支保护、审批或仓库权限。正常 Actions 路径的全部 jobs 门禁保持。两种证据路径共用后续不可变 tag／资产核对、原包下载验证、渠道前像 lease 原子提升及 latest 读回。
+
+本地检查输出禁止覆盖。失败保留日志，在新输出目录重跑；已有正式／部分发布的原 bundle 不删除，恢复时用原 `publish` 加完整证据继续，不重新 `prepare-local` 替换既有身份。已有 Actions 成功记录也可继续用原 publish。跨版本补齐时默认仍用分离源码／工具的 Actions 路径；本地新入口专用于同 checkout 的后续版本，不放宽旧版本 pin。
 
 ## 发布顺序与恢复
 
