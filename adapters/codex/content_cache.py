@@ -500,7 +500,10 @@ class ContentAdapter:
                         row['remote']=self._read_target(*target);self._save('outbox/'+request['request_id']+'.json',row)
                     except Exception:pass
                 blocked.setdefault(target,set()).add(request['request_id']);continue
-            if row['state']=='confirmed':self._finish_reconciliation(row);continue
+            if row['state']=='confirmed':
+                self._finish_reconciliation(row)
+                blocked.get(target,set()).difference_update(row['reconciles']['request_ids'])
+                continue
             if row['state']!='pending' or blocked.get(target,set())-set(row['reconciles']['request_ids']):continue
             try:self._assert_sources_shareable(row['reconciles']['source_keys'])
             except CacheBlocked:
@@ -534,6 +537,8 @@ class ContentAdapter:
                 self._save('outbox/'+request['request_id']+'.json',row)
             with operation_stage('outbox-reconciliation'):
                 self._finish_reconciliation(row)
+                if row['state']=='confirmed':
+                    blocked.get(target,set()).difference_update(row['reconciles']['request_ids'])
 
     def queue_status(self):
         rows=self._queued()
@@ -553,9 +558,37 @@ class ContentAdapter:
 
     def _queue_result(self,row):
         result=row['response'] if row['state']!='pending' else {'request_id':row['request']['request_id'],'error':{'code':'content_upload_queued','retryable':True},'persistence':{'durable':False}}
+        # Derived diagnostics only: never edit a retained request, its CAS base,
+        # reconciliation references or ID to make a queued write go through.
+        blockers=[]
+        if row['state']=='pending':
+            target=(row['request']['params']['kind'],row['request']['params']['id'])
+            for previous in self._queued():
+                if previous['request']['request_id']==row['request']['request_id']:break
+                params=previous['request']['params'];rid=previous['request']['request_id']
+                if (previous['request']['method']!='memory_event_submit' and
+                        (params['kind'],params['id'])==target and
+                        previous['state'] in ('conflict','blocked') and
+                        rid not in row['reconciles']['request_ids']):
+                    blockers.append({'request_id':rid,'state':previous['state']})
+            if blockers:
+                result=dict(result,error={'code':'content_queue_blocked','retryable':False})
+        if blockers or row['state']=='conflict':
+            next_action=('Preserve all saved requests and request_ids. Read the current target with content_read and review the retained local proposals. '
+                         'Resolve conflicts with an explicitly reviewed content_put using a new stable request_id, the current expected_revision and reconciles.request_ids selecting the exact conflicts. '
+                         'A blocked request requires review of its original error and an explicit identical retry after its cause is fixed. '
+                         'Do not delete queue entries, change their CAS bases or use a new ID merely to retry an existing write.')
+        elif row['state']=='blocked':
+            next_action='Review the original error, fix its cause, then explicitly retry the exact saved request and request_id. Refresh does not retry blocked writes.'
+        elif row['state']=='pending':
+            next_action='Server persistence is unconfirmed. Retry the exact saved request and request_id after restoring connectivity; do not create a replacement write or change its CAS base.'
+        elif row['state']=='reconciled':
+            next_action='This proposal was resolved by a confirmed reconciliation. Keep the original evidence; do not resubmit it.'
+        else:next_action='The Server receipt determines persistence; local mapping and running model context are separate.'
         receipt=result.get('persistence',{})
         return dict(result,local_queue={'state':row['state'],'saved':True,'request_sha256':row['request_sha'],
-                                       'server_saved':row['state']=='confirmed','github_confirmed':receipt.get('state')=='remote-confirmed' and receipt.get('durable') is True})
+                                       'server_saved':row['state']=='confirmed','github_confirmed':receipt.get('state')=='remote-confirmed' and receipt.get('durable') is True,
+                                       'blocked_by':blockers,'resolution_request_id':row['resolution_request_id'],'next_action':next_action})
 
     def stage_import(self,plan):
         """Explicit reviewed normalized sources only; no native/file discovery."""

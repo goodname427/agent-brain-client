@@ -119,6 +119,133 @@ class WriteFailures(unittest.TestCase):
         self.assertEqual(self.invoke()["local_queue"]["state"], "confirmed")
         self.assertEqual(self.f.cloud.puts, 33)
 
+    def test_pending_reports_exact_conflict_without_replaying_or_editing_queue(self):
+        self.f.adapter.invoke(self.request)
+        conflict = self.f.request("synthetic_old_conflict", body="Conflicting proposal")
+        self.f.adapter.invoke(conflict)
+        revision = fixture.contract.envelope("memory", "synthetic-topic", fixture.MEMORY)["revision"]
+        self.request = self.f.request("synthetic_waiting_write", body="Waiting proposal", revision=revision)
+        self.f.adapter._enqueue(self.request)
+        before = {p.name: p.read_bytes() for p in (self.f.cache / "outbox").iterdir()}
+        calls = len(self.f.cloud.calls)
+        result = self.invoke()
+        self.assertEqual(result["error"], {"code": "content_queue_blocked", "retryable": False})
+        self.assertEqual(result["local_queue"]["state"], "pending")
+        self.assertEqual(result["local_queue"]["blocked_by"], [{"request_id": conflict["request_id"], "state": "conflict"}])
+        self.assertIn("reconciles.request_ids", result["local_queue"]["next_action"])
+        self.assertFalse(result["local_queue"]["server_saved"])
+        self.assertFalse(result["persistence"]["durable"])
+        self.assertEqual(len(self.f.cloud.calls), calls)
+        self.assertEqual({p.name: p.read_bytes() for p in (self.f.cache / "outbox").iterdir()}, before)
+        self.f.adapter = self.f.restart()
+        self.server = ContentServer(self.f.adapter)
+        self.assertEqual(self.invoke()["local_queue"]["blocked_by"], result["local_queue"]["blocked_by"])
+
+    def test_blocked_predecessor_and_unrelated_target_are_distinguished(self):
+        original = self.f.cloud.request
+
+        def reject(request):
+            if request["method"] == "content_put":
+                return {"request_id": request["request_id"], "error": {"code": "invalid_request", "retryable": False}, "persistence": {"durable": False}}
+            return original(request)
+
+        self.f.cloud.request = reject
+        self.invoke()
+        self.f.cloud.request = original
+        self.request = self.f.request("synthetic_waiting_blocked")
+        result = self.invoke()
+        self.assertEqual(result["local_queue"]["blocked_by"], [{"request_id": "synthetic_write_0001", "state": "blocked"}])
+        self.assertEqual(self.f.cloud.puts, 0)
+        self.request = self.f.request("synthetic_unrelated_write")
+        self.request["params"]["id"] = "synthetic-unrelated"
+        self.assertEqual(self.invoke()["local_queue"]["state"], "confirmed")
+        self.assertEqual(self.f.cloud.puts, 1)
+
+    def test_confirmed_merge_clears_only_resolved_blockers_in_same_drain(self):
+        self.f.adapter.invoke(self.request)
+        conflict = self.f.request("synthetic_first_conflict", body="Local conflicting proposal")
+        self.f.adapter.invoke(conflict)
+        revision = fixture.contract.envelope("memory", "synthetic-topic", fixture.MEMORY)["revision"]
+        merged = self.f.request("synthetic_reviewed_merge", body="Reviewed merged proposal", revision=revision)
+        followup = self.f.request("synthetic_followup_write", body="Later proposal", revision=fixture.contract.envelope("memory", "synthetic-topic", merged["params"]["record"])["revision"])
+        self.f.adapter._enqueue(merged, {"request_ids": [conflict["request_id"]], "source_keys": []})
+        self.f.adapter._enqueue(followup)
+        self.f.cloud.lose_ack = True
+        self.f.adapter._drain()
+        self.assertEqual(self.f.adapter.queue_status()["pending"], 2)
+        self.assertEqual(self.f.adapter.queue_status()["conflict"], 1)
+        # An exact replay recovers the lost receipt before releasing dependents.
+        self.f.restart()._drain()
+        self.assertEqual(self.f.adapter.queue_status()["pending"], 0)
+        self.assertEqual(self.f.adapter.queue_status()["reconciled"], 1)
+        self.assertEqual(self.f.cloud.puts, 3)
+        for request in (conflict, merged, followup):
+            row = self.f.adapter._load("outbox/" + request["request_id"] + ".json")
+            self.assertEqual(row["request"], request)
+        self.assertEqual(self.f.cloud.records[("memory", "synthetic-topic")], followup["params"]["record"])
+
+    def test_offline_pending_does_not_claim_a_conflict(self):
+        self.f.cloud.offline = True
+        result = self.invoke()
+        self.assertEqual(result["error"], {"code": "content_upload_queued", "retryable": True})
+        self.assertEqual(result["local_queue"]["blocked_by"], [])
+        self.assertIn("unconfirmed", result["local_queue"]["next_action"])
+
+    def test_merge_does_not_release_unselected_conflict(self):
+        self.f.adapter.invoke(self.request)
+        first = self.f.request("synthetic_conflict_first")
+        second = self.f.request("synthetic_conflict_second")
+        self.f.adapter.invoke(first)
+        # Stage two historical conflicts without bypassing the ordinary queue.
+        row = self.f.adapter._enqueue(second)
+        row.update(state="conflict", response={"request_id": second["request_id"], "error": {"code": "revision_conflict", "retryable": False}, "persistence": {"durable": False}})
+        self.f.adapter._save("outbox/" + second["request_id"] + ".json", row)
+        revision = fixture.contract.envelope("memory", "synthetic-topic", fixture.MEMORY)["revision"]
+        merged = self.f.request("synthetic_partial_merge", revision=revision)
+        result = self.f.adapter.invoke(merged, reconciles={"request_ids": [first["request_id"]], "source_keys": []})
+        self.assertEqual(result["local_queue"]["blocked_by"], [{"request_id": second["request_id"], "state": "conflict"}])
+        self.assertEqual(self.f.cloud.puts, 1)
+        self.assertEqual(self.f.adapter.queue_status()["conflict"], 2)
+
+    def test_existing_pending_after_merge_keeps_its_original_cas(self):
+        self.f.adapter.invoke(self.request)
+        conflict = self.f.request("synthetic_prior_conflict")
+        self.f.adapter.invoke(conflict)
+        revision = fixture.contract.envelope("memory", "synthetic-topic", fixture.MEMORY)["revision"]
+        waiting = self.f.request("synthetic_original_waiter", body="Original queued proposal", revision=revision)
+        self.f.adapter.invoke(waiting)
+        merged = self.f.request("synthetic_explicit_merge", body="Explicit merged proposal", revision=revision)
+        self.f.adapter.invoke(merged, reconciles={"request_ids": [conflict["request_id"]], "source_keys": []})
+        row = self.f.adapter._load("outbox/" + waiting["request_id"] + ".json")
+        self.assertEqual(row["request"], waiting)
+        self.assertEqual(row["state"], "conflict")
+        self.assertEqual(self.f.cloud.records[("memory", "synthetic-topic")], merged["params"]["record"])
+        self.assertEqual(self.f.cloud.puts, 2)
+
+    def test_confirmed_merge_recovers_reconciliation_crash_before_followup(self):
+        self.f.adapter.invoke(self.request)
+        conflict = self.f.request("synthetic_crash_conflict")
+        self.f.adapter.invoke(conflict)
+        revision = fixture.contract.envelope("memory", "synthetic-topic", fixture.MEMORY)["revision"]
+        merged = self.f.request("synthetic_crash_merge", body="Reviewed merge", revision=revision)
+        followup = self.f.request("synthetic_after_crash", body="Later write", revision=fixture.contract.envelope("memory", "synthetic-topic", merged["params"]["record"])["revision"])
+        self.f.adapter._enqueue(merged, {"request_ids": [conflict["request_id"]], "source_keys": []})
+        self.f.adapter._enqueue(followup)
+        finish = self.f.adapter._finish_reconciliation
+
+        def interrupted(row):
+            if row["request"]["request_id"] == merged["request_id"]:
+                raise SystemExit("Synthetic crash after confirmed receipt")
+            finish(row)
+
+        with patch.object(self.f.adapter, "_finish_reconciliation", interrupted):
+            with self.assertRaises(SystemExit):
+                self.f.adapter._drain()
+        self.f.restart()._drain()
+        self.assertEqual(self.f.adapter.queue_status()["pending"], 0)
+        self.assertEqual(self.f.adapter.queue_status()["reconciled"], 1)
+        self.assertEqual(self.f.cloud.puts, 3)
+
     def test_failed_error_response_save_is_not_a_server_confirmation(self):
         original = self.f.cloud.request
         save = self.f.adapter._save
