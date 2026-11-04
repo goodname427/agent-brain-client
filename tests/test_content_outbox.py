@@ -27,7 +27,10 @@ class Cloud:
         self.calls.append(copy.deepcopy(request))
         if self.offline:raise OSError('Synthetic disconnected')
         method=request['method'];params=request['params'];rid=request['request_id'];contract.validate(method,params)
-        if method=='content_catalog':result={'content_api_version':1,'commit':format(self.puts,'040x'),'artifacts':[{'kind':k,'id':i,'revision':contract.envelope(k,i,v)['revision']} for (k,i),v in sorted(self.records.items()) if k in params['kinds']]}
+        if method=='content_catalog':
+            result={'content_api_version':1,'commit':format(self.puts,'040x'),'artifacts':[{'kind':k,'id':i,'revision':contract.envelope(k,i,v)['revision']} for (k,i),v in sorted(self.records.items()) if k in params['kinds']]}
+            try:result=contract.catalog_page(result,params.get('cursor'))
+            except ValueError:return {'request_id':rid,'error':{'code':'catalog_changed','retryable':True},'persistence':{'durable':False}}
         elif method=='content_read':result=contract.envelope(params['kind'],params['id'],self.records.get((params['kind'],params['id'])))
         else:
             if rid in self.journal:return copy.deepcopy(self.journal[rid])

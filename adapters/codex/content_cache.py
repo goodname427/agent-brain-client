@@ -28,7 +28,8 @@ from remote_http import check_request,RequestStopped
 BEGIN='<!-- agent-brain-content:begin -->';END='<!-- agent-brain-content:end -->'
 BLOCK=re.compile(re.escape(BEGIN)+r'.*?'+re.escape(END)+r'(?:\r?\n)?',re.S)
 OFFLINE_TRANSPORT_ERRORS=frozenset(('transport_unconfirmed','ssh_proxy_unconfirmed','server_proxy_unconfirmed'))
-# A catalog permits 256 records, each with up to 64 KiB of encoded content.
+# Each catalog page permits 256 records. Snapshot capacity is a byte budget,
+# independent of the number of records or pages, with 64 KiB per record.
 # Per-record envelopes fit in 512 bytes. Aggregate persistence must accommodate
 # that contract, rather than treating a whole collection as one small record.
 SNAPSHOT_BYTES=256*(65536+512)
@@ -1142,8 +1143,7 @@ class ContentAdapter:
         if kind!='memory' and value!=contract.envelope(kind,identity,value['record']):raise CacheBlocked()
 
     def _fetch(self):
-        kinds=self.policy['kinds'];catalog=self._request('content_catalog',{'kinds':kinds})
-        if set(catalog)!={'content_api_version','commit','artifacts'} or catalog['content_api_version']!=1 or not re.fullmatch(r'[a-f0-9]{40}',catalog['commit']) or not isinstance(catalog['artifacts'],list) or len(catalog['artifacts'])>256:raise CacheBlocked()
+        kinds=self.policy['kinds'];catalog=self._catalog(kinds)
         # Reuse only a fully verified snapshot bound to this service and policy.
         # The live catalog revision, not the previous commit, determines reuse.
         cached={}
@@ -1157,7 +1157,7 @@ class ContentAdapter:
                     previous['content_api_version']==1 and previous['commit']==active['commit'] and
                     sha(contract.encode(previous))==active['snapshot_sha'] and
                     len(contract.encode(previous))<=SNAPSHOT_BYTES and
-                    isinstance(previous['records'],list) and len(previous['records'])<=256):
+                    isinstance(previous['records'],list)):
                 for value in previous['records']:
                     self._validate_target(value,value.get('kind'),value.get('id'))
                     kind,identity=value['kind'],value['id']
@@ -1178,10 +1178,28 @@ class ContentAdapter:
                 value=self._request('content_read',{'kind':kind,'id':identity})
             if set(value)!={'content_api_version','kind','id','revision','record'} or value['content_api_version']!=1 or value['kind']!=kind or value['id']!=identity or value['revision']!=item['revision'] or not re.fullmatch(r'[a-f0-9]{64}',value['revision']):raise CacheBlocked()
             contract.record(kind,value['record'],identity);records.append(value)
-        if self._request('content_catalog',{'kinds':kinds})!=catalog:raise CacheBlocked()
+        if self._catalog(kinds)!=catalog:raise CacheBlocked()
         snapshot={'content_api_version':1,'commit':catalog['commit'],'records':records}
         if len(contract.encode(snapshot))>SNAPSHOT_BYTES:raise CollectionCapacityExceeded()
         return snapshot
+
+    def _catalog(self,kinds):
+        cursor=None;commit=None;artifacts=[];seen=set();size=0
+        while True:
+            page=self._request('content_catalog',dict(kinds=kinds,**({'cursor':cursor} if cursor else {})))
+            try:contract.validate_catalog(page)
+            except ValueError:raise CacheBlocked() from None
+            if commit is not None and page['commit']!=commit:raise CacheBlocked()
+            commit=page['commit']
+            for row in page['artifacts']:
+                key=(row.get('kind'),row.get('id'))
+                if key in seen:raise CacheBlocked()
+                seen.add(key);artifacts.append(row);size+=len(contract.encode(row))
+                if size>SNAPSHOT_BYTES:raise CollectionCapacityExceeded()
+            next_cursor=page.get('next_cursor')
+            if next_cursor is None:return {'content_api_version':1,'commit':commit,'artifacts':artifacts}
+            if next_cursor==cursor:raise CacheBlocked()
+            cursor=next_cursor
 
     def _mapping(self,snapshot,owned):
         desired={};lines=['# Agent Brain cloud content','This mapping is a rebuildable cache. Read/upload through the approved Server API; do not write GitHub directly.','Cloud refresh does not replace already loaded model context.']
@@ -1252,7 +1270,7 @@ class ContentAdapter:
                 if journal and journal.get('phase') not in ('complete','rolled-back'):raise CacheBlocked()
                 self._owned();queue=self.queue_status()
                 snapshot=self._load('snapshots/'+active['commit']+'.json')
-                if not isinstance(snapshot,dict) or set(snapshot)!={'content_api_version','commit','records'} or snapshot['content_api_version']!=1 or snapshot['commit']!=active['commit'] or sha(contract.encode(snapshot))!=active['snapshot_sha'] or len(contract.encode(snapshot))>SNAPSHOT_BYTES or not isinstance(snapshot['records'],list) or len(snapshot['records'])>256:raise CacheBlocked()
+                if not isinstance(snapshot,dict) or set(snapshot)!={'content_api_version','commit','records'} or snapshot['content_api_version']!=1 or snapshot['commit']!=active['commit'] or sha(contract.encode(snapshot))!=active['snapshot_sha'] or len(contract.encode(snapshot))>SNAPSHOT_BYTES or not isinstance(snapshot['records'],list):raise CacheBlocked()
                 seen=set()
                 for value in snapshot['records']:
                     self._validate_target(value,value.get('kind'),value.get('id'))
@@ -1263,6 +1281,7 @@ class ContentAdapter:
                 result:dict|None
                 if request['method']=='content_catalog':
                     result={'content_api_version':1,'commit':snapshot['commit'],'artifacts':[{'kind':v['kind'],'id':v['id'],'revision':v['revision']} for v in snapshot['records'] if v['kind'] in params['kinds']]}
+                    result=contract.catalog_page(result,params.get('cursor'),[self.queue_sha,params['kinds']])
                 else:
                     result=next((v for v in snapshot['records'] if (v['kind'],v['id'])==(params['kind'],params['id'])),None)
                     if result is None:return unavailable('content_offline_cache_miss',True)
@@ -1421,7 +1440,8 @@ class ContentAdapter:
                 self._validate_target(result.get('result'),params['kind'],params['id'])
         if method=='content_catalog' and 'error' not in result:
             value=result.get('result',{})
-            if set(value)!={'content_api_version','commit','artifacts'} or value['content_api_version']!=1 or not re.fullmatch(r'[a-f0-9]{40}',value.get('commit','')) or not isinstance(value.get('artifacts'),list) or len(value['artifacts'])>256:raise CacheBlocked()
+            try:contract.validate_catalog(value)
+            except ValueError:raise CacheBlocked() from None
             visible=[];seen=set()
             for item in value['artifacts']:
                 if not isinstance(item,dict) or set(item)!={'kind','id','revision'}:raise CacheBlocked()
