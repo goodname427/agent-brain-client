@@ -1,7 +1,7 @@
 # Codex configuration updates
 
 The updater owns the authenticated `mcp_servers.agent_brain_server` binding and
-the tagged Agent Brain Hook groups. It does not own a whole event, a whole TOML
+the tagged Agent Brain Hook commands and their invocation settings. It does not own a whole event, a whole TOML
 table, or everything between its marker comments. Other tools, host trust state,
 model settings and user comments stay in the user's configuration.
 
@@ -13,7 +13,8 @@ assignment is re-encoded only when it contains a managed field being changed.
 No tool-name allowlist or per-device configuration hash catalog is needed.
 
 Global Hook refresh compares only its tagged groups against the private receipt.
-Other events and other groups within the same event can change independently.
+Other events, groups within the same event, and foreign commands sharing a group
+can change independently.
 A change to the managed command, timeout or options reports its field path and
 preserves the file. The updater retains capture approval, source identity,
 `global.off`, host trust decisions and a paused MCP service.

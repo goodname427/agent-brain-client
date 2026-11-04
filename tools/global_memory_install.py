@@ -66,16 +66,27 @@ def legacy_split_owned(raw):
     return text[:start] + ''.join(foreign) + text[end:], ''.join(kept) + text[text.index(END):end]
 
 
-def owned_groups(config):
-    """Ownership belongs to tagged Hook groups, never an entire event/table."""
+def owned_hook(hook):
     from global_memory import MARKER
+    return isinstance(hook, dict) and hook.get('statusMessage') == MARKER
+
+
+def owned_group(group):
+    """Project our commands and their invocation settings from a shared group."""
+    hooks = group.get('hooks') if isinstance(group, dict) else None
+    if not isinstance(hooks, list): return None
+    tagged = [hook for hook in hooks if owned_hook(hook)]
+    return dict(group, hooks=tagged) if tagged else None
+
+
+def owned_groups(config):
+    """Own tagged commands, never a whole event or foreign sibling commands."""
     result = {}
     for event, groups in config.get('hooks', {}).items():
         if not isinstance(groups, list): continue
         for index, group in enumerate(groups):
-            hooks = group.get('hooks') if isinstance(group, dict) else None
-            if isinstance(hooks, list) and any(isinstance(hook, dict) and hook.get('statusMessage') == MARKER for hook in hooks):
-                result[('hooks', event, index)] = group
+            projection = owned_group(group)
+            if projection is not None: result[('hooks', event, index)] = projection
     return result
 
 
@@ -94,7 +105,7 @@ def render_groups(groups):
 
 
 def split_owned(raw):
-    from codex_connect import toml_statements, toml_remove
+    from codex_connect import toml_statements, toml_remove, toml_get
     text = raw.decode()
     markers = {BEGIN: [], END: []}
     for start, end, kind, _ in toml_statements(text):
@@ -108,7 +119,13 @@ def split_owned(raw):
     # Remove marker comments in reverse source order, then edit semantic paths.
     for start, end in sorted(markers[BEGIN] + markers[END], reverse=True):
         text = text[:start] + text[end:]
-    outside = toml_remove(text, list(groups))
+    paths = []
+    for path, projection in groups.items():
+        commands = toml_get(config, path)['hooks']
+        if len(commands) == len(projection['hooks']): paths.append(path)
+        else:
+            paths.extend(path + ('hooks', index) for index, command in enumerate(commands) if owned_hook(command))
+    outside = toml_remove(text, paths)
     return outside, BEGIN + '\n' + render_groups(groups) + END + '\n'
 
 
@@ -170,7 +187,7 @@ def same_owned(left, right):
 
 
 def unowned_config(config, owned):
-    """Remove exactly the owned arrays for preservation comparison."""
+    """Remove our commands while retaining foreign commands in shared groups."""
     result = copy.deepcopy(config)
     if owned is None:
         if result.get('hooks') == {}:
@@ -182,11 +199,13 @@ def unowned_config(config, owned):
         actual = hooks.get(event)
         if not isinstance(groups, list) or not isinstance(actual, list):
             raise ValueError('Owned Hook event changed')
-        matches = [i for i in range(len(actual) - len(groups) + 1)
-                   if typed_equal(actual[i:i + len(groups)], groups)]
-        if len(matches) != 1: raise ValueError('Owned Hook event ambiguous')
-        i = matches[0]
-        del actual[i:i + len(groups)]
+        for group in groups:
+            matches = [index for index, candidate in enumerate(actual) if typed_equal(owned_group(candidate), group)]
+            if len(matches) != 1: raise ValueError('Owned Hook event ambiguous: hooks.' + event)
+            index = matches[0]
+            remaining = [command for command in actual[index]['hooks'] if not owned_hook(command)]
+            if remaining: actual[index]['hooks'] = remaining
+            else: del actual[index]
         if not actual: del hooks[event]
     if not hooks: result.pop('hooks', None)
     return result

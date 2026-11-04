@@ -502,6 +502,19 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertEqual(hooks.unowned_config(actual, None), hooks.unowned_config(expected, None))
         self.assertEqual(actual['description'], expected['description'])
 
+    def test_foreign_command_inside_owned_group_survives_refresh_and_removal(self):
+        foreign = (b'[[hooks.Stop.hooks]]\ntype="command"\n'
+                   b'command="synthetic-shared-group-command"\n')
+        before = self.config.read_bytes().replace(hooks.END.encode(), foreign + hooks.END.encode())
+        self.config.write_bytes(before)
+        self.assertTrue(hooks.installation_status(self.value))
+        expected = hooks.unowned_config(hooks.tomllib.loads(before.decode()), hooks.block(self.value))
+        hooks.refresh(self.home)
+        self.assertIn(foreign, self.config.read_bytes())
+        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        hooks.transact(self.native, self.file.parent, '', remove=True)
+        self.assertTrue(hooks.typed_equal(hooks.tomllib.loads(self.config.read_text()), expected))
+
     def test_concurrent_unrelated_edit_reloads_and_merges_without_losing_pause(self):
         stage = host.host_stage
         attempts = []
@@ -587,11 +600,11 @@ class SemanticConfigMerge(unittest.TestCase):
         self.assertFalse(host.migration_config_matches(config, current, pin, state, {}))
         journal = {'before': {str(config): {'data': base64.b64encode(original).decode()}}}
         saved = state / 'native-install-receipt.json'
-        saved.write_text(json.dumps(journal)); saved.chmod(0o600)
+        old.write(saved, journal)
         self.assertTrue(host.migration_config_matches(config, current, pin, state, {}))
         self.assertFalse(host.migration_config_matches(config, current.replace(b'command="fixed"', b'command="changed"'), pin, state, {}))
         journal['before'][str(config)]['data'] = base64.b64encode(current).decode()
-        saved.write_text(json.dumps(journal))
+        old.write(saved, journal)
         self.assertFalse(host.migration_config_matches(config, current, pin, state, {}))
 
     def test_equivalent_mcp_syntax_and_shared_inline_tables(self):
