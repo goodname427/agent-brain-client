@@ -218,8 +218,9 @@ def tool_discovery(home, metadata, active):
     _,declared,_,_=context(home,active['package'],metadata['release_policy'],metadata['release_policy_sha256'],inspection=True,allow_legacy_030_active=True)
     package_tools=declared['enabled_tools'];registered_tools=registered['enabled_tools']
     missing=sorted(set(package_tools)-set(registered_tools))
+    obsolete=sorted(set(registered_tools)-set(package_tools))
     return {'active_package_tools':package_tools,'registered_enabled_tools':registered_tools,
-            'blocked_by_registration':missing,'registration_update_required':bool(missing),
+            'blocked_by_registration':missing,'obsolete_registered_tools':obsolete,'registration_update_required':bool(missing or obsolete),
             'service_enabled':registered['enabled'],'host_tool_discovery':'unknown',
             'model_tool_visibility':'unknown','network_used':False,'device_credentials_accessed':False}
 
