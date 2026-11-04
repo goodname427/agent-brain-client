@@ -79,6 +79,8 @@ def unowned_config(config, owned):
     """Remove exactly the owned arrays for preservation comparison."""
     result = copy.deepcopy(config)
     if owned is None:
+        if result.get('hooks') == {}:
+            result.pop('hooks')
         return result
     expected = tomllib.loads(owned).get('hooks', {})
     hooks = result.get('hooks', {})

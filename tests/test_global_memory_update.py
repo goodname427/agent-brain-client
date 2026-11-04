@@ -167,6 +167,14 @@ class GlobalMemoryUpdate(unittest.TestCase):
             hooks.refresh(self.home)["status"], "global-hook-not-installed"
         )
 
+    def test_install_and_uninstall_preserve_existing_empty_hooks_table(self):
+        hooks.transact(self.native, self.file.parent, '', remove=True)
+        self.config.write_bytes(self.config.read_bytes() + b'\n[hooks]\n')
+        hooks.transact(self.native, self.file.parent, hooks.block(self.value))
+        hooks.transact(self.native, self.file.parent, '', remove=True)
+        self.assertIn(b'[hooks]', self.config.read_bytes())
+        self.assertEqual(hooks.tomllib.loads(self.config.read_text())['hooks'], {})
+
     def test_foreign_hook_edit_is_preserved(self):
         self.config.write_bytes(
             self.config.read_bytes().replace(b"timeout = 120", b"timeout = 119")
