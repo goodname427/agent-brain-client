@@ -162,7 +162,7 @@ class GlobalClient:
 
     def wire(self, method, params, rid=None):
         allowed = {'memory_global_status', 'memory_query', 'memory_global_query', 'memory_global_event_submit',
-                   'memory_global_stop', 'memory_global_resume', 'memory_global_sync'}
+                   'memory_global_stop', 'memory_global_resume', 'memory_global_sync', 'memory_global_register'}
         if method not in allowed: raise ValueError('Global memory operation required')
         rid = rid or 'global_' + os.urandom(16).hex()
         request = {'request_id': rid, 'method': method, 'params': params}

@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path[:0] = [
     str(Path(__file__).resolve().parents[1] / name) for name in ("tools", "tests")
@@ -35,6 +35,18 @@ class FirstInstall(unittest.TestCase):
         self.code = self.authority.issue(self.fixture_grant, 300)
 
     input = fixtures.HTTPSContent.input
+
+    def test_registered_runtime_handoff_preserves_interactive_update_only(self):
+        policy = {'runtime':{k:'synthetic' for k in wizard.DEPENDENCY_RUNTIME}}
+        mcp = {'command':str(self.home / 'synthetic-pinned-python')}
+        for action, interactive, expected in (('update',True,None),('update',False,subprocess.DEVNULL),
+                                               ('check-update',True,subprocess.DEVNULL)):
+            with (self.subTest(action=action,interactive=interactive),
+                  patch.object(wizard,'dependency_environment',return_value={}),
+                  patch.object(sys.stdin,'isatty',return_value=interactive)):
+                runner = Mock(return_value=type('Reply',(),{'returncode':0})())
+                self.assertEqual(wizard.pinned_update_runtime(self.home,action,policy,mcp,self.home,runner),0)
+                self.assertIs(runner.call_args.kwargs['stdin'],expected)
 
     def fixture(self):
         dependencies = self.home / "tools"
