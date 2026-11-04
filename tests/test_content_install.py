@@ -177,7 +177,7 @@ class ContentInstall(unittest.TestCase):
             grant=outer.grant
             def request(c,request):
                 outer.assertEqual(request['method'],'content_catalog');return {'request_id':request['request_id'],'result':{'content_api_version':1,'commit':'a'*40,'artifacts':[]},'persistence':{'state':'read-only'}}
-        before=self.native_files();result=installation_check(Client(),self.content_value);self.assertTrue(result['authentication_checked']);self.assertEqual(set(result['tools']),{'memory_query','content_catalog','content_read','content_put','content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'});self.assertFalse(result['native_changed']);self.assertEqual(self.native_files(),before)
+        before=self.native_files();result=installation_check(Client(),self.content_value);self.assertTrue(result['authentication_checked']);self.assertEqual(set(result['tools']),{'memory_query','memory_recall','content_catalog','content_read','content_put','content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'});self.assertFalse(result['native_changed']);self.assertEqual(self.native_files(),before)
 
     def test_installation_protocol_check_accepts_rule_skill_only_read_grant(self):
         class Client:
@@ -196,8 +196,8 @@ class ContentInstall(unittest.TestCase):
 
     def test_declared_local_tool_flows_to_plan_running_service_and_protocol_check(self):
         original = content_mcp.local_tools
-        def declared(kinds, memory_sources):
-            tools = original(kinds, memory_sources)
+        def declared(kinds, memory_sources, layered_recall=False):
+            tools = original(kinds, memory_sources, layered_recall)
             if memory_sources:
                 tools.append({'name': 'content_sources_synthetic_review',
                     'description': 'Synthetic contract evolution; never invoked.',

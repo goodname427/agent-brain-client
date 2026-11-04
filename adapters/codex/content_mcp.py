@@ -37,8 +37,11 @@ class ContentParameterError(ProtocolError):
 TOOL_CONTRACT_VERSION = 1
 
 
-def local_tools(kinds, memory_sources):
+def local_tools(kinds, memory_sources, layered_recall=False):
     tools = []
+    if layered_recall:
+        origin = {'type':'object','properties':{'kind':{'type':'string','enum':['project','non-project']},'cwd':{'type':'string'},'project_root':{'type':['string','null']},'repository_root':{'type':['string','null']}},'required':['kind','cwd','project_root','repository_root'],'additionalProperties':False}
+        tools.append({'name':'memory_recall','description':'Read L1/L2/L3 derived memory through the approved HTTPS Server using the existing device identity. Supply the current source origin and a distinct reader session ID. Server source approval is required; this tool cannot enable capture, enroll a device, import old conversations or call a model. Returns layer-specific committed event provenance and source applicability. Empty layers remain unconfirmed; ordinary memory_query topics are not layered recall. '+RECALL_EVIDENCE_GUIDANCE,'inputSchema':{'type':'object','properties':{'origin':origin,'session_id':{'type':'string','pattern':'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'},'query':{'type':'string','minLength':1,'maxLength':1024},'limit':{'type':'integer','minimum':1,'maximum':3,'default':3}},'required':['origin','session_id','query'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
     tools.append({'name':'content_request_id','description':'Generate a deterministic idempotent write request_id from the completed Codex turn digest, operation and AgentBrain target identity. Different targets/operations in one turn receive different IDs; retries of the same operation get the same ID. Local-only; no transfer.','inputSchema':{'type':'object','properties':{'turn_sha256':{'type':'string','pattern':'^[a-f0-9]{64}$'},'method':{'type':'string','enum':['content_put','content_remove']},'kind':{'type':'string','enum':kinds},'id':{'type':'string','pattern':'^[a-z0-9][a-z0-9-]{0,63}$'}},'required':['turn_sha256','method','kind','id'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
     if memory_sources:
         tools.append({'name':'content_sources_inventory','description':'Enumerate only the Codex persistent memories directory. Returns path-free IDs, file fingerprints and per-item processing status in pages of 64; never returns memory text or reads session/transcript files. Inventory is not semantic review or import coverage. Use the returned cursor for the next page; restart if it changes. Local-only read; no Server request or data transfer.','inputSchema':{'type':'object','properties':{'cursor':{'type':'string','maxLength':96}},'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
@@ -48,7 +51,7 @@ def local_tools(kinds, memory_sources):
     return tools
 
 
-LOCAL_TOOLS = frozenset(tool['name'] for tool in local_tools([], True))
+LOCAL_TOOLS = frozenset(tool['name'] for tool in local_tools([], True, True))
 
 
 class ContentToolUnavailable(ContentParameterError):
@@ -63,7 +66,7 @@ def memory_sources_authorized(policy, grant):
 
 def tool_names(methods, memory_sources):
     names = set(methods) - contract.HOOK_METHODS
-    names |= {tool['name'] for tool in local_tools([], memory_sources)}
+    names |= {tool['name'] for tool in local_tools([], memory_sources, memory_sources and 'memory_query' in methods)}
     return sorted(names)
 
 
@@ -103,7 +106,26 @@ class ContentServer(Server):
         grant=getattr(client,'grant',None)
         return memory_sources_authorized(policy, grant)
 
+    def layered_recall(self, arguments):
+        if 'memory_recall' not in tool_names(self.adapter.methods(), self._memory_source_tools_authorized()):
+            raise ContentToolUnavailable('Layered recall requires the existing Memory read grant.')
+        try:
+            if not isinstance(arguments, dict): raise ValueError()
+            params = dict({'limit':3}, **arguments)
+            contract.global_recall_params(params)
+        except (ValueError, TypeError):
+            raise ContentParameterError('Layered recall requires current origin, reader session_id, query and optional limit from 1 to 3.') from None
+        rid = uuid.uuid4().hex
+        try:
+            result = self.adapter.recall({'request_id':rid,'method':'memory_global_query','params':params})
+        except RequestStopped: raise
+        except Exception:
+            result = {'request_id':rid,'error':{'code':'layered_recall_unconfirmed','retryable':False,'stage':'response-validation'},'persistence':{'durable':False}}
+        result = dict(result, client_runtime=self.client_runtime)
+        return {'isError':'error' in result,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
+
     def invoke(self,name,arguments):
+        if name == 'memory_recall': return self.layered_recall(arguments)
         try:
             if name.startswith('content_sources_') and not self._memory_source_tools_authorized():
                 raise ContentParameterError('Native Memory source tools are outside the granted Memory scope.')
@@ -220,7 +242,7 @@ class ContentServer(Server):
                 if name in ('memory_query','content_read','content_catalog'):description+=RECALL_EVIDENCE_GUIDANCE
                 description+='Running worker version: '+self.client_version+'. '+UPDATE_GUIDANCE
                 tools.append({'name':name,'description':description,'inputSchema':{'type':'object','properties':properties,'required':required,'additionalProperties':False},'annotations':{'readOnlyHint':name not in contract.WRITES,'destructiveHint':name=='content_remove','idempotentHint':True}})
-            tools.extend(local_tools(kinds, self._memory_source_tools_authorized()))
+            tools.extend(local_tools(kinds, self._memory_source_tools_authorized(), 'memory_recall' in declared))
             return {'tools':tools}
         result=super().handle(request)
         if isinstance(request,dict) and request.get('method')=='initialize' and isinstance(result,dict):
@@ -513,7 +535,7 @@ def serve(server, source, output, *, request_timeout=90, max_pending=256):
                 if control is not None:control.check()
                 params=request.get('params',{}) if isinstance(request,dict) else {}
                 read_only=(request.get('method')=='tools/call' and isinstance(params,dict)
-                           and params.get('name') in ('content_catalog','content_read','memory_query'))
+                           and params.get('name') in ('content_catalog','content_read','memory_query','memory_recall'))
                 if control is not None and read_only:
                     with control.activate():value=server.handle(request)
                     control.close(check=True)

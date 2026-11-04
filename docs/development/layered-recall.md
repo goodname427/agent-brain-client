@@ -2,9 +2,16 @@
 
 The ordinary MCP `memory_query` searches canonical destination Memory records.
 It does not read Tencent's L2 scenarios or L3 profile. Those derivatives travel
-through `memory_global_query` and the owned `UserPromptSubmit` Hook. The Hook
+through `memory_global_query`, the read-only MCP `memory_recall` entry and the owned `UserPromptSubmit` Hook. The Hook
 uses the current question, validates generation provenance and source
 applicability, and emits `hookSpecificOutput.additionalContext`.
+
+`memory_recall` accepts the current origin, a distinct reader session ID, a
+question and an optional limit of 1–3. It uses the existing HTTPS identity and
+Server source gate, retaining the layer and committed event provenance; it does
+not enable sources, replay the outbox or call a model. See the
+[Windows acceptance repairs](windows-acceptance-repairs.md) for admission diagnostics
+and the distinction between ordinary topic search and layered recall.
 
 The personal pool can return another enrolled device's personal namespace with
 `source_device_id`. Previously the Client rejected that additional field and

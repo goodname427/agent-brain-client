@@ -183,7 +183,12 @@ def install(args):
     if profile_id:
         import re
         if not re.fullmatch('[a-f0-9]{32}', profile_id): raise ValueError('Exact existing personal pool identity required')
-        if file.exists() and value['scope']['profile_id'] != profile_id: raise ValueError('Existing source identity preserved')
+        if file.exists() and value['scope']['profile_id'] != profile_id:
+            # A default, never-approved empty installation has no source or
+            # journal identity to migrate. Joining a pool is an explicit choice.
+            if (value['enabled'] or value['approved_scope_sha256'] is not None or value['server_scope_sha256'] is not None
+                    or value['scope']['include_roots'] or value['scope']['non_project_roots'] or value['scope']['exclude_roots'] or value['legacy_projects']):
+                raise ValueError('Existing source identity preserved')
         value['scope']['profile_id'] = profile_id
     routes = {row['root']: row for row in value['legacy_projects']}
     base = home / '.config/agent-brain-client/project-memory'

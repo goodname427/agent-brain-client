@@ -369,7 +369,7 @@ class RemoteClient:
         if self.write_receipt is not None and request.get('method') in ('remember','forget','content_put','content_remove'):
             req.add_header('X-Agent-Brain-Write-Receipt',self.write_receipt)
         write=request.get('method') in ('remember','forget','content_put','content_remove','memory_event_submit','memory_extract')
-        core=(request.get('method') in ('memory_event_submit','memory_extract') or request.get('method')=='memory_query'
+        core=(request.get('method') in ('memory_event_submit','memory_extract','memory_global_query') or request.get('method')=='memory_query'
               and isinstance(request.get('params'),dict) and 'context' in request['params'])
         def response_json(raw):
             if not core:return json.loads(raw)

@@ -402,7 +402,7 @@ class LauncherClosure(unittest.TestCase):
                     "enabled_tools"
                 ]
             ),
-            9,
+            10,
         )
         self.assertEqual(
             historical["inspect"](self.f.home)["reason"], "mcp-binding-changed"

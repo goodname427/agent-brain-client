@@ -66,15 +66,20 @@ def activate(value, scope):
         local = {'kind': 'non-project', 'cwd': scope['non_project_roots'][0], 'project_root': None, 'repository_root': None}
     else: raise ValueError('Approved source root required')
     response = client.wire('memory_global_status', {'origin': local, 'session_id': 'device-activation-status'})
+    if 'error' in response:
+        return {'status':'global-memory-admission-unconfirmed','activated':False,'server_error':response['error'],
+                'next_action':'Check global-status --check-server and have the existing Server operator apply this device metadata packet; preserve the local fence.',
+                'model_calls':0,'permissions_changed':False}
     result = response.get('result', {})
     pin = digest(scope)
     if result.get('scope_sha256') != pin or result.get('global_profile_id') != scope['profile_id'] or result.get('source_device_id') != client.device_id:
         raise ValueError('Authenticated source admission unconfirmed')
+    off = settings_path(value['device_home']).parent / 'global.off'
+    off.touch(mode=0o600)
     value.update(scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin, enabled=True)
     old.write(settings_path(value['device_home']), value)
     response = client.wire('memory_global_resume', {})
     if 'error' in response: raise ValueError('Source resume unconfirmed; local fence retained')
-    off = settings_path(value['device_home']).parent / 'global.off'
     if off.exists(): off.unlink()
     return {'status': 'global-memory-configured', 'scope_sha256': pin, 'source_device_id': client.device_id,
             'activated': True, 'model_calls': 0, 'auto_recharge': False, 'trust': 'normal-host-hook-review-required'}
@@ -104,10 +109,16 @@ def configure(args):
         scope = old.private_json(pending) if pending.exists() else copy.deepcopy(value['scope'])
         validate(scope)
     pin = digest(scope)
+    if not scope['include_roots'] and not scope['non_project_roots']:
+        return {'status':'global-memory-source-scope-required','activated':False,'scope':scope,
+                'next_action':'Preview the explicitly requested project roots with --include-root; project roots do not authorize non-project capture.',
+                'model_calls':0,'permissions_changed':False}
     if args.approve_scope != pin:
+        import os
+        entry = '& ./tools/memory-windows.ps1' if os.name == 'nt' else 'sh tools/memory.sh'
         return {'status': 'global-memory-source-approval-required', 'scope': scope, 'scope_sha256': pin,
                 'operator_configured': bool(value['operator']), 'activated': False,
-                'next_command': 'sh tools/memory.sh global-configure --approve-scope ' + pin,
+                'next_command': entry + ' global-configure --approve-scope ' + pin,
                 'recipient': 'existing Server and configured DeepSeek Flash', 'budget': 'existing unlimited cumulative accounting; no recharge', 'model_calls': 0}
     off = directory / 'global.off'; off.touch(mode=0o600)
     # Hand future legacy collection to the unified pool only after exact source
@@ -142,8 +153,12 @@ def configure(args):
     if not value['legacy_projects']:
         packet['schema'] = 2
         packet['client']['grant'] = profile['grant']
-    if getattr(args, 'packet_output', None):
-        target = old.canonical(args.packet_output)
+    packet_output = getattr(args, 'packet_output', None)
+    if packet_output or not value['operator']:
+        # A normal Windows client has no SSH operator. Prepare the exact
+        # approved metadata for the existing operator rather than fail after
+        # asking the Agent to perform an unsupported privileged operation.
+        target = old.canonical(packet_output or directory / ('device-packet-' + pin + '.json'))
         if target.exists():
             if old.private_json(target) != packet: raise ValueError('Existing device packet preserved')
         else: old.write(target, packet)

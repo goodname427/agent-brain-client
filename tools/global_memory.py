@@ -60,6 +60,19 @@ def approved(value):
             and not (settings_path(value['device_home']).parent / 'global.off').exists())
 
 
+def admission_state(value):
+    """Explain each local fence without credentials, content reads or writes."""
+    pin = digest(value['scope']); reasons = []
+    if not value['enabled']: reasons.append('capture-disabled')
+    if not (value['scope']['include_roots'] or value['scope']['non_project_roots']): reasons.append('source-scope-empty')
+    if value['approved_scope_sha256'] != pin: reasons.append('local-source-approval-required')
+    if value['server_scope_sha256'] != pin: reasons.append('server-source-approval-unconfirmed')
+    if (settings_path(value['device_home']).parent / 'global.off').exists(): reasons.append('local-stop-fence')
+    return {'status':'locally-ready' if not reasons else 'configuration-required', 'reasons':reasons,
+            'next_action':'check-authenticated-server-source-status' if not reasons else 'preview-exact-future-source-scope-and-prepare-device-packet',
+            'historical_import':False, 'permissions_changed':False}
+
+
 def discover(cwd):
     current = Path(cwd).resolve(strict=True)
     if not current.is_dir(): raise ValueError('Local working directory required')
@@ -358,6 +371,7 @@ def main():
     p.add_argument('--profile-id')
     p.add_argument('--packet-output')
     p.add_argument('--activate-packet')
+    p.add_argument('--check-server', action='store_true', help='Authenticated metadata-only source registration check; does not enable capture')
     p.add_argument('--operator'); p.add_argument('--operator-sha256')
     p.add_argument('--query', default='personal preferences and task progress')
     a = p.parse_args()
@@ -382,9 +396,13 @@ def main():
                 from global_memory_install import installation_status
                 installed=installation_status(value)
                 result = {'global_entry_installed': installed, 'expanded_sources_enabled': installed and approved(value),
+                          'admission': admission_state(value),
                           'recall_observation': recall_observation(value),
                           'scope': value['scope'], 'legacy_project_roots': [r['root'] for r in value['legacy_projects']],
                           'cloud_orchestration_supported': False, 'native_delivery': 'unobserved', 'credentials_accessed': False, 'default_sharing': 'cross-project', 'applicability': 'origin-and-current-question', 'legacy_capture_migrated': [r['root'] for r in value['legacy_projects'] if not r.get('capture_delegated', True)]}
+                if a.check_server:
+                    result['server_admission'] = GlobalClient(value).wire('memory_global_status', {})
+                    result['credentials_accessed'] = True
             elif a.action in ('global-stop', 'global-resume'):
                 directory = settings_path(a.device_home).parent; off = directory / 'global.off'
                 if a.action == 'global-stop': off.touch(mode=0o600)
