@@ -185,6 +185,7 @@ class PublicUpdate(unittest.TestCase):
         value = json.loads(output.getvalue())
         self.assertEqual(code, 0, value)
         self.assertEqual(value['status'], 'client-update-updated', value)
+        self.assertTrue(value['reload_check']['hook_configuration_changed'])
         self.assertTrue(hooks.installation_status(gm.load(self.home)))
 
     def test_cli_does_not_resolve_connection_pair_or_install(self):

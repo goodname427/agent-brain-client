@@ -933,7 +933,7 @@ def manage_update(home, action, *, channel_factory=None):
     result['reload_check'] = {
         'active_package_changed': result.get('active_package_changed'),
         'mcp_registration_changed': result.get('bootstrap_registration_changed'),
-        'hook_configuration_changed': result.get('global_hook', {}).get('native_changed'),
+        'hook_configuration_changed': result.get('hook_configuration_changed', result.get('global_hook', {}).get('native_changed')),
         'host_tool_visibility': 'unknown', 'model_loaded': 'unknown',
     }
     if result.get('status') in ('client-update-updated', 'client-update-current', 'client-update-available'):
@@ -1171,7 +1171,7 @@ def _manage_update(home, action, *, channel_factory=None):
                             update_available=None,
                             next_action='The verified package is ready but the global Hook refresh is unconfirmed. Retry the same public update entry; preserve source approval and review the normal host Hook prompt.')
             hook_changed = hook_changed or hook['native_changed']
-            result.update(global_hook=hook, bootstrap_registration_changed=bootstrap_migrated, native_changed=bootstrap_migrated or hook_changed,
+            result.update(global_hook=hook, bootstrap_registration_changed=bootstrap_migrated, hook_configuration_changed=hook_changed, native_changed=bootstrap_migrated or hook_changed,
                           reload_required=None)
             if hook['status'] == 'global-hook-updated':
                 result['status'] = 'client-update-updated'
