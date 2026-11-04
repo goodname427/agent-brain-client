@@ -12,6 +12,8 @@
 
 跨版本工具白名单与固定启动器升级兼容见 [工具绑定迁移](tool-binding-migration.md)。
 
+集合大小、快照持久化与中断恢复的统一预算见 [集合快照容量](content-cache-capacity.md)。
+
 ```sh
 TEST_ROOT=$(mktemp -d)
 mkdir -p "$TEST_ROOT/home" "$TEST_ROOT/codex"

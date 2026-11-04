@@ -1,6 +1,7 @@
 """Synthetic content write failures; no device credentials, real memories or network."""
 
 from contextlib import contextmanager, redirect_stderr
+import copy
 import io
 import json
 import unittest
@@ -8,6 +9,7 @@ from unittest.mock import patch
 
 from brain_lock import locked
 from content_mcp import ContentParameterError, ContentServer
+from content_cache import ContentAdapter
 from remote_http import RequestStopped
 import test_content_outbox as fixture
 
@@ -306,6 +308,117 @@ class WriteFailures(unittest.TestCase):
             self.f.adapter, "invoke", side_effect=ValueError("SYNTHETIC_PRIVATE")
         ):
             self.assertEqual(self.invoke()["error"]["stage"], "adapter-invoke")
+
+
+class CollectionCapacity(unittest.TestCase):
+    def setUp(self):
+        self.f = fixture.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        self.f.setUp()
+        self.addCleanup(self.f.doCleanups)
+        # Individually small, valid records; the complete collection is >1 MiB.
+        for index in range(96):
+            self.f.cloud.records['memory', 'synthetic-large-' + str(index)] = dict(
+                fixture.MEMORY, body=('Synthetic collection 中文\n' * 600) + str(index))
+
+    def restart(self):
+        return ContentAdapter(self.f.home, self.f.cache, fixture.POLICY, self.f.cloud,
+                              codex_home=self.f.home / '.codex')
+
+    def files(self):
+        return {p.name: p.read_bytes() for p in
+                (self.f.home / '.config/agent-brain-client/content/memory').iterdir()}
+
+    def test_large_collection_save_restart_and_offline_read(self):
+        result = self.f.adapter.invoke(self.f.request())
+        self.assertTrue(result['local_queue']['server_saved'])
+        self.assertEqual(result['local_refresh']['status'], 'content-refreshed')
+        active = json.loads((self.f.cache / 'active.json').read_bytes())
+        snapshot = self.f.cache / 'snapshots' / (active['commit'] + '.json')
+        self.assertGreater(snapshot.stat().st_size, 1048576)
+        before = self.files()
+        outbox = {p.name: p.read_bytes() for p in (self.f.cache / 'outbox').iterdir()}
+        self.f.cloud.calls.clear()
+        adapter = self.restart()
+        self.assertEqual(adapter.refresh()['status'], 'content-current')
+        self.assertFalse(any(r['method'] in ('content_read', 'content_put') for r in self.f.cloud.calls))
+        self.assertEqual(self.files(), before)
+        self.assertEqual({p.name: p.read_bytes() for p in (self.f.cache / 'outbox').iterdir()}, outbox)
+        self.f.cloud.offline = True
+        reply = adapter.invoke({'request_id': 'synthetic_offline_collection', 'method': 'content_read',
+                                'params': {'kind': 'memory', 'id': 'synthetic-large-0'}})
+        self.assertTrue(reply['local_cache']['stale'])
+        self.assertEqual(reply['result']['record'], self.f.cloud.records['memory', 'synthetic-large-0'])
+
+    def test_large_recovery_journal_rolls_back_and_survives_restart(self):
+        self.assertEqual(self.f.adapter.refresh()['status'], 'content-refreshed')
+        before = self.files()
+        active = (self.f.cache / 'active.json').read_bytes()
+        for record in self.f.cloud.records.values():
+            record['body'] = record['body'].replace('Synthetic collection', 'Synthetic replacement')
+        self.f.cloud.puts += 1
+        save = self.f.adapter._save
+
+        def fail(name, value):
+            if name.startswith('snapshots/'):
+                raise OSError('Synthetic snapshot persistence failure')
+            return save(name, value)
+
+        with patch.object(self.f.adapter, '_save', side_effect=fail):
+            result = self.f.adapter.refresh()
+        self.assertEqual(result['stage'], 'snapshot-save')
+        self.assertEqual(result['status'], 'content-refresh-blocked')
+        self.assertGreater((self.f.cache / 'transaction.json').stat().st_size, 3 * 1048576)
+        self.assertEqual(json.loads((self.f.cache / 'transaction.json').read_bytes())['phase'], 'rolled-back')
+        self.assertEqual((self.f.cache / 'active.json').read_bytes(), active)
+        self.assertEqual(self.files(), before)
+        self.assertEqual(self.restart().refresh()['status'], 'content-refreshed')
+        self.assertNotEqual(self.files(), before)
+
+    def test_record_and_catalog_limits_still_preserve_prior_mapping(self):
+        self.assertEqual(self.f.adapter.refresh()['status'], 'content-refreshed')
+        before = self.files()
+        active = (self.f.cache / 'active.json').read_bytes()
+        self.f.cloud.records['memory', 'synthetic-too-large'] = dict(fixture.MEMORY, body='x' * 65536)
+        self.f.cloud.puts += 1
+        result = self.restart().refresh()
+        self.assertEqual(result['stage'], 'remote-snapshot')
+        self.assertEqual(result['status'], 'content-refresh-blocked')
+        del self.f.cloud.records['memory', 'synthetic-too-large']
+        for index in range(257):
+            self.f.cloud.records['memory', 'synthetic-count-' + str(index)] = copy.deepcopy(fixture.MEMORY)
+        result = self.restart().refresh()
+        self.assertEqual(result['stage'], 'remote-snapshot')
+        self.assertEqual(result['status'], 'content-refresh-blocked')
+        self.assertEqual((self.f.cache / 'active.json').read_bytes(), active)
+        self.assertEqual(self.files(), before)
+
+    def test_interrupted_large_transaction_recovers_before_remote_fetch(self):
+        self.assertEqual(self.f.adapter.refresh()['status'], 'content-refreshed')
+        before = self.files()
+        active = (self.f.cache / 'active.json').read_bytes()
+        for record in self.f.cloud.records.values():
+            record['body'] = record['body'].replace('Synthetic collection', 'Synthetic interrupted')
+        self.f.cloud.puts += 1
+        save = self.f.adapter._save
+
+        def interrupted(name, value):
+            if name.startswith('snapshots/'):
+                raise SystemExit('Synthetic process exit before snapshot persistence')
+            return save(name, value)
+
+        with patch.object(self.f.adapter, '_save', side_effect=interrupted):
+            with self.assertRaises(SystemExit):
+                self.f.adapter.refresh()
+        self.assertGreater((self.f.cache / 'transaction.json').stat().st_size, 3 * 1048576)
+        self.assertEqual(json.loads((self.f.cache / 'transaction.json').read_bytes())['phase'], 'applying')
+        self.assertNotEqual(self.files(), before)
+        adapter = self.restart()
+        with patch.object(adapter, '_fetch', side_effect=OSError('Synthetic disconnected after recovery')):
+            result = adapter.refresh()
+        self.assertEqual(result['stage'], 'remote-snapshot')
+        self.assertEqual(json.loads((self.f.cache / 'transaction.json').read_bytes())['phase'], 'rolled-back')
+        self.assertEqual((self.f.cache / 'active.json').read_bytes(), active)
+        self.assertEqual(self.files(), before)
 
 
 if __name__ == "__main__":
