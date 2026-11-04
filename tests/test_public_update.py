@@ -46,7 +46,13 @@ class PublicUpdate(unittest.TestCase):
                 )
 
             def verified_active(self):
-                return copy.deepcopy(test.active)
+                active=copy.deepcopy(test.active)
+                if active is not None:
+                    # Reporting uses synthetic version/commit transitions, but
+                    # offline tool discovery still inspects a real verified
+                    # fixture package rather than an invented path or list.
+                    active['package']=json.loads(test.registration)['package']
+                return active
 
             def discover(self, adapter, platform, installed):
                 test.calls.append(("discover", adapter, platform, installed))
