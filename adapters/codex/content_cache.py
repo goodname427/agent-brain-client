@@ -28,13 +28,30 @@ from remote_http import check_request,RequestStopped
 BEGIN='<!-- agent-brain-content:begin -->';END='<!-- agent-brain-content:end -->'
 BLOCK=re.compile(re.escape(BEGIN)+r'.*?'+re.escape(END)+r'(?:\r?\n)?',re.S)
 OFFLINE_TRANSPORT_ERRORS=frozenset(('transport_unconfirmed','ssh_proxy_unconfirmed','server_proxy_unconfirmed'))
+# A catalog permits 256 records, each with up to 64 KiB of encoded content.
+# Per-record envelopes fit in 512 bytes. Aggregate persistence must accommodate
+# that contract, rather than treating a whole collection as one small record.
+SNAPSHOT_BYTES=256*(65536+512)
+# Always-on rules appear both in their own file and in the managed AGENTS block.
+# Retain room for the existing bounded native AGENTS preimage and guidance.
+MAPPING_BYTES=2*SNAPSHOT_BYTES+262144
+# Recovery stores base64 preimages twice, targets, optional Windows rollback
+# images and path/digest metadata. Keep the same bound for writing and recovery.
+TRANSACTION_BYTES=8*MAPPING_BYTES
 REVIEW_DECISIONS={'shareable':{'safe-cross-project-personal-summary'},
                   'excluded':{'secret-localonly-or-confidential'},
                   'deferred':{'project-scope-unavailable','uncertain-content'},
                   'skipped':{'no-durable-user-fact'}}
 
 class CacheBlocked(Exception):pass
+class CollectionCapacityExceeded(CacheBlocked):pass
 def sha(raw):return hashlib.sha256(raw).hexdigest()
+
+
+def cache_bytes(name):
+    if name=='transaction.json':return TRANSACTION_BYTES
+    if name=='owned.json' or re.fullmatch(r'snapshots/[a-f0-9]{40}\.json',name):return SNAPSHOT_BYTES
+    return 1048576
 
 
 _operation_diagnostic:ContextVar[dict[str,str]|None]=ContextVar('content_operation_diagnostic',default=None)
@@ -371,7 +388,7 @@ class ContentAdapter:
         require_platform('cache-storage',self.platform)
         path=self.cache/name;self._safe(path,self.cache)
         if not path.exists():return default
-        limit=3*1048576 if name=='transaction.json' else 1048576
+        limit=cache_bytes(name)
         if not path.is_file() or path.stat().st_size>limit:raise CacheBlocked()
         private_mode(path,blocked=CacheBlocked)
         return json.loads(path.read_text(encoding='utf-8'))
@@ -379,7 +396,7 @@ class ContentAdapter:
     def _save(self,name,value):
         require_platform('cache-storage',self.platform)
         raw=contract.encode(value)
-        if len(raw)>(3*1048576 if name=='transaction.json' else 1048576):raise CacheBlocked()
+        if len(raw)>cache_bytes(name):raise CollectionCapacityExceeded()
         path=self.cache/name;self._safe(path,self.cache);atomic(path,raw,0o600)
         for directory in [path.parent,*path.parent.parents]:
             sync_directory(directory)
@@ -1072,6 +1089,7 @@ class ContentAdapter:
             if (isinstance(previous,dict) and set(previous)=={'content_api_version','commit','records'} and
                     previous['content_api_version']==1 and previous['commit']==active['commit'] and
                     sha(contract.encode(previous))==active['snapshot_sha'] and
+                    len(contract.encode(previous))<=SNAPSHOT_BYTES and
                     isinstance(previous['records'],list) and len(previous['records'])<=256):
                 for value in previous['records']:
                     self._validate_target(value,value.get('kind'),value.get('id'))
@@ -1095,7 +1113,7 @@ class ContentAdapter:
             contract.record(kind,value['record'],identity);records.append(value)
         if self._request('content_catalog',{'kinds':kinds})!=catalog:raise CacheBlocked()
         snapshot={'content_api_version':1,'commit':catalog['commit'],'records':records}
-        if len(contract.encode(snapshot))>524288:raise CacheBlocked()
+        if len(contract.encode(snapshot))>SNAPSHOT_BYTES:raise CollectionCapacityExceeded()
         return snapshot
 
     def _mapping(self,snapshot,owned):
@@ -1126,7 +1144,7 @@ class ContentAdapter:
         if text.count(BEGIN)!=text.count(END) or text.count(BEGIN)>1 or BEGIN in text and name not in owned['files']:raise CacheBlocked()
         text=BLOCK.sub('',text)
         desired[name]=(text.rstrip()+'\n\n'+block if text.strip() else block).encode()
-        if sum(len(raw) for raw in desired.values())>524288:raise CacheBlocked()
+        if sum(len(raw) for raw in desired.values())>MAPPING_BYTES:raise CollectionCapacityExceeded()
         return desired
 
     def _deny_offline_snapshot(self):
@@ -1167,7 +1185,7 @@ class ContentAdapter:
                 if journal and journal.get('phase') not in ('complete','rolled-back'):raise CacheBlocked()
                 self._owned();queue=self.queue_status()
                 snapshot=self._load('snapshots/'+active['commit']+'.json')
-                if not isinstance(snapshot,dict) or set(snapshot)!={'content_api_version','commit','records'} or snapshot['content_api_version']!=1 or snapshot['commit']!=active['commit'] or sha(contract.encode(snapshot))!=active['snapshot_sha'] or len(contract.encode(snapshot))>524288 or not isinstance(snapshot['records'],list) or len(snapshot['records'])>256:raise CacheBlocked()
+                if not isinstance(snapshot,dict) or set(snapshot)!={'content_api_version','commit','records'} or snapshot['content_api_version']!=1 or snapshot['commit']!=active['commit'] or sha(contract.encode(snapshot))!=active['snapshot_sha'] or len(contract.encode(snapshot))>SNAPSHOT_BYTES or not isinstance(snapshot['records'],list) or len(snapshot['records'])>256:raise CacheBlocked()
                 seen=set()
                 for value in snapshot['records']:
                     self._validate_target(value,value.get('kind'),value.get('id'))
@@ -1252,7 +1270,8 @@ class ContentAdapter:
         except Exception as error:
             try:journal=self._load('transaction.json');uncertain=journal and journal['phase']=='applying'
             except Exception:uncertain=True
-            reason=('request-stopped' if isinstance(error,RequestStopped) else
+            reason=('collection-capacity-exceeded' if isinstance(error,CollectionCapacityExceeded) else
+                    'request-stopped' if isinstance(error,RequestStopped) else
                     'file-access-failed' if isinstance(error,OSError) else 'validation-failed')
             return {'status':'content-recovery-review-required' if uncertain else 'content-refresh-blocked','stage':stage,'reason':reason,'native_changed':None if uncertain else False,'model_loaded':'unknown','next_action':'The Server save receipt is independent of this local mapping failure. Preserve local files and prior snapshots; inspect the reported refresh stage before retrying. Do not resubmit a saved write with a new request_id.'}
 
