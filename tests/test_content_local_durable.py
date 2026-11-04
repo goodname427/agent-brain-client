@@ -1,10 +1,12 @@
 """Client acknowledges Server local durability without claiming GitHub backup."""
 
 import copy
+import json
 import unittest
 
 import test_content_outbox as fixture
 from content_cache import ContentAdapter
+from content_mcp import ContentServer
 
 
 class LocalDurable(unittest.TestCase):
@@ -15,6 +17,7 @@ class LocalDurable(unittest.TestCase):
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
         self.github = False
+        self.backup = None
         self.original = self.f.cloud.request
         self.f.cloud.request = self.request
 
@@ -28,6 +31,8 @@ class LocalDurable(unittest.TestCase):
                 github_confirmed=self.github,
                 state="remote-confirmed" if self.github else "local-confirmed",
             )
+            if self.backup is not None:
+                response['persistence']['github_backup']=copy.deepcopy(self.backup)
         elif (
             request["method"] in ("content_catalog", "content_read")
             and "error" not in response
@@ -110,8 +115,48 @@ class LocalDurable(unittest.TestCase):
         self.f.cloud.request = corrupt
         result = self.f.adapter.invoke(self.f.request())
         self.assertEqual(result["local_queue"]["state"], "pending")
+        self.assertNotIn('write_status',result)
         self.assertFalse(result["local_queue"]["server_saved"])
         self.assertEqual(self.f.adapter.queue_status()["pending"], 1)
+
+    def test_mcp_saved_result_distinguishes_waiting_and_real_backup_attention(self):
+        server=ContentServer(self.f.adapter)
+        request=self.f.request()
+        for state in ('waiting','paused','review-required'):
+            with self.subTest(state=state):
+                self.backup={'state':'pending','attention_required':state!='waiting',
+                             'automatic_retry':{'state':state},'last_error':'github_unavailable'}
+                response=server.invoke('content_put',dict(request['params'],request_id=request['request_id']))
+                self.assertFalse(response['isError'])
+                result=response['structuredContent']
+                self.assertEqual(result['write_status']['status'],'saved')
+                self.assertEqual(result['write_status']['backup_status'],'pending' if state=='waiting' else 'needs-attention')
+                self.assertIn('Saved on the Server.',result['write_status']['message'])
+                self.assertEqual(result['persistence']['github_backup'],self.backup)
+                self.assertFalse(result['persistence']['github_confirmed'])
+                self.assertTrue(result['local_queue']['server_saved'])
+                self.assertEqual(json.loads(response['content'][0]['text']),result)
+                self.assertEqual(self.f.cloud.puts,1)
+        self.github=True
+        result=server.invoke('content_put',dict(request['params'],request_id=request['request_id']))['structuredContent']
+        self.assertEqual(result['write_status']['backup_status'],'confirmed')
+        self.assertTrue(result['persistence']['github_confirmed'])
+        self.assertEqual(self.f.cloud.puts,1)
+
+    def test_legacy_or_malformed_optional_backup_metadata_does_not_invent_retry(self):
+        for backup in (None,[],{'automatic_retry':None}):
+            self.backup=backup
+            result=self.f.adapter.invoke(self.f.request())
+            self.assertEqual(result['write_status']['status'],'saved')
+            self.assertNotIn('background task',result['write_status']['message'])
+            self.assertFalse(result['persistence']['github_confirmed'])
+
+    def test_offline_local_queue_does_not_claim_server_save_success(self):
+        self.f.cloud.offline=True
+        response=ContentServer(self.f.adapter).invoke('content_put',dict(self.f.request()['params'],request_id='synthetic_offline_save_01'))
+        self.assertTrue(response['isError'])
+        self.assertNotIn('write_status',response['structuredContent'])
+        self.assertFalse(response['structuredContent']['local_queue']['server_saved'])
 
 
 if __name__ == "__main__":
