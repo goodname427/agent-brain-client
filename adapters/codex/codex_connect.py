@@ -32,12 +32,19 @@ class HostConfigChanged(ValueError):
     """A staged host write was cancelled before modifying the destination."""
 
 
+def toml_string(value):
+    # JSON escapes C0 controls; TOML additionally forbids a literal DEL. Keep
+    # Unicode scalars literal so non-BMP keys never become surrogate escapes.
+    return json.dumps(value, ensure_ascii=False).replace('\x7f', r'\u007f')
+
+
 def toml_literal(value):
     """Encode a parsed TOML value, including values in a shared inline table."""
     import datetime
     import math
+    if isinstance(value, str): return toml_string(value)
     if isinstance(value, dict):
-        return '{' + ', '.join(json.dumps(k, ensure_ascii=False) + ' = ' + toml_literal(v) for k, v in sorted(value.items())) + '}'
+        return '{' + ', '.join(toml_string(k) + ' = ' + toml_literal(v) for k, v in sorted(value.items())) + '}'
     if isinstance(value, list): return '[' + ', '.join(map(toml_literal, value)) + ']'
     if isinstance(value, (datetime.datetime, datetime.date, datetime.time)): return value.isoformat()
     if isinstance(value, float) and not math.isfinite(value):
@@ -58,7 +65,7 @@ def toml_equal(left, right):
 
 
 def toml_key(key):
-    return key if re.fullmatch(r'[A-Za-z0-9_-]+', key) else json.dumps(key, ensure_ascii=False)
+    return key if re.fullmatch(r'[A-Za-z0-9_-]+', key) else toml_string(key)
 
 
 def toml_statements(text):
@@ -141,11 +148,16 @@ def toml_remove(text, paths):
             descendants = [target[len(path):] for target in paths if target[:len(path)] == path]
             if descendants and kind == 'value':
                 value = copy.deepcopy(toml_get(config, path))
+                empty_assignment = False
                 # Remove higher array indices before lower ones.
                 for target in sorted(descendants, reverse=True):
                     parent = toml_get(value, target[:-1]); del parent[target[-1]]
                     if isinstance(target[-1], int) and not parent:
+                        if len(target) == 1:
+                            empty_assignment = True
+                            break
                         del toml_get(value, target[:-2])[target[-2]]
+                if empty_assignment: continue
                 # Reuse the exact quoted/dotted LHS, found by a sentinel parse.
                 for index, char in enumerate(source):
                     if char != '=': continue

@@ -356,13 +356,24 @@ class GlobalMemoryUpdate(unittest.TestCase):
     def test_retained_removal_requires_authenticated_journal_and_exact_block(self):
         import client_lifecycle as lifecycle
         outside, previous = hooks.split_owned(self.config.read_bytes())
+        lines = previous.splitlines(keepends=True)
+        for index in range(len(lines) - 1):
+            if lines[index].startswith('type = ') and lines[index + 1].startswith('command = '):
+                lines[index], lines[index + 1] = lines[index + 1], lines[index]
+                break
+        reordered = ''.join(lines)
+        self.assertNotEqual(reordered, previous)
+        self.assertTrue(hooks.same_owned(reordered, previous))
         self.config.write_bytes(outside.encode())
         with self.assertRaises((ValueError, OSError)):
             hooks.refresh(self.home)
         for phase, block, accepted in (('applying', previous, False),
                                         ('complete', 'Changed block', False),
                                         ('complete', previous, True),
-                                        ('reinstalled', previous, True)):
+                                        ('reinstalled', previous, True),
+                                        ('complete', reordered, True),
+                                        ('reinstalled', reordered, True),
+                                        ('complete', reordered.replace('timeout = 120', 'timeout = 119'), False)):
             with (patch.object(lifecycle, 'read_removal', return_value={'phase': phase, 'hook_block': block}),
                   patch.object(lifecycle, 'validate_journal') as authenticate):
                 if accepted:
@@ -511,6 +522,51 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertEqual(hooks.unowned_config(actual, None), hooks.unowned_config(expected, None))
         self.assertEqual(actual['description'], expected['description'])
 
+    def inline_event_config(self, dotted):
+        config = hooks.tomllib.loads(self.config.read_text())
+        config['hooks']['OtherEvent'] = [{'hooks': [{'type': 'command', 'command': 'synthetic-foreign'}]}]
+        config['hooks']['state'] = {'synthetic-stop': {'enabled': False, 'trusted_hash': 'synthetic-pin'}}
+        prefix = self.config.read_text().split(hooks.BEGIN)[0]
+        assignments = ''.join(('hooks.' if dotted else '') + event + ' = ' + host.toml_literal(groups) + '\n'
+                              for event, groups in config['hooks'].items())
+        return (prefix + hooks.BEGIN + '\n' + ('' if dotted else '[hooks]\n') + assignments + hooks.END + '\n').encode()
+
+    def assert_inline_event_lifecycle(self, dotted):
+        before = self.inline_event_config(dotted)
+        self.config.write_bytes(before)
+        expected = hooks.unowned_config(hooks.tomllib.loads(before.decode()), hooks.block(self.value))
+        self.assertTrue(hooks.installation_status(self.value))
+        self.assertTrue(hooks.refresh(self.home, check_only=True)['update_available'])
+        self.assertEqual(self.config.read_bytes(), before)
+        hooks.refresh(self.home)
+        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        hooks.transact(self.native, self.file.parent, '', remove=True)
+        self.assertTrue(hooks.typed_equal(hooks.unowned_config(hooks.tomllib.loads(self.config.read_text()), None), expected))
+        self.preserved()
+
+    def test_inline_event_assignment_lifecycle(self):
+        self.assert_inline_event_lifecycle(False)
+
+    def test_dotted_inline_event_assignment_lifecycle(self):
+        self.assert_inline_event_lifecycle(True)
+
+    def test_inline_event_interruption_restores_exact_preimage(self):
+        before = self.inline_event_config(False)
+        self.config.write_bytes(before)
+        target = hooks.block(dict(self.value, code_sha256={name: 'c' * 64 for name in gm.FILES}))
+        apply = host.host_apply
+
+        def interrupt(rows, persist):
+            apply(rows, persist)
+            raise SystemExit('synthetic interrupted inline event write')
+
+        with patch.object(host, 'host_apply', side_effect=interrupt), self.assertRaises(SystemExit):
+            hooks.transact(self.native, self.file.parent, target)
+        receipt = self.file.parent / 'hook-install.json'
+        hooks.recover_record(self.config, receipt, hooks.read_receipt(receipt))
+        self.assertEqual(self.config.read_bytes(), before)
+        hooks.transact(self.native, self.file.parent, target)
+
     def test_foreign_command_inside_owned_group_survives_refresh_and_removal(self):
         foreign = (b'[[hooks.Stop.hooks]]\ntype="command"\n'
                    b'command="synthetic-shared-group-command"\n')
@@ -597,6 +653,22 @@ class GlobalMemoryUpdate(unittest.TestCase):
 
 
 class SemanticConfigMerge(unittest.TestCase):
+    def test_del_values_and_keys_stay_valid_toml_when_reencoding_shared_assignments(self):
+        import content_install as ci
+        from client_lifecycle import remove_table
+        source = ('mcp_servers={agent_brain_server={command="old"}, other={command="other", '
+                  'env={TOKEN="\\u007f", "\\u007f"="\U0001f600", "\U0001f600"="value"}}}\n').encode()
+        expected = hooks.tomllib.loads(source.decode())
+        target = {'command': 'new', 'enabled': False}
+        merged = ci.render(source, target, True)
+        expected['mcp_servers']['agent_brain_server'] = target
+        self.assertTrue(host.toml_equal(hooks.tomllib.loads(merged.decode()), expected))
+        self.assertNotIn(b'\x7f', merged)
+        removed = hooks.tomllib.loads(remove_table(merged).decode())
+        self.assertEqual(removed['mcp_servers']['other'], expected['mcp_servers']['other'])
+        for key in ('\x7f', '\U0001f600', 'ordinary'):
+            self.assertEqual(hooks.tomllib.loads(host.toml_key(key) + '=true\n'), {key: True})
+
     def test_hash_only_migration_uses_authenticated_image_not_live_file_hash(self):
         import base64
         temp = tempfile.TemporaryDirectory()
