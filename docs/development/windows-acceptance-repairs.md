@@ -32,7 +32,7 @@ Codex 可将自己的 `hooks.state` 信任表写进托管标记范围。更新�
 
 ## 普通 MCP 的 L1/L2/L3 读取
 
-新增只读 `memory_recall`，参数为当前 `origin`、独立 reader `session_id`、`query` 和可选 `limit:1..3`。它通过当前 HTTPS 设备身份调用 Server 的 `memory_global_query`，保留现有逐设备/逐来源批准、个人池与项目隔离。普通 `memory_query` 继续查询 destination topics。
+日常只读工具统一为 `memory_query`，参数为当前 `origin`、独立 reader `session_id`、`query` 和可选 `limit:1..3`。主动查询和自动召回均发送此方法，保留现有逐设备/逐来源批准、个人池与项目隔离。历史 `memory_recall` 只作内部兼容，不进入 Agent 的工具清单。
 
 结果保留 `namespace_results[].recall.L1/L2/L3`、已提交事件、生成证据与 `source_context`。拒绝未经来源证明的行、L0 原始事件、错误设备、伪造适用范围和超量结果。跨来源数据保持 `reference-only`，不能升格为 Rule/Skill；返回空层不能宣称该层已读到。服务端拒绝不自动重试、配对或启用采集。调用不刷新映射、不补传队列、不触发模型，不使用 synthetic sandbox 证明正式召回。
 

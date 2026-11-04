@@ -23,6 +23,40 @@ def old_contract(manifest, output):
     manifest['files']['adapters/codex/content_mcp.py']=ci.sha(raw)
 
 
+def retired_recall_contract(manifest,output):
+    file=output/'adapters/codex/content_mcp.py'
+    raw=file.read_text().replace('    return tools\n',"    tools.append({'name':'memory_recall'})\n    return tools\n",1).encode()
+    file.write_bytes(raw);manifest['files']['adapters/codex/content_mcp.py']=ci.sha(raw)
+
+
+@unittest.skipIf(sys.platform=='win32','Portable Mac install fixture; target contracts are shared across platforms')
+class RetiredRecallMigration(unittest.TestCase):
+    def test_official_update_removes_retired_recall_without_touching_pending_writes(self):
+        f=fixture.ContentInstall('test_prepare_read_only_then_apply_inspect_reuse_and_single_link_state')
+        f.setUp();self.addCleanup(f.doCleanups)
+        f.publish('0.6.2',mutate=retired_recall_contract);f.package=Path(f.channel.update()['active']['package'])
+        plan=f.plan();self.assertIn('memory_recall',plan['mcp']['enabled_tools'])
+        self.assertTrue(ci.apply(plan,f.digest(plan),lambda p:None)['installed'])
+        profile=f.profile.read_bytes();policy=f.policy_path.read_bytes()
+        pending=Path(f.policy['runtime']['content_cache'])/'outbox/synthetic-preserved.json'
+        pending.parent.mkdir(parents=True,exist_ok=True);pending.write_bytes(b'{"synthetic":"retained"}')
+        before=f.config.read_bytes()
+        f.publish('0.6.4');f.channel.update()
+        with patch.object(wizard,'HTTPS_CONTENT_CAPABILITIES',f.policy['capabilities']):
+            checked=wizard.manage_update(f.home,'check-update',channel_factory=lambda *a:f.channel)
+            self.assertEqual(checked['tool_discovery']['blocked_by_registration'],[])
+            self.assertEqual(checked['tool_discovery']['obsolete_registered_tools'],['memory_recall'])
+            self.assertTrue(checked['tool_discovery']['registration_update_required'])
+            self.assertEqual(f.config.read_bytes(),before)
+            updated=wizard.manage_update(f.home,'update',channel_factory=lambda *a:f.channel)
+        self.assertEqual(updated['status'],'client-update-current',updated)
+        table=ci.tomllib.loads(f.config.read_text())['mcp_servers'][ci.NAME]
+        self.assertIn('memory_query',table['enabled_tools']);self.assertNotIn('memory_recall',table['enabled_tools'])
+        self.assertEqual(updated['tool_discovery']['obsolete_registered_tools'],[])
+        self.assertEqual(f.profile.read_bytes(),profile);self.assertEqual(f.policy_path.read_bytes(),policy)
+        self.assertEqual(pending.read_bytes(),b'{"synthetic":"retained"}')
+
+
 @unittest.skipIf(sys.platform=='win32','Portable Mac install fixture; package contract tests run on both platforms')
 class BindingMigration(unittest.TestCase):
     def setUp(self):

@@ -140,8 +140,32 @@ class HTTPSContent(unittest.TestCase):
         self.backend.record['device_id']='f'*32
         second=HTTPSContentClient(self.profile_path,self.digest,store=self.store);other=ContentAdapter(self.home,cache,policy,second,codex_home=self.home/'codex');self.assertNotEqual(old,other.queue_sha)
         self.assertNotIn(self.backend.record['credential'],json.dumps(first.queue_identity));self.assertEqual(first.request({'request_id':'synthetic_request_123456','method':'content_catalog','params':{'kinds':['memory']}})['error']['code'],'device_transport_blocked')
+
         with self.assertRaises(CacheBlocked):other._drain()
         self.assertEqual(outbox.read_bytes(),before)
+
+    def test_native_l1_https_receipt_confirms_adapter_outbox_without_git_commit(self):
+        client=self.paired();policy={'schema':1,'adapter':'codex','kinds':GRANT['artifact_types'],'ids':GRANT['ids'],'dependencies':{'commands':[],'python_modules':[]}}
+        adapter=ContentAdapter(self.home,self.base/'native-cache',policy,client,codex_home=self.home/'codex')
+        request={'request_id':'synthetic_native_https_0001','method':'content_put','params':{'kind':'memory','id':'synthetic-memory',
+            'record':{'title':'Synthetic','description':'Native L1 fixture','body':'Synthetic direct fact','type':'user'},'expected_revision':'missing'}}
+        response={'request_id':request['request_id'],'result':{'content_api_version':1,'kind':'memory','id':'synthetic-memory',
+            'record':request['params']['record'],'revision':'b'*64},'persistence':{'state':'local-confirmed','durable':False,
+            'local_durable':True,'github_confirmed':False,'storage':'tencent-l1','checkpoint':'c'*64}}
+        class Response:
+            status=200
+            def __enter__(s):return s
+            def __exit__(s,*args):pass
+            def read(s,*args):return json.dumps(response).encode()
+        class Opener:
+            def open(s,*args,**kwargs):return Response()
+        client.transport.opener=Opener()
+        with patch.object(adapter,'refresh',return_value={'status':'synthetic-mapping-unchanged'}):reply=adapter.invoke(request)
+        self.assertNotIn('error',reply)
+        self.assertEqual(adapter._load('outbox/'+request['request_id']+'.json')['state'],'confirmed')
+        self.assertEqual(reply['persistence']['checkpoint'],'c'*64)
+        self.assertNotIn('commit',reply['persistence'])
+        self.assertFalse(reply['persistence']['github_confirmed'])
 
     def test_https_owned_install_plan_readonly_then_failed_postcheck_restores_preimage(self):
         import content_install as install

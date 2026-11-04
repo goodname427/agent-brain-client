@@ -416,10 +416,14 @@ class RemoteClient:
                     from content_contract import core_receipt
                     return result if core_receipt(result,request) else failed('invalid_write_receipt','response-validation',True)
                 receipt=result.get('persistence',{})
+                native=(isinstance(receipt,dict) and request.get('method')=='content_put'
+                        and request.get('params',{}).get('kind')=='memory' and receipt.get('storage')=='tencent-l1'
+                        and isinstance(receipt.get('checkpoint'),str) and re.fullmatch(r'[a-f0-9]{64}',receipt['checkpoint'])
+                        and 'commit' not in receipt)
                 local=(self.write_receipt=='local-durable-v1' and isinstance(receipt,dict)
                        and receipt.get('state')=='local-confirmed' and receipt.get('durable') is False
                        and receipt.get('local_durable') is True and receipt.get('github_confirmed') is False
-                       and isinstance(receipt.get('commit'),str) and re.fullmatch(r'[a-f0-9]{40}',receipt['commit'])
+                       and (native or isinstance(receipt.get('commit'),str) and re.fullmatch(r'[a-f0-9]{40}',receipt['commit']))
                        and isinstance(result.get('result'),dict))
                 if not isinstance(receipt,dict) or receipt.get('durable') is not True and not local:
                     return failed('invalid_write_receipt','response-validation',True)

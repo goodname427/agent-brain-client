@@ -25,7 +25,7 @@ Set-Location $checkout
 
 安装成功后正常重载 Codex 的 `agent_brain_server` MCP，并按既有 Onboard 流程核对获授权的 Memory/Rule/Skill。模型加载不可观测时仍报告 unknown。完整信任与恢复说明见 [地址与密钥安装](address-key-install.md)。
 
-安装入口会在本机继续询问未来采集范围：选择项目根目录、排除目录和非项目根目录，再确认显示的完整范围。选择 Later 不启用采集；既有个人 Memory 读取授权仍可使用 `memory_recall`，不要求本设备先成为采集来源。已批准或暂停的来源保留原样，不会因安装或更新重新选择或恢复。
+安装入口会在本机继续询问未来采集范围：选择项目根目录、排除目录和非项目根目录，再确认显示的完整范围。选择 Later 不启用采集；既有个人 Memory 读取授权仍可使用 `memory_query`，不要求本设备先成为采集来源。已批准或暂停的来源保留原样，不会因安装或更新重新选择或恢复。
 
 确认后，Client 使用现有设备 HTTPS 凭据将无凭据来源元数据登记到同一个人记忆池，读回核对设备和范围后才激活。无需把设备包交给 Server operator，不生成新长期凭据，不扫描历史。Server 必须包含 `authenticated-device-v1` 来源登记接口；未确认结果保留本机停止标记与来源包，重试同一请求。
 

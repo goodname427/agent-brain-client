@@ -30,9 +30,9 @@
 
 独立排查确认另一个可复现缺口：旧三工具登记在只读检查时应保持不变，但 `prepare(replace_existing=True)` 也复制了旧过滤清单；若目标包已经与登记启动器相同，更新入口还会直接跳过替换。结果是正常更新和重启都无法修复这类登记。修复后，显式更新按已验证目标包及原 policy/grant 生成替换清单，同包但清单不同也执行原有事务。只读检查仍不改登记，暂停状态、身份、信任锚、外部编辑保护和待发送队列保留。
 
-`check-update` / `update` 的 `tool_discovery` 分别报告 `active_package_tools`、`registered_enabled_tools` 和 `blocked_by_registration`。同版本缺少工具时仍报告需要更新。MCP 回执的 `client_runtime.offered_tools` 报告实际 worker 声明的清单；CLI 的 `host_tool_discovery` / `model_tool_visibility` 和 MCP 的 `host_tool_visibility` / `model_loaded` 保持 `unknown`，不能把包声明或配置匹配冒称模型已可调用。普通 `memory_query` 的说明明确区分 topic 检索与分层召回。
+`check-update` / `update` 的 `tool_discovery` 分别报告 `active_package_tools`、`registered_enabled_tools` 和 `blocked_by_registration`。同版本缺少工具时仍报告需要更新。MCP 回执的 `client_runtime.offered_tools` 报告实际 worker 声明的清单；CLI 的 `host_tool_discovery` / `model_tool_visibility` 和 MCP 的 `host_tool_visibility` / `model_loaded` 保持 `unknown`，不能把包声明或配置匹配冒称模型已可调用。当前日常记忆查询统一为 `memory_query`，主动查询和自动召回使用同一入口。
 
-回归覆盖旧三工具同包修复、九到十项迁移、暂停与外部编辑保护，以及待发送文件逐字节保留。源代码和实际构建包的离线 MCP checkpoint 核对计划清单、`tools/list` 与 worker 声明，在现有 Mac/Windows CI 入口执行。最终仍需在两端宿主中确认模型发现 `memory_recall` 并完成受控 L2/L3 调用；这里的合成验证不作该项声明。
+回归覆盖旧三工具同包修复、九到十项迁移、暂停与外部编辑保护，以及待发送文件逐字节保留。源代码和实际构建包的离线 MCP checkpoint 核对计划清单、`tools/list` 与 worker 声明，在现有 Mac/Windows CI 入口执行。最终仍需在两端宿主中确认模型仅发现日常查询工具 `memory_query` 并完成受控 L2/L3 调用；这里的合成验证不作该项声明。
 
 ## 0.6.9 后的旧重装标记
 
@@ -41,3 +41,7 @@
 另一个确证阻断是 `reinstall-current.json`：旧重装已被后续完成的原生安装事务替代，但退休检查只接受标记与当前登记的计划摘要相同，因而以 `Unconfirmed reinstall marker preserved` 停止启动器迁移。现在还允许一个严格限定的历史情形：当前登记已核验，完成事务的登记后像精确匹配当前文件，其校验过的登记前像正是旧标记对应的计划、包、平台与策略绑定。只识别这个直接前驱，不猜测多轮历史、不改摘要、不删除计划；将标记逐字保存在原归档路径后，才沿既有事务迁移启动器和工具过滤。
 
 未知、未完成、前后像不符或缺少历史计划的标记继续保留并停止。合成回归覆盖 Mac 公开更新路径、Windows 原生文件与权限保留、策略路径已变更的前驱，以及伪造/中断证据拒绝。真实设备诊断只读；源码修复合入不代表设备已应用迁移，更不能证明宿主已重新声明工具。
+
+## 统一查询后的旧工具退休
+
+当前 `tools/list` 和新登记只声明 `memory_query`。旧包登记可能仍含 `memory_recall`；只读检查同时报告缺失工具与 `obsolete_registered_tools`，不会改写配置。官方 update 用已验证目标包的完整清单替换旧过滤，移除退休工具，保留身份、暂停状态、其他宿主设置与待发送记录。内部旧调用仍转发到共同实现；正式宿主重载后才会采用新声明。`RetiredRecallMigration` 合成回归覆盖这一完整更新路径，不代表真实设备已重载。
