@@ -166,6 +166,40 @@ class PublicUpdate(unittest.TestCase):
         self.assertIsNone(result['native_changed'])
         self.assertEqual(wizard.lifecycle_exit('update', result), 2)
 
+    def test_real_hook_conflict_reaches_public_receipt_with_exact_field(self):
+        hooks.install(SimpleNamespace(device_home=str(self.home), profile_id=None, operator=None, operator_sha256=None))
+        config = self.f.f.config
+        config.write_bytes(config.read_bytes().replace(b'timeout = 120', b'timeout = 119'))
+        changed = config.read_bytes()
+        for action in ('check-update', 'update'):
+            with self.subTest(action=action), patch.object(self.f.f.backend, 'load', side_effect=AssertionError('No credential access')):
+                result = wizard.manage_update(self.home, action, channel_factory=self.channel)
+            self.assertEqual(result['reason'], 'managed-config-conflict', result)
+            self.assertEqual(result['conflict_field'], 'config.hooks.SessionStart[0].hooks[0].timeout')
+            self.assertIn(result['conflict_field'], result['next_action'])
+            self.assertEqual(wizard.lifecycle_exit(action, result), 2)
+            self.assertEqual(config.read_bytes(), changed)
+
+    def test_mcp_conflict_receipt_names_table_without_echoing_values(self):
+        config = self.f.f.config
+        changed = config.read_bytes().replace(b'command = ', b'command = "synthetic-unapproved" # ')
+        config.write_bytes(changed)
+        result = wizard.manage_update(self.home, 'check-update', channel_factory=self.channel)
+        self.assertEqual(result['reason'], 'mcp-binding-changed', result)
+        self.assertEqual(result['conflict_field'], 'mcp_servers.agent_brain_server')
+        self.assertNotIn('synthetic-unapproved', json.dumps(result))
+        self.assertEqual(config.read_bytes(), changed)
+
+    def test_busy_editor_receipt_gives_retry_action_without_claiming_conflict(self):
+        from codex_connect import HostConfigChanged
+        for action in ('check-update', 'update'):
+            with self.subTest(action=action), patch.object(hooks, 'refresh', side_effect=HostConfigChanged('synthetic-private-detail')):
+                result = wizard.manage_update(self.home, action, channel_factory=self.channel)
+            self.assertEqual(result['reason'], 'config-edit-in-progress', result)
+            self.assertNotIn('conflict_field', result)
+            self.assertIn('editor finish', result['next_action'])
+            self.assertNotIn('synthetic-private-detail', json.dumps(result))
+
     def test_public_update_recovers_torn_hook_before_registration_inspection(self):
         from test_windows_install_closure import torn_hook
         hooks.install(SimpleNamespace(device_home=str(self.home), profile_id=None, operator=None, operator_sha256=None))
