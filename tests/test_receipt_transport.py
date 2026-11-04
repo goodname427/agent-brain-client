@@ -15,10 +15,12 @@ class ReceiptTransport(unittest.TestCase):
         response={'request_id':request['request_id'],'result':{},'persistence':{'durable':False,'state':'local-confirmed',
             'local_durable':True,'github_confirmed':False,'storage':'tencent-l1','checkpoint':'c'*64}}
         client=RemoteClient('https://synthetic.invalid',credential_provider=lambda:'SYNTHETIC_TOKEN_12345678901234567890',write_receipt='local-durable-v1')
-        client.opener=MagicMock();client.opener.open.return_value.__enter__.return_value.read.side_effect=lambda size:json.dumps(response).encode()
+        client.opener=MagicMock()
+        client.opener.open.return_value.__enter__.return_value.read.side_effect=lambda size:json.dumps(response).encode()
         self.assertNotIn('error',client.request(request))
         for key,bad in [('checkpoint','bad'),('storage','other'),('github_confirmed',True),('local_durable',False)]:
-            original=response['persistence'][key];response['persistence'][key]=bad
+            original=response['persistence'][key]
+            response['persistence'][key]=bad
             self.assertEqual(client.request(request)['error']['code'],'invalid_write_receipt')
             response['persistence'][key]=original
         self.assertEqual(client.request(dict(request,params={'kind':'rule'}))['error']['code'],'invalid_write_receipt')
