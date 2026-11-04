@@ -3,6 +3,7 @@ import copy
 import json
 from types import SimpleNamespace
 import unittest
+import unicodedata
 from unittest.mock import patch
 
 import test_content_outbox as fixture
@@ -58,6 +59,27 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
         self.assertEqual(found['L3']['provenance']['event_ids'], ['event'])
         self.assertFalse(found['L3']['source_context']['global_rule'])
         self.assertFalse((self.fixture.cache / 'outbox').exists())
+
+    def test_mcp_keeps_l2_l3_for_nfc_nfd_equivalent_mac_and_windows_origins(self):
+        for root in ('/synthetic/projects/caf\u00e9', 'C:\\Synthetic\\Projects\\caf\u00e9'):
+            for reader_form, source_form in (('NFC', 'NFD'), ('NFD', 'NFC')):
+                with self.subTest(root=root, reader=reader_form, source=source_form):
+                    reader = unicodedata.normalize(reader_form, root)
+                    source = unicodedata.normalize(source_form, root)
+                    self.local = {'kind':'project','cwd':reader,'project_root':reader,'repository_root':reader}
+                    self.foreign = {'kind':'project','cwd':source,'project_root':source,'repository_root':source}
+                    self.params['origin'] = self.local
+                    before = copy.deepcopy(self.params)
+                    server = ContentServer(self.adapter, '0.6.3'); server.state = 'ready'
+                    result = server.handle({'jsonrpc':'2.0','id':2,'method':'tools/call',
+                                            'params':{'name':'memory_recall','arguments':self.params}})
+                    self.assertFalse(result['isError'], result)
+                    found = result['structuredContent']['result']['namespace_results'][0]['recall']
+                    self.assertEqual(found['L2'][0]['content'], 'Synthetic L2')
+                    self.assertEqual(found['L3']['content'], 'Synthetic L3')
+                    self.assertEqual(found['L3']['source_context']['relation'], 'current-source')
+                    self.assertEqual(found['L3']['source_context']['origins'], [self.foreign])
+                    self.assertEqual(self.params, before)
 
     def test_denial_is_preserved_and_never_retries_or_enables_sources(self):
         calls = []
