@@ -22,6 +22,10 @@ Windows 正常安装向导的空来源分支先用现有设备身份只读查询
 
 `global_entry_installed=false` 且原生 Hook 与私有回执不一致时，保留两者并检查差异；不要删除回执、手改摘要或直接重装来覆盖外部改动。此现象的原因不能仅凭状态布尔值确定。诊断和恢复必须先核验现有事务及配置前像；原生宿主的 Hook 信任仍需正常审阅。
 
+Codex 可将自己的 `hooks.state` 信任表写进托管标记范围。更新检查和事务把完整状态表原样保留为宿主数据，并对剩余托管 Hook 进行严格类型的 TOML 语义比较；改变命令、事件、参数或其他定义仍拒绝。原来的信任值及禁用决定不会由 Client 创建或修改，命令更新后的信任仍由 Codex 正常判断。恢复事务仍核验精确前像；其他不明差异不自动覆盖。
+
+`global-status --check-server` 是只读诊断：它验证私有设置和既有登记，但在当前 checkout 与设备固定 Hook 源码 pin 不同时仍可查询 Server，并标记 `checkout_code_matches_hook_pins=false`，把实际采集是否启用标为未知。Hook 执行和来源配置继续要求原有代码 pin 校验；仅凭诊断成功不能声称采集或真实 Hook 执行成功。
+
 用户已要求所有项目、无排除时，为实际存放项目的每个本地盘根传入 `--include-root`，不设置 `--exclude-root`；例如 `--include-root C:/` 仅覆盖该盘下的项目。不要据此猜测其他盘，或添加 `--non-project-root`。先检查精确预览，再使用该预览摘要准备元数据包，交由已有 Server operator 应用，最后 `global-configure --activate-packet <原包>`。激活先核对 Server 的池、设备与范围摘要；拒绝时保留错误代码和本地关闭状态，不扩大权限。
 
 ## 普通 MCP 的 L1/L2/L3 读取

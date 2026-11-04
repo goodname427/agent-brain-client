@@ -2,6 +2,8 @@
 
 import copy
 from contextlib import contextmanager
+import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -9,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from brain_lock import private_directory
 import codex_connect as host
@@ -164,6 +167,14 @@ class GlobalMemoryUpdate(unittest.TestCase):
             hooks.refresh(self.home)["status"], "global-hook-not-installed"
         )
 
+    def test_install_and_uninstall_preserve_existing_empty_hooks_table(self):
+        hooks.transact(self.native, self.file.parent, '', remove=True)
+        self.config.write_bytes(self.config.read_bytes() + b'\n[hooks]\n')
+        hooks.transact(self.native, self.file.parent, hooks.block(self.value))
+        hooks.transact(self.native, self.file.parent, '', remove=True)
+        self.assertIn(b'[hooks]', self.config.read_bytes())
+        self.assertEqual(hooks.tomllib.loads(self.config.read_text())['hooks'], {})
+
     def test_foreign_hook_edit_is_preserved(self):
         self.config.write_bytes(
             self.config.read_bytes().replace(b"timeout = 120", b"timeout = 119")
@@ -173,6 +184,64 @@ class GlobalMemoryUpdate(unittest.TestCase):
             hooks.refresh(self.home)
         self.assertEqual(self.config.read_bytes(), before)
         self.assertEqual(old.private_json(self.file), self.value)
+
+    def test_host_trust_tables_survive_refresh_without_becoming_owned(self):
+        state = (b'[hooks.state."synthetic:session_start:0:0"]\ntrusted_hash = "sha256:one"\n'
+                 b'[hooks.state."synthetic:stop:0:0"]\nenabled = false\ntrusted_hash = "sha256:two"\n')
+        before = (self.config.read_bytes().replace(b'timeout = 120', b'timeout=120')
+                  .replace(hooks.END.encode(), state + hooks.END.encode()))
+        self.config.write_bytes(before)
+        self.assertTrue(hooks.installation_status(self.value))
+        self.assertTrue(hooks.refresh(self.home, check_only=True)['update_available'])
+        self.assertEqual(self.config.read_bytes(), before)
+        result = hooks.refresh(self.home)
+        self.assertEqual(result['status'], 'global-hook-updated')
+        self.assertIn(state, self.config.read_bytes())
+        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        before_current = self.config.read_bytes()
+        self.assertEqual(hooks.refresh(self.home)['status'], 'global-hook-current')
+        self.assertEqual(self.config.read_bytes(), before_current)
+        self.preserved()
+        hooks.transact(self.native, self.file.parent, '', remove=True)
+        self.assertIn(state, self.config.read_bytes())
+        self.assertNotIn(hooks.BEGIN.encode(), self.config.read_bytes())
+
+    def test_trust_table_does_not_hide_changed_hook_definition(self):
+        state = b'[hooks.state."synthetic:stop:0:0"]\ntrusted_hash = "sha256:one"\n'
+        before = self.config.read_bytes().replace(b'timeout = 120', b'timeout = 119').replace(hooks.END.encode(), state + hooks.END.encode())
+        self.config.write_bytes(before)
+        with self.assertRaises(ValueError):
+            hooks.refresh(self.home)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertFalse(hooks.same_owned('[[hooks.Stop]]\nasync=true\n', '[[hooks.Stop]]\nasync=1\n'))
+
+    def test_trailing_host_state_is_preserved_when_tables_move(self):
+        state = b'[hooks.state."synthetic:stop:0:0"]\ntrusted_hash = "sha256:one"\n'
+        before = self.config.read_bytes().replace(hooks.END.encode(), state + hooks.END.encode()) + b'custom_host_field = "keep"\n'
+        self.config.write_bytes(before)
+        original = hooks.tomllib.loads(before.decode())['hooks']['state']
+        hooks.refresh(self.home)
+        self.assertEqual(hooks.tomllib.loads(self.config.read_text())['hooks']['state'], original)
+        self.assertIn(b'custom_host_field = "keep"', self.config.read_bytes())
+
+    def test_metadata_status_reports_old_code_and_checks_server_without_changing_state(self):
+        before = {p: p.read_bytes() for p in self.home.rglob('*') if p.is_file()}
+        self.no_client.stop()
+        response = {'result': {'metadata_only': True, 'source_registered': False,
+                               'source_device_id': 'd' * 32, 'global_profile_id': 'e' * 32}}
+        client = SimpleNamespace(wire=lambda method, params: response)
+        output = io.StringIO()
+        with (patch.object(gm, 'GlobalClient', return_value=client),
+              patch.object(sys, 'argv', ['global_memory', 'global-status', '--device-home', str(self.home), '--check-server']),
+              patch.object(sys, 'stdout', output)):
+            self.assertEqual(gm.main(), 0)
+        result = json.loads(output.getvalue())
+        self.assertFalse(result['checkout_code_matches_hook_pins'])
+        self.assertIsNone(result['expanded_sources_enabled'])
+        self.assertEqual(result['server_admission'], response)
+        with self.assertRaises(ValueError):
+            gm.load(self.home)
+        self.assertEqual(before, {p: p.read_bytes() for p in self.home.rglob('*') if p.is_file()})
 
     def test_retained_removal_requires_authenticated_journal_and_exact_block(self):
         import client_lifecycle as lifecycle

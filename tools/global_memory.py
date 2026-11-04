@@ -42,13 +42,14 @@ def validate_settings(value, home):
     return value
 
 
-def load(home):
+def load(home, *, verify_code=True):
     file = settings_path(home)
     directory=old.canonical(file.parent,existing=True)
     old.private_mode(directory,directory=True,owner=True)
     value = validate_settings(old.private_json(file), home)
-    for name, pin in value['code_sha256'].items():
-        if old.digest((ROOT / name).read_bytes()) != pin: raise ValueError('Global source code changed; refresh owned installation')
+    if verify_code:
+        for name, pin in value['code_sha256'].items():
+            if old.digest((ROOT / name).read_bytes()) != pin: raise ValueError('Global source code changed; refresh owned installation')
     old.registration(home)  # Metadata only; never activates a credential.
     return value
 
@@ -384,7 +385,10 @@ def main():
             from global_memory_operator import configure
             result = configure(a)
         else:
-            value = load(a.device_home)
+            # Status reads only validated metadata. An official checkout may
+            # legitimately differ from the installed frozen Hook code; do not
+            # use that mismatch to suppress the authenticated status probe.
+            value = load(a.device_home, verify_code=a.action != 'global-status')
             if a.action == 'global-hook':
                 old.imports()
                 from remote_http import RequestControl
@@ -400,6 +404,13 @@ def main():
                           'recall_observation': recall_observation(value),
                           'scope': value['scope'], 'legacy_project_roots': [r['root'] for r in value['legacy_projects']],
                           'cloud_orchestration_supported': False, 'native_delivery': 'unobserved', 'credentials_accessed': False, 'default_sharing': 'cross-project', 'applicability': 'origin-and-current-question', 'legacy_capture_migrated': [r['root'] for r in value['legacy_projects'] if not r.get('capture_delegated', True)]}
+                try:
+                    code_matches = all(old.digest((ROOT / name).read_bytes()) == pin for name, pin in value['code_sha256'].items())
+                except OSError:
+                    code_matches = False
+                result['checkout_code_matches_hook_pins'] = code_matches
+                if not code_matches:
+                    result['expanded_sources_enabled'] = None
                 if a.check_server:
                     result['server_admission'] = GlobalClient(value).wire('memory_global_status', {})
                     result['credentials_accessed'] = True
