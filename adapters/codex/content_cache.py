@@ -28,7 +28,8 @@ from remote_http import check_request,RequestStopped
 BEGIN='<!-- agent-brain-content:begin -->';END='<!-- agent-brain-content:end -->'
 BLOCK=re.compile(re.escape(BEGIN)+r'.*?'+re.escape(END)+r'(?:\r?\n)?',re.S)
 OFFLINE_TRANSPORT_ERRORS=frozenset(('transport_unconfirmed','ssh_proxy_unconfirmed','server_proxy_unconfirmed'))
-# A catalog permits 256 records, each with up to 64 KiB of encoded content.
+# Each catalog page permits 256 records. Snapshot capacity is a byte budget,
+# independent of the number of records or pages, with 64 KiB per record.
 # Per-record envelopes fit in 512 bytes. Aggregate persistence must accommodate
 # that contract, rather than treating a whole collection as one small record.
 SNAPSHOT_BYTES=256*(65536+512)
@@ -486,17 +487,20 @@ class ContentAdapter:
                     raise CacheBlocked()
 
     def _finish_reconciliation(self,row):
-        if row['state']!='confirmed':return
+        if row['state']!='confirmed':return False
+        resolved=False
         for rid in row['reconciles']['request_ids']:
             previous=self._load('outbox/'+rid+'.json')
             if previous['state']=='conflict':
                 previous.update(state='reconciled',resolution_request_id=row['request']['request_id']);self._save('outbox/'+rid+'.json',previous)
+                resolved=True
         if row['reconciles']['source_keys']:
             state=self._imports()
             for key in row['reconciles']['source_keys']:
                 item=state['items'][key]
                 if item['status'] in ('conflict','inventoried'):item.update(status='reconciled',request_id=row['request']['request_id'])
             self._save('imports.json',state)
+        return resolved
 
     @staticmethod
     def _event_allowed(request,event_gate):
@@ -505,7 +509,14 @@ class ContentAdapter:
         except Exception:return False
 
     def _drain(self,event_request_id=None,event_gate=None):
+        # A resolver can follow older waiters in creation order. Revisit those
+        # only after confirmed reconciliation made progress. An uncertain send
+        # ends the whole drain, so this never loops over an unconfirmed request.
+        while self._drain_pass(event_request_id,event_gate):pass
+
+    def _drain_pass(self,event_request_id=None,event_gate=None):
         blocked:dict[tuple[str,str],set[str]]={}
+        resolved=False
         for row in self._queued():
             request=row['request'];params=request['params'];target=(params['kind'],params['id'])
             # Automatic legacy refresh never uploads captured text. An exact
@@ -518,7 +529,7 @@ class ContentAdapter:
                     except Exception:pass
                 blocked.setdefault(target,set()).add(request['request_id']);continue
             if row['state']=='confirmed':
-                self._finish_reconciliation(row)
+                resolved=self._finish_reconciliation(row) or resolved
                 blocked.get(target,set()).difference_update(row['reconciles']['request_ids'])
                 continue
             if row['state']!='pending' or blocked.get(target,set())-set(row['reconciles']['request_ids']):continue
@@ -532,40 +543,77 @@ class ContentAdapter:
                         state['items'][key].update(status='blocked',request_id=request['request_id'])
                 self._save('imports.json',state)
                 blocked.setdefault(target,set()).add(request['request_id']);continue
-            if not self._event_allowed(request,event_gate):break
+            if not self._event_allowed(request,event_gate):return False
             try:response=self.client.request(json.loads(contract.encode(request)))
-            except Exception:break
-            if not isinstance(response,dict) or response.get('request_id')!=request['request_id']:break
+            except Exception:return False
+            if not isinstance(response,dict) or response.get('request_id')!=request['request_id']:return False
             if 'error' not in response:
-                if not self._server_saved(response,request):break
+                if not self._server_saved(response,request):return False
                 row.update(state='confirmed',response=response)
             else:
                 error=response['error']
-                if not isinstance(error,dict):break
+                if not isinstance(error,dict):return False
                 if error.get('code')=='revision_conflict':
                     row.update(state='conflict',response=response)
                     try:row['remote']=self._read_target(*target)
                     except Exception:pass
                 elif error.get('retryable') is False and error.get('code') not in ('server_proxy_unconfirmed','ssh_proxy_unconfirmed','persistence_pending','pending_write_must_retry'):
                     row.update(state='blocked',response=response)
-                else:break
+                else:return False
                 blocked.setdefault(target,set()).add(request['request_id'])
             with operation_stage('outbox-confirmation' if row['state']=='confirmed' else 'outbox-response'):
                 self._save('outbox/'+request['request_id']+'.json',row)
             with operation_stage('outbox-reconciliation'):
-                self._finish_reconciliation(row)
+                resolved=self._finish_reconciliation(row) or resolved
                 if row['state']=='confirmed':
                     blocked.get(target,set()).difference_update(row['reconciles']['request_ids'])
+        return resolved
 
     def queue_status(self):
         rows=self._queued()
         return {state:sum(row['state']==state for row in rows) for state in ('pending','confirmed','conflict','blocked','reconciled')}
 
+    def inspect_queue(self,*,request_id=None,cursor=None):
+        """Read one locked snapshot; never fetch, drain, repair or map content."""
+        check_request()
+        with operation_stage('queue-inspection'),locked(self.cache/'content.lock',cancel_check=check_request):
+            try:rows=self._queued()
+            except (ValueError,TypeError,KeyError):raise CacheBlocked() from None
+            check_request()
+            counts={state:sum(row['state']==state for row in rows) for state in ('pending','confirmed','conflict','blocked','reconciled')}
+            base={'counts':counts,'data_transferred':False,'native_changed':False,
+                  'remote_snapshot_current':False}
+            if request_id is not None:
+                row=next((row for row in rows if row['request']['request_id']==request_id),None)
+                if row is None:return dict(base,status='not-found',request_id=request_id)
+                # Only this exact read exposes bodies; listing contains metadata.
+                return dict(base,status='retained',request=row['request'],reconciles=row['reconciles'],
+                            response=row['response'],remote_snapshot=row['remote'],
+                            local_queue=self._queue_result(row,rows)['local_queue'])
+            snapshot=sha(contract.encode(rows));offset=0
+            if cursor is not None:
+                match=re.fullmatch(r'([a-f0-9]{64}):([0-9]{1,6})',cursor)
+                if match is None or match[1]!=snapshot:raise ValueError('Queue changed; restart inspection without cursor.')
+                offset=int(match[2])
+                if offset>len(rows):raise ValueError('Invalid queue cursor; restart inspection.')
+            page=[]
+            for row in rows[offset:offset+64]:
+                check_request()
+                request=row['request'];params=request['params']
+                page.append({'request_id':request['request_id'],'method':request['method'],
+                             'kind':params['kind'],'id':params['id'],'expected_revision':params.get('expected_revision'),
+                             'local_queue':self._queue_result(row,rows)['local_queue']})
+            end=offset+len(page)
+            return dict(base,status='snapshot',entries=page,
+                        next_cursor=f'{snapshot}:{end}' if end<len(rows) else None)
+
     def _server_saved(self,response,request):
         if not isinstance(response,dict) or response.get('request_id')!=request['request_id'] or 'error' in response:return False
         receipt=response.get('persistence');value=response.get('result');params=request['params']
         if request['method']=='memory_event_submit':return contract.core_receipt(response,request)
-        if not isinstance(receipt,dict) or not isinstance(value,dict) or not isinstance(receipt.get('commit'),str) or not re.fullmatch(r'[a-f0-9]{40}',receipt['commit']):return False
+        if not isinstance(receipt,dict) or not isinstance(value,dict):return False
+        native=(params['kind']=='memory' and receipt.get('storage')=='tencent-l1' and isinstance(receipt.get('checkpoint'),str) and re.fullmatch(r'[a-f0-9]{64}',receipt['checkpoint']))
+        if not native and (not isinstance(receipt.get('commit'),str) or not re.fullmatch(r'[a-f0-9]{40}',receipt['commit'])):return False
         remote=receipt.get('state')=='remote-confirmed' and receipt.get('durable') is True and receipt.get('github_confirmed',True) is True and receipt.get('local_durable',True) is True
         local=receipt.get('state')=='local-confirmed' and receipt.get('durable') is False and receipt.get('local_durable') is True and receipt.get('github_confirmed') is False
         if not (remote or local):return False
@@ -573,14 +621,14 @@ class ContentAdapter:
         except Exception:return False
         return self._import_same(params['kind'],params.get('record'),value['record'],preserve_enabled=False)
 
-    def _queue_result(self,row):
+    def _queue_result(self,row,rows=None):
         result=row['response'] if row['state']!='pending' else {'request_id':row['request']['request_id'],'error':{'code':'content_upload_queued','retryable':True},'persistence':{'durable':False}}
         # Derived diagnostics only: never edit a retained request, its CAS base,
         # reconciliation references or ID to make a queued write go through.
         blockers=[]
         if row['state']=='pending':
             target=(row['request']['params']['kind'],row['request']['params']['id'])
-            for previous in self._queued():
+            for previous in self._queued() if rows is None else rows:
                 if previous['request']['request_id']==row['request']['request_id']:break
                 params=previous['request']['params'];rid=previous['request']['request_id']
                 if (previous['request']['method']!='memory_event_submit' and
@@ -591,18 +639,38 @@ class ContentAdapter:
             if blockers:
                 result=dict(result,error={'code':'content_queue_blocked','retryable':False})
         if blockers or row['state']=='conflict':
-            next_action=('Preserve all saved requests and request_ids. Read the current target with content_read and review the retained local proposals. '
+            next_action=('Inspect blockers and retained local proposals with content_queue_inspect, then read the current target with content_read. '
                          'Resolve conflicts with an explicitly reviewed content_put using a new stable request_id, the current expected_revision and reconciles.request_ids selecting the exact conflicts. '
                          'A blocked request requires review of its original error and an explicit identical retry after its cause is fixed. '
+                         'After confirmed reconciliation, dependents continue with their original CAS; review any resulting stale-revision conflicts. '
                          'Do not delete queue entries, change their CAS bases or use a new ID merely to retry an existing write.')
         elif row['state']=='blocked':
-            next_action='Review the original error, fix its cause, then explicitly retry the exact saved request and request_id. Refresh does not retry blocked writes.'
+            next_action='Inspect the original request and error with content_queue_inspect, fix its cause, then explicitly retry the exact saved request and request_id. Refresh does not retry blocked writes.'
         elif row['state']=='pending':
             next_action='Server persistence is unconfirmed. Retry the exact saved request and request_id after restoring connectivity; do not create a replacement write or change its CAS base.'
         elif row['state']=='reconciled':
             next_action='This proposal was resolved by a confirmed reconciliation. Keep the original evidence; do not resubmit it.'
         else:next_action='The Server receipt determines persistence; local mapping and running model context are separate.'
         receipt=result.get('persistence',{})
+        if row['state']=='confirmed' and row['request']['method']!='memory_event_submit':
+            backup=receipt.get('github_backup',{})
+            if not isinstance(backup,dict):backup={}
+            retry=backup.get('automatic_retry',{})
+            if not isinstance(retry,dict):retry={}
+            confirmed=receipt.get('state')=='remote-confirmed' and receipt.get('durable') is True
+            attention=backup.get('attention_required') is True or backup.get('state')=='review-required' or retry.get('state') in ('paused','review-required')
+            if confirmed:
+                next_action='Saved on the Server and GitHub backup confirmed. No further save action is needed.'
+            elif attention:
+                next_action='Saved on the Server. GitHub backup needs attention; inspect the backup diagnostic. Keep the saved request; do not create another write or poll for confirmation.'
+            elif retry.get('state')=='waiting':
+                next_action='Saved on the Server. GitHub backup is a separate background task. No additional write or polling is needed.'
+            else:
+                next_action='Saved on the Server. GitHub backup is not yet confirmed. Do not create another write to save the same content.'
+            # Only a validated Server receipt can produce this success summary.
+            # Keep the original receipt and diagnostics unchanged below it.
+            result=dict(write_status={'status':'saved','message':next_action,
+                                      'backup_status':'confirmed' if confirmed else 'needs-attention' if attention else 'pending'},**result)
         return dict(result,local_queue={'state':row['state'],'saved':True,'request_sha256':row['request_sha'],
                                        'server_saved':row['state']=='confirmed','github_confirmed':receipt.get('state')=='remote-confirmed' and receipt.get('durable') is True,
                                        'blocked_by':blockers,'resolution_request_id':row['resolution_request_id'],'next_action':next_action})
@@ -1059,7 +1127,8 @@ class ContentAdapter:
         response=self.client.request({'request_id':uuid.uuid4().hex,'method':method,'params':params})
         if 'error' in response:
             error=response['error']
-            if not isinstance(error,dict) or error.get('retryable') is not True or error.get('code') not in OFFLINE_TRANSPORT_ERRORS:self._deny_offline_snapshot()
+            race=method=='content_catalog' and isinstance(error,dict) and error.get('code')=='catalog_changed'
+            if not race and (not isinstance(error,dict) or error.get('retryable') is not True or error.get('code') not in OFFLINE_TRANSPORT_ERRORS):self._deny_offline_snapshot()
             raise CacheBlocked()
         if not isinstance(response.get('result'),dict):raise CacheBlocked()
         return response['result']
@@ -1075,8 +1144,7 @@ class ContentAdapter:
         if kind!='memory' and value!=contract.envelope(kind,identity,value['record']):raise CacheBlocked()
 
     def _fetch(self):
-        kinds=self.policy['kinds'];catalog=self._request('content_catalog',{'kinds':kinds})
-        if set(catalog)!={'content_api_version','commit','artifacts'} or catalog['content_api_version']!=1 or not re.fullmatch(r'[a-f0-9]{40}',catalog['commit']) or not isinstance(catalog['artifacts'],list) or len(catalog['artifacts'])>256:raise CacheBlocked()
+        kinds=self.policy['kinds'];catalog=self._catalog(kinds)
         # Reuse only a fully verified snapshot bound to this service and policy.
         # The live catalog revision, not the previous commit, determines reuse.
         cached={}
@@ -1090,7 +1158,7 @@ class ContentAdapter:
                     previous['content_api_version']==1 and previous['commit']==active['commit'] and
                     sha(contract.encode(previous))==active['snapshot_sha'] and
                     len(contract.encode(previous))<=SNAPSHOT_BYTES and
-                    isinstance(previous['records'],list) and len(previous['records'])<=256):
+                    isinstance(previous['records'],list)):
                 for value in previous['records']:
                     self._validate_target(value,value.get('kind'),value.get('id'))
                     kind,identity=value['kind'],value['id']
@@ -1111,10 +1179,28 @@ class ContentAdapter:
                 value=self._request('content_read',{'kind':kind,'id':identity})
             if set(value)!={'content_api_version','kind','id','revision','record'} or value['content_api_version']!=1 or value['kind']!=kind or value['id']!=identity or value['revision']!=item['revision'] or not re.fullmatch(r'[a-f0-9]{64}',value['revision']):raise CacheBlocked()
             contract.record(kind,value['record'],identity);records.append(value)
-        if self._request('content_catalog',{'kinds':kinds})!=catalog:raise CacheBlocked()
+        if self._catalog(kinds)!=catalog:raise CacheBlocked()
         snapshot={'content_api_version':1,'commit':catalog['commit'],'records':records}
         if len(contract.encode(snapshot))>SNAPSHOT_BYTES:raise CollectionCapacityExceeded()
         return snapshot
+
+    def _catalog(self,kinds):
+        cursor=None;commit=None;artifacts=[];seen=set();size=0
+        while True:
+            page=self._request('content_catalog',dict(kinds=kinds,**({'cursor':cursor} if cursor else {})))
+            try:contract.validate_catalog(page)
+            except ValueError:raise CacheBlocked() from None
+            if commit is not None and page['commit']!=commit:raise CacheBlocked()
+            commit=page['commit']
+            for row in page['artifacts']:
+                key=(row.get('kind'),row.get('id'))
+                if key in seen:raise CacheBlocked()
+                seen.add(key);artifacts.append(row);size+=len(contract.encode(row))
+                if size>SNAPSHOT_BYTES:raise CollectionCapacityExceeded()
+            next_cursor=page.get('next_cursor')
+            if next_cursor is None:return {'content_api_version':1,'commit':commit,'artifacts':artifacts}
+            if next_cursor==cursor:raise CacheBlocked()
+            cursor=next_cursor
 
     def _mapping(self,snapshot,owned):
         desired={};lines=['# Agent Brain cloud content','This mapping is a rebuildable cache. Read/upload through the approved Server API; do not write GitHub directly.','Cloud refresh does not replace already loaded model context.']
@@ -1185,7 +1271,7 @@ class ContentAdapter:
                 if journal and journal.get('phase') not in ('complete','rolled-back'):raise CacheBlocked()
                 self._owned();queue=self.queue_status()
                 snapshot=self._load('snapshots/'+active['commit']+'.json')
-                if not isinstance(snapshot,dict) or set(snapshot)!={'content_api_version','commit','records'} or snapshot['content_api_version']!=1 or snapshot['commit']!=active['commit'] or sha(contract.encode(snapshot))!=active['snapshot_sha'] or len(contract.encode(snapshot))>SNAPSHOT_BYTES or not isinstance(snapshot['records'],list) or len(snapshot['records'])>256:raise CacheBlocked()
+                if not isinstance(snapshot,dict) or set(snapshot)!={'content_api_version','commit','records'} or snapshot['content_api_version']!=1 or snapshot['commit']!=active['commit'] or sha(contract.encode(snapshot))!=active['snapshot_sha'] or len(contract.encode(snapshot))>SNAPSHOT_BYTES or not isinstance(snapshot['records'],list):raise CacheBlocked()
                 seen=set()
                 for value in snapshot['records']:
                     self._validate_target(value,value.get('kind'),value.get('id'))
@@ -1196,6 +1282,7 @@ class ContentAdapter:
                 result:dict|None
                 if request['method']=='content_catalog':
                     result={'content_api_version':1,'commit':snapshot['commit'],'artifacts':[{'kind':v['kind'],'id':v['id'],'revision':v['revision']} for v in snapshot['records'] if v['kind'] in params['kinds']]}
+                    result=contract.catalog_page(result,params.get('cursor'),[self.queue_sha,params['kinds']])
                 else:
                     result=next((v for v in snapshot['records'] if (v['kind'],v['id'])==(params['kind'],params['id'])),None)
                     if result is None:return unavailable('content_offline_cache_miss',True)
@@ -1213,6 +1300,8 @@ class ContentAdapter:
         error=result.get('error',{}) if isinstance(result,dict) else {}
         if isinstance(result,dict) and result.get('request_id')==request['request_id'] and isinstance(error,dict) and error.get('retryable') is True and error.get('code') in OFFLINE_TRANSPORT_ERRORS:
             return self._offline_read(request)
+        if (request['method']=='content_catalog' and isinstance(error,dict) and error.get('code')=='catalog_changed'
+                and isinstance(result,dict) and result.get('request_id')==request['request_id']):return result
         if isinstance(result,dict) and 'error' in result:
             self.offline_denied=True
             try:
@@ -1221,12 +1310,14 @@ class ContentAdapter:
             except Exception:pass
         return result
 
-    def refresh(self):
+    def refresh(self,*,replay=True):
         require_platform('cache-recovery',self.platform)
         stage='local-recovery'
         try:
             with locked(self.cache/'content.lock'):
-                self._recover();self._import_pending();self._drain();self._import_pending()
+                self._recover();self._import_pending()
+                if replay:self._drain()
+                self._import_pending()
                 queue=self.queue_status();imports=self.import_status()
                 if queue['pending'] or queue['conflict'] or queue['blocked'] or any(imports['counts'].get(v,0) for v in ('inventoried','pending','conflict','blocked')):
                     return {'status':'content-local-changes-retained','native_changed':False,'model_loaded':'unknown','queue':queue,'imports':imports,'next_action':'Reconnect to replay exact saved requests; explicitly reconcile conflicts before mapping.'}
@@ -1352,7 +1443,8 @@ class ContentAdapter:
                 self._validate_target(result.get('result'),params['kind'],params['id'])
         if method=='content_catalog' and 'error' not in result:
             value=result.get('result',{})
-            if set(value)!={'content_api_version','commit','artifacts'} or value['content_api_version']!=1 or not re.fullmatch(r'[a-f0-9]{40}',value.get('commit','')) or not isinstance(value.get('artifacts'),list) or len(value['artifacts'])>256:raise CacheBlocked()
+            try:contract.validate_catalog(value)
+            except ValueError:raise CacheBlocked() from None
             visible=[];seen=set()
             for item in value['artifacts']:
                 if not isinstance(item,dict) or set(item)!={'kind','id','revision'}:raise CacheBlocked()
@@ -1365,5 +1457,7 @@ class ContentAdapter:
         if method not in contract.WRITES:
             refresh={'status':'read-only','native_changed':False,'model_loaded':'unknown','next_action':'Mappings refresh at MCP startup and after confirmed writes; this read does not refresh native mappings.'}
         else:
-            refresh=({'status':'event-only','native_changed':False,'model_loaded':'unknown'} if method=='memory_event_submit' else self.refresh()) if result.get('local_queue',{}).get('state')=='confirmed' else {'status':'content-local-changes-retained','native_changed':False,'model_loaded':'unknown','queue':self.queue_status()}
+            # This write already drained once. Mapping must not silently retry
+            # another request whose acknowledgement was lost in that drain.
+            refresh=({'status':'event-only','native_changed':False,'model_loaded':'unknown'} if method=='memory_event_submit' else self.refresh(replay=False)) if result.get('local_queue',{}).get('state')=='confirmed' else {'status':'content-local-changes-retained','native_changed':False,'model_loaded':'unknown','queue':self.queue_status()}
         return dict(result,local_refresh=refresh)
