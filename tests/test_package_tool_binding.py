@@ -41,7 +41,7 @@ class BindingMigration(unittest.TestCase):
     def test_old_nine_tool_binding_is_authenticated_readonly_then_migrated(self):
         files=self.f.native_files()
         with patch.object(ci,'package_tools',side_effect=lambda package,policy,grant:content_mcp.enabled_tools(policy,grant)):
-            self.assertTrue(ci.inspect(self.f.home)['registration_verified'])
+            self.assertEqual(ci.inspect(self.f.home)['reason'],'mcp-binding-changed')
         self.assertTrue(ci.inspect(self.f.home)['registration_verified'])
         self.assertEqual(self.f.native_files(),files)
         profile=self.f.profile.read_bytes();policy=self.f.policy_path.read_bytes()
