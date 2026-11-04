@@ -48,11 +48,12 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
     def test_real_mcp_adapter_https_read_keeps_three_layers_and_proof(self):
         server = ContentServer(self.adapter, '0.6.3'); server.state = 'ready'
         listed = server.handle({'jsonrpc':'2.0','id':1,'method':'tools/list'})['tools']
-        tool = next(t for t in listed if t['name'] == 'memory_recall')
+        tool = next(t for t in listed if t['name'] == 'memory_query')
         self.assertTrue(tool['annotations']['readOnlyHint'])
+        self.assertNotIn('memory_recall',[t['name'] for t in listed])
         with patch.object(self.adapter, 'refresh', side_effect=AssertionError('No mapping refresh')), patch.object(self.adapter, '_drain', side_effect=AssertionError('No queue replay')):
             answer = server.handle({'jsonrpc':'2.0','id':2,'method':'tools/call',
-                                    'params':{'name':'memory_recall','arguments':{k:v for k,v in self.params.items() if k != 'limit'}}})
+                                    'params':{'name':'memory_query','arguments':{k:v for k,v in self.params.items() if k != 'limit'}}})
         self.assertFalse(answer['isError'], answer)
         found = answer['structuredContent']['result']['namespace_results'][0]['recall']
         self.assertEqual(found['L2'][0]['content'], 'Synthetic L2')
@@ -72,7 +73,7 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
                     before = copy.deepcopy(self.params)
                     server = ContentServer(self.adapter, '0.6.3'); server.state = 'ready'
                     result = server.handle({'jsonrpc':'2.0','id':2,'method':'tools/call',
-                                            'params':{'name':'memory_recall','arguments':self.params}})
+                                            'params':{'name':'memory_query','arguments':self.params}})
                     self.assertFalse(result['isError'], result)
                     found = result['structuredContent']['result']['namespace_results'][0]['recall']
                     self.assertEqual(found['L2'][0]['content'], 'Synthetic L2')
@@ -87,10 +88,10 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
             calls.append(copy.deepcopy(request))
             return {'request_id':request['request_id'],'error':{'code':'global_source_device_denied','retryable':False},'persistence':{'durable':False}}
         self.client.transport.request = deny
-        result = ContentServer(self.adapter).invoke('memory_recall', self.params)['structuredContent']
+        result = ContentServer(self.adapter).invoke('memory_query', self.params)['structuredContent']
         self.assertEqual(result['error']['code'], 'global_source_device_denied')
         self.assertEqual(result['source_admission']['status'], 'device-source-approval-required')
-        self.assertEqual([r['method'] for r in calls], ['memory_global_query'])
+        self.assertEqual([r['method'] for r in calls], ['memory_query'])
         self.assertFalse(gm.settings_path(self.fixture.home).exists())
 
     def test_forged_proof_raw_events_wrong_scope_and_excess_results_fail_closed(self):
@@ -103,12 +104,12 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
             def reply(request):
                 result = self.response(request); change(result['result']['namespace_results'][0]['recall']); return result
             self.client.transport.request = reply
-            with self.subTest(change=change): self.assertTrue(ContentServer(self.adapter).invoke('memory_recall', self.params)['isError'])
+            with self.subTest(change=change): self.assertTrue(ContentServer(self.adapter).invoke('memory_query', self.params)['isError'])
         self.client.transport.request = self.response
-        self.assertTrue(ContentServer(self.adapter).invoke('memory_recall', dict(self.params, limit=1))['isError'])
-        with self.assertRaises(ProtocolError): ContentServer(self.adapter).invoke('memory_recall', dict(self.params, enable=True))
+        self.assertTrue(ContentServer(self.adapter).invoke('memory_query', dict(self.params, limit=1))['isError'])
+        with self.assertRaises(ProtocolError): ContentServer(self.adapter).invoke('memory_query', dict(self.params, enable=True))
         self.fixture.cloud.grant['scopes'] = ['put']
-        with self.assertRaises(ProtocolError): ContentServer(self.adapter).invoke('memory_recall', self.params)
+        with self.assertRaises(ProtocolError): ContentServer(self.adapter).invoke('memory_query', self.params)
 
     def test_empty_never_approved_install_can_explicitly_select_existing_pool(self):
         home = self.fixture.home

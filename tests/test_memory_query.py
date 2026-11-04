@@ -1,97 +1,46 @@
-"""Query bypasses unrelated blocked mapping; no online-time claims offline."""
-
+"""One query entry and legacy aliases share the approved native read path."""
 import unittest
 from unittest.mock import patch
-import test_content_outbox as fixture
 from content_mcp import ContentServer, ProtocolError
+from test_windows_acceptance_repairs import WindowsAcceptanceRepairs
 
 
 class MemoryQueryClient(unittest.TestCase):
     def setUp(self):
-        self.fixture = fixture.Outbox(
-            "test_write_saved_and_fsynced_before_network_and_restart_reconnect"
-        )
-        self.fixture.setUp()
-        self.addCleanup(self.fixture.doCleanups)
+        self.f=WindowsAcceptanceRepairs();self.f.setUp();self.addCleanup(self.f.doCleanups)
 
-    def reply(self, request):
-        return {
-            "request_id": request["request_id"],
-            "result": {
-                "content_api_version": 1,
-                "commit": "a" * 40,
-                "method": "recent-updates",
-                "time_basis": "memory_updated_at",
-                "topics": [
-                    {
-                        "id": "synthetic-topic",
-                        "title": "Synthetic progress",
-                        "description": "Useful small fact",
-                        "revision": "b" * 64,
-                        "updated_at": "2026-10-12T12:00:00Z",
-                        "score": 0,
-                        "preview": "A small useful update",
-                    }
-                ],
-            },
-            "persistence": {"durable": False, "state": "read-only"},
-        }
+    def test_query_alias_and_defaults_do_not_refresh_or_replay(self):
+        adapter=self.f.adapter;server=ContentServer(adapter)
+        with patch.object(adapter,'refresh',side_effect=AssertionError('No refresh')),patch.object(adapter,'_drain',side_effect=AssertionError('No replay')):
+            current=server.invoke('memory_query',self.f.params)
+            legacy=server.invoke('memory_recall',self.f.params)
+            self.assertFalse(current['isError']);self.assertFalse(legacy['isError'])
+            self.assertEqual(current['structuredContent']['result'],legacy['structuredContent']['result'])
+            with patch('global_memory.discover',return_value=self.f.local):
+                default=server.invoke('memory_query',{'query':'Synthetic progress'})
+            self.assertFalse(default['isError'])
+            with patch('global_memory.discover',return_value=self.f.local):
+                alias=server.invoke('content_catalog',{'kinds':['memory'],'query':'Synthetic progress'})
+            self.assertFalse(alias['isError'])
+        self.assertFalse((self.f.fixture.cache/'outbox').exists())
+        with self.assertRaises(ProtocolError):server.invoke('memory_query',dict(self.f.params,since='2026-01-01T00:00:00Z'))
 
-    def test_mcp_defaults_and_query_does_not_refresh_or_touch_queue(self):
-        adapter = self.fixture.adapter
-        self.fixture.cloud.request = self.reply
-        with patch.object(
-            adapter,
-            "refresh",
-            side_effect=AssertionError(
-                "Unrelated blocked Skill refresh must not gate query"
-            ),
-        ):
-            response = ContentServer(adapter).invoke("memory_query", {})
-        self.assertFalse(response["isError"], response)
-        self.assertEqual(
-            response["structuredContent"]["result"]["topics"][0]["preview"],
-            "A small useful update",
-        )
-        self.assertFalse((self.fixture.cache / "outbox").exists())
-        with patch.object(
-            adapter, "refresh", side_effect=AssertionError("Query alias is read-only")
-        ):
-            alias = ContentServer(adapter).invoke(
-                "content_catalog", {"kinds": ["memory"], "query": ""}
-            )
-        self.assertFalse(alias["isError"], alias)
-        with self.assertRaises(ProtocolError):
-            ContentServer(adapter).invoke(
-                "content_catalog", {"kinds": ["rule"], "query": ""}
-            )
+    def test_transport_failure_is_unconfirmed_without_lexical_fallback(self):
+        def unavailable(request):raise OSError('Synthetic offline')
+        self.f.client.transport.request=unavailable
+        result=ContentServer(self.f.adapter).invoke('memory_query',self.f.params)
+        self.assertTrue(result['isError'])
+        self.assertEqual(result['structuredContent']['error']['code'],'layered_recall_unconfirmed')
 
-    def test_wrong_scope_or_response_is_rejected_and_offline_not_fresh(self):
-        adapter = self.fixture.adapter
-        self.fixture.cloud.request = lambda request: dict(
-            self.reply(request),
-            result=dict(
-                self.reply(request)["result"],
-                topics=[
-                    dict(self.reply(request)["result"]["topics"][0], id="not-allowed")
-                ],
-            ),
-        )
-        with patch.dict(adapter.policy["ids"], memory=["synthetic-topic"]):
-            self.assertTrue(
-                ContentServer(adapter).invoke("memory_query", {})["isError"]
-            )
-
-        def disconnected(request):
-            raise OSError("Synthetic disconnected")
-
-        self.fixture.cloud.request = disconnected
-        response = ContentServer(adapter).invoke("memory_query", {})
-        self.assertTrue(response["isError"])
-        self.assertEqual(
-            response["structuredContent"]["error"]["code"], "memory_query_unavailable"
-        )
+    def test_native_l1_save_receipt_does_not_require_a_fabricated_git_commit(self):
+        f=self.f.fixture;request={'request_id':'fictional_native_save_0001','method':'content_put',
+            'params':{'kind':'memory','id':'synthetic-topic','record':{'title':'Fictional','description':'Direct L1','body':'Fictional fact','type':'user'},'expected_revision':'missing'}}
+        params=request['params']
+        response={'request_id':request['request_id'],'result':{'content_api_version':1,'kind':'memory','id':params['id'],'revision':'b'*64,'record':params['record']},
+                  'persistence':{'storage':'tencent-l1','checkpoint':'c'*64,'state':'local-confirmed','durable':False,'local_durable':True,'github_confirmed':False}}
+        self.assertTrue(f.adapter._server_saved(response,request))
+        response['persistence']['checkpoint']='invalid'
+        self.assertFalse(f.adapter._server_saved(response,request))
 
 
-if __name__ == "__main__":
-    unittest.main()
+if __name__=='__main__':unittest.main()

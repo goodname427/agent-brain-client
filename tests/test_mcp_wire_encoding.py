@@ -24,6 +24,8 @@ def synthetic_worker(mode, encoding):
             return {'result': {'echo': request['params']},
                     'persistence': {'durable': False, 'state': 'read-only'}}
 
+        recall = invoke
+
         def request(self, request):
             return self.invoke(request)
 

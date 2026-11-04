@@ -2,11 +2,11 @@
 
 The ordinary MCP `memory_query` searches canonical destination Memory records.
 It does not read Tencent's L2 scenarios or L3 profile. Those derivatives travel
-through `memory_global_query`, the read-only MCP `memory_recall` entry and the owned `UserPromptSubmit` Hook. The Hook
+through `memory_query`, the read-only MCP `memory_query` entry and the owned `UserPromptSubmit` Hook. The Hook
 uses the current question, validates generation provenance and source
 applicability, and emits `hookSpecificOutput.additionalContext`.
 
-`memory_recall` accepts the current origin, a distinct reader session ID, a
+`memory_query` accepts the current origin, a distinct reader session ID, a
 question and an optional limit of 1–3. It uses the existing HTTPS identity and
 Server source gate, retaining the layer and committed event provenance; it does
 not enable sources, replay the outbox or call a model. See the
@@ -70,3 +70,5 @@ A business recall can admit a session on the Server and update a Client memory
 snapshot. It is not operationally write-free even when its persistence envelope
 says `read-only`. Investigation under a no-production-write restriction uses
 code, existing content-free receipts and isolated synthetic fixtures.
+
+The only daily query tool is `memory_query`; the hidden `memory_recall` alias forwards to it. Automatic Hooks also send `memory_query`. Direct Agent facts and extracted facts share native L1 after the Server's reviewed migration cutover. New native save receipts carry `storage=tencent-l1` and a checkpoint digest; local persistence does not prove remote backup.

@@ -319,6 +319,31 @@ def private_recall_text(text):
                 or re.search(r'-----BEGIN [A-Z ]*PRIVATE KEY-----|(?i:bearer)\s+[A-Za-z0-9_-]{24,}|(?i:api[_-]?key|password|secret[_-]?key)\s*[:=]\s*["\']?[^\s"\']{4,}|\bsk-[A-Za-z0-9_-]{20,}', text))
 
 
+def verified_memory_sources(proof, device, project, direct_l1=False):
+    sources=proof.get('sources',[]);manual=proof.get('manual_sources',[])
+    if (proof.get('status') not in ('verified-native-generation-graph','verified-l1-source-graph')
+            or not proof.get('generation_ids') and not (direct_l1 and manual)
+            or not sources and not manual or not isinstance(sources,list) or not isinstance(manual,list)
+            or len(sources)+len(manual)>100
+            or set(proof.get('event_ids',[]))!={s.get('event_id') for s in sources}):return False
+    for source in [*sources,*manual]:
+        if (not isinstance(source,dict) or source.get('state')!='committed'
+                or source.get('identity',{}).get('device_id')!=device
+                or source.get('identity',{}).get('project_id')!=project):return False
+    for source in manual:
+        if (proof.get('status')!='verified-l1-source-graph' or source.get('kind') not in ('agent','legacy-import')
+                or not re.fullmatch('abm-[a-f0-9]{64}',str(source.get('record_id')))
+                or not re.fullmatch('[a-f0-9]{64}',str(source.get('revision')))
+                or not re.fullmatch('[a-z0-9][a-z0-9-]{0,63}',str(source.get('original_id')))
+                or not isinstance(source.get('actor'),str) or not source['actor']
+                or not isinstance(source.get('device_id'),str) or not source['device_id']):return False
+        try:recall_origin(source.get('origin'))
+        except (ValueError,TypeError):return False
+        if source['kind']=='legacy-import' and (not re.fullmatch('[a-f0-9]{40}',str(source.get('commit')))
+                or not re.fullmatch('[a-f0-9]{64}',str(source.get('plan_sha256')))):return False
+    return True
+
+
 def global_recall_result(value, params, device):
     """Keep layer, committed event proof and source applicability intact."""
     global_recall_params(params)
@@ -338,9 +363,7 @@ def global_recall_result(value, params, device):
             if not isinstance(row['content'], str): raise ValueError('Recall text required')
             if private_recall_text(row['content']): raise ValueError('Private recall text excluded')
             proof = row['provenance']; sources = proof.get('sources', [])
-            if (proof.get('status') != 'verified-native-generation-graph' or not proof.get('generation_ids') or not sources
-                    or set(proof.get('event_ids', [])) != {s.get('event_id') for s in sources}
-                    or any(s.get('state') != 'committed' or s.get('identity', {}).get('device_id') != source_device or s.get('identity', {}).get('project_id') != group['project_id'] for s in sources)): raise ValueError('Committed generation provenance required')
+            if not verified_memory_sources(proof,source_device,group['project_id'],row in found['L1']):raise ValueError('Committed L1 source provenance required')
             source = row.get('source_context', {})
             if not isinstance(source, dict) or set(source) != {'origins', 'relation', 'use', 'global_rule'} or source['use'] != 'reference-only' or source['global_rule'] is not False or not isinstance(source['origins'], list) or not 1 <= len(source['origins']) <= 32: raise ValueError('Source applicability required')
             matches = [recall_origin(origin) == current for origin in source['origins']]

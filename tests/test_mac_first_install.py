@@ -397,7 +397,7 @@ class FirstInstall(unittest.TestCase):
         )
         reply = {
             "status": "content-native-protocol-checked",
-            "tool_contract_version": 1,
+            "tool_contract_version": plan["tool_contract_version"],
             "protocol_checked": True,
             "authentication_checked": True,
             "native_changed": False,

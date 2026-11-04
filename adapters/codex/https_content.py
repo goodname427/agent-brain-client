@@ -360,7 +360,7 @@ class HTTPSContentClient:
     def recall(self, request):
         """One read through the Server's existing per-device global source gate."""
         from content_contract import global_recall_params, global_recall_result
-        if self.device_task is not None or self.recall_policy is not None or request.get('method') != 'memory_global_query':
+        if self.device_task is not None or self.recall_policy is not None or request.get('method') not in ('memory_query','memory_global_query'):
             raise ValueError('Normal approved-source recall required')
         if 'read' not in self.grant['scopes'] or 'memory' not in self.grant['artifact_types']:
             raise ValueError('Memory read grant required')
