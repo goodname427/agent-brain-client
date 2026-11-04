@@ -857,10 +857,11 @@ def windows_launcher_handover(home, *, channel_factory=None, channel=None, befor
             raise ValueError("Trusted launcher candidate unavailable")
         row=rows[0]
         candidate=safe(Path(channel.engine.local)/'packages'/(row['manifest']['version']+'-'+row['commit']))
-        if str(candidate)==meta['package']:
-            return False
         ci.package_check(candidate,channel.engine.policy)
         plan=ci.prepare(home,candidate,meta['release_policy'],meta['release_policy_sha256'],replace_existing=True)
+        _,registered,_,_=ci.registered_context(home,meta)
+        if str(candidate)==meta['package'] and plan['mcp']==registered:
+            return False
         saved={'schema':1,'plan':plan,'active':before,'target_commit':row['commit']}
         # Confirm offline compatibility before making even a pending marker.
         probe_launcher(plan,before)
@@ -1046,6 +1047,7 @@ def manage_update(home, action, *, channel_factory=None):
             if before is None:
                 return dict(result, reason='verified-active-package-required')
             result.update(active_package_version=before['version'], active_package_commit=before.get('commit'))
+            result['tool_discovery']=content_install.tool_discovery(home,meta,before)
             if action == 'check-update':
                 discovered = channel.discover('codex', policy['platform'], before['version'])
                 rows = discovered.get('releases', [])
@@ -1058,7 +1060,7 @@ def manage_update(home, action, *, channel_factory=None):
                 launcher_update = meta['package'] != str(Path(channel.engine.local)/'packages'/(latest_version+'-'+latest_commit))
                 hook = hooks.refresh(home, check_only=True)
                 result['global_hook'] = hook
-                available = available or launcher_update or hook['update_available']
+                available = available or launcher_update or hook['update_available'] or result['tool_discovery']['registration_update_required']
                 result['launcher_update_available']=launcher_update
                 if channel.verified_active() != before:
                     return dict(result, reason='active-package-changed-during-check')
@@ -1127,6 +1129,8 @@ def manage_update(home, action, *, channel_factory=None):
                                         ('The compatible bootstrap handover is complete and the prior 0.3.0 package remains active. ' if bootstrap_migrated and after is not None and after['version']=='0.3.0' else '')+
                                         'Retry the same public update entry after reviewing the installation/channel state. Do not repeat pairing or import.')
             changed = after != before
+            current_meta=private_json(safe(Path(home)/'.config/agent-brain-client/codex-mcp.json'))
+            result['tool_discovery']=content_install.tool_discovery(home,current_meta,after)
             result.update(status='client-update-updated' if changed else 'client-update-current',
                           active_package_version=after['version'], active_package_commit=after.get('commit'),
                           latest_channel_version=after['version'], latest_channel_commit=after.get('commit'),

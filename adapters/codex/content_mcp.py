@@ -103,6 +103,8 @@ class ContentServer(Server):
     def __init__(self,adapter,client_version='0.2.0'):
         super().__init__(None,client_version);self.adapter=adapter
         self.client_runtime={'running_worker_version':client_version,'running_worker_commit':worker_commit(client_version),'service_mode':'approved-content'}
+        self.client_runtime.update(declared_tools=tool_names(adapter.methods(),self._memory_source_tools_authorized()),
+                                   host_tool_discovery='unknown',model_tool_visibility='unknown')
 
     def _memory_source_tools_authorized(self):
         policy=getattr(self.adapter,'policy',None)
@@ -243,6 +245,7 @@ class ContentServer(Server):
                 if name=='content_put':properties['reconciles']={'type':'object','description':'Local-only references to staged source plans or write conflicts; never sent to Server. A still-inventoried source plan can be reconciled only by the exact staged record; a conflicted plan may be reconciled by an explicit merge of the source and remote versions. Only durable confirmation resolves them.','properties':{'request_ids':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256},'source_keys':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256}},'required':['request_ids','source_keys'],'additionalProperties':False}
                 description='Approved cloud content only. Server is the sole write boundary; retain CAS revision and request_id on write retries. Transport failures may return a verified stale snapshot with local_cache.stale=true; cache misses never prove remote absence. Local cache refresh does not reload existing model context. '
                 if name=='content_catalog':description+='AgentBrain destination records only; this does not discover Harness-native sources. Pass kinds only for the complete authorized target inventory; there is no pagination limit. Query/since/until/limit selects a Memory-only retrieval alias capped at 3. '
+                if name=='memory_query':description+='Canonical destination Memory topics only. For L1/L2/L3 derived memory use memory_recall when declared; an empty topic search does not establish that derived layers are absent. '
                 if name in ('memory_query','content_read','content_catalog'):description+=RECALL_EVIDENCE_GUIDANCE
                 description+='Running worker version: '+self.client_version+'. '+UPDATE_GUIDANCE
                 tools.append({'name':name,'description':description,'inputSchema':{'type':'object','properties':properties,'required':required,'additionalProperties':False},'annotations':{'readOnlyHint':name not in contract.WRITES,'destructiveHint':name=='content_remove','idempotentHint':True}})

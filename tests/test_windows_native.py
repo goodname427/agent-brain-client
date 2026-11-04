@@ -638,6 +638,24 @@ class WindowsNative(unittest.TestCase):
         # A failed old launcher can leave MCP registered with no content cache.
         # Ordinary retained-data uninstall/reinstall must work from that state.
         self.assertFalse(Path(runtime['content_cache']).exists())
+        # A legacy host filter must be repaired even when the launcher and
+        # active package already match. Exercise the real Windows transaction,
+        # preserving the existing host inode and sandbox security descriptor.
+        legacy=ci.prepare(self.home,meta['package'],meta['release_policy'],meta['release_policy_sha256'],True)
+        legacy['mcp']['enabled_tools']=['content_catalog','content_put','content_read']
+        legacy['config_after_sha256']=ci.sha(ci.render(config.read_bytes(),legacy['mcp'],True))
+        with patch.object(ci,'prepare',return_value=legacy):
+            self.assertTrue(ci.apply(legacy,ci.sha(ci.contract.encode(legacy)),lambda p:None)['installed'])
+        checked=wizard.manage_update(self.home,'check-update',channel_factory=channel)
+        self.assertEqual(checked['status'],'client-update-available',checked)
+        self.assertIn('memory_recall',checked['tool_discovery']['blocked_by_registration'])
+        repaired=wizard.manage_update(self.home,'update',channel_factory=channel)
+        self.assertTrue(repaired['native_changed'],repaired)
+        self.assertTrue(repaired['reload_required'])
+        self.assertEqual(repaired['tool_discovery']['blocked_by_registration'],[])
+        self.assertEqual(config.stat().st_ino,inode)
+        self.assertEqual(host_security(config),file_security)
+        self.assertEqual(host_security(native),directory_security)
         config.write_bytes(config.read_bytes().replace(b'enabled = true',b'enabled = false'))
         self.assertEqual(lifecycle.uninstall(self.home,lambda message:'Continue')['status'],'client-uninstalled')
         private_mode(Path(runtime['content_cache']),directory=True,owner=True)

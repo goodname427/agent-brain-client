@@ -47,6 +47,10 @@ with tempfile.TemporaryDirectory(dir=Path(os.environ['HOME'])) as temporary:
     server.handle({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
     actual = server.handle({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'})
     assert sorted(tool['name'] for tool in actual['tools']) == result['tools']
+    assert server.client_runtime['declared_tools'] == result['tools']
+    assert 'memory_recall' in result['tools']
+    assert server.client_runtime['host_tool_discovery'] == 'unknown'
+    assert server.client_runtime['model_tool_visibility'] == 'unknown'
 if '--installation-result' in sys.argv:
     print(json.dumps(result))
     raise SystemExit(0)
