@@ -801,6 +801,33 @@ def pinned_update_runtime(home, action, policy, mcp, native, runner):
                    '--action', action], env=environment, stdin=subprocess.DEVNULL).returncode
 
 
+def completed_reinstall_registration(home, current, meta):
+    """Recognize only the current install or its exact transaction predecessor."""
+    if current['plan_sha256'] == meta['plan_sha256']:
+        return meta
+    import base64
+    import content_install as ci
+    registration = safe(Path(home) / '.config/agent-brain-client/codex-mcp.json')
+    receipt = private_json(registration.parent / 'content-install-receipt.json')
+    registered = ci.raw(registration)
+    row = receipt.get('before', {}).get(str(registration), {})
+    if (receipt.get('schema') != 1 or receipt.get('phase') != 'complete'
+            or receipt.get('plan_sha256') != meta['plan_sha256']
+            or receipt.get('after', {}).get(str(registration)) != sha(registered)
+            or json.loads(registered, object_pairs_hook=ci.pairs) != meta
+            or set(row) != {'data', 'sha', 'mode'} or not isinstance(row['data'], str)):
+        raise ValueError('Unconfirmed reinstall predecessor preserved')
+    previous_raw = base64.b64decode(row['data'], validate=True)
+    previous = json.loads(previous_raw, object_pairs_hook=ci.pairs)
+    if (sha(previous_raw) != row['sha'] or not isinstance(previous, dict)
+            or previous.get('schema') != 1 or previous.get('content_candidate') is not True
+            or previous.get('plan_sha256') != current['plan_sha256']
+            or previous.get('native_mcp_name') != meta['native_mcp_name']
+            or previous.get('platform') != meta['platform']):
+        raise ValueError('Unconfirmed reinstall predecessor preserved')
+    return previous
+
+
 def retire_completed_reinstall(home, meta):
     """Archive a proven completed reinstall before replacing its registration."""
     import content_install as ci
@@ -811,13 +838,15 @@ def retire_completed_reinstall(home, meta):
         return
     current = private_json(current_path)
     if (set(current) != {'schema', 'removed_plan_sha256', 'plan', 'plan_sha256'}
-            or current['schema'] != 1 or current['plan_sha256'] != meta['plan_sha256']):
+            or current['schema'] != 1):
         raise ValueError('Unconfirmed reinstall marker preserved')
+    binding = completed_reinstall_registration(home, current, meta)
     plan = pinned(current['plan'], current['plan_sha256'])
     ci.validate_install_scope(plan)
-    if (plan['device_home'] != str(home) or plan['package'] != meta['package']
-            or plan['release_policy'] != meta['release_policy']
-            or plan['release_policy_sha256'] != meta['release_policy_sha256']
+    if (plan['device_home'] != str(home) or plan['package'] != binding['package']
+            or plan['package_sha256'] != binding['package_sha256']
+            or plan['release_policy'] != binding['release_policy']
+            or plan['release_policy_sha256'] != binding['release_policy_sha256']
             or not ci.inspect(home).get('registration_verified')):
         raise ValueError('Completed reinstall binding changed')
     same_private(state / ('prior-reinstall-current-' + sha(canonical(current)) + '.json'), current)

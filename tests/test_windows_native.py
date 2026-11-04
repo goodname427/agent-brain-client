@@ -647,6 +647,20 @@ class WindowsNative(unittest.TestCase):
         legacy['config_after_sha256']=ci.sha(ci.render(config.read_bytes(),legacy['mcp'],True))
         with patch.object(ci,'prepare',return_value=legacy):
             self.assertTrue(ci.apply(legacy,ci.sha(ci.contract.encode(legacy)),lambda p:None)['installed'])
+        # A completed transaction can supersede an old reinstall marker while
+        # retaining the three-tool filter. Preserve the old plan and archive
+        # the marker only after authenticating that exact predecessor image.
+        reinstall_plan = state/'first-install/synthetic-retained-reinstall.json'
+        ci.save(reinstall_plan, legacy)
+        retained = {'schema':1, 'removed_plan_sha256':'c'*64,
+                    'plan':str(reinstall_plan), 'plan_sha256':ci.sha(ci.contract.encode(legacy))}
+        marker = state/'first-install/reinstall-current.json'
+        ci.save(marker, retained)
+        superseding = ci.prepare(self.home,meta['package'],meta['release_policy'],meta['release_policy_sha256'],True)
+        superseding['mcp']['enabled_tools'] = legacy['mcp']['enabled_tools']
+        superseding['config_after_sha256'] = ci.sha(ci.render(config.read_bytes(),superseding['mcp'],True))
+        with patch.object(ci,'prepare',return_value=superseding):
+            self.assertTrue(ci.apply(superseding,ci.sha(ci.contract.encode(superseding)),lambda p:None)['installed'])
         checked=wizard.manage_update(self.home,'check-update',channel_factory=channel)
         self.assertEqual(checked['status'],'client-update-available',checked)
         self.assertIn('memory_recall',checked['tool_discovery']['blocked_by_registration'])
@@ -655,6 +669,9 @@ class WindowsNative(unittest.TestCase):
         self.assertIsNone(repaired['reload_required'])
         self.assertTrue(repaired['reload_check']['mcp_registration_changed'])
         self.assertEqual(repaired['tool_discovery']['blocked_by_registration'],[])
+        self.assertFalse(marker.exists())
+        archive = marker.parent/('prior-reinstall-current-'+wizard.sha(wizard.canonical(retained))+'.json')
+        self.assertEqual(ci.private_json(archive),retained)
         self.assertEqual(config.stat().st_ino,inode)
         self.assertEqual(host_security(config),file_security)
         self.assertEqual(host_security(native),directory_security)

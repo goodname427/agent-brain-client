@@ -351,6 +351,73 @@ class LauncherClosure(unittest.TestCase):
         self.assertEqual(ci.private_json(marker), value)
         self.assertEqual(self.f.config.read_bytes(), before)
 
+    def superseded_reinstall(self):
+        state = self.f.home / '.config/agent-brain-client/first-install'
+        state.mkdir(mode=0o700)
+        plan = state / 'synthetic-reinstall-plan.json'
+        ci.save(plan, self.original_plan)
+        marker = state / 'reinstall-current.json'
+        value = {'schema': 1, 'removed_plan_sha256': 'a' * 64,
+                 'plan': str(plan), 'plan_sha256': self.meta['plan_sha256']}
+        ci.save(marker, value)
+        # A later completed native transaction supersedes the reinstall. Its
+        # exact registration preimage proves the marker is historical, even
+        # when the reviewed policy path changes in that later transaction.
+        policy = state / 'synthetic-replacement-policy.json'
+        policy.write_bytes(self.f.policy_path.read_bytes())
+        policy.chmod(0o600)
+        replacement = ci.prepare(self.f.home, self.f.package, policy,
+                                 self.f.policy_sha, replace_existing=True)
+        self.assertTrue(ci.apply(replacement, self.f.digest(replacement), lambda p: None)['installed'])
+        self.meta = ci.private_json(self.f.home / '.config/agent-brain-client/codex-mcp.json')
+        self.assertNotEqual(self.meta['plan_sha256'], value['plan_sha256'])
+        return marker, value
+
+    def test_handover_archives_exact_superseded_reinstall_predecessor(self):
+        marker, value = self.superseded_reinstall()
+        before = self.f.config.read_bytes()
+        # The evidence check itself is read-only.
+        previous = wizard.completed_reinstall_registration(self.f.home, value, self.meta)
+        self.assertEqual(previous['plan_sha256'], value['plan_sha256'])
+        self.assertEqual(self.f.config.read_bytes(), before)
+        self.assertEqual(ci.private_json(marker), value)
+        self.assertTrue(self.handover())
+        self.assertFalse(marker.exists())
+        archive = marker.parent / ('prior-reinstall-current-' + wizard.sha(wizard.canonical(value)) + '.json')
+        self.assertEqual(ci.private_json(archive), value)
+        self.assertTrue(ci.inspect(self.f.home)['registration_verified'])
+
+    def test_superseded_marker_requires_complete_exact_predecessor_evidence(self):
+        marker, value = self.superseded_reinstall()
+        receipt = self.f.home / '.config/agent-brain-client/content-install-receipt.json'
+        original = ci.private_json(receipt)
+        config = self.f.config.read_bytes()
+        for change in ('phase', 'plan', 'target', 'image', 'predecessor'):
+            altered = copy.deepcopy(original)
+            registration = str(receipt.parent / 'codex-mcp.json')
+            if change == 'phase':
+                altered['phase'] = 'applying'
+            if change == 'plan':
+                altered['plan_sha256'] = 'b' * 64
+            if change == 'target':
+                altered['after'][registration] = 'b' * 64
+            if change == 'image':
+                altered['before'][registration]['sha'] = 'b' * 64
+            if change == 'predecessor':
+                import base64
+                row = altered['before'][registration]
+                prior = json.loads(base64.b64decode(row['data']))
+                prior['plan_sha256'] = 'b' * 64
+                raw = ci.contract.encode(prior)
+                row.update(data=base64.b64encode(raw).decode(), sha=ci.sha(raw))
+            ci.save(receipt, altered)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                wizard.retire_completed_reinstall(self.f.home, self.meta)
+            self.assertEqual(ci.private_json(marker), value)
+            self.assertEqual(self.f.config.read_bytes(), config)
+            self.assertFalse(list(marker.parent.glob('prior-reinstall-current-*.json')))
+        ci.save(receipt, original)
+
     def test_normal_install_retry_dispatches_applying_launcher_before_original_plan(
         self,
     ):

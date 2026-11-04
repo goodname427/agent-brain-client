@@ -33,3 +33,11 @@
 `check-update` / `update` 的 `tool_discovery` 分别报告 `active_package_tools`、`registered_enabled_tools` 和 `blocked_by_registration`。同版本缺少工具时仍报告需要更新。MCP 回执的 `client_runtime.offered_tools` 报告实际 worker 声明的清单；CLI 的 `host_tool_discovery` / `model_tool_visibility` 和 MCP 的 `host_tool_visibility` / `model_loaded` 保持 `unknown`，不能把包声明或配置匹配冒称模型已可调用。普通 `memory_query` 的说明明确区分 topic 检索与分层召回。
 
 回归覆盖旧三工具同包修复、九到十项迁移、暂停与外部编辑保护，以及待发送文件逐字节保留。源代码和实际构建包的离线 MCP checkpoint 核对计划清单、`tools/list` 与 worker 声明，在现有 Mac/Windows CI 入口执行。最终仍需在两端宿主中确认模型发现 `memory_recall` 并完成受控 L2/L3 调用；这里的合成验证不作该项声明。
+
+## 0.6.9 后的旧重装标记
+
+活动包升级不等于固定启动器或工具登记升级。只读设备核对可同时发现当前活动包声明十项，而原生登记仍绑定旧启动器和三项过滤；当前会话没有新鲜 worker 回执时，worker 与模型可见性继续报告未知。没有保留完整更新命令输出，也不能凭此倒推之前走过哪条升级路径。
+
+另一个确证阻断是 `reinstall-current.json`：旧重装已被后续完成的原生安装事务替代，但退休检查只接受标记与当前登记的计划摘要相同，因而以 `Unconfirmed reinstall marker preserved` 停止启动器迁移。现在还允许一个严格限定的历史情形：当前登记已核验，完成事务的登记后像精确匹配当前文件，其校验过的登记前像正是旧标记对应的计划、包、平台与策略绑定。只识别这个直接前驱，不猜测多轮历史、不改摘要、不删除计划；将标记逐字保存在原归档路径后，才沿既有事务迁移启动器和工具过滤。
+
+未知、未完成、前后像不符或缺少历史计划的标记继续保留并停止。合成回归覆盖 Mac 公开更新路径、Windows 原生文件与权限保留、策略路径已变更的前驱，以及伪造/中断证据拒绝。真实设备诊断只读；源码修复合入不代表设备已应用迁移，更不能证明宿主已重新声明工具。
