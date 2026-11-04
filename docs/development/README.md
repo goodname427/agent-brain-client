@@ -10,6 +10,8 @@
 
 采集来源诊断和普通 MCP 分层读取修复见 [Windows 验收修复](windows-acceptance-repairs.md)。
 
+跨版本工具白名单与固定启动器升级兼容见 [工具绑定迁移](tool-binding-migration.md)。
+
 ```sh
 TEST_ROOT=$(mktemp -d)
 mkdir -p "$TEST_ROOT/home" "$TEST_ROOT/codex"
