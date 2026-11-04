@@ -192,6 +192,33 @@ def release_evidence(paths, plan):
             'trust': 'operator-retained receipts and logs; not signed CI attestations'}
 
 
+def hybrid_evidence(paths, plan, api):
+    """Local Mac scopes and live official Windows job identities stay separate."""
+    evidence, checked = {}, {}
+    required = {('documentation', (3, 12)), ('source', (3, 12)), ('macos', (3, 12))}
+    trees = {plan['source_tree'], plan.get('executor_tree', plan['source_tree'])}
+    if any(json.loads(Path(path).read_bytes()).get('source_tree') not in trees for path in paths):
+        raise ValueError('Unexpected local evidence tree')
+    for label, tree in (('source', plan['source_tree']),
+                        ('executor', plan.get('executor_tree', plan['source_tree']))):
+        if tree not in checked:
+            rows = {}
+            for path in paths:
+                if json.loads(Path(path).read_bytes()).get('source_tree') != tree:
+                    continue
+                key, row = load_receipt(path, tree)
+                if key in rows:
+                    raise ValueError('Duplicate local check evidence')
+                rows[key] = row
+            if set(rows) != required:
+                raise ValueError('Complete local documentation/source/macOS evidence required: ' + label)
+            checked[tree] = {'local': [rows[key] for key in sorted(rows)],
+                             'github_windows': api.windows_ci({'source_tree': tree})}
+        evidence[label] = checked[tree]
+    return {'mode': 'hybrid', 'github_actions': 'windows-jobs-only', 'trees': evidence,
+            'trust': 'local receipts and logs plus live official GitHub job records; no overall CI success claimed'}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('scope', choices=COMMANDS)

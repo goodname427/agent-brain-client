@@ -156,6 +156,54 @@ class LocalChecks(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'macOS'):
                 rc.prepare_local(Path('unused'), '1' * 40, 'auto', 'all')
 
+    def test_hybrid_requires_all_local_mac_scopes_and_keeps_official_windows_separate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = complete(root)[:3]
+            plan = {'source_tree': TREE, 'executor_tree': '3' * 40}
+            api = unittest.mock.Mock()
+            api.windows_ci.return_value = {'scope': 'windows-jobs-only', 'run_id': 12}
+            with self.assertRaisesRegex(ValueError, 'executor'):
+                cc.hybrid_evidence(paths, plan, api)
+            paths += complete(root, '3' * 40)[:3]
+            result = cc.hybrid_evidence(paths, plan, api)
+            self.assertEqual(result['mode'], 'hybrid')
+            for label in ('source', 'executor'):
+                self.assertEqual(len(result['trees'][label]['local']), 3)
+                self.assertEqual(result['trees'][label]['github_windows']['scope'], 'windows-jobs-only')
+            for index in range(len(paths)):
+                with self.assertRaises(ValueError):
+                    cc.hybrid_evidence(paths[:index] + paths[index + 1:], plan, api)
+            with self.assertRaisesRegex(ValueError, 'Duplicate'):
+                cc.hybrid_evidence(paths + [paths[0]], plan, api)
+            with self.assertRaisesRegex(ValueError, 'Unexpected'):
+                cc.hybrid_evidence(paths + [receipt(root, 'source', tree='9' * 40)], plan, api)
+            with self.assertRaises(ValueError):
+                cc.hybrid_evidence(paths + [root / ('windows-3.11.15-' + TREE[:5]) / 'checks.json'], plan, api)
+
+    def test_hybrid_rejects_missing_windows_before_any_remote_write_and_reuses_publication(self):
+        plan, assets = fixtures.platform_fixture()
+        plan['executor_tree'] = plan['source_tree']
+        remote = fixtures.PlatformRemote(plan, assets)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = complete(root, plan['source_tree'])[:3]
+            with patch.object(rc, 'git', side_effect=remote.git), \
+                    patch.object(rc, 'remote_ref', side_effect=remote.ref), \
+                    patch.object(rc, 'download_assets'), \
+                    patch.object(remote, 'windows_ci', create=True, side_effect=ValueError('Windows missing')) as windows:
+                with self.assertRaisesRegex(ValueError, 'Windows missing'):
+                    rc.publish(root, remote, plan, local_checks=paths, hybrid_checks=True)
+                self.assertEqual(remote.events, [])
+                windows.side_effect = None
+                windows.return_value = {'scope': 'windows-jobs-only', 'run_id': 12}
+                fixtures.ReleasePipeline.setup_output(self, root, assets)
+                windows.reset_mock()
+                rc.publish(root, remote, plan, local_checks=paths, hybrid_checks=True)
+                windows.assert_called_once_with({'source_tree': plan['source_tree']})
+            self.assertEqual(remote.latest, plan['tags']['installer'])
+            self.assertEqual(json.loads((root / 'ci.json').read_bytes())['mode'], 'hybrid')
+
     def test_local_commands_cover_every_workflow_check_and_keep_native_matrix(self):
         workflow = (cc.ROOT / '.github/workflows/client-checks.yml').read_text()
         parts = re.split(r'^  ([a-z-]+):\n', workflow.split('\njobs:\n', 1)[1], flags=re.M)
