@@ -19,6 +19,11 @@ A change to the managed command, timeout or options reports its field path and
 preserves the file. The updater retains capture approval, source identity,
 `global.off`, host trust decisions and a paused MCP service.
 
+The public update/check-update receipt includes `conflict_field` for a managed
+conflict, including the affected MCP table when only a table digest is known.
+A continuously edited file reports `config-edit-in-progress` with a retry action.
+Neither receipt echoes command values or hides behind a generic Hook failure.
+
 Before an authorized launcher update starts writing, its plan can be regenerated
 against the latest unowned configuration. The package, policy, registration and
 other approved inputs must stay the same. Existing applying transactions retain

@@ -21,6 +21,12 @@ BEGIN = '# agent-brain-global-memory:begin'
 END = '# agent-brain-global-memory:end'
 
 
+class ManagedHookConflict(ValueError):
+    def __init__(self, field):
+        self.field = field
+        super().__init__('Outside edit to owned global Hook preserved: ' + field)
+
+
 def read_receipt(path):
     path=old.canonical(path,existing=True)
     private_mode(path,owner=True)
@@ -169,7 +175,7 @@ def owned_conflict(previous, candidates):
     try:
         path = difference(tomllib.loads(previous or ''), tomllib.loads(candidates[0] or ''), 'config')
     except (ValueError, TypeError, IndexError): path = 'hooks'
-    return ValueError('Outside edit to owned global Hook preserved: ' + (path or 'hooks'))
+    return ManagedHookConflict(path or 'hooks')
 
 
 def typed_equal(x, y):

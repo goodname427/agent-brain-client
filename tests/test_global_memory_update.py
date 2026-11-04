@@ -498,7 +498,8 @@ class GlobalMemoryUpdate(unittest.TestCase):
     def test_inline_hooks_and_marker_looking_string_data_are_semantic(self):
         config = hooks.tomllib.loads(self.config.read_text())
         config['hooks']['Stop'].insert(0, {'hooks': [{'type': 'command', 'command': 'synthetic-foreign'}]})
-        raw = ('description = """\n' + hooks.BEGIN + '\n[hooks.Stop]\n' + hooks.END + '\n"""\n'
+        raw = ('# synthetic comment\u2028' + hooks.BEGIN + '\n'
+               + 'description = """\n' + hooks.BEGIN + '\n[hooks.Stop]\n' + hooks.END + '\n"""\n'
                + 'hooks = ' + host.toml_literal(config['hooks']) + '\n'
                + hooks.BEGIN + '\n' + hooks.END + '\n').encode()
         self.config.write_bytes(raw)

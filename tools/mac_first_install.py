@@ -1007,6 +1007,19 @@ def manage_update(home, action, *, channel_factory=None):
     return result
 
 
+def config_conflict(result, field, reason='managed-config-conflict'):
+    return dict(result, status='client-update-review-required', reason=reason,
+                conflict_field=field, update_available=None,
+                next_action='Resolve the conflicting Agent Brain setting at ' + field +
+                ', then rerun the same update entry. Existing user configuration and source approval are preserved.')
+
+
+def config_busy(result):
+    return dict(result, status='client-update-review-required', reason='config-edit-in-progress',
+                update_available=None,
+                next_action='config.toml is still being edited. Let the editor finish, then rerun the same update entry; concurrent changes were preserved.')
+
+
 def _manage_update(home, action, *, channel_factory=None):
     """Reuse the registered updater; no pairing or worker restart.
 
@@ -1014,6 +1027,8 @@ def _manage_update(home, action, *, channel_factory=None):
     The CLI cannot observe host worker versions. MCP responses report their own.
     """
     import content_install
+    import global_memory_install as hooks
+    from codex_connect import HostConfigChanged
     from content_install import inspect, registered_context
     result = {
         'operation': action, 'status': 'client-update-review-required',
@@ -1030,7 +1045,6 @@ def _manage_update(home, action, *, channel_factory=None):
     try:
         if action not in ('check-update', 'update'):
             raise ValueError('Known maintenance action required')
-        import global_memory_install as hooks
         if hooks.recover_update(home, check_only=action == 'check-update'):
             if action == 'check-update':
                 return dict(result, reason='global-hook-recovery-required', native_changed=None)
@@ -1110,6 +1124,8 @@ def _manage_update(home, action, *, channel_factory=None):
             handover_path.unlink()
         state = inspect(home)
         if not state.get('registration_verified') or state.get('installation_state') not in ('verified', 'verified-disabled'):
+            if state.get('reason') == 'mcp-binding-changed':
+                return config_conflict(result, 'mcp_servers.' + content_install.NAME, state['reason'])
             return dict(result, reason=state.get('reason', 'verified-installation-required'))
         meta = private_json(safe(Path(home) / '.config/agent-brain-client/codex-mcp.json'))
         policy, registered_mcp, _, _ = registered_context(home, meta)
@@ -1230,6 +1246,10 @@ def _manage_update(home, action, *, channel_factory=None):
             # Update only its executable code, preserving all source decisions.
             try:
                 hook = hooks.refresh(home)
+            except hooks.ManagedHookConflict as error:
+                return config_conflict(result, error.field)
+            except HostConfigChanged:
+                return config_busy(result)
             except Exception:
                 return dict(result, status='client-update-review-required',
                             reason='global-hook-refresh-required', native_changed=None,
@@ -1244,6 +1264,10 @@ def _manage_update(home, action, *, channel_factory=None):
         finally:
             os.environ.clear()
             os.environ.update(previous)
+    except hooks.ManagedHookConflict as error:
+        return config_conflict(result, error.field)
+    except HostConfigChanged:
+        return config_busy(result)
     except Exception:
         pending=(Path(home)/'.config/agent-brain-client/launcher-handover.json').exists()
         return dict(result,native_changed=None if pending else bootstrap_migrated or hook_changed,

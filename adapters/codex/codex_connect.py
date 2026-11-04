@@ -70,7 +70,9 @@ def toml_statements(text):
     """
     tomllib.loads(text)
     context, prefix, pending, start, offset = (), '', '', 0, 0
-    for line in text.splitlines(keepends=True):
+    # TOML line breaks are LF/CRLF. Unicode separators can be ordinary comment
+    # or string data and must not expose a spurious header or marker line.
+    for line in re.findall(r'[^\n]*\n|[^\n]+$', text):
         pending += line
         offset += len(line)
         try: parsed = tomllib.loads(pending)
