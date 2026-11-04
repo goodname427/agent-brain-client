@@ -69,9 +69,47 @@ def admission_state(value):
     if value['approved_scope_sha256'] != pin: reasons.append('local-source-approval-required')
     if value['server_scope_sha256'] != pin: reasons.append('server-source-approval-unconfirmed')
     if (settings_path(value['device_home']).parent / 'global.off').exists(): reasons.append('local-stop-fence')
+    if not reasons: next_action = 'check-authenticated-server-source-status'
+    elif reasons == ['local-stop-fence']: next_action = 'explicit-global-resume-for-the-existing-approved-source'
+    elif 'source-scope-empty' in reasons or 'local-source-approval-required' in reasons:
+        next_action = 'preview-exact-future-source-scope-and-prepare-device-packet'
+    elif 'server-source-approval-unconfirmed' in reasons:
+        next_action = 'check-server-and-have-existing-operator-apply-the-saved-device-packet'
+    else: next_action = 'check-server-and-activate-the-original-approved-device-packet'
     return {'status':'locally-ready' if not reasons else 'configuration-required', 'reasons':reasons,
-            'next_action':'check-authenticated-server-source-status' if not reasons else 'preview-exact-future-source-scope-and-prepare-device-packet',
+            'next_action':next_action,
             'historical_import':False, 'permissions_changed':False}
+
+
+def resume(value):
+    """Resume only an already approved source; preserve fences on uncertainty."""
+    legacy_sources = [row for row in value.get('legacy_projects', []) if row.get('capture_delegated', True)]
+    if not value['server_scope_sha256'] and legacy_sources:
+        # Preserve the original per-project control path; it cannot activate
+        # the unapproved expanded scope on this device.
+        off = settings_path(value['device_home']).parent / 'global.off'
+        off.touch(mode=0o600)
+        for row in legacy_sources:
+            source = old.load(row['settings'], row['settings_sha256'])
+            old.daily_command(source, 'resume')
+        off.unlink()
+        return {'status':'global-memory-legacy-resumed', 'collection_enabled':False,
+                'legacy_capture_resumed':True, 'remote_confirmed':True,
+                'next_action':admission_state(value)['next_action']}
+    state = admission_state(value)
+    if any(reason != 'local-stop-fence' for reason in state['reasons']):
+        return {'status':'global-memory-activation-required', 'collection_enabled':False,
+                'remote_confirmed':False, 'admission':state, 'permissions_changed':False}
+    off = settings_path(value['device_home']).parent / 'global.off'
+    off.touch(mode=0o600)
+    response = GlobalClient(value).wire('memory_global_resume', {})
+    result = response.get('result', {})
+    if 'error' in response or result.get('schema') != 1 or result.get('stopped') is not False:
+        return {'status':'global-memory-resume-unconfirmed', 'collection_enabled':False,
+                'remote_confirmed':False, 'server_error':response.get('error'), 'local_stop_fence':True,
+                'next_action':'Inspect global-status --check-server and the existing Server source; preserve the local stop fence.'}
+    off.unlink()
+    return {'status':'global-memory-resumed', 'collection_enabled':True, 'remote_confirmed':True}
 
 
 def discover(cwd):
@@ -414,22 +452,21 @@ def main():
                 if a.check_server:
                     result['server_admission'] = GlobalClient(value).wire('memory_global_status', {})
                     result['credentials_accessed'] = True
-            elif a.action in ('global-stop', 'global-resume'):
+            elif a.action == 'global-resume': result = resume(value)
+            elif a.action == 'global-stop':
                 directory = settings_path(a.device_home).parent; off = directory / 'global.off'
-                if a.action == 'global-stop': off.touch(mode=0o600)
+                off.touch(mode=0o600)
                 if value['server_scope_sha256']:
                     client = GlobalClient(value)
-                    result = client.wire('memory_global_stop' if a.action == 'global-stop' else 'memory_global_resume', {})
+                    result = client.wire('memory_global_stop', {})
                     if 'error' in result: raise ValueError('Remote global control unconfirmed')
                 else:
                     for row in value['legacy_projects']:
                         source = old.load(row['settings'], row['settings_sha256'])
                         marker = Path(source['off_file'])
-                        if a.action == 'global-stop': marker.touch(mode=0o600)
-                        result = old.daily_command(source, 'stop' if a.action == 'global-stop' else 'resume')
-                        if a.action == 'global-resume' and marker.exists(): marker.unlink()
-                if a.action == 'global-resume' and off.exists(): off.unlink()
-                result = {'status': 'global-memory-stopped' if a.action == 'global-stop' else 'global-memory-resumed', 'remote_confirmed': True}
+                        marker.touch(mode=0o600)
+                        result = old.daily_command(source, 'stop')
+                result = {'status': 'global-memory-stopped', 'remote_confirmed': bool(value['server_scope_sha256'] or value['legacy_projects'])}
             elif a.action == 'global-sync': result = flush(value)
             else:
                 local = eligible(value, os.getcwd())
@@ -438,7 +475,8 @@ def main():
         print(json.dumps(result, ensure_ascii=False), flush=True)
         if a.action == 'global-hook' and observation:
             print(json.dumps(dict(observation, status='hook-output-written', recall_status=observation['status'])), file=sys.stderr)
-        return 0
+        failed_activation = a.action == 'global-configure' and a.activate_packet and result.get('activated') is not True
+        return 2 if failed_activation or result.get('status') in ('global-memory-activation-required', 'global-memory-resume-unconfirmed') else 0
     except Exception:
         if a.action == 'global-hook':
             print('{}'); print('{"stage":"agentbrain-global-memory","status":"review-required"}', file=sys.stderr); return 0

@@ -628,6 +628,8 @@ class SourceClosure(unittest.TestCase):
 
             def wire(self, method, params):
                 events.append(method)
+                if method == 'memory_global_resume':
+                    return {'result': {'schema': 1, 'stopped': False}}
                 if method == "memory_global_status" and params == {}:
                     return {"result": {"metadata_only": True, "source_device_id": self.device_id,
                                        "source_registered": False, "global_profile_id": "e" * 32}}

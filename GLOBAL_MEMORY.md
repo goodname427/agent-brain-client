@@ -70,7 +70,14 @@ outbox operations, rechecking source exclusions and LocalOnly/recognized secret
 patterns; it never invents a new model request ID to bypass uncertainty.
 
 Global stop also requests stop for the registered legacy source. Resume preserves
-markers that had already been stopped individually. Uninstall removes only the
+markers that had already been stopped individually. A resume command cannot
+activate an empty or unapproved expanded scope: it reports
+`global-memory-activation-required` without accessing credentials. An approved
+expanded source keeps its local stop fence until Server explicitly confirms
+`schema:1` and `stopped:false`; missing confirmation or a denial reports
+`global-memory-resume-unconfirmed` and exits nonzero. Legacy-only resume is
+reported separately and does not claim expanded collection is enabled.
+Uninstall removes only the
 owned user-level Hook block and retains data, queues and other project entries.
 
 Directory exclusions apply before cache/upload/injection; previously excluded
