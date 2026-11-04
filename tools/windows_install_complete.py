@@ -140,6 +140,26 @@ def source_setup(home, *, choose=input):
         if choose("> ").strip() != "Choose sources":
             raise EOFError()
         scope = copy.deepcopy(value["scope"])
+        # An empty local install starts with a random placeholder pool. Bind the
+        # preview to the authenticated existing pool, not that placeholder.
+        # Never overwrite an already registered server source from this flow.
+        if not (scope["include_roots"] or scope["exclude_roots"] or scope["non_project_roots"] or value["legacy_projects"] or value["server_scope_sha256"]):
+            import re
+            client = gm.GlobalClient(value)
+            response = client.wire("memory_global_status", {})
+            admission = response.get("result", {})
+            pool = admission.get("global_profile_id")
+            if ("error" in response or admission.get("metadata_only") is not True
+                    or admission.get("source_device_id") != client.device_id
+                    or admission.get("source_registered") is not False
+                    or not isinstance(pool, str) or not re.fullmatch(r"[a-f0-9]{32}", pool)):
+                return {
+                    "status": "source-server-status-review-required",
+                    "collection_enabled": False,
+                    "server_error": response.get("error"),
+                    "next_action": "Check global-status --check-server. Preserve existing device and source configuration; do not replace a registered Server source or guess the personal pool.",
+                }
+            scope["profile_id"] = pool
         for key, prompt in (
             ("include_roots", "Personal project root"),
             ("exclude_roots", "Excluded root"),
@@ -180,6 +200,11 @@ def source_setup(home, *, choose=input):
             "collection_enabled": False,
             "next_action": "Rerun the normal Windows install entry and choose sources locally. Select project roots, exclusions and non-project roots, then approve the displayed scope. Until then the Hook returns before reading its input.",
         }
+    if scope["profile_id"] != value["scope"]["profile_id"]:
+        if gm.load(home) != value:
+            raise ValueError("Global settings changed during source review")
+        value["scope"]["profile_id"] = scope["profile_id"]
+        gm.old.write(gm.settings_path(home), value)
     packet = directory / "device-source-packet.json"
     args = SimpleNamespace(
         device_home=str(home),
