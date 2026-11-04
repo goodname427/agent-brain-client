@@ -215,6 +215,83 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), before)
         self.assertFalse(hooks.same_owned('[[hooks.Stop]]\nasync=true\n', '[[hooks.Stop]]\nasync=1\n'))
 
+    def test_third_party_tables_inside_markers_survive_check_refresh_and_removal(self):
+        foreign = (b'# Synthetic third-party configuration\n'
+                   b'[mcp_servers.node_repl]\ncommand = "synthetic-node"\n'
+                   b'args = ["--synthetic"]\n'
+                   b'[mcp_servers.node_repl.env]\nSYNTHETIC = "keep"\n'
+                   b'[apps."synthetic-sites"]\nenabled = true\n'
+                   b'[hooks.state."synthetic:stop:0:0"]\n'
+                   b'enabled = false\ntrusted_hash = "sha256:keep"\n')
+        before = self.config.read_bytes().replace(b'[[hooks.UserPromptSubmit]]', foreign + b'[[hooks.UserPromptSubmit]]')
+        self.config.write_bytes(before)
+        expected = hooks.unowned_config(hooks.tomllib.loads(before.decode()), hooks.block(self.value))
+        self.assertTrue(hooks.installation_status(self.value))
+        self.assertTrue(hooks.refresh(self.home, check_only=True)['update_available'])
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(old.private_json(self.file), self.value)
+        hooks.refresh(self.home)
+        self.assertIn(foreign, self.config.read_bytes())
+        current = gm.load(self.home)
+        self.assertTrue(hooks.installation_status(current))
+        self.assertEqual(hooks.unowned_config(hooks.tomllib.loads(self.config.read_text()),
+                                             hooks.split_owned(self.config.read_bytes())[1]), expected)
+        updated = self.config.read_bytes()
+        self.assertEqual(hooks.refresh(self.home)['status'], 'global-hook-current')
+        self.assertEqual(self.config.read_bytes(), updated)
+        hooks.transact(self.native, self.file.parent, '', remove=True)
+        self.assertIn(foreign, self.config.read_bytes())
+        self.assertEqual(hooks.tomllib.loads(self.config.read_text()), expected)
+
+    def test_foreign_tables_do_not_hide_owned_hook_edits(self):
+        foreign = b'[mcp_servers.node_repl]\ncommand = "synthetic-node"\n'
+        before = self.config.read_bytes().replace(b'[[hooks.Stop]]', foreign + b'[[hooks.Stop]]').replace(b'async = true', b'async = false')
+        self.config.write_bytes(before)
+        for action in (lambda: hooks.refresh(self.home, check_only=True),
+                       lambda: hooks.refresh(self.home),
+                       lambda: hooks.transact(self.native, self.file.parent, '', remove=True)):
+            with self.assertRaisesRegex(ValueError, 'Outside edit'):
+                action()
+            self.assertEqual(self.config.read_bytes(), before)
+            self.assertEqual(old.private_json(self.file), self.value)
+
+    def test_multiline_foreign_data_and_quoted_headers_preserve_toml_scope(self):
+        foreign = (b'["apps"."synthetic-sites"]\ntext = """\n'
+                   b'[hooks.Stop]\nexample only\n"""\n'
+                   b"['hooks'.'state'.'synthetic:stop:0:0']\n"
+                   b'enabled = false\ntrusted_hash = "sha256:keep"\n')
+        before = self.config.read_bytes().replace(hooks.END.encode(), foreign + hooks.END.encode()).replace(b'\n', b'\r\n')
+        self.config.write_bytes(before)
+        parsed = hooks.tomllib.loads(before.decode())
+        self.assertTrue(hooks.installation_status(self.value))
+        hooks.refresh(self.home)
+        after = hooks.tomllib.loads(self.config.read_text())
+        self.assertEqual(after['apps'], parsed['apps'])
+        self.assertEqual(after['hooks']['state'], parsed['hooks']['state'])
+        self.assertIn(foreign.rstrip().replace(b'\n', b'\r\n'), self.config.read_bytes())
+
+    def test_interrupted_hook_write_with_foreign_tables_restores_exact_preimage(self):
+        foreign = b'[apps."synthetic-sites"]\nenabled = false\n'
+        before = self.config.read_bytes().replace(hooks.END.encode(), foreign + hooks.END.encode())
+        self.config.write_bytes(before)
+        target = hooks.block(dict(self.value, code_sha256={name: 'c' * 64 for name in gm.FILES}))
+        apply = host.host_apply
+
+        def interrupt(rows, persist):
+            apply(rows, persist)
+            raise SystemExit('Synthetic interruption after Hook write')
+
+        with patch.object(host, 'host_apply', side_effect=interrupt), self.assertRaises(SystemExit):
+            hooks.transact(self.native, self.file.parent, target)
+        receipt = self.file.parent / 'hook-install.json'
+        record = hooks.read_receipt(receipt)
+        self.assertEqual(record['phase'], 'applying')
+        hooks.recover_record(self.config, receipt, record)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(old.private_json(self.file), self.value)
+        hooks.transact(self.native, self.file.parent, target)
+        self.assertIn(foreign, self.config.read_bytes())
+
     def test_trailing_host_state_is_preserved_when_tables_move(self):
         state = b'[hooks.state."synthetic:stop:0:0"]\ntrusted_hash = "sha256:one"\n'
         before = self.config.read_bytes().replace(hooks.END.encode(), state + hooks.END.encode()) + b'custom_host_field = "keep"\n'

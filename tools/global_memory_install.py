@@ -32,27 +32,36 @@ def split_owned(raw):
     start, end = text.index(BEGIN), text.index(END) + len(END)
     if end < start: raise ValueError('Invalid owned global Hook block')
     if text[end:end + 1] == '\n': end += 1
-    # Codex may persist its own hook trust tables within our marker range.
-    # Extract only complete hooks.state tables, verbatim, into the unowned
-    # configuration. Never interpret, create, modify or grant trust.
-    body = text[start:end]
-    lines = body.splitlines(keepends=True)
-    kept, state = [], []
-    i = 0
-    while i < len(lines):
-        if re.match(r'^\s*\[\s*hooks\s*\.\s*state\s*(?:\.|\])', lines[i]):
-            fragment = [lines[i]]
-            i += 1
-            while i < len(lines) and not re.match(r'^\s*\[', lines[i]) and not lines[i].startswith(END):
-                fragment.append(lines[i]); i += 1
-            raw_state = ''.join(fragment)
-            parsed = tomllib.loads(raw_state)
-            if set(parsed) != {'hooks'} or set(parsed['hooks']) != {'state'} or not isinstance(parsed['hooks']['state'], dict):
-                raise ValueError('Invalid host Hook state preserved')
-            state.append(raw_state)
-        else:
-            kept.append(lines[i]); i += 1
-    return text[:start] + ''.join(state) + text[end:], ''.join(kept)
+    # Host writers may insert trust or third-party tables before our end marker.
+    # Markers delimit text, not ownership of those tables. Keep their exact
+    # bytes outside the owned Hook definition; the transaction below also checks
+    # the complete parsed unowned configuration before writing.
+    body = text[start:text.index(END)]
+    kept, foreign = [], []
+    section, unowned = 0, False
+    offset = 0
+    for line in body.splitlines(keepends=True):
+        if re.match(r'^\s*\[', line):
+            try:
+                header = tomllib.loads(line)
+                # A header-looking line inside a multiline string/array is data.
+                tomllib.loads(body[:offset])
+            except ValueError:
+                pass
+            else:
+                next_unowned = ('hooks' not in header
+                                or set(header['hooks']) == {'state'})
+                boundary = offset
+                if next_unowned and not unowned:
+                    for preceding in reversed(body[section:offset].splitlines(keepends=True)):
+                        if preceding.strip() and (not preceding.lstrip().startswith('#') or BEGIN in preceding):
+                            break
+                        boundary -= len(preceding)
+                (foreign if unowned else kept).append(body[section:boundary])
+                section, unowned = boundary, next_unowned
+        offset += len(line)
+    (foreign if unowned else kept).append(body[section:])
+    return text[:start] + ''.join(foreign) + text[end:], ''.join(kept) + text[text.index(END):end]
 
 
 def typed_equal(x, y):
