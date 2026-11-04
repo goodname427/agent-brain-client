@@ -8,6 +8,8 @@ Windows Client 0.6.2 的隔离验收中，常规断线、重启、补传与重�
 
 已定位一个能产生同样错误的代码路径：私有文件校验直接使用 `Path.stat().st_nlink`。[CPython Windows stat 实现](https://github.com/python/cpython/blob/3.13/Modules/posixmodule.c) 的慢路径在共享冲突或访问拒绝时可退回目录项信息；目录信息不填链接数，结果为 0。合成 API 回归将路径 stat 固定为 0、完整句柄元数据固定为 1，旧实现拒绝，新实现通过。
 
+Windows 3.11／3.13 原生回归随后复现了主要竞态：锁文件先创建、再设置最终所有者和 DACL，另一调用在中间窗口进行所有者检查而失败。失败校验位于原清理块外，也可能遗留打开的锁句柄。锁文件现通过 [CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew) 的安全属性在创建时就固定所有者和私有 DACL；打开已有锁时系统忽略该描述符，仍完整校验而不重写权限。失败时关闭句柄。[LockFileEx](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfileex) 支持 EOF 以外的范围，因此不再在加锁前写初始化字节，避免其他调用已持锁时发生写冲突。
+
 修复从一个只请求属性与安全描述符读取权限的 Win32 句柄获取文件类型、链接数、所有者和 DACL。句柄共享读／写／删除以兼容现有锁和原子替换，并用 `OPEN_REPARSE_POINT` 拒绝跟随最终重解析点；祖先路径检查保留。共享标志没有向其他用户授予权限。完整元数据不可用、链接数为 0 或大于 1、类型错误、所有者错误和不受信主体仍拒绝；不修改已有 DACL，不读取文件正文。
 
 此路径用于 Windows Client 私有缓存、outbox、锁和登记资料；macOS 检查不变。`test_windows_private_metadata` 验证不完整路径 stat、失败关闭和句柄释放；`test_windows_native.WindowsNative` 包含真实 Win32 DACL、跨进程租约及十轮双调用同 ID 重试。原生测试在非 Windows 系统跳过，不能把合成 API 测试当作实机通过。

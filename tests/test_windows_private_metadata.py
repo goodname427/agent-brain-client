@@ -133,6 +133,57 @@ class PrivateMetadata(unittest.TestCase):
                 storage.file_mode(5, 0o600)
         self.kernel.GetFileInformationByHandle.assert_not_called()
 
+    def test_lock_creation_installs_owner_and_dacl_atomically_without_rewriting_existing_files(
+        self,
+    ):
+        def descriptor(text, revision, result, length):
+            self.assertIn("O:synthetic-ownerD:P", text)
+            result._obj.value = 5678
+            return True
+
+        self.api.ConvertStringSecurityDescriptorToSecurityDescriptorW = Mock(
+            side_effect=descriptor
+        )
+        native = SimpleNamespace(open_osfhandle=Mock(return_value=5))
+        with (
+            patch.dict("sys.modules", {"msvcrt": native}),
+            patch.object(storage, "os", SimpleNamespace(O_RDWR=2, O_BINARY=0x8000)),
+        ):
+            self.assertEqual(storage._windows_open_lock(self.path), 5)
+        args = self.kernel.CreateFileW.call_args.args
+        self.assertEqual(args[:3], (str(self.path), 0xC0000000, 3))
+        self.assertEqual(args[4:], (4, 0x00200080, None))
+        self.assertEqual(args[3]._obj.descriptor, 5678)
+        self.assertFalse(args[3]._obj.inherit)
+        self.kernel.CloseHandle.assert_not_called()
+        self.kernel.LocalFree.assert_called_once()
+
+    def test_rejected_lock_metadata_closes_the_open_file(self):
+        handle = Mock()
+        handle.fileno.return_value = 5
+        with (
+            patch.object(storage, "require_platform"),
+            patch.object(storage, "private_directory"),
+            patch.object(storage, "_windows_open_lock", return_value=5),
+            patch.object(
+                storage,
+                "_windows_private_handle",
+                side_effect=ValueError("unsafe owner"),
+            ),
+            patch.object(
+                storage,
+                "os",
+                SimpleNamespace(name="nt", fdopen=Mock(return_value=handle)),
+            ),
+            patch.dict(
+                "sys.modules", {"msvcrt": SimpleNamespace(get_osfhandle=lambda fd: 123)}
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "unsafe owner"):
+                with storage.locked(self.path):
+                    self.fail("Unsafe lock was yielded")
+        handle.close.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
