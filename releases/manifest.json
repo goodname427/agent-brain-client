@@ -18,7 +18,7 @@
     "adapters/codex/codex_connect.py": "908f1876fed7fd85e714bf7b9391428912cd1aec3c8ef102eab6679957062317",
     "adapters/codex/content_cache.py": "3a503f5d702fc385628e5a8d8ac02880a90a205052ba1833bd1ae215f434e28b",
     "adapters/codex/content_contract.py": "9a6365aa6c1e163a6aff6d811702f66aab27cd28b9f85973d8a6f14e0bcfd3c2",
-    "adapters/codex/content_install.py": "5803e4b469f1420ba99b7955dcd33a51e30682d660804c00828d41ff61be6b40",
+    "adapters/codex/content_install.py": "8503f119476767aa949529be084b32eae1d682b1d65e5a3ed4105c735a533f62",
     "adapters/codex/content_mcp.py": "71ba3cb09a6d15d6497e14c1836ace3ba24b9eb02a52dc619cfc86b25969857a",
     "adapters/codex/https_content.py": "6686497886f179f69fee2472cb849df5e72a7c99df848ae1f95293b7675d3838",
     "adapters/codex/remote_http.py": "e0ee0253aea6571dd40a34f47adfd5965e40558ae16ee6d6e3041c8ed44eb5e0",
@@ -33,5 +33,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.6.4"
+  "version": "0.6.5"
 }
