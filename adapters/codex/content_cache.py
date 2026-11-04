@@ -574,9 +574,11 @@ class ContentAdapter:
 
     def inspect_queue(self,*,request_id=None,cursor=None):
         """Read one locked snapshot; never fetch, drain, repair or map content."""
-        with operation_lock(self.cache/'content.lock','content-lock'):
+        check_request()
+        with operation_stage('queue-inspection'),locked(self.cache/'content.lock',cancel_check=check_request):
             try:rows=self._queued()
             except (ValueError,TypeError,KeyError):raise CacheBlocked() from None
+            check_request()
             counts={state:sum(row['state']==state for row in rows) for state in ('pending','confirmed','conflict','blocked','reconciled')}
             base={'counts':counts,'data_transferred':False,'native_changed':False,
                   'remote_snapshot_current':False}
@@ -595,6 +597,7 @@ class ContentAdapter:
                 if offset>len(rows):raise ValueError('Invalid queue cursor; restart inspection.')
             page=[]
             for row in rows[offset:offset+64]:
+                check_request()
                 request=row['request'];params=request['params']
                 page.append({'request_id':request['request_id'],'method':request['method'],
                              'kind':params['kind'],'id':params['id'],'expected_revision':params.get('expected_revision'),
