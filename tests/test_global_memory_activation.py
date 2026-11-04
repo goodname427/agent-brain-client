@@ -1,0 +1,169 @@
+"""Source activation/control regressions with synthetic state and no network."""
+import copy
+import io
+import json
+from pathlib import Path
+import sys
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import Mock, patch
+
+import global_memory as gm
+import global_memory_operator as operator
+from global_memory_scope import digest
+
+
+class GlobalMemoryActivation(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix='synthetic-source-activation-')
+        self.addCleanup(temp.cleanup)
+        self.home = Path(temp.name).resolve()
+        self.file = gm.settings_path(self.home)
+        self.file.parent.mkdir(parents=True, mode=0o700)
+        self.scope = {'schema':1, 'profile_id':'a' * 32,
+                      'include_roots':[{'root':str(self.home), 'sharing':'personal'}],
+                      'exclude_roots':[], 'non_project_roots':[], 'recall_personal':True}
+        self.value = {'device_home':str(self.home), 'enabled':True, 'scope':self.scope,
+                      'approved_scope_sha256':digest(self.scope),
+                      'server_scope_sha256':digest(self.scope), 'legacy_projects':[], 'operator':None}
+        self.off = self.file.parent / 'global.off'
+
+    def test_empty_source_resume_cannot_claim_activation_or_access_credentials(self):
+        value = copy.deepcopy(self.value)
+        value.update(enabled=False, approved_scope_sha256=None, server_scope_sha256=None)
+        value['scope']['include_roots'] = []
+        self.off.touch()
+        before = self.off.read_bytes()
+        with patch.object(gm, 'GlobalClient', side_effect=AssertionError('No credentials')):
+            result = gm.resume(value)
+        self.assertEqual(result['status'], 'global-memory-activation-required')
+        self.assertFalse(result['remote_confirmed'])
+        self.assertFalse(result['collection_enabled'])
+        self.assertEqual(self.off.read_bytes(), before)
+        self.assertFalse(self.file.exists())
+
+    def test_each_missing_approval_keeps_source_fenced_without_server_request(self):
+        for field, missing in (('enabled', False), ('approved_scope_sha256', None),
+                               ('server_scope_sha256', None)):
+            with self.subTest(field=field):
+                value = dict(self.value, **{field:missing})
+                self.off.touch()
+                with patch.object(gm, 'GlobalClient', side_effect=AssertionError('No credentials')):
+                    self.assertFalse(gm.resume(value)['remote_confirmed'])
+                self.assertTrue(self.off.exists())
+
+    def test_failed_or_nonconfirming_resume_retains_fence_and_exact_denial(self):
+        error = {'code':'global_source_device_denied', 'retryable':False}
+        responses = [{'error':error}, {'result':{}},
+                     {'result':{'schema':1, 'stopped':True}},
+                     {'result':{'schema':1, 'stopped':0}}]
+        for response in responses:
+            with self.subTest(response=response):
+                client = SimpleNamespace(wire=Mock(return_value=response))
+                with patch.object(gm, 'GlobalClient', return_value=client):
+                    result = gm.resume(self.value)
+                self.assertEqual(result['status'], 'global-memory-resume-unconfirmed')
+                self.assertFalse(result['collection_enabled'])
+                self.assertEqual(result['server_error'], response.get('error'))
+                self.assertTrue(self.off.exists())
+                client.wire.assert_called_once_with('memory_global_resume', {})
+                self.assertFalse(self.file.exists())
+
+    def test_transport_exception_leaves_even_previously_running_source_fenced(self):
+        client = SimpleNamespace(wire=Mock(side_effect=OSError('Synthetic transport failure')))
+        with patch.object(gm, 'GlobalClient', return_value=client), self.assertRaises(OSError):
+            gm.resume(self.value)
+        self.assertTrue(self.off.exists())
+
+    def test_confirmed_resume_only_clears_local_fence_without_changing_scope(self):
+        before = copy.deepcopy(self.value)
+        self.off.touch()
+        client = SimpleNamespace(wire=Mock(return_value={'result':{'schema':1, 'stopped':False}}))
+        with patch.object(gm, 'GlobalClient', return_value=client): result = gm.resume(self.value)
+        self.assertTrue(result['remote_confirmed'])
+        self.assertTrue(result['collection_enabled'])
+        self.assertFalse(self.off.exists())
+        self.assertEqual(self.value, before)
+        self.assertFalse(self.file.exists())
+
+    def test_local_stop_guidance_resumes_original_approval_without_recreating_packet(self):
+        self.off.touch()
+        self.assertEqual(gm.admission_state(self.value)['next_action'],
+                         'explicit-global-resume-for-the-existing-approved-source')
+        pending = dict(self.value, server_scope_sha256=None)
+        self.assertEqual(gm.admission_state(pending)['next_action'],
+                         'check-server-and-have-existing-operator-apply-the-saved-device-packet')
+
+    def test_legacy_resume_keeps_original_project_control_and_no_expanded_source_claim(self):
+        value = dict(self.value, enabled=False, approved_scope_sha256=None,
+                     server_scope_sha256=None,
+                     legacy_projects=[{'settings':'synthetic-settings', 'settings_sha256':'b' * 64}])
+        source = {'off_file':str(self.home / 'synthetic-project.off')}
+        with (patch.object(gm, 'GlobalClient', side_effect=AssertionError('No global credentials')),
+              patch.object(gm.old, 'load', return_value=source),
+              patch.object(gm.old, 'daily_command', return_value={}) as command):
+            result = gm.resume(value)
+        command.assert_called_once_with(source, 'resume')
+        self.assertEqual(result['status'], 'global-memory-legacy-resumed')
+        self.assertTrue(result['legacy_capture_resumed'])
+        self.assertFalse(result['collection_enabled'])
+
+    def test_cli_pending_resume_returns_nonzero_and_actionable_json(self):
+        value = dict(self.value, enabled=False)
+        output = io.StringIO()
+        with (patch.object(gm, 'load', return_value=value),
+              patch.object(sys, 'argv', ['global_memory', 'global-resume']),
+              patch.object(sys, 'stdout', output),
+              patch.object(gm, 'GlobalClient', side_effect=AssertionError('No credentials'))):
+            self.assertEqual(gm.main(), 2)
+        self.assertEqual(json.loads(output.getvalue())['status'], 'global-memory-activation-required')
+
+    def test_migrated_legacy_sources_are_not_reenabled_while_global_admission_is_pending(self):
+        value = dict(self.value, enabled=False, server_scope_sha256=None,
+                     legacy_projects=[{'capture_delegated':False}])
+        with (patch.object(gm, 'GlobalClient', side_effect=AssertionError('No credentials')),
+              patch.object(gm.old, 'daily_command', side_effect=AssertionError('No legacy reactivation'))):
+            result = gm.resume(value)
+        self.assertEqual(result['status'], 'global-memory-activation-required')
+
+    def test_cli_denied_activation_returns_nonzero_with_original_error(self):
+        output = io.StringIO()
+        result = {'status':'global-memory-admission-unconfirmed', 'activated':False,
+                  'server_error':{'code':'global_source_device_denied', 'retryable':False}}
+        with (patch.object(operator, 'configure', return_value=result),
+              patch.object(sys, 'argv', ['global_memory', 'global-configure', '--activate-packet', 'synthetic-packet']),
+              patch.object(sys, 'stdout', output)):
+            self.assertEqual(gm.main(), 2)
+        self.assertEqual(json.loads(output.getvalue()), result)
+
+    def test_activation_does_not_clear_fence_on_missing_resume_confirmation(self):
+        value = dict(self.value, enabled=False, server_scope_sha256=None)
+        status = {'result':{'scope_sha256':digest(self.scope),
+                            'global_profile_id':self.scope['profile_id'], 'source_device_id':'c' * 32}}
+        client = SimpleNamespace(device_id='c' * 32, wire=Mock(side_effect=[status, {'result':{}}]))
+        with patch.object(gm, 'GlobalClient', return_value=client):
+            result = operator.activate(value, self.scope)
+        self.assertFalse(result['activated'])
+        self.assertFalse(result['collection_enabled'])
+        self.assertTrue(self.off.exists())
+        self.assertFalse(gm.approved(value))
+
+    def test_all_selected_project_roots_preview_clears_exclusions_without_nonproject_capture(self):
+        value = copy.deepcopy(self.value)
+        value['scope']['exclude_roots'] = [str(self.home / 'synthetic-old-exclusion')]
+        args = SimpleNamespace(device_home=str(self.home), include_root=[str(self.home)],
+                               isolate_root=[], exclude_root=[], non_project_root=[],
+                               activate_packet=None, approve_scope=None)
+        with (patch.object(gm, 'load', return_value=value),
+              patch.object(gm, 'GlobalClient', side_effect=AssertionError('No credentials'))):
+            result = operator.configure(args)
+        self.assertEqual(result['status'], 'global-memory-source-approval-required')
+        self.assertEqual(result['scope']['include_roots'], self.scope['include_roots'])
+        self.assertEqual(result['scope']['exclude_roots'], [])
+        self.assertEqual(result['scope']['non_project_roots'], [])
+        self.assertFalse(result['activated'])
+        self.assertFalse(self.file.exists())
+
+
+if __name__ == '__main__': unittest.main()

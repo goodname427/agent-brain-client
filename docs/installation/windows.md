@@ -28,6 +28,7 @@ Set-Location $checkout
 未来自动采集需单独确认来源。以下仅为用户替换后的固定步骤，不把示例目录当作已获准范围：
 
 ```powershell
+& ./tools/memory-windows.ps1 global-status --check-server
 & ./tools/memory-windows.ps1 global-install --profile-id '<既有个人池32位ID>'
 & ./tools/memory-windows.ps1 global-configure --include-root 'C:/Work' --exclude-root 'C:/Work/Private' --non-project-root 'C:/Notes'
 # 审阅上一步显示的精确 scope 和摘要；确认后生成无凭据来源包：
@@ -40,6 +41,12 @@ Set-Location $checkout
 & ./tools/memory-windows.ps1 global-configure --activate-packet 'C:/delivery/windows-source.json'
 & ./tools/memory-windows.ps1 global-status
 ```
+
+已有安装先用只读 `global-status --check-server` 判断下一步。`enabled=false`、空范围表示本地未来来源尚未启用；普通认证读取成功不证明采集已获准。空参数元数据结果中，`source_registered=false` 才明确表示本设备未登记；单独的 `global_source_device_denied` 仍需核查身份、授权和 Server 接口版本，不能直接定性为未登记或禁用。当前 checkout 与 Hook pin 不一致时先走正常 update，不能手改摘要。
+
+用户选择“所有项目、无排除目录”时，为实际存放项目的每个本地盘根传入 `--include-root`，例如 `--include-root 'C:/' --include-root 'D:/'`。只列设备上实际需要的本地盘，不遍历项目树；不传 `--exclude-root` 或 `--non-project-root`。精确预览中的 `exclude_roots`、`non_project_roots` 均应为空。仅有 C 盘不能声称其他盘已覆盖，项目范围也不授权非项目对话。后续仍对该预览摘要准备设备包、由既有 Server operator 应用、再激活原包；不需要新建凭据或重新配对。
+
+`global-resume` 只恢复原本已批准的来源，不补齐空范围或 Server 登记。空范围、缺少批准或未完成激活时返回 `global-memory-activation-required` 和非零退出码；此路径不调用 Server 或访问凭据。已批准的暂停来源可显式恢复，只有 Server 明确返回 `schema:1`、`stopped:false` 才撤掉本地停止标记。错误、停止状态或缺失确认返回 `global-memory-resume-unconfirmed`，保留标记和错误代码。旧的逐项目采集独立恢复时标为 `global-memory-legacy-resumed`，不声称用户级扩大范围已启用。
 
 在 Codex `/hooks` 正常审阅并信任新增定义，然后新建本地会话。用户级 Hook 覆盖获准目录中的项目、子目录、worktree 和非项目会话。SessionStart/UserPromptSubmit 按当前问题召回；Stop 将未来事件写入原 outbox，Server 常驻消费者沿用 DeepSeek 提取及 GitHub 备份。来源、请求身份、冲突和恢复账本保留；跨设备内容只作相关参考，不自动变成全局 Rule。Secret/LocalOnly/no-share 继续排除。
 

@@ -57,7 +57,7 @@ raise SystemExit(r.returncode)
 
 def activate(value, scope):
     """Authenticate server admission before enabling future local Hook capture."""
-    from global_memory import GlobalClient, settings_path
+    from global_memory import GlobalClient, settings_path, resume
     client = GlobalClient(value)
     if scope['include_roots']:
         root = scope['include_roots'][0]['root']
@@ -78,15 +78,14 @@ def activate(value, scope):
     off.touch(mode=0o600)
     value.update(scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin, enabled=True)
     old.write(settings_path(value['device_home']), value)
-    response = client.wire('memory_global_resume', {})
-    if 'error' in response: raise ValueError('Source resume unconfirmed; local fence retained')
-    if off.exists(): off.unlink()
+    resumed = resume(value)
+    if not resumed['remote_confirmed']: return dict(resumed, activated=False)
     return {'status': 'global-memory-configured', 'scope_sha256': pin, 'source_device_id': client.device_id,
             'activated': True, 'model_calls': 0, 'auto_recharge': False, 'trust': 'normal-host-hook-review-required'}
 
 
 def configure(args):
-    from global_memory import load, settings_path, GlobalClient
+    from global_memory import load, settings_path, GlobalClient, resume
     value = load(args.device_home); directory = settings_path(args.device_home).parent
     pending = directory / 'pending-scope.json'
     if getattr(args, 'activate_packet', None):
@@ -171,9 +170,8 @@ def configure(args):
     receipt = operator(value, packet)
     value.update(scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin, enabled=True)
     old.write(settings_path(args.device_home), value)
-    response = GlobalClient(value).wire('memory_global_resume', {})
-    if 'error' in response: raise ValueError('Global source resume unconfirmed; local fence retained')
-    if off.exists(): off.unlink()
     old.write(directory / 'server-configuration-receipt.json', receipt)
+    resumed = resume(value)
+    if not resumed['remote_confirmed']: return dict(resumed, activated=False)
     return {'status': 'global-memory-configured', 'scope_sha256': pin, 'scope': scope,
             'model_calls': 0, 'auto_recharge': False, 'native_delivery': 'requires-supported-host-and-normal-hook-trust'}
