@@ -292,6 +292,31 @@ class GlobalMemoryUpdate(unittest.TestCase):
         hooks.transact(self.native, self.file.parent, target)
         self.assertIn(foreign, self.config.read_bytes())
 
+    def test_previous_version_journal_with_comments_before_trust_table_recovers(self):
+        state = '[hooks.state."synthetic:stop:0:0"]\nenabled = false\ntrusted_hash = "sha256:keep"\n'
+        comments = '\n# Host trust comment retained in the old owned image\n'
+        original = self.config.read_text()
+        before = original.replace(hooks.END, comments + state + hooks.END).encode()
+        self.config.write_bytes(before)
+        # Schema-2 images produced by the previous splitter: only the state
+        # table moved; comments/blank lines stayed inside previous_block.
+        previous = hooks.block(self.value).replace(hooks.END, comments + hooks.END)
+        outside = original[:original.index(hooks.BEGIN)] + state
+        target = hooks.block(dict(self.value, code_sha256={name: 'c' * 64 for name in gm.FILES}))
+        after = (outside.rstrip() + '\n\n' + target).encode()
+        receipt = self.file.parent / 'hook-install.json'
+        record = {'schema': 2, 'phase': 'applying', 'block': target,
+                  'previous_block': previous, 'before_sha256': old.digest(before),
+                  'after_sha256': old.digest(after), 'host': host.host_plan({self.config: after})}
+        host.host_apply(record['host'], lambda: old.write(receipt, record))
+        hooks.recover_record(self.config, receipt, hooks.read_receipt(receipt))
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(hooks.read_receipt(receipt)['phase'], 'rolled-back')
+        self.assertFalse(hooks.installation_status(self.value))
+        hooks.transact(self.native, self.file.parent, target)
+        self.assertEqual(hooks.tomllib.loads(self.config.read_text())['hooks']['state'],
+                         hooks.tomllib.loads(before.decode())['hooks']['state'])
+
     def test_trailing_host_state_is_preserved_when_tables_move(self):
         state = b'[hooks.state."synthetic:stop:0:0"]\ntrusted_hash = "sha256:one"\n'
         before = self.config.read_bytes().replace(hooks.END.encode(), state + hooks.END.encode()) + b'custom_host_field = "keep"\n'

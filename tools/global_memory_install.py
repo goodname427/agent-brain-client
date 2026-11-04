@@ -52,7 +52,9 @@ def split_owned(raw):
                 next_unowned = ('hooks' not in header
                                 or set(header['hooks']) == {'state'})
                 boundary = offset
-                if next_unowned and not unowned:
+                # Legacy schema-2 journals kept comments before hooks.state
+                # in previous_block. Preserve that exact split for recovery.
+                if next_unowned and not unowned and 'hooks' not in header:
                     for preceding in reversed(body[section:offset].splitlines(keepends=True)):
                         if preceding.strip() and (not preceding.lstrip().startswith('#') or BEGIN in preceding):
                             break
