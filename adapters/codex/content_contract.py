@@ -33,6 +33,9 @@ def mcp_methods(scopes):return methods(scopes)-HOOK_METHODS
 def encode(value):return json.dumps(value,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()
 
 def validate(method,params):
+    if method=='content_catalog' and isinstance(params,dict) and 'cursor' in params:
+        if not isinstance(params['cursor'],str) or not re.fullmatch(r'[a-f0-9]{64}:[0-9]{1,20}',params['cursor']):raise ValueError('Invalid catalog cursor')
+        params={k:v for k,v in params.items() if k!='cursor'}
     if method not in FIELDS or not isinstance(params,dict) or set(params) not in (FIELDS[method],FIELDS[method]|{'context'} if method=='memory_query' else FIELDS[method],FIELDS[method]|{'context','selection'} if method=='memory_query' else FIELDS[method],FIELDS[method]|{'context','source_sessions'} if method=='memory_query' else FIELDS[method],FIELDS[method]|{'context','source_scope'} if method=='memory_query' else FIELDS[method]):raise ValueError('Invalid content request')
     if method in ('memory_status','memory_resume','memory_stop','memory_revoke','memory_sync'):
         for item in params.values():event_identifier(item)
@@ -410,3 +413,23 @@ def exact_capture_response(recall,params,device_id):
                     or s.get('identity',{}).get('session_id')!=selection['source_session_id'] for s in sources)
                 or layer=='L3' and set(ids)!=set(events)):
             raise ValueError('Unverified exact capture response')
+
+
+def catalog_page(value,cursor=None,scope=None):
+    """One revision-bound page; the count of stored records is unrestricted."""
+    snapshot=hashlib.sha256(encode([value['commit'],value['artifacts'],scope])).hexdigest()
+    start=0
+    if cursor is not None:
+        match=re.fullmatch(r'([a-f0-9]{64}):([0-9]{1,20})',cursor)
+        if match is None or match[1]!=snapshot:raise ValueError('Catalog changed; restart without cursor')
+        start=int(match[2])
+        if start>=len(value['artifacts']):raise ValueError('Invalid catalog offset')
+    end=start+256
+    return dict(value,artifacts=value['artifacts'][start:end],**({'next_cursor':snapshot+':'+str(end)} if end<len(value['artifacts']) else {}))
+
+
+def validate_catalog(value):
+    if (not isinstance(value,dict) or set(value) not in ({'content_api_version','commit','artifacts'},{'content_api_version','commit','artifacts','next_cursor'})
+            or value['content_api_version']!=1 or not isinstance(value['commit'],str) or not re.fullmatch('[a-f0-9]{40}',value['commit'])
+            or not isinstance(value['artifacts'],list) or len(value['artifacts'])>256):raise ValueError('Invalid catalog page')
+    if 'next_cursor' in value and (not isinstance(value['next_cursor'],str) or not re.fullmatch(r'[a-f0-9]{64}:[0-9]{1,20}',value['next_cursor'])):raise ValueError('Invalid catalog continuation')

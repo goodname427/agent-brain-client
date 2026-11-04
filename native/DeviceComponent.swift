@@ -34,7 +34,12 @@ func authorizeRequest(_ request: [String:Any],_ grant: [String:Any]) throws {
     let ids=try validateIDs(grant)
     guard Set(request.keys)==Set(["request_id","method","params"]),let rid=request["request_id"] as? String,rid.range(of:"^[A-Za-z0-9_-]{16,128}$",options:.regularExpression) != nil,let method=request["method"] as? String,let params=request["params"] as? [String:Any],let scopes=grant["scopes"] as? [String],let types=grant["artifact_types"] as? [String] else { throw Blocked() }
     let fields: [String:Set<String>]=["content_catalog":["kinds"],"content_read":["kind","id"],"content_put":["kind","id","record","expected_revision"],"content_remove":["kind","id","expected_revision"]]
-    guard let expected=fields[method],Set(params.keys)==expected,scopes.contains(["content_put","content_remove"].contains(method) ? "write":"read") else { throw Blocked() }
+    var supplied=Set(params.keys)
+    if method=="content_catalog",let cursor=params["cursor"] {
+        guard let value=cursor as? String,value.range(of:"^[a-f0-9]{64}:[0-9]{1,20}$",options:.regularExpression) != nil else { throw Blocked() }
+        supplied.remove("cursor")
+    }
+    guard let expected=fields[method],supplied==expected,scopes.contains(["content_put","content_remove"].contains(method) ? "write":"read") else { throw Blocked() }
     if method=="content_catalog" {
         guard let kinds=params["kinds"] as? [String],!kinds.isEmpty,Set(kinds).count==kinds.count,kinds.allSatisfy({types.contains($0)}) else { throw Blocked() }
     } else {
@@ -256,6 +261,11 @@ func selfCheck() throws -> [String:Any] {
     guard resetEnrollment({_,_ in true},store,transport)["status"] as? String == "pairing-reenrollment-ready",store.value==nil else { throw Blocked() }
     let grant: [String:Any]=["scopes":["read"],"artifact_types":["memory"],"ids":["memory":["synthetic"]]]
     try authorizeRequest(["request_id":"SYNTHETIC_REQUEST_ID","method":"content_read","params":["kind":"memory","id":"synthetic"]],grant)
+    try authorizeRequest(["request_id":"SYNTHETIC_REQUEST_ID","method":"content_catalog","params":["kinds":["memory"]]],grant)
+    try authorizeRequest(["request_id":"SYNTHETIC_REQUEST_ID","method":"content_catalog","params":["kinds":["memory"],"cursor":String(repeating:"a",count:64)+":256"]],grant)
+    for cursor: Any in ["invalid",String(repeating:"a",count:64)+":-1",String(repeating:"a",count:63)+":256",256] {
+        var denied=false;do { try authorizeRequest(["request_id":"SYNTHETIC_REQUEST_ID","method":"content_catalog","params":["kinds":["memory"],"cursor":cursor]],grant) } catch { denied=true };guard denied else { throw Blocked() }
+    }
     for request: [String:Any] in [
         ["request_id":"SYNTHETIC_REQUEST_ID","method":"content_put","params":["kind":"memory","id":"synthetic","record":[:],"expected_revision":"missing"]],
         ["request_id":"SYNTHETIC_REQUEST_ID","method":"content_read","params":["kind":"skill","id":"synthetic"]],

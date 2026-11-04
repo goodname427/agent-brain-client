@@ -238,11 +238,11 @@ class ContentServer(Server):
             if not isinstance(arguments,dict):raise ContentParameterError('Content tool arguments must be an object.')
             if name=='content_catalog' and set(arguments)&{'query','since','until','limit'}:
                 if arguments.get('kinds')!=['memory']:raise ContentParameterError('Catalog query options are a Memory-only retrieval alias. For complete coverage pass kinds only.')
-                if 'limit' in arguments and (type(arguments['limit']) is not int or not 1<=arguments['limit']<=3):raise ContentParameterError('content_catalog has no pagination limit. For complete Onboard coverage pass kinds only; Memory query alias limit must be an integer from 1 to 3.')
+                if 'limit' in arguments and (type(arguments['limit']) is not int or not 1<=arguments['limit']<=3):raise ContentParameterError('content_catalog uses next_cursor for inventory pages. Memory retrieval alias limit must be an integer from 1 to 3.')
                 if set(arguments)-{'kinds','query','since','until','limit','request_id'}:raise ValueError()
                 return self.layered_recall({key:value for key,value in arguments.items() if key!='kinds'})
             required=contract.FIELDS[name]|({'request_id'} if name in contract.WRITES else set())
-            allowed=contract.FIELDS[name]|{'request_id'}|({'reconciles'} if name=='content_put' else set())
+            allowed=contract.FIELDS[name]|({'cursor'} if name=='content_catalog' else set())|{'request_id'}|({'reconciles'} if name=='content_put' else set())
             if set(arguments)-allowed or required-set(arguments):raise ValueError()
             params=dict(arguments);reconciles=params.pop('reconciles',None);rid=params.pop('request_id',uuid.uuid4().hex);contract.validate(name,params)
             if not isinstance(rid,str) or not 16<=len(rid)<=128 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in rid):raise ValueError()
@@ -293,6 +293,7 @@ class ContentServer(Server):
             for name,fields in contract.FIELDS.items():
                 if name not in declared or name=='memory_query':continue
                 properties:dict[str,Any]={field:{'type':'string'} for field in fields}
+                if name=='content_catalog':properties['cursor']={'type':'string','pattern':'^[a-f0-9]{64}:[0-9]{1,20}$','description':'Use next_cursor from the preceding page; omit to restart.'}
                 if 'kinds' in fields:properties['kinds']={'type':'array','items':{'type':'string','enum':kinds},'minItems':1,'uniqueItems':True}
                 if 'kind' in fields:properties['kind']['enum']=kinds
                 if 'record' in fields:
@@ -305,7 +306,7 @@ class ContentServer(Server):
                 if name in contract.WRITES:properties['request_id']={'type':'string','pattern':'^[A-Za-z0-9_-]{16,128}$'};required.append('request_id')
                 if name=='content_put':properties['reconciles']={'type':'object','description':'Local-only references to staged source plans or write conflicts; never sent to Server. Inspect retained proposals with content_queue_inspect and read the current target before merging. request_ids select only retained conflicts; recover pending outcomes by identical retry first. A still-inventoried source plan can be reconciled only by the exact staged record; a conflicted source plan requires an explicit merge of source and remote versions. Server persistence confirmation resolves selected conflicts.','properties':{'request_ids':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256},'source_keys':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256}},'required':['request_ids','source_keys'],'additionalProperties':False}
                 description='Approved cloud content only. Server is the sole write boundary; retain CAS revision and request_id on write retries. Transport failures may return a verified stale snapshot with local_cache.stale=true; cache misses never prove remote absence. Local cache refresh does not reload existing model context. '
-                if name=='content_catalog':description+='AgentBrain destination records only; this does not discover Harness-native sources. Pass kinds only for the complete authorized target inventory; there is no pagination limit. Use memory_query for retrieval. '
+                if name=='content_catalog':description+='AgentBrain destination records only; this does not discover Harness-native sources. Omit cursor for the first authorized inventory page, then follow next_cursor until absent. Use memory_query for retrieval. '
                 if name in ('memory_query','content_read','content_catalog'):description+=RECALL_EVIDENCE_GUIDANCE
                 description+='Running worker version: '+self.client_version+'. '+UPDATE_GUIDANCE
                 tools.append({'name':name,'description':description,'inputSchema':{'type':'object','properties':properties,'required':required,'additionalProperties':False},'annotations':{'readOnlyHint':name not in contract.WRITES,'destructiveHint':name=='content_remove','idempotentHint':True}})
@@ -540,7 +541,7 @@ def installation_check(client,policy,client_version='0.2.0'):
     if first['serverInfo']['name']!='agent-brain-content-codex-candidate' or len(tool_names)!=len(set(tool_names)) or set(tool_names)!=expected_tools or result['isError']:raise ValueError('Content protocol check failed')
     catalog=result['structuredContent']['result']
     import re
-    if catalog.get('content_api_version')!=1 or not re.fullmatch(r'[a-f0-9]{40}',catalog.get('commit','')) or not isinstance(catalog.get('artifacts'),list) or len(catalog['artifacts'])>256:raise ValueError('Unconfirmed content catalog')
+    contract.validate_catalog(catalog)
     for item in catalog['artifacts']:
         contract.validate('content_read',{'kind':item['kind'],'id':item['id']})
         if item['kind'] not in policy['kinds'] or not re.fullmatch(r'[a-f0-9]{64}',item.get('revision','')):raise ValueError('Invalid content catalog')

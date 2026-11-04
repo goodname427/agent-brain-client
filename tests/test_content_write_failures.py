@@ -374,7 +374,7 @@ class CollectionCapacity(unittest.TestCase):
         self.assertEqual(self.restart().refresh()['status'], 'content-refreshed')
         self.assertNotEqual(self.files(), before)
 
-    def test_record_and_catalog_limits_still_preserve_prior_mapping(self):
+    def test_record_byte_limit_preserves_mapping_and_catalog_can_exceed_one_page(self):
         self.assertEqual(self.f.adapter.refresh()['status'], 'content-refreshed')
         before = self.files()
         active = (self.f.cache / 'active.json').read_bytes()
@@ -383,14 +383,14 @@ class CollectionCapacity(unittest.TestCase):
         result = self.restart().refresh()
         self.assertEqual(result['stage'], 'remote-snapshot')
         self.assertEqual(result['status'], 'content-refresh-blocked')
+        self.assertEqual((self.f.cache / 'active.json').read_bytes(), active)
+        self.assertEqual(self.files(), before)
         del self.f.cloud.records['memory', 'synthetic-too-large']
         for index in range(257):
             self.f.cloud.records['memory', 'synthetic-count-' + str(index)] = copy.deepcopy(fixture.MEMORY)
         result = self.restart().refresh()
-        self.assertEqual(result['stage'], 'remote-snapshot')
-        self.assertEqual(result['status'], 'content-refresh-blocked')
-        self.assertEqual((self.f.cache / 'active.json').read_bytes(), active)
-        self.assertEqual(self.files(), before)
+        self.assertEqual(result['status'], 'content-refreshed')
+        self.assertNotEqual((self.f.cache / 'active.json').read_bytes(), active)
 
     def test_interrupted_large_transaction_recovers_before_remote_fetch(self):
         self.assertEqual(self.f.adapter.refresh()['status'], 'content-refreshed')

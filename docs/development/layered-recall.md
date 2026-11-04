@@ -72,3 +72,8 @@ says `read-only`. Investigation under a no-production-write restriction uses
 code, existing content-free receipts and isolated synthetic fixtures.
 
 The only daily query tool is `memory_query`; the hidden `memory_recall` alias forwards to it. Automatic Hooks also send `memory_query`. Direct Agent facts and extracted facts share native L1 after the Server's reviewed migration cutover. New native save receipts carry `storage=tencent-l1` and a checkpoint digest; local persistence does not prove remote backup.
+
+Content inventory uses optional opaque cursor pagination, without adding another
+daily memory-query tool. Client refresh follows every page and verifies the
+complete snapshot before native mapping. Page size and snapshot byte budgets do
+not limit the total number of saved native memory topics.
