@@ -674,6 +674,31 @@ class WindowsNative(unittest.TestCase):
         private_mode(cache / 'active.json', owner=True)
         self.assertEqual([r for r in cloud.calls if r['method']=='content_put'], [request, request])
 
+    def test_refresh_skips_unchanged_agents_held_by_read_only_host(self):
+        from ctypes import wintypes as W
+        from brain_windows import libraries
+        from content_cache import ContentAdapter
+        from test_content_outbox import Cloud, POLICY, MEMORY
+        cloud=Cloud();cloud.grant.update(platform=native_platform())
+        adapter=ContentAdapter(self.home,self.home/'cache',copy.deepcopy(POLICY),cloud,codex_home=self.home/'codex')
+        self.assertEqual(adapter.refresh()['status'],'content-refreshed')
+        agents=self.home/'codex/AGENTS.md';before=agents.read_bytes()
+        _,kernel=libraries()
+        kernel.CreateFileW.argtypes=[W.LPCWSTR,W.DWORD,W.DWORD,ctypes.c_void_p,W.DWORD,W.DWORD,W.HANDLE]
+        kernel.CreateFileW.restype=W.HANDLE
+        kernel.CloseHandle.argtypes=[W.HANDLE]
+        handle=kernel.CreateFileW(str(agents),0x80000000,1,None,3,0,None)
+        self.assertNotEqual(handle,W.HANDLE(-1).value)
+        try:
+            request={'request_id':'synthetic_windows_busy_agents_001','method':'content_put',
+                     'params':{'kind':'memory','id':'synthetic-topic','record':MEMORY,'expected_revision':'missing'}}
+            result=adapter.invoke(request)
+            self.assertTrue(result['local_queue']['server_saved'])
+            self.assertEqual(result['local_refresh']['status'],'content-refreshed',result)
+            self.assertEqual(agents.read_bytes(),before)
+            self.assertEqual((self.home/'.config/agent-brain-client/content/memory/synthetic-topic.md').read_bytes(),MEMORY['body'].encode())
+        finally:kernel.CloseHandle(handle)
+
 # This module is already selected by Windows CI. Inherit the complete synthetic
 # inventory/review/stage/CAS/outbox suite so native readers cannot be omitted.
 import test_codex_memory_inventory as memory_inventory

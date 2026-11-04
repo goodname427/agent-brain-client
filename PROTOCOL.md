@@ -270,6 +270,26 @@ The new HTTPS client declares the capability and its HTTP transport accepts only
 strict local-confirmed receipts before the content adapter validates the record.
 The header changes neither authorization, CAS nor the request digest.
 
+Additive receipt labels distinguish operation and storage: writes may carry
+operation=write, save_status=saved and backup_status=pending/confirmed. Reads may
+carry operation=read, read_success=true and write_receipt=false; their durable=false
+is not a failed write. A pending backup with automatic_retry.state=waiting is a
+separate background task, not a failed save. The Server preserves last_error and
+retry metadata; attention_required=true and status_note identify paused retries,
+review requirements or invalid local ownership. Clients must report those faults
+without rewriting, polling or pretending backup is confirmed.
+
+Native refresh authenticates a live catalog before reusing records from the
+service/policy-bound verified snapshot. Only matching revisions are reused;
+changed records are read again, removed records disappear, and a second catalog
+must still match before applying mappings. This bounds ordinary refresh traffic
+without expanding scope or accepting a stale snapshot as remote confirmation.
+Only changed host files enter the write transaction; unchanged Skills and AGENTS
+are checked for ownership but never reopened for write. Snapshot-only changes
+report native_changed=false after successfully advancing the verified snapshot.
+Refresh failures include a nonsecret stage/reason and retain prior files and
+snapshots. A mapping failure does not invalidate an independent Server save receipt.
+
 Memory behavior and source-coverage decisions belong to the currently loaded `agent-brain-memory` and `agent-brain-onboard` Skills. This protocol defines content method schemas, field and authorization constraints, CAS and receipt semantics only; it does not set daily memory candidate thresholds or onboarding/source-import policy. If a relevant Skill is unavailable, report that gap. `content_catalog` reports AgentBrain destination contents, not Harness-native source inventory. `memory_query` limits each retrieval to at most three results; that query bound does not define source-review or import coverage.
 
 memory_query is an additive read-only typed method: kind=memory, query string (empty for recent), since/until nullable offset-aware ISO8601, limit 1..3. It returns current authorized topic previews/revisions and server memory updated_at, never event occurrence time or historical erased preferences. Existing content_catalog may carry Memory-only query options at the MCP layer and delegates to this method, retaining the original installed tool whitelist; normal catalog calls and v1 record/envelope shapes remain unchanged. Query does not refresh/drain unrelated blocked writes; unavailable/offline query stays an error. No new credential/scope/SQL migration, background collector or raw-session access.
