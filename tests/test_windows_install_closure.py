@@ -693,8 +693,11 @@ class SourceClosure(unittest.TestCase):
                 self.value = value
                 self.device_id = "d" * 32
 
-            def wire(self, method, params):
+            def wire(self, method, params, rid=None):
                 events.append(method)
+                if method == 'memory_global_register':
+                    return {'result':{'source_registered':True, 'scope_sha256':digest(params['scope']),
+                        'source_device_id':self.device_id, 'global_profile_id':params['scope']['profile_id']}}
                 if method == 'memory_global_resume':
                     return {'result': {'schema': 1, 'stopped': False}}
                 if method == "memory_global_status" and params == {}:
@@ -717,7 +720,7 @@ class SourceClosure(unittest.TestCase):
             result = guide.source_setup(self.home, choose=lambda prompt: next(answers))
         self.assertTrue(result["collection_enabled"])
         self.assertTrue(gm.approved(gm.load(self.home)))
-        self.assertEqual(events, ["memory_global_status", "memory_global_status", "memory_global_resume"])
+        self.assertEqual(events, ["memory_global_status", "memory_global_register", "memory_global_status", "memory_global_resume"])
         self.assertEqual(gm.load(self.home)["scope"]["profile_id"], "e" * 32)
         self.assertTrue(hooks.installation_status(gm.load(self.home)))
         self.assertTrue(

@@ -1,4 +1,4 @@
-"""One preview/approval entry using an existing pinned SSH operator reference.
+"""Preview/approve sources through an enrolled device or existing SSH operator.
 
 No Server imports, key material, arbitrary remote commands or billing changes.
 """
@@ -84,6 +84,26 @@ def activate(value, scope):
             'activated': True, 'model_calls': 0, 'auto_recharge': False, 'trust': 'normal-host-hook-review-required'}
 
 
+def register(value, packet):
+    """Send approved metadata with the original device credential, never pair."""
+    from global_memory import GlobalClient
+    if packet['schema'] != 2 or packet['scope'] != value['scope'] or packet['approved_scope_sha256'] != value['approved_scope_sha256']:
+        raise ValueError('Original approved device packet required')
+    client = GlobalClient(value)
+    if packet['client']['source_device_id'] != client.device_id:
+        raise ValueError('Original enrolled device required')
+    response = client.wire('memory_global_register', packet, 'source_' + digest(packet))
+    result = response.get('result', {})
+    if ('error' in response or result.get('source_registered') is not True
+            or result.get('scope_sha256') != digest(packet['scope'])
+            or result.get('source_device_id') != client.device_id
+            or result.get('global_profile_id') != packet['scope']['profile_id']):
+        return {'status':'global-memory-registration-pending', 'activated':False,
+                'server_error':response.get('error'), 'model_calls':0,
+                'next_action':'Retry global-configure --activate-packet with the saved approved packet; retain the device identity, scope and local stop fence.'}
+    return activate(value, packet['scope'])
+
+
 def configure(args):
     from global_memory import load, settings_path, GlobalClient, resume
     value = load(args.device_home); directory = settings_path(args.device_home).parent
@@ -94,7 +114,7 @@ def configure(args):
             raise ValueError('Original approved source packet required')
         client = GlobalClient(value)
         if packet['client']['source_device_id'] != client.device_id: raise ValueError('Original device identity required')
-        return activate(value, packet['scope'])
+        return register(value, packet) if packet['schema'] == 2 else activate(value, packet['scope'])
     changed = args.include_root or args.isolate_root or args.exclude_root or args.non_project_root
     if changed:
         scope = copy.deepcopy(value['scope'])
@@ -163,6 +183,9 @@ def configure(args):
         else: old.write(target, packet)
         value.update(scope=scope, approved_scope_sha256=pin, enabled=False)
         old.write(settings_path(args.device_home), value)
+        if packet['schema'] == 2:
+            result = register(value, packet)
+            return dict(result, packet=str(target), packet_sha256=old.digest(target.read_bytes()))
         return {'status': 'global-memory-device-packet-prepared', 'packet': str(target),
                 'packet_sha256': old.digest(target.read_bytes()), 'scope_sha256': pin,
                 'source_device_id': device_id, 'activated': False, 'model_calls': 0,

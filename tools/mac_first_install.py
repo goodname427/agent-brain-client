@@ -1241,10 +1241,8 @@ def lifecycle_exit(action, value):
 
 
 def finish_install(home, value):
-    if os.name != "nt":
-        return value
     from windows_install_complete import complete
-    if value.get('installed') is True:
+    if os.name == "nt" and value.get('installed') is True:
         updated=manage_update(home,'update')
         value=dict(value,launcher_update=updated)
         if updated.get('status') not in ('client-update-current','client-update-updated'):
@@ -1280,6 +1278,16 @@ def main():
                     if delegated is not None:
                         return delegated
                     value = manage_update(home, args.action)
+                    if (args.action == 'update' and value.get('status') in ('client-update-current','client-update-updated')
+                            and sys.stdin.isatty()):
+                        from windows_install_complete import source_setup
+                        from global_memory import settings_path
+                        if settings_path(home).exists():
+                            try:
+                                value['source_setup'] = source_setup(home)
+                            except Exception:
+                                value['source_setup'] = {'status':'source-setup-resume-required', 'collection_enabled':False,
+                                    'next_action':'Retry source setup with the original saved scope and packet; the software update result above is preserved.'}
                 except Exception:
                     value = {'operation': args.action, 'status': 'client-update-review-required',
                              'reason': 'existing-runtime-or-registration-unverified',
