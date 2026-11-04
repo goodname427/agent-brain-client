@@ -362,7 +362,7 @@ def global_recall_result(value, params, device):
             if row.get('content') is None: continue
             if not isinstance(row['content'], str): raise ValueError('Recall text required')
             if private_recall_text(row['content']): raise ValueError('Private recall text excluded')
-            proof = row['provenance']; sources = proof.get('sources', [])
+            proof = row['provenance']
             if not verified_memory_sources(proof,source_device,group['project_id'],row in found['L1']):raise ValueError('Committed L1 source provenance required')
             source = row.get('source_context', {})
             if not isinstance(source, dict) or set(source) != {'origins', 'relation', 'use', 'global_rule'} or source['use'] != 'reference-only' or source['global_rule'] is not False or not isinstance(source['origins'], list) or not 1 <= len(source['origins']) <= 32: raise ValueError('Source applicability required')
