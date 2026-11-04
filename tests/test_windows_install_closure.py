@@ -572,7 +572,7 @@ class SourceClosure(unittest.TestCase):
 
     def test_defer_or_cancel_never_reads_sources_or_activates_credentials(self):
         before = gm.settings_path(self.home).read_bytes()
-        for answers in (iter(["Later"]), self.answers(False)):
+        for answers in (iter(["Later"]),):
             with (
                 patch.object(
                     gm, "GlobalClient", side_effect=AssertionError("No credentials")
@@ -586,6 +586,37 @@ class SourceClosure(unittest.TestCase):
             self.assertFalse(result["collection_enabled"])
         self.assertEqual(gm.settings_path(self.home).read_bytes(), before)
 
+    def test_cancel_after_pool_lookup_preserves_local_settings(self):
+        before = gm.settings_path(self.home).read_bytes()
+        client = SimpleNamespace(device_id="d" * 32, wire=lambda *a: {"result": {
+            "metadata_only": True, "source_device_id": "d" * 32,
+            "source_registered": False, "global_profile_id": "e" * 32}})
+        answers = self.answers(False)
+        with (patch.object(gm, "GlobalClient", return_value=client),
+              patch.object(gm, "discover", side_effect=AssertionError("No scan")),
+              patch.object(sys, "stdout", io.StringIO())):
+            result = guide.source_setup(self.home, choose=lambda prompt: next(answers))
+        self.assertFalse(result["collection_enabled"])
+        self.assertEqual(gm.settings_path(self.home).read_bytes(), before)
+
+    def test_existing_or_unconfirmed_server_source_is_not_overwritten(self):
+        before = gm.settings_path(self.home).read_bytes()
+        for response in (
+            {"error": {"code": "global_source_device_denied"}},
+            {"result": {"metadata_only": True, "source_device_id": "d" * 32,
+                        "source_registered": True, "global_profile_id": "e" * 32}},
+            {"result": {"metadata_only": True, "source_device_id": "f" * 32,
+                        "source_registered": False, "global_profile_id": "e" * 32}},
+        ):
+            client = SimpleNamespace(device_id="d" * 32, wire=lambda *a: response)
+            with (self.subTest(response=response),
+                  patch.object(gm, "GlobalClient", return_value=client),
+                  patch.object(sys, "stdout", io.StringIO())):
+                result = guide.source_setup(self.home, choose=lambda prompt: "Choose sources")
+                self.assertEqual(result["status"], "source-server-status-review-required")
+                self.assertFalse(result["collection_enabled"])
+                self.assertEqual(gm.settings_path(self.home).read_bytes(), before)
+
     def test_explicit_local_selection_packet_and_authenticated_activation(self):
         events = []
 
@@ -596,6 +627,9 @@ class SourceClosure(unittest.TestCase):
 
             def wire(self, method, params):
                 events.append(method)
+                if method == "memory_global_status" and params == {}:
+                    return {"result": {"metadata_only": True, "source_device_id": self.device_id,
+                                       "source_registered": False, "global_profile_id": "e" * 32}}
                 return {
                     "result": {
                         "scope_sha256": digest(self.value["scope"]),
@@ -613,7 +647,8 @@ class SourceClosure(unittest.TestCase):
             result = guide.source_setup(self.home, choose=lambda prompt: next(answers))
         self.assertTrue(result["collection_enabled"])
         self.assertTrue(gm.approved(gm.load(self.home)))
-        self.assertEqual(events, ["memory_global_status", "memory_global_resume"])
+        self.assertEqual(events, ["memory_global_status", "memory_global_status", "memory_global_resume"])
+        self.assertEqual(gm.load(self.home)["scope"]["profile_id"], "e" * 32)
         self.assertTrue(hooks.installation_status(gm.load(self.home)))
         self.assertTrue(
             (gm.settings_path(self.home).parent / "device-source-packet.json").is_file()
@@ -625,6 +660,9 @@ class SourceClosure(unittest.TestCase):
                 self.device_id = "d" * 32
 
             def wire(self, *args):
+                if args == ("memory_global_status", {}):
+                    return {"result": {"metadata_only": True, "source_device_id": self.device_id,
+                                       "source_registered": False, "global_profile_id": "e" * 32}}
                 return {"error": {"code": "source-not-admitted"}}
 
         answers = self.answers()
