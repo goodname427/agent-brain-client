@@ -16,7 +16,7 @@
     "scripts/brain_release.py": "69f341f9bd2b01a70f77b5e88db1315197fe47ea33a5419b38be3d4c7cc89acf",
     "scripts/brain_lock.py": "fd2ce1389495d5095f83f62787388f4a74ea57b7ee681d24aceb6e0612995b1d",
     "adapters/codex/client_pairing.py": "c627030d0369c8e4e1e3df20191b61bc5774c037c2d84e07fbce3c75633bf722",
-    "adapters/codex/content_cache.py": "369b1e0e03647213dc74790cc66dc6be4c7e87e7fea01f6e5ea65df8b994b97b",
+    "adapters/codex/content_cache.py": "21e0365820fbd691f00493807222f262db75af80798382851dd6e1b617d9fed4",
     "adapters/codex/content_mcp.py": "decd02f8bdd4ccba2bd19fc162abc6cf28ffd6968773cf289f216ed7abc9a5d3",
     "adapters/codex/content_contract.py": "9a6365aa6c1e163a6aff6d811702f66aab27cd28b9f85973d8a6f14e0bcfd3c2",
     "adapters/codex/content_install.py": "94b31a62fe5a316443cbccc6f82f5f21415ef8758ccbf5f709c00546d1d2027f",
