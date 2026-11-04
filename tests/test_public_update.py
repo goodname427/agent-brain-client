@@ -104,7 +104,9 @@ class PublicUpdate(unittest.TestCase):
     def test_update_and_repeat_use_existing_policy_and_require_observed_worker(self):
         result = self.action("update")
         self.assertEqual(result["status"], "client-update-updated", result)
-        self.assertTrue(result["reload_required"])
+        self.assertIsNone(result["reload_required"])
+        self.assertEqual(result["reload_reason"], "running-worker-unobserved")
+        self.assertIn("no MCP worker reload is needed", result["next_action"])
         self.assertEqual(result["active_package_version"], "0.2.11")
         self.assertIsNone(result["running_worker_version"])
         self.update_status = "current"
@@ -144,7 +146,9 @@ class PublicUpdate(unittest.TestCase):
         self.assertEqual(updated['global_hook']['status'], 'global-hook-updated')
         self.assertFalse(updated['active_package_changed'])
         self.assertTrue(updated['native_changed'])
-        self.assertTrue(updated['reload_required'])
+        self.assertIsNone(updated['reload_required'])
+        self.assertTrue(updated['reload_check']['hook_configuration_changed'])
+        self.assertFalse(updated['reload_check']['mcp_registration_changed'])
         self.assertEqual(gm.load(self.home), original)
 
     def test_hook_failure_reports_partial_update_and_nonzero_exit(self):
