@@ -8,6 +8,8 @@
 
 `local_queue.saved:true` 只证明请求已保留在本机；服务器保存仍以 `persistence` 回执为准。离线或回执未确认时返回 `content_upload_queued`、`retryable:true`，恢复连接后沿用原请求正文、CAS 基线和 `request_id`。本地映射刷新不等于服务器保存，也不会重载当前模型上下文。
 
+有效的内容写入回执另附 `write_status`，首先明确“服务器已保存”。GitHub 备份单独标为 `confirmed`、`pending` 或 `needs-attention`。Server 返回正常 `automatic_retry.state=waiting` 时无需重复写入或轮询；暂停、需审查和 `attention_required=true` 会明确提示处理备份，MCP 保存结果仍为成功。原始 `persistence`、备份诊断及本机队列完整保留；旧 Server 缺少重试元数据时只报告备份尚未确认，不推断后台正在工作。离线、CAS 冲突及非法回执不会得到保存成功摘要。此摘要不用于自动采集的 Core 接收回执。
+
 同一目标前面存在未解决的 `conflict` 或 `blocked` 请求时，后续请求仍保留 `pending`，返回 `content_queue_blocked`、`retryable:false`；`local_queue.blocked_by` 列出实际阻塞的请求 ID 与状态，`next_action` 说明恢复步骤。这表示先解决依赖才能继续，不能把它报告成普通网络等待，也不能假定所有 pending 都来自冲突。这些诊断由现有队列计算，不改写队列格式、请求内容或 ID，不返回记忆正文或本地路径。
 
 对于 CAS 冲突，保留原始提案，使用 `content_read` 读取当前版本，并审阅本地提案和远端版本。显式确认合并后，以新的稳定 `request_id`、当前 `expected_revision` 和 `reconciles.request_ids` 指向确切冲突，提交新的 `content_put`。这是新的合并操作，不能仅换 ID 重发原写入。已有 pending 请求的参数及 reconciliation 引用不可修改。只有合并请求取得有效服务器保存回执后，旧冲突才标为 `reconciled` 并保留 `resolution_request_id`；丢失回执时沿用合并请求原 ID 恢复。后续原请求仍使用自己的 CAS 基线，过期时会明确冲突，不自动覆盖或重定基线。未选中的冲突继续阻塞。

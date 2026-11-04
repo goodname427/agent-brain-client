@@ -603,6 +603,25 @@ class ContentAdapter:
             next_action='This proposal was resolved by a confirmed reconciliation. Keep the original evidence; do not resubmit it.'
         else:next_action='The Server receipt determines persistence; local mapping and running model context are separate.'
         receipt=result.get('persistence',{})
+        if row['state']=='confirmed' and row['request']['method']!='memory_event_submit':
+            backup=receipt.get('github_backup',{})
+            if not isinstance(backup,dict):backup={}
+            retry=backup.get('automatic_retry',{})
+            if not isinstance(retry,dict):retry={}
+            confirmed=receipt.get('state')=='remote-confirmed' and receipt.get('durable') is True
+            attention=backup.get('attention_required') is True or backup.get('state')=='review-required' or retry.get('state') in ('paused','review-required')
+            if confirmed:
+                next_action='Saved on the Server and GitHub backup confirmed. No further save action is needed.'
+            elif attention:
+                next_action='Saved on the Server. GitHub backup needs attention; inspect the backup diagnostic. Keep the saved request; do not create another write or poll for confirmation.'
+            elif retry.get('state')=='waiting':
+                next_action='Saved on the Server. GitHub backup is a separate background task. No additional write or polling is needed.'
+            else:
+                next_action='Saved on the Server. GitHub backup is not yet confirmed. Do not create another write to save the same content.'
+            # Only a validated Server receipt can produce this success summary.
+            # Keep the original receipt and diagnostics unchanged below it.
+            result=dict(write_status={'status':'saved','message':next_action,
+                                      'backup_status':'confirmed' if confirmed else 'needs-attention' if attention else 'pending'},**result)
         return dict(result,local_queue={'state':row['state'],'saved':True,'request_sha256':row['request_sha'],
                                        'server_saved':row['state']=='confirmed','github_confirmed':receipt.get('state')=='remote-confirmed' and receipt.get('durable') is True,
                                        'blocked_by':blockers,'resolution_request_id':row['resolution_request_id'],'next_action':next_action})
