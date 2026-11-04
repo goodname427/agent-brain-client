@@ -43,6 +43,7 @@ TOOL_CONTRACT_VERSION = 2
 
 def local_tools(kinds, memory_sources, layered_recall=False):
     tools = []
+    tools.append({'name':'content_queue_inspect','description':'Inspect this Client\'s retained write queue without sending, retrying or changing requests. With no arguments, list a page of path-free metadata and exact blocking request IDs; use next_cursor for more. With request_id, read the exact original proposal, CAS base, reconciliation references, saved response and cached remote conflict snapshot. The snapshot may be stale: call content_read before an explicit reviewed merge through content_put with a new stable request_id and reconciles.request_ids. Unknown pending outcomes require the identical original request and ID; never replace, rebase or delete them. Confirmed reconciliation releases dependents with their original CAS, so a newly stale dependent requires its own review. No device or source discovery.','inputSchema':{'type':'object','properties':{'request_id':{'type':'string','pattern':'^[A-Za-z0-9_-]{16,128}$'},'cursor':{'type':'string','maxLength':96}},'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
     if layered_recall:
         origin = {'type':'object','properties':{'kind':{'type':'string','enum':['project','non-project']},'cwd':{'type':'string'},'project_root':{'type':['string','null']},'repository_root':{'type':['string','null']}},'required':['kind','cwd','project_root','repository_root'],'additionalProperties':False}
         tools.append({'name':'memory_query','description':'The single memory query and automatic recall entry. Read shared L1/L2/L3 memory through the approved HTTPS Server using the existing device identity. Optional origin defaults to current directory metadata; optional session_id defaults to a distinct reader ID. Server source approval is required; this tool cannot enable capture, enroll a device, import old conversations or call a model. Returns layer-specific committed event provenance and source applicability. Direct and automatically extracted facts share L1 and the same L2/L3 derivation. Empty layers remain unconfirmed. '+RECALL_EVIDENCE_GUIDANCE,'inputSchema':{'type':'object','properties':{'origin':origin,'session_id':{'type':'string','pattern':'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'},'query':{'type':'string','minLength':1,'maxLength':1024},'limit':{'type':'integer','minimum':1,'maximum':3,'default':3}},'required':['query'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
@@ -71,6 +72,7 @@ def memory_sources_authorized(policy, grant):
 def tool_names(methods, memory_sources):
     names = set(methods) - contract.HOOK_METHODS
     names |= {tool['name'] for tool in local_tools([], memory_sources, memory_sources and 'memory_query' in methods)}
+    if not set(methods) & {'content_put','content_remove'}:names.discard('content_queue_inspect')
     return sorted(names)
 
 
@@ -179,6 +181,21 @@ class ContentServer(Server):
     def invoke(self,name,arguments):
         if name in ('memory_query','memory_recall'): return self.layered_recall(arguments)
         try:
+            if name=='content_queue_inspect':
+                if name not in tool_names(self.adapter.methods(), self._memory_source_tools_authorized()):
+                    raise ContentToolUnavailable('Queue inspection requires an existing content write grant.')
+                if not isinstance(arguments,dict) or set(arguments)-{'request_id','cursor'} or len(arguments)>1:
+                    raise ContentParameterError('Inspect a queue page with optional cursor, or one exact request_id.')
+                rid=arguments.get('request_id');cursor=arguments.get('cursor')
+                if ('request_id' in arguments and (not isinstance(rid,str) or re.fullmatch(r'[A-Za-z0-9_-]{16,128}',rid) is None) or
+                        'cursor' in arguments and (not isinstance(cursor,str) or re.fullmatch(r'[a-f0-9]{64}:[0-9]{1,6}',cursor) is None)):
+                    raise ContentParameterError('Use an exact retained request_id or the returned next_cursor.')
+                try:result=self.adapter.inspect_queue(request_id=rid,cursor=cursor)
+                except LockTimeout:
+                    raise ProtocolError(-32000,'Local queue busy; retry inspection after the active operation finishes.') from None
+                except OSError:
+                    raise ProtocolError(-32010,'Queue inspection unavailable; preserve retained requests and restore private cache access.') from None
+                return {'isError':False,'structuredContent':result,'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}
             if name.startswith('content_sources_') and not self._memory_source_tools_authorized():
                 raise ContentParameterError('Native Memory source tools are outside the granted Memory scope.')
             if name=='content_request_id':
@@ -231,8 +248,12 @@ class ContentServer(Server):
             if not isinstance(rid,str) or not 16<=len(rid)<=128 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in rid):raise ValueError()
         except ContentParameterError:raise
         except CacheBlocked:
+            if name=='content_queue_inspect':
+                raise ProtocolError(-32010,'Queue inspection unavailable; preserve retained requests and restore the original Client identity, policy and private cache access.') from None
             raise ProtocolError(-32010,'Native Memory source changed or is unavailable; refresh inventory before retrying.') from None
         except (ValueError,TypeError):
+            if name=='content_queue_inspect':
+                raise ContentParameterError('Invalid queue inspection arguments or queue changed; restart without cursor, then use the returned request_id or next_cursor.') from None
             message='Invalid '+name+' arguments; use the exact fields and types in this tool input schema.'
             if name in contract.WRITES:message+=' Writes require a stable request_id and the expected_revision obtained from content_read.'
             raise ContentParameterError(message) from None
@@ -282,13 +303,13 @@ class ContentServer(Server):
                     ],'description':'Typed v1 Memory, Rule, or Skill record. Server validates the selected record against kind.'}
                 required=[] if name=='memory_query' else list(sorted(fields))
                 if name in contract.WRITES:properties['request_id']={'type':'string','pattern':'^[A-Za-z0-9_-]{16,128}$'};required.append('request_id')
-                if name=='content_put':properties['reconciles']={'type':'object','description':'Local-only references to staged source plans or write conflicts; never sent to Server. A still-inventoried source plan can be reconciled only by the exact staged record; a conflicted plan may be reconciled by an explicit merge of the source and remote versions. Only durable confirmation resolves them.','properties':{'request_ids':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256},'source_keys':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256}},'required':['request_ids','source_keys'],'additionalProperties':False}
+                if name=='content_put':properties['reconciles']={'type':'object','description':'Local-only references to staged source plans or write conflicts; never sent to Server. Inspect retained proposals with content_queue_inspect and read the current target before merging. request_ids select only retained conflicts; recover pending outcomes by identical retry first. A still-inventoried source plan can be reconciled only by the exact staged record; a conflicted source plan requires an explicit merge of source and remote versions. Server persistence confirmation resolves selected conflicts.','properties':{'request_ids':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256},'source_keys':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256}},'required':['request_ids','source_keys'],'additionalProperties':False}
                 description='Approved cloud content only. Server is the sole write boundary; retain CAS revision and request_id on write retries. Transport failures may return a verified stale snapshot with local_cache.stale=true; cache misses never prove remote absence. Local cache refresh does not reload existing model context. '
                 if name=='content_catalog':description+='AgentBrain destination records only; this does not discover Harness-native sources. Pass kinds only for the complete authorized target inventory; there is no pagination limit. Query/since/until/limit selects a Memory-only retrieval alias capped at 3. '
                 if name in ('memory_query','content_read','content_catalog'):description+=RECALL_EVIDENCE_GUIDANCE
                 description+='Running worker version: '+self.client_version+'. '+UPDATE_GUIDANCE
                 tools.append({'name':name,'description':description,'inputSchema':{'type':'object','properties':properties,'required':required,'additionalProperties':False},'annotations':{'readOnlyHint':name not in contract.WRITES,'destructiveHint':name=='content_remove','idempotentHint':True}})
-            tools.extend(local_tools(kinds, self._memory_source_tools_authorized(), 'memory_query' in declared))
+            tools.extend(tool for tool in local_tools(kinds, self._memory_source_tools_authorized(), 'memory_query' in declared) if tool['name'] in declared)
             return {'tools':tools}
         result=super().handle(request)
         if isinstance(request,dict) and request.get('method')=='initialize' and isinstance(result,dict):
