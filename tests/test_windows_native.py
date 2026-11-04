@@ -632,7 +632,8 @@ class WindowsNative(unittest.TestCase):
         self.assertTrue(json.loads(output.getvalue())['installed'])
         fixed=recovered_updates[0]
         self.assertEqual(fixed['status'],'client-update-updated',fixed)
-        self.assertTrue(fixed['native_changed']);self.assertTrue(fixed['reload_required'])
+        self.assertTrue(fixed['native_changed']);self.assertIsNone(fixed['reload_required'])
+        self.assertTrue(fixed['reload_check']['mcp_registration_changed'])
         self.assertEqual(fixed['active_package_version'],'0.5.8');self.assertTrue(ci.inspect(self.home)['installed'])
         meta=ci.private_json(state/'codex-mcp.json');policy=ci.private_json(meta['release_policy']);runtime=policy['runtime']
         # A failed old launcher can leave MCP registered with no content cache.
