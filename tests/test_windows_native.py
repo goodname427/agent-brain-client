@@ -697,6 +697,16 @@ class WindowsNative(unittest.TestCase):
         # Pause only this MCP before owned removal. Identity, source settings,
         # snapshots and the original file object survive normal uninstall.
         config.write_bytes(config.read_bytes().replace(b'enabled = true',b'enabled = false'))
+        # A host may reorder equivalent Hook fields before native removal.
+        lines=config.read_text(encoding='utf-8').splitlines(keepends=True)
+        for index in range(len(lines)-1):
+            if lines[index].startswith('type = ') and lines[index+1].startswith('command = '):
+                lines[index],lines[index+1]=lines[index+1],lines[index]
+                break
+        config.write_bytes(''.join(lines).encode())
+        receipt=hooks.read_receipt(gm.settings_path(self.home).parent/'hook-install.json')
+        self.assertNotEqual(hooks.split_owned(config.read_bytes())[1],receipt['block'])
+        self.assertTrue(hooks.installation_status(gm.load(self.home)))
         removed=lifecycle.uninstall(self.home,lambda message:'Continue')
         self.assertEqual(removed['status'],'client-uninstalled',removed)
         self.assertNotIn(hooks.BEGIN,config.read_text(encoding='utf-8'))

@@ -291,13 +291,13 @@ def recover_pending(home, native):
 
 
 def verified_removal(home, previous, record):
-    """Recognize only the exact Hook removed by an authenticated lifecycle journal."""
+    """Recognize the same Hook definition in an authenticated removal journal."""
     if previous is not None: return False
     from client_lifecycle import read_removal, validate_journal
     removal = read_removal(home)
     validate_journal(home, removal)
     return (removal.get('phase') in ('complete', 'reinstalled')
-            and removal.get('hook_block') == record.get('block'))
+            and same_owned(removal.get('hook_block'), record.get('block')))
 
 
 def transact(native, directory, owned, *, remove=False):
