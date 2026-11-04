@@ -49,7 +49,40 @@ class CatalogPages(unittest.TestCase):
         rejected=self.f.adapter.invoke(self.request(first['next_cursor']))
         self.assertEqual(rejected['error']['code'],'catalog_changed')
         self.assertEqual((self.f.cache/'active.json').read_bytes(),active)
+        self.f.cloud.offline=True
+        cached=self.f.adapter.invoke({'request_id':'synthetic_race_read_0001','method':'content_read','params':{'kind':'memory','id':'synthetic-0599'}})
+        self.assertTrue(cached['local_cache']['stale'])
+        self.assertFalse(json.loads((self.f.cache/'offline-snapshot.json').read_bytes()).get('read_denied'))
+        self.f.cloud.offline=False
         self.assertEqual(len(self.pages(self.f.adapter)[1]),601)
+
+    def test_refresh_page_race_keeps_prior_snapshot_available_offline(self):
+        self.assertEqual(self.f.adapter.refresh()['status'],'content-refreshed')
+        original=self.f.cloud.request
+        def racing(request):
+            if request['method']=='content_catalog' and request['params'].get('cursor'):
+                self.f.cloud.puts+=1
+            return original(request)
+        self.f.cloud.request=racing
+        self.assertNotEqual(self.f.adapter.refresh()['status'],'content-refreshed')
+        self.f.cloud.offline=True
+        found=self.f.adapter.invoke({'request_id':'synthetic_refresh_race_0001','method':'content_read','params':{'kind':'memory','id':'synthetic-0599'}})
+        self.assertTrue(found['local_cache']['stale'])
+
+    def test_scope_filter_can_empty_nonfinal_pages_without_hiding_later_allowed_ids(self):
+        original=self.f.cloud.request
+        def filtered(request):
+            response=original(request)
+            if request['method']=='content_catalog' and 'result' in response:
+                response['result']['artifacts']=[row for row in response['result']['artifacts'] if row['id']=='synthetic-0599']
+            return response
+        self.f.cloud.request=filtered
+        _,items,sizes=self.pages(self.f.adapter)
+        self.assertEqual(sizes,[0,0,1]);self.assertEqual(items[0]['id'],'synthetic-0599')
+        self.assertEqual(self.f.adapter.refresh()['status'],'content-refreshed')
+        self.f.cloud.offline=True
+        found=self.f.adapter.invoke({'request_id':'synthetic_filtered_page_0001','method':'content_read','params':{'kind':'memory','id':'synthetic-0599'}})
+        self.assertTrue(found['local_cache']['stale'])
 
     def test_tool_schema_exposes_optional_cursor_and_keeps_one_memory_query(self):
         server=ContentServer(self.f.adapter);server.state='ready'

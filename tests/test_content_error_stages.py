@@ -46,7 +46,7 @@ class ContentErrors(unittest.TestCase):
                     "content_catalog", {"kinds": ["memory"], "limit": limit}
                 )
             self.assertEqual(error.exception.code, -32602)
-            self.assertIn("no pagination", error.exception.message)
+            self.assertIn("next_cursor", error.exception.message)
             self.assertNotIn("Writes", error.exception.message)
         self.assertEqual(self.adapter.calls, [])
         result = self.server.invoke("content_catalog", {"kinds": ["memory"]})
@@ -118,8 +118,8 @@ class ContentErrors(unittest.TestCase):
             "--action check-update",
             "--action update",
             "running_worker_version",
-            "kinds only",
-            "no pagination",
+            "first authorized inventory page",
+            "next_cursor",
         ):
             self.assertIn(text, catalog["description"])
 

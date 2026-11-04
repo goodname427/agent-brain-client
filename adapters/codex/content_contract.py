@@ -432,4 +432,4 @@ def validate_catalog(value):
     if (not isinstance(value,dict) or set(value) not in ({'content_api_version','commit','artifacts'},{'content_api_version','commit','artifacts','next_cursor'})
             or value['content_api_version']!=1 or not isinstance(value['commit'],str) or not re.fullmatch('[a-f0-9]{40}',value['commit'])
             or not isinstance(value['artifacts'],list) or len(value['artifacts'])>256):raise ValueError('Invalid catalog page')
-    if 'next_cursor' in value and (not value['artifacts'] or not isinstance(value['next_cursor'],str) or not re.fullmatch(r'[a-f0-9]{64}:[0-9]{1,20}',value['next_cursor'])):raise ValueError('Invalid catalog continuation')
+    if 'next_cursor' in value and (not isinstance(value['next_cursor'],str) or not re.fullmatch(r'[a-f0-9]{64}:[0-9]{1,20}',value['next_cursor'])):raise ValueError('Invalid catalog continuation')

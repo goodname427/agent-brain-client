@@ -1127,7 +1127,8 @@ class ContentAdapter:
         response=self.client.request({'request_id':uuid.uuid4().hex,'method':method,'params':params})
         if 'error' in response:
             error=response['error']
-            if not isinstance(error,dict) or error.get('retryable') is not True or error.get('code') not in OFFLINE_TRANSPORT_ERRORS:self._deny_offline_snapshot()
+            race=method=='content_catalog' and isinstance(error,dict) and error.get('code')=='catalog_changed'
+            if not race and (not isinstance(error,dict) or error.get('retryable') is not True or error.get('code') not in OFFLINE_TRANSPORT_ERRORS):self._deny_offline_snapshot()
             raise CacheBlocked()
         if not isinstance(response.get('result'),dict):raise CacheBlocked()
         return response['result']
@@ -1299,6 +1300,8 @@ class ContentAdapter:
         error=result.get('error',{}) if isinstance(result,dict) else {}
         if isinstance(result,dict) and result.get('request_id')==request['request_id'] and isinstance(error,dict) and error.get('retryable') is True and error.get('code') in OFFLINE_TRANSPORT_ERRORS:
             return self._offline_read(request)
+        if (request['method']=='content_catalog' and isinstance(error,dict) and error.get('code')=='catalog_changed'
+                and isinstance(result,dict) and result.get('request_id')==request['request_id']):return result
         if isinstance(result,dict) and 'error' in result:
             self.offline_denied=True
             try:
