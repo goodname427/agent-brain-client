@@ -55,6 +55,8 @@ class BindingMigration(unittest.TestCase):
             result=wizard.manage_update(self.f.home,'update',channel_factory=factory)
         self.assertEqual(result['status'],'client-update-current',result)
         self.assertTrue(result['native_changed']);self.assertTrue(result['reload_required'])
+        self.assertEqual(result['registered_tool_count'],10)
+        self.assertEqual(result['registered_launcher_version'],'0.6.4')
         table=ci.tomllib.loads(self.f.config.read_text())['mcp_servers'][ci.NAME]
         self.assertIn('memory_recall',table['enabled_tools']);self.assertEqual(len(table['enabled_tools']),10)
         self.assertTrue(ci.inspect(self.f.home)['registration_verified'])
@@ -117,6 +119,7 @@ class LegacyFilterMigration(unittest.TestCase):
             updated=wizard.manage_update(self.f.home,'update',channel_factory=factory)
         self.assertEqual(updated['status'],'client-update-current',updated)
         self.assertTrue(updated['native_changed']);self.assertTrue(updated['reload_required'])
+        self.assertEqual(updated['registered_tool_count'],10)
         self.assertEqual(updated['tool_discovery']['blocked_by_registration'],[])
         self.assertFalse(updated['tool_discovery']['registration_update_required'])
         self.assertEqual(updated['tool_discovery']['host_tool_discovery'],'unknown')

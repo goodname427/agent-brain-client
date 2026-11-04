@@ -1131,6 +1131,11 @@ def manage_update(home, action, *, channel_factory=None):
             changed = after != before
             current_meta=private_json(safe(Path(home)/'.config/agent-brain-client/codex-mcp.json'))
             result['tool_discovery']=content_install.tool_discovery(home,current_meta,after)
+            launcher=Path(current_meta['package']);launcher_manifest=launcher/'verified.json'
+            launcher_record=json.loads(content_install.raw(launcher_manifest if launcher_manifest.exists() else launcher/'export-manifest.json'))
+            result.update(registered_launcher_package=current_meta['package'],
+                          registered_launcher_version=launcher_record.get('manifest',launcher_record).get('version'),
+                          registered_tool_count=len(result['tool_discovery']['registered_enabled_tools']))
             result.update(status='client-update-updated' if changed else 'client-update-current',
                           active_package_version=after['version'], active_package_commit=after.get('commit'),
                           latest_channel_version=after['version'], latest_channel_commit=after.get('commit'),
