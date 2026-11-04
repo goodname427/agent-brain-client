@@ -419,12 +419,14 @@ class HTTPSContent(unittest.TestCase):
                 patch.object(content_install,'validate_install_scope'), \
                 patch.object(client_release,'policy_file',return_value=policy), \
                 patch.object(installer,'dependency_environment',return_value={'PATH':'/synthetic/bin'}), \
+                patch.object(sys.stdin,'isatty',return_value=True), \
                 patch.object(sys,'executable','/synthetic/maintenance-python'):
             result=installer.reexec_update_runtime(self.home,'update',runner=runner)
         self.assertEqual(result,0)
         self.assertEqual(captured[0][0][:3],[str(pinned),'-I','-B'])
         self.assertEqual(captured[0][1]['env']['PATH'],'/synthetic/bin')
         self.assertEqual(captured[0][1]['env']['CODEX_HOME'],plan['codex_home'])
+        self.assertIsNone(captured[0][1]['stdin'])
 
     def test_pairing_transport_terminal_redacts_error_and_does_not_follow_redirect(self):
         transport=PairingHTTPS('https://synthetic.invalid');token='SYNTHETIC_DEVICE_TOKEN_1234567890123456'
