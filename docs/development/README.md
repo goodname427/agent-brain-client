@@ -8,6 +8,8 @@
 
 二三级记忆的入口、跨设备合同与无正文回执见 [L2/L3 召回验收](layered-recall.md)。
 
+采集来源诊断和普通 MCP 分层读取修复见 [Windows 验收修复](windows-acceptance-repairs.md)。
+
 ```sh
 TEST_ROOT=$(mktemp -d)
 mkdir -p "$TEST_ROOT/home" "$TEST_ROOT/codex"

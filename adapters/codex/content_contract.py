@@ -6,7 +6,7 @@ registry is intentionally small and extensible; clients cannot invent types.
 from datetime import datetime, timezone
 import hashlib
 import json
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
 import re
 
 TYPES={'memory','rule','skill'}
@@ -284,6 +284,68 @@ def core_recall(value,context):
     for name in ('L0','L1','L2'):
         if not isinstance(recall[name],list) or len(recall[name])>20 or any(not isinstance(row,dict) or not isinstance(row.get('provenance'),dict) for row in recall[name]):raise ValueError('Bounded sourced Core rows required')
     if not isinstance(recall['L3'],dict) or not isinstance(recall['L3'].get('provenance'),dict) or recall['L3'].get('content') is not None and not isinstance(recall['L3'].get('content'),str):raise ValueError('Sourced Core profile required')
+
+
+def recall_origin(value):
+    """Metadata only; no filesystem discovery or new source authorization."""
+    def path(raw):
+        if not isinstance(raw, str) or any(c in raw for c in ('\x00', '\r', '\n')): raise ValueError('Absolute origin required')
+        windows = PureWindowsPath(raw)
+        if windows.drive:
+            if not re.match(r'^[A-Za-z]:[\\/]', raw) or not windows.is_absolute() or '..' in windows.parts or any(':' in p for p in windows.parts[1:]): raise ValueError('Local drive origin required')
+            return windows.as_posix().casefold()
+        if not raw.startswith('/') or raw.startswith('//') or '\\' in raw or '..' in PurePosixPath(raw).parts: raise ValueError('Absolute origin required')
+        return str(PurePosixPath(raw)).casefold()
+    if not isinstance(value, dict) or set(value) != {'kind', 'cwd', 'project_root', 'repository_root'} or value['kind'] not in ('project', 'non-project'): raise ValueError('Exact source origin required')
+    cwd = path(value['cwd'])
+    if value['kind'] == 'project':
+        root = path(value['project_root']); path(value['repository_root'])
+        if cwd != root and not cwd.startswith(root.rstrip('/') + '/'): raise ValueError('Working directory outside project')
+    elif value['project_root'] is not None or value['repository_root'] is not None: raise ValueError('Non-project origin cannot claim a repository')
+    return value['kind'], path(value['repository_root'] or value['cwd'])
+
+
+def global_recall_params(params):
+    if not isinstance(params, dict) or set(params) != {'origin', 'session_id', 'query', 'limit'}: raise ValueError('Exact layered recall request required')
+    recall_origin(params['origin']); event_identifier(params['session_id'])
+    if not isinstance(params['query'], str) or not params['query'].strip() or len(params['query']) > 1024 or type(params['limit']) is not int or not 1 <= params['limit'] <= 3: raise ValueError('Bounded recall query required')
+    if private_recall_text(params['query']): raise ValueError('Private recall text excluded')
+
+
+def private_recall_text(text):
+    return bool(re.search(r'(?im)^\s*(?:\[local[-_ ]?only\]|\[no-memory\]|\[private\]|localonly:|不要记忆[:：]|\[(?:no[-_ ]?share|project[-_ ]?only|do[-_ ]?not[-_ ]?share)\])|禁止(?:跨项目)?共享|不要(?:跨项目)?共享|仅限(?:当前|本)项目|do not share (?:this|across projects)|keep (?:this )?project[- ]only', text)
+                or re.search(r'-----BEGIN [A-Z ]*PRIVATE KEY-----|(?i:bearer)\s+[A-Za-z0-9_-]{24,}|(?i:api[_-]?key|password|secret[_-]?key)\s*[:=]\s*["\']?[^\s"\']{4,}|\bsk-[A-Za-z0-9_-]{20,}', text))
+
+
+def global_recall_result(value, params, device):
+    """Keep layer, committed event proof and source applicability intact."""
+    global_recall_params(params)
+    if not isinstance(value, dict) or set(value) != {'schema', 'namespace_results'} or value['schema'] != 1 or not isinstance(value['namespace_results'], list) or len(value['namespace_results']) > 18 or len(encode(value)) > 240000: raise ValueError('Bounded layered response required')
+    count = 0
+    current = recall_origin(params['origin'])
+    for group in value['namespace_results']:
+        if not isinstance(group, dict) or set(group) not in ({'project_id', 'sharing', 'recall'}, {'project_id', 'sharing', 'recall', 'source_device_id'}) or group['sharing'] not in ('personal', 'project') or not re.fullmatch(r'abp-[a-f0-9]{32}', str(group['project_id'])): raise ValueError('Verified namespace required')
+        source_device = group.get('source_device_id', device)
+        if not isinstance(source_device, str) or not re.fullmatch(r'[a-f0-9]{32}', source_device) or source_device != device and group['sharing'] != 'personal': raise ValueError('Approved personal peer required')
+        context = {'project_id': group['project_id'], 'session_id': params['session_id'], 'cross_session': True}
+        core_recall({'content_api_version': 1, 'method': 'core-recall', 'source': 'core', 'scope': context, 'recall': group['recall']}, context)
+        found = group['recall']
+        if found['L0']: raise ValueError('Derived-only recall required')
+        for row in [*found['L1'], *found['L2'], found['L3']]:
+            if row.get('content') is None: continue
+            if not isinstance(row['content'], str): raise ValueError('Recall text required')
+            if private_recall_text(row['content']): raise ValueError('Private recall text excluded')
+            proof = row['provenance']; sources = proof.get('sources', [])
+            if (proof.get('status') != 'verified-native-generation-graph' or not proof.get('generation_ids') or not sources
+                    or set(proof.get('event_ids', [])) != {s.get('event_id') for s in sources}
+                    or any(s.get('state') != 'committed' or s.get('identity', {}).get('device_id') != source_device or s.get('identity', {}).get('project_id') != group['project_id'] for s in sources)): raise ValueError('Committed generation provenance required')
+            source = row.get('source_context', {})
+            if not isinstance(source, dict) or set(source) != {'origins', 'relation', 'use', 'global_rule'} or source['use'] != 'reference-only' or source['global_rule'] is not False or not isinstance(source['origins'], list) or not 1 <= len(source['origins']) <= 32: raise ValueError('Source applicability required')
+            matches = [recall_origin(origin) == current for origin in source['origins']]
+            relation = 'current-source' if all(matches) else 'other-source' if not any(matches) else 'mixed-source'
+            if source['relation'] != relation: raise ValueError('Source relation changed')
+            count += 1
+    if count > params['limit']: raise ValueError('Recall exceeds requested limit')
 
 
 def validate_capture_selection(value):

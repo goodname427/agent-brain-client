@@ -194,13 +194,17 @@ def source_setup(home, *, choose=input):
     result = configure(args)
     # The authenticated status endpoint can confirm an already admitted device;
     # it cannot authorize a new source. Failure leaves the local off fence.
+    admitted = None
     try:
         admitted = activate(gm.load(home), scope)
+        if admitted.get('activated') is not True:
+            raise ValueError('Source admission is pending')
         return dict(admitted, collection_enabled=True)
     except Exception:
         return dict(
             result,
             collection_enabled=False,
+            server_admission=admitted,
             next_action="Give the saved metadata packet to the existing Server operator for this exact Windows device. Then run & ./tools/memory-windows.ps1 global-configure --activate-packet "
             + "'"
             + str(packet).replace("'", "''")

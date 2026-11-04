@@ -1223,6 +1223,21 @@ class ContentAdapter:
                     'file-access-failed' if isinstance(error,OSError) else 'validation-failed')
             return {'status':'content-recovery-review-required' if uncertain else 'content-refresh-blocked','stage':stage,'reason':reason,'native_changed':None if uncertain else False,'model_loaded':'unknown','next_action':'The Server save receipt is independent of this local mapping failure. Preserve local files and prior snapshots; inspect the reported refresh stage before retrying. Do not resubmit a saved write with a new request_id.'}
 
+    def recall(self, request):
+        """Read only; do not drain queues, refresh mappings or broaden grants."""
+        check_request()
+        if 'memory_query' not in self.methods() or 'memory' not in self.policy['kinds'] or 'memory' not in self.client.grant['artifact_types']: raise CacheBlocked()
+        contract.global_recall_params(request['params'])
+        reader = getattr(self.client, 'recall', None)
+        if not callable(reader):
+            return {'request_id':request['request_id'],'error':{'code':'layered_recall_transport_unavailable','retryable':False},'persistence':{'durable':False}}
+        result = reader(request)
+        if not isinstance(result, dict) or result.get('request_id') != request['request_id']: raise CacheBlocked()
+        if 'error' not in result: contract.global_recall_result(result['result'], request['params'], self.client.device_id)
+        if result.get('error', {}).get('code') == 'global_source_device_denied':
+            result = dict(result, source_admission={'status':'device-source-approval-required','next_action':'Check this enrolled device in the existing Server global source registry and apply its exact approved metadata packet. Do not reuse another device identity or change credentials.'})
+        return dict(result, local_refresh={'status':'read-only','native_changed':False,'model_loaded':'unknown'})
+
     def invoke(self,request,reconciles=None,*,event_gate=None):
         check_request()
         require_platform('cache-storage',self.platform)
