@@ -9,6 +9,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+import unicodedata
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,6 +68,30 @@ class LayeredRecall(unittest.TestCase):
 
     def read(self):
         return gm.recall(self.value, self.local, 'synthetic-reader', 'synthetic question')
+
+    def test_mcp_contract_matches_shared_nfc_source_relation_on_both_platforms(self):
+        from content_contract import global_recall_result, recall_origin
+        for root in ('/synthetic/projects/caf\u00e9', 'C:\\Synthetic\\Projects\\caf\u00e9'):
+            for reader_form, source_form in (('NFC', 'NFD'), ('NFD', 'NFC')):
+                with self.subTest(root=root, reader=reader_form, source=source_form):
+                    self.local = self.origin(unicodedata.normalize(reader_form, root))
+                    self.foreign = self.origin(unicodedata.normalize(source_form, root))
+                    group = self.group()
+                    self.assertEqual(group['recall']['L3']['source_context']['relation'], 'current-source')
+                    params = {'origin':self.local,'session_id':'synthetic-reader','query':'synthetic question','limit':3}
+                    global_recall_result({'schema':1,'namespace_results':[group]}, params, self.device)
+                    self.assertEqual(recall_origin(self.local), recall_origin(self.foreign))
+
+    def test_mcp_origin_normalizes_before_containment_without_compatibility_folding(self):
+        from content_contract import recall_origin
+        for root in ('/synthetic/projects/caf\u00e9', 'C:/Synthetic/Projects/caf\u00e9'):
+            local = self.origin(root)
+            local['cwd'] = unicodedata.normalize('NFD', root) + '/src'
+            recall_origin(local)
+        # Fullwidth characters are compatibility equivalents, not canonical
+        # equivalents. They must remain distinct sources under the NFC contract.
+        self.assertNotEqual(recall_origin(self.origin('/synthetic/ProjectA')),
+                            recall_origin(self.origin('/synthetic/Project\uff21')))
 
     def test_both_device_directions_accept_verified_peer_L2_L3(self):
         for local, foreign in ((self.origin('/synthetic/mac/current'), self.origin('c:/synthetic/windows/source')),
