@@ -13,6 +13,10 @@ import uuid
 import memory_automation as old
 from global_memory_scope import validate
 
+# Status also runs from an isolated CLI without the test runner's PYTHONPATH.
+# Load the same fixed bundle paths used by install and Hook execution.
+old.imports()
+
 BEGIN = '# agent-brain-global-memory:begin'
 END = '# agent-brain-global-memory:end'
 

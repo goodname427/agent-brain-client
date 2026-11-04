@@ -345,6 +345,14 @@ class GlobalMemoryUpdate(unittest.TestCase):
             gm.load(self.home)
         self.assertEqual(before, {p: p.read_bytes() for p in self.home.rglob('*') if p.is_file()})
 
+    def test_isolated_status_cli_loads_shared_toml_editor_without_pythonpath(self):
+        environment = dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.native))
+        proc = subprocess.run([sys.executable, '-I', '-B', str(gm.ROOT / 'tools/global_memory.py'),
+                               'global-status', '--device-home', str(self.home)],
+                              cwd=self.home, env=environment, capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stdout.decode() + proc.stderr.decode())
+        self.assertTrue(json.loads(proc.stdout)['global_entry_installed'])
+
     def test_retained_removal_requires_authenticated_journal_and_exact_block(self):
         import client_lifecycle as lifecycle
         outside, previous = hooks.split_owned(self.config.read_bytes())
