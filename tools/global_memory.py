@@ -161,7 +161,7 @@ class GlobalClient:
         self.queue_identity = dict(self.base.queue_identity, global_profile=value['scope']['profile_id'], origin_sha=digest(local))
 
     def wire(self, method, params, rid=None):
-        allowed = {'memory_global_status', 'memory_global_query', 'memory_global_event_submit',
+        allowed = {'memory_global_status', 'memory_query', 'memory_global_query', 'memory_global_event_submit',
                    'memory_global_stop', 'memory_global_resume', 'memory_global_sync', 'memory_global_register'}
         if method not in allowed: raise ValueError('Global memory operation required')
         rid = rid or 'global_' + os.urandom(16).hex()
@@ -260,7 +260,7 @@ def submit_hook(value, local, payload):
 
 def recall(value, local, session, query='personal preferences and task progress'):
     client = GlobalClient(value, local)
-    response = client.wire('memory_global_query', dict(client.params(session), query=query, limit=3))
+    response = client.wire('memory_query', dict(client.params(session), query=query, limit=3))
     if 'error' in response:
         cache=settings_path(value['device_home']).parent/('recall-'+digest(local)+'.json')
         if response['error'].get('code')=='transport_unconfirmed' and cache.exists():
@@ -273,7 +273,7 @@ def recall(value, local, session, query='personal preferences and task progress'
     # personal namespace for each of the 16 peers. Empty groups still count.
     if set(data) != {'schema', 'namespace_results'} or data['schema'] != 1 or not isinstance(data['namespace_results'], list) or len(data['namespace_results']) > 18:
         raise ValueError('Bounded global recall required')
-    from content_contract import core_recall
+    from content_contract import core_recall, verified_memory_sources
     selected = select(value['scope'], local)
     ids = {namespace(client.actor, value['scope']['profile_id']), namespace(client.actor, source_id(value['scope'], local, selected['sharing']))}
     items = []
@@ -293,10 +293,8 @@ def recall(value, local, session, query='personal preferences and task progress'
         for layer in ('L1', 'L2', 'L3'):
             for row in [found[layer]] if layer == 'L3' else found[layer]:
                 if row.get('content') is None: continue
-                proof = row.get('provenance', {}); sources = proof.get('sources', [])
-                if (proof.get('status') != 'verified-native-generation-graph' or not proof.get('generation_ids') or not sources
-                        or set(proof.get('event_ids', [])) != {s.get('event_id') for s in sources}
-                        or any(s.get('state') != 'committed' or s.get('identity', {}).get('device_id') != device or s.get('identity', {}).get('project_id') != group['project_id'] for s in sources)):
+                proof = row.get('provenance', {})
+                if not verified_memory_sources(proof,device,group['project_id'],layer=='L1'):
                     raise ValueError('Global recall provenance changed')
                 context = row.get('source_context')
                 # The authenticated Server checks a peer's own approved origins.

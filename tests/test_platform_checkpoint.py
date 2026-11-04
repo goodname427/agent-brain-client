@@ -116,7 +116,7 @@ class HistoricalPackageTools(unittest.TestCase):
         file.write_text(raw)
         tools=ci.package_tools(package,POLICY,self.grant)
         self.assertIn('synthetic_future_read',tools)
-        self.assertIn('memory_recall',tools)
+        self.assertIn('memory_query',tools)
         self.assertEqual(set(tools),before|{'synthetic_future_read'})
 
     def test_probe_failure_is_bounded_and_does_not_accept_updater_fallback(self):

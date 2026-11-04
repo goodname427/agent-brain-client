@@ -30,6 +30,8 @@ class Adapter:
             "persistence": {"durable": True},
         }
 
+    recall = invoke
+
 
 class ContentErrors(unittest.TestCase):
     def setUp(self):

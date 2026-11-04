@@ -465,7 +465,7 @@ class LauncherClosure(unittest.TestCase):
         historical = runpy.run_path(str(source))
         self.assertEqual(self.before["version"], "0.5.7")
         registered=ci.tomllib.loads(self.f.config.read_text())["mcp_servers"][ci.NAME]["enabled_tools"]
-        self.assertIn('memory_recall',registered)
+        self.assertIn('memory_query',registered)
         self.assertIn('content_queue_inspect',registered)
         self.assertEqual(
             historical["inspect"](self.f.home)["reason"], "mcp-binding-changed"

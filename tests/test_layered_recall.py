@@ -103,7 +103,7 @@ class LayeredRecall(unittest.TestCase):
             self.assertEqual([r['layer'] for r in rows], ['L1', 'L2', 'L3'])
             self.assertTrue(all(r['source_context']['relation'] == 'other-source' for r in rows))
             self.assertTrue(all(r['source_context']['use'] == 'reference-only' for r in rows))
-        self.assertTrue(all(method == 'memory_global_query' for method, _ in self.sent))
+        self.assertTrue(all(method == 'memory_query' for method, _ in self.sent))
 
     def test_legacy_local_reply_checks_local_origins(self):
         group = self.group(); group.pop('source_device_id')

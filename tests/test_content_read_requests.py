@@ -406,6 +406,8 @@ class HTTPRequests(unittest.TestCase):
             def invoke(self, request):
                 return client.request(request)
 
+            recall = invoke
+
         self.server = ContentServer(Adapter())
         self.server.state = "ready"
 

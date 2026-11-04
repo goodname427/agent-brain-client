@@ -610,7 +610,9 @@ class ContentAdapter:
         if not isinstance(response,dict) or response.get('request_id')!=request['request_id'] or 'error' in response:return False
         receipt=response.get('persistence');value=response.get('result');params=request['params']
         if request['method']=='memory_event_submit':return contract.core_receipt(response,request)
-        if not isinstance(receipt,dict) or not isinstance(value,dict) or not isinstance(receipt.get('commit'),str) or not re.fullmatch(r'[a-f0-9]{40}',receipt['commit']):return False
+        if not isinstance(receipt,dict) or not isinstance(value,dict):return False
+        native=(params['kind']=='memory' and receipt.get('storage')=='tencent-l1' and isinstance(receipt.get('checkpoint'),str) and re.fullmatch(r'[a-f0-9]{64}',receipt['checkpoint']))
+        if not native and (not isinstance(receipt.get('commit'),str) or not re.fullmatch(r'[a-f0-9]{40}',receipt['commit'])):return False
         remote=receipt.get('state')=='remote-confirmed' and receipt.get('durable') is True and receipt.get('github_confirmed',True) is True and receipt.get('local_durable',True) is True
         local=receipt.get('state')=='local-confirmed' and receipt.get('durable') is False and receipt.get('local_durable') is True and receipt.get('github_confirmed') is False
         if not (remote or local):return False
