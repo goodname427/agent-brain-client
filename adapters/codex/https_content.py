@@ -357,6 +357,18 @@ class HTTPSContentClient:
         if saved['phase']!='active' or self.device_id is None or saved['device_id']!=self.device_id:raise ValueError('Device identity changed; old outbox preserved')
         return saved['credential']
 
+    def recall(self, request):
+        """One read through the Server's existing per-device global source gate."""
+        from content_contract import global_recall_params, global_recall_result
+        if self.device_task is not None or self.recall_policy is not None or request.get('method') != 'memory_global_query':
+            raise ValueError('Normal approved-source recall required')
+        if 'read' not in self.grant['scopes'] or 'memory' not in self.grant['artifact_types']:
+            raise ValueError('Memory read grant required')
+        global_recall_params(request['params'])
+        result = self.transport.request(request)
+        if 'error' not in result: global_recall_result(result['result'], request['params'], self.device_id)
+        return result
+
     def request(self,request):
         try:
             method=request['method'];params=request['params']

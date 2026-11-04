@@ -1027,6 +1027,25 @@ class ContentAdapter:
     def _fetch(self):
         kinds=self.policy['kinds'];catalog=self._request('content_catalog',{'kinds':kinds})
         if set(catalog)!={'content_api_version','commit','artifacts'} or catalog['content_api_version']!=1 or not re.fullmatch(r'[a-f0-9]{40}',catalog['commit']) or not isinstance(catalog['artifacts'],list) or len(catalog['artifacts'])>256:raise CacheBlocked()
+        # Reuse only a fully verified snapshot bound to this service and policy.
+        # The live catalog revision, not the previous commit, determines reuse.
+        cached={}
+        active=self._load('active.json');pin=self._load('offline-snapshot.json')
+        if (isinstance(active,dict) and set(active)=={'commit','snapshot_sha'} and
+                isinstance(active['commit'],str) and re.fullmatch(r'[a-f0-9]{40}',active['commit']) and
+                isinstance(pin,dict) and pin.get('schema')==1 and pin.get('policy_sha')==self.policy_sha and
+                pin.get('service_sha')==self.queue_sha and pin.get('active')==active and not pin.get('read_denied')):
+            previous=self._load('snapshots/'+active['commit']+'.json')
+            if (isinstance(previous,dict) and set(previous)=={'content_api_version','commit','records'} and
+                    previous['content_api_version']==1 and previous['commit']==active['commit'] and
+                    sha(contract.encode(previous))==active['snapshot_sha'] and
+                    isinstance(previous['records'],list) and len(previous['records'])<=256):
+                for value in previous['records']:
+                    self._validate_target(value,value.get('kind'),value.get('id'))
+                    kind,identity=value['kind'],value['id']
+                    contract.validate('content_read',{'kind':kind,'id':identity})
+                    if kind not in kinds or not self._allows(kind,identity) or (kind,identity) in cached:raise CacheBlocked()
+                    cached[kind,identity]=value
         records=[];seen=set()
         for item in catalog['artifacts']:
             if not isinstance(item,dict) or set(item)!={'kind','id','revision'}:raise CacheBlocked()
@@ -1036,7 +1055,9 @@ class ContentAdapter:
             # Keep the complete catalog for the final snapshot race check, but
             # never fetch or map content outside this device's selected IDs.
             if not self._allows(kind,identity):continue
-            value=self._request('content_read',{'kind':kind,'id':identity})
+            value=cached.get((kind,identity))
+            if value is None or value['revision']!=item['revision']:
+                value=self._request('content_read',{'kind':kind,'id':identity})
             if set(value)!={'content_api_version','kind','id','revision','record'} or value['content_api_version']!=1 or value['kind']!=kind or value['id']!=identity or value['revision']!=item['revision'] or not re.fullmatch(r'[a-f0-9]{64}',value['revision']):raise CacheBlocked()
             contract.record(kind,value['record'],identity);records.append(value)
         if self._request('content_catalog',{'kinds':kinds})!=catalog:raise CacheBlocked()
@@ -1151,13 +1172,16 @@ class ContentAdapter:
 
     def refresh(self):
         require_platform('cache-recovery',self.platform)
+        stage='local-recovery'
         try:
             with locked(self.cache/'content.lock'):
                 self._recover();self._import_pending();self._drain();self._import_pending()
                 queue=self.queue_status();imports=self.import_status()
                 if queue['pending'] or queue['conflict'] or queue['blocked'] or any(imports['counts'].get(v,0) for v in ('inventoried','pending','conflict','blocked')):
                     return {'status':'content-local-changes-retained','native_changed':False,'model_loaded':'unknown','queue':queue,'imports':imports,'next_action':'Reconnect to replay exact saved requests; explicitly reconcile conflicts before mapping.'}
-                owned=self._owned();snapshot=self._fetch();desired=self._mapping(snapshot,owned)
+                stage='owned-files';owned=self._owned()
+                stage='remote-snapshot';snapshot=self._fetch()
+                stage='native-mapping';desired=self._mapping(snapshot,owned)
                 self._skill_dirs(desired,owned['files'])
                 if any(self.cache==self._path(name) or self.cache in self._path(name).parents for name in desired):raise CacheBlocked()
                 active=self._load('active.json')
@@ -1168,10 +1192,14 @@ class ContentAdapter:
                         self._load('snapshots/'+snapshot['commit']+'.json')==snapshot and mapping_matches):
                     self._pin_offline_snapshot(snapshot)
                     return {'status':'content-current','native_changed':False,'model_loaded':'unknown'}
-                before={};after={}
+                stage='native-preflight';before={};after={}
                 for name in set(owned['files'])|set(desired):
                     raw=self._raw(name)
                     if name!='.codex/AGENTS.md' and name not in owned['files'] and raw is not None:raise CacheBlocked()
+                    # A new snapshot commit need not change every host file.
+                    # Opening unchanged Skills/AGENTS for write can fail on
+                    # Windows while Codex or an editor holds them read-only.
+                    if raw==desired.get(name):continue
                     path=self._path(name);before[name]={'data':base64.b64encode(raw).decode() if raw is not None else None,'sha':sha(raw) if raw is not None else None,'mode':path.stat().st_mode&0o777 if raw is not None else 0o600}
                     after[name]=sha(desired[name]) if name in desired else None
                 journal={'phase':'applying','before':before,'after':after,'owned':owned,'active':active}
@@ -1179,17 +1207,36 @@ class ContentAdapter:
                 if any(journal['host'][str(self._path(name))]['before_sha']!=old['sha'] for name,old in before.items()):raise CacheBlocked()
                 self._save('transaction.json',journal)
                 try:
+                    stage='native-apply'
                     host_apply(journal['host'],lambda:self._save('transaction.json',journal))
+                    stage='snapshot-save'
                     self._save('snapshots/'+snapshot['commit']+'.json',snapshot)
                     self._save('owned.json',{'policy_sha':self.policy_sha,'binding':self.binding,'files':{name:sha(raw) for name,raw in desired.items()}})
                     self._save('active.json',{'commit':snapshot['commit'],'snapshot_sha':sha(contract.encode(snapshot))})
-                    self.health();self._owned();self._pin_offline_snapshot(snapshot);self._save('transaction.json',dict(journal,phase='complete'))
+                    stage='verification';self.health();self._owned();self._pin_offline_snapshot(snapshot);self._save('transaction.json',dict(journal,phase='complete'))
                 except Exception:self._restore(journal);raise
-                return {'status':'content-refreshed','native_changed':True,'model_loaded':'unknown','commit':snapshot['commit']}
-        except Exception:
+                return {'status':'content-refreshed','native_changed':bool(before),'model_loaded':'unknown','commit':snapshot['commit']}
+        except Exception as error:
             try:journal=self._load('transaction.json');uncertain=journal and journal['phase']=='applying'
             except Exception:uncertain=True
-            return {'status':'content-recovery-review-required' if uncertain else 'content-refresh-blocked','native_changed':None if uncertain else False,'model_loaded':'unknown','next_action':'Preserve local files and prior snapshots. Review transport, contract, content scope, dependencies, owned-file drift or interrupted recovery.'}
+            reason=('request-stopped' if isinstance(error,RequestStopped) else
+                    'file-access-failed' if isinstance(error,OSError) else 'validation-failed')
+            return {'status':'content-recovery-review-required' if uncertain else 'content-refresh-blocked','stage':stage,'reason':reason,'native_changed':None if uncertain else False,'model_loaded':'unknown','next_action':'The Server save receipt is independent of this local mapping failure. Preserve local files and prior snapshots; inspect the reported refresh stage before retrying. Do not resubmit a saved write with a new request_id.'}
+
+    def recall(self, request):
+        """Read only; do not drain queues, refresh mappings or broaden grants."""
+        check_request()
+        if 'memory_query' not in self.methods() or 'memory' not in self.policy['kinds'] or 'memory' not in self.client.grant['artifact_types']: raise CacheBlocked()
+        contract.global_recall_params(request['params'])
+        reader = getattr(self.client, 'recall', None)
+        if not callable(reader):
+            return {'request_id':request['request_id'],'error':{'code':'layered_recall_transport_unavailable','retryable':False},'persistence':{'durable':False}}
+        result = reader(request)
+        if not isinstance(result, dict) or result.get('request_id') != request['request_id']: raise CacheBlocked()
+        if 'error' not in result: contract.global_recall_result(result['result'], request['params'], self.client.device_id)
+        if result.get('error', {}).get('code') == 'global_source_device_denied':
+            result = dict(result, source_admission={'status':'device-source-approval-required','next_action':'Check this enrolled device in the existing Server global source registry and apply its exact approved metadata packet. Do not reuse another device identity or change credentials.'})
+        return dict(result, local_refresh={'status':'read-only','native_changed':False,'model_loaded':'unknown'})
 
     def invoke(self,request,reconciles=None,*,event_gate=None):
         check_request()

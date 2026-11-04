@@ -42,6 +42,10 @@ DAILY_INSTRUCTIONS = ('Daily maintenance of non-sensitive personal shared memory
     'Do not read or copy custom approval rules. Use this server rather than old local Core/direct Git writers. '
     'Native memory remains available under its existing authorization.')
 
+SYNTHETIC_ROUTING = ('Synthetic sandbox only; this is not the approved personal content service. '
+    'Use only for an explicitly requested synthetic-service test, never as fallback for personal memory or Client outbox/reconnection tests. '
+    'Do not enable a disabled plugin or trust old session guidance as current availability. ')
+
 
 class ProtocolError(Exception):
     def __init__(self, code, message):
@@ -61,6 +65,7 @@ def tool(name,data_mode='synthetic',daily=False):
     if name == 'remember':
         properties['type']['enum'] = ['user', 'feedback', 'reference']
     description=DESCRIPTIONS[name] if data_mode=='synthetic' else DESCRIPTIONS[name].replace('synthetic','explicitly authorized personal')
+    if data_mode=='synthetic':description='Synthetic sandbox only; not personal memory or Client offline/replay verification. '+description
     if daily and name=='forget':description='Deletion is disabled for daily personal memory maintenance.'
     if daily and name=='remember':description='Maintain a matching non-sensitive personal shared topic with its read revision; do not create a conversation log or duplicate event topics. Keep request_id on retries; only durable=true confirms persistence.'
     return {'name': name, 'description': description,
@@ -149,7 +154,7 @@ class Server:
             return {'protocolVersion': params['protocolVersion'] if params['protocolVersion'] in VERSIONS else VERSIONS[0],
                     'serverInfo': {'name': 'agent-brain-remote-codex', 'version': self.client_version},
                     'capabilities': {'tools': {}},
-                    'instructions': DAILY_INSTRUCTIONS if self.daily else ('Synthetic personal data only. ' if self.data_mode=='synthetic' else 'Explicitly authorized personal shared memory only. No automatic collection, native history, private/local-only or project data. ')+'Use these tools instead of local Core commands. '
+                    'instructions': DAILY_INSTRUCTIONS if self.daily else (SYNTHETIC_ROUTING+'Synthetic personal data only. ' if self.data_mode=='synthetic' else 'Explicitly authorized personal shared memory only. No automatic collection, native history, private/local-only or project data. ')+'Use these tools instead of local Core commands. '
                                     'Read relevant topics before CAS changes; retain write request_id and parameters on retries. '
                                     'Only durable=true confirms GitHub persistence. Report missing credentials, tunnel or release channel; '
                                     'do not read private memory, native databases or credentials, or migrate real memories.'}
