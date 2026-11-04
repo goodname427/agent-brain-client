@@ -856,6 +856,22 @@ def retire_completed_reinstall(home, meta):
 
 
 def windows_launcher_handover(home, *, channel_factory=None, channel=None, before=None, meta=None):
+    import content_install as ci
+    from codex_connect import HostConfigChanged
+    for attempt in range(3):
+        try:
+            return launcher_handover_once(home, channel_factory=channel_factory, channel=channel, before=before, meta=meta)
+        except (HostConfigChanged, ci.InstallBlocked) as error:
+            # These errors occur before journaling or writing host files. Later
+            # failures return a recovery result and never enter this retry.
+            if not isinstance(error, HostConfigChanged) and str(error) not in (
+                    'Install preimage or inputs changed', 'Config rendering differs from approved plan'):
+                raise
+            if attempt == 2:
+                raise HostConfigChanged('config.toml is still being edited; retry update after the editor finishes') from None
+
+
+def launcher_handover_once(home, *, channel_factory=None, channel=None, before=None, meta=None):
     """Repair a stale fixed launcher on either platform through a verified transaction.
 
     The exact active checkpoint, policy, target package and native preimages are
@@ -897,6 +913,14 @@ def windows_launcher_handover(home, *, channel_factory=None, channel=None, befor
         retire_completed_reinstall(home, meta)
         ci.save(marker,saved)
     plan = saved["plan"]
+    # An editor may have added tools since the updater saved this plan. Refresh
+    # only config preimages; prepare authenticates our own service independently
+    # of every unrelated TOML field. Interrupted writes use exact recovery first.
+    refreshed = ci.rebase_update_plan(plan)
+    if refreshed != plan:
+        saved = dict(saved, plan=refreshed)
+        ci.save(marker, saved)
+        plan = refreshed
     target = safe(plan["package"])
     if target.parent != safe(Path(channel.engine.local) / "packages"):
         raise ValueError("Launcher package outside trusted cache")

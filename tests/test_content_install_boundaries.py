@@ -62,6 +62,27 @@ class InstallBoundaries(unittest.TestCase):
                 result,calls=self.startup();self.assertEqual(result['status'],'content-native-install-pending');self.assertEqual(calls,0)
         self.f.config.write_bytes(original)
 
+    def test_update_plan_rebases_unrelated_changes_and_preserves_new_pause(self):
+        self.apply()
+        plan = install.prepare(self.f.home, self.f.package, self.f.policy_path, self.f.policy_sha, True)
+        original = self.f.config.read_bytes()
+        self.f.config.write_bytes(b'new_unrelated_tool = true\n' + original.replace(b'enabled = true', b'enabled = false'))
+        rebased = install.rebase_update_plan(plan)
+        self.assertFalse(rebased['mcp']['enabled'])
+        self.assertTrue(install.apply(rebased, self.f.digest(rebased), lambda p:None)['installed'])
+        self.assertIn(b'new_unrelated_tool = true', self.f.config.read_bytes())
+        self.assertEqual(install.inspect(self.f.home)['installation_state'], 'verified-disabled')
+
+    def test_update_plan_refuses_changed_owned_binding_without_writing(self):
+        self.apply()
+        plan = install.prepare(self.f.home, self.f.package, self.f.policy_path, self.f.policy_sha, True)
+        changed = dict(plan['mcp'], command='synthetic-unapproved')
+        self.f.config.write_bytes(install.render(self.f.config.read_bytes(), changed, True))
+        before = self.f.native_files()
+        with self.assertRaisesRegex(ValueError, 'MCP drift'):
+            install.rebase_update_plan(plan)
+        self.assertEqual(self.f.native_files(), before)
+
     def test_inflight_damaged_candidate_keeps_real_registered_predecessor_usable(self):
         from brain_lock import locked
         from brain_release import atomic_json, digest

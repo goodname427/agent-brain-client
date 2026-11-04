@@ -25,7 +25,7 @@ def read_receipt(path):
     return json.loads(path.read_bytes(),object_pairs_hook=old.unique)
 
 
-def split_owned(raw):
+def legacy_split_owned(raw):
     text = raw.decode()
     if BEGIN not in text and END not in text: return text, None
     if text.count(BEGIN) != 1 or text.count(END) != 1: raise ValueError('Ambiguous owned global Hook block')
@@ -66,8 +66,95 @@ def split_owned(raw):
     return text[:start] + ''.join(foreign) + text[end:], ''.join(kept) + text[text.index(END):end]
 
 
+def owned_groups(config):
+    """Ownership belongs to tagged Hook groups, never an entire event/table."""
+    from global_memory import MARKER
+    result = {}
+    for event, groups in config.get('hooks', {}).items():
+        if not isinstance(groups, list): continue
+        for index, group in enumerate(groups):
+            hooks = group.get('hooks') if isinstance(group, dict) else None
+            if isinstance(hooks, list) and any(isinstance(hook, dict) and hook.get('statusMessage') == MARKER for hook in hooks):
+                result[('hooks', event, index)] = group
+    return result
+
+
+def render_groups(groups):
+    from codex_connect import toml_literal, toml_key
+    result = ''
+    for path, group in groups.items():
+        header = '.'.join(toml_key(key) for key in path[:2])
+        result += '[[' + header + ']]\n'
+        for key, value in group.items():
+            if key != 'hooks': result += toml_key(key) + ' = ' + toml_literal(value) + '\n'
+        for hook in group.get('hooks', []):
+            result += '[[' + header + '.hooks]]\n'
+            result += ''.join(toml_key(key) + ' = ' + toml_literal(value) + '\n' for key, value in hook.items())
+    return result
+
+
+def split_owned(raw):
+    from codex_connect import toml_statements, toml_remove
+    text = raw.decode()
+    markers = {BEGIN: [], END: []}
+    for start, end, kind, _ in toml_statements(text):
+        if kind == 'comment' and text[start:end].strip() in markers:
+            markers[text[start:end].strip()].append((start, end))
+    if not any(markers.values()): return text, None
+    if any(len(spans) != 1 for spans in markers.values()) or markers[BEGIN][0][0] >= markers[END][0][0]:
+        raise ValueError('Ambiguous owned global Hook block')
+    config = tomllib.loads(text)
+    groups = owned_groups(config)
+    # Remove marker comments in reverse source order, then edit semantic paths.
+    for start, end in sorted(markers[BEGIN] + markers[END], reverse=True):
+        text = text[:start] + text[end:]
+    outside = toml_remove(text, list(groups))
+    return outside, BEGIN + '\n' + render_groups(groups) + END + '\n'
+
+
+def render_owned(outside, owned):
+    """Merge into existing inline event arrays, append ordinary array tables."""
+    if owned is None: return (outside.rstrip() + '\n').encode()
+    from codex_connect import toml_statements, toml_replace
+    groups = owned_groups(tomllib.loads(owned))
+    appended = {}
+    for path, group in groups.items():
+        event_path = path[:2]
+        if any(kind == 'value' and event_path[:len(current)] == current
+               for _, _, kind, current in toml_statements(outside)):
+            config = tomllib.loads(outside)
+            existing = config.get('hooks', {}).get(path[1], [])
+            outside = toml_replace(outside, event_path, existing + [group])
+        else: appended[path] = group
+    return (outside.rstrip() + '\n\n' + BEGIN + '\n' + render_groups(appended) + END + '\n').encode()
+
+
+def owned_conflict(previous, candidates):
+    """Name the first conflicting field, without printing command/secret values."""
+    def difference(left, right, path):
+        if type(left) is not type(right): return path
+        if isinstance(left, dict):
+            for key in sorted(left.keys() | right.keys()):
+                if key not in left or key not in right: return path + '.' + key
+                found = difference(left[key], right[key], path + '.' + key)
+                if found: return found
+        elif isinstance(left, list):
+            if len(left) != len(right): return path
+            for index, (a, b) in enumerate(zip(left, right)):
+                found = difference(a, b, path + '[' + str(index) + ']')
+                if found: return found
+        elif left != right: return path
+        return None
+    try:
+        path = difference(tomllib.loads(previous or ''), tomllib.loads(candidates[0] or ''), 'config')
+    except (ValueError, TypeError, IndexError): path = 'hooks'
+    return ValueError('Outside edit to owned global Hook preserved: ' + (path or 'hooks'))
+
+
 def typed_equal(x, y):
+    import math
     if type(x) is not type(y): return False
+    if isinstance(x, float) and math.isnan(x) and math.isnan(y): return True
     if isinstance(x, dict): return x.keys() == y.keys() and all(typed_equal(x[k], y[k]) for k in x)
     if isinstance(x, list): return len(x) == len(y) and all(typed_equal(u, v) for u, v in zip(x, y))
     return x == y
@@ -131,15 +218,17 @@ def block(value, *, root=None):
 def recover_record(file, receipt, record):
     """Restore only this journal's exact host images, without parsing live TOML."""
     from codex_connect import host_restore
-    if record.get('schema')!=2 or set(record.get('host',{}))!={str(file)}:
+    if record.get('schema') not in (2,3) or set(record.get('host',{}))!={str(file)}:
         raise ValueError('Hook recovery scope changed')
     row=record['host'][str(file)]
     if row['before_sha']!=record['before_sha256'] or row['target_sha']!=record['after_sha256']:
         raise ValueError('Hook recovery images changed')
     before=base64.b64decode(row['before'],validate=True)
     target=base64.b64decode(row['target'],validate=True)
-    outside, previous=split_owned(before)
-    expected=(outside.rstrip()+('\n\n'+record['block'] if record['block'] is not None else '\n')).encode()
+    splitter = legacy_split_owned if record['schema'] == 2 else split_owned
+    outside, previous=splitter(before)
+    expected=((outside.rstrip()+('\n\n'+record['block'] if record['block'] is not None else '\n')).encode()
+              if record['schema'] == 2 else render_owned(outside, record['block']))
     if previous!=record['previous_block'] or target!=expected:
         raise ValueError('Hook recovery target changed')
     if tomllib.loads(before.decode()).get('mcp_servers')!=tomllib.loads(target.decode()).get('mcp_servers'):
@@ -187,10 +276,18 @@ def verified_removal(home, previous, record):
 
 
 def transact(native, directory, owned, *, remove=False):
+    from codex_connect import HostConfigChanged
+    for attempt in range(3):
+        try: return transact_once(native, directory, owned, remove=remove)
+        except HostConfigChanged:
+            if attempt == 2: raise HostConfigChanged('config.toml is still being edited; retry update after the editor finishes') from None
+
+
+def transact_once(native, directory, owned, *, remove=False):
     from brain_lock import locked
     file = old.canonical(native / 'config.toml', existing=True)
     receipt = directory / 'hook-install.json'
-    from codex_connect import host_plan,host_apply,host_restore
+    from codex_connect import host_plan,host_apply,host_restore,HostConfigChanged
     with locked(directory / 'hook-install.lock'):
         record = read_receipt(receipt) if receipt.exists() else None
         if record and record.get('phase')=='applying':
@@ -202,10 +299,10 @@ def transact(native, directory, owned, *, remove=False):
                 # A verified normal uninstall removes the owned inline block
                 # while retaining this private receipt and device settings.
                 if not verified_removal(Path(directory).parents[2], previous, record):
-                    raise ValueError('Outside edit to owned global Hook preserved')
+                    raise owned_conflict(previous, candidates)
         elif previous is not None: raise ValueError('Unowned global Hook block preserved')
         if remove and previous is None: return {'status': 'global-hook-not-installed', 'native_changed': False}
-        after = (outside.rstrip() + ('\n\n' + owned if not remove else '\n')).encode()
+        after = render_owned(outside, None if remove else owned)
         old_config, new_config = tomllib.loads(before.decode()), tomllib.loads(after.decode())
         outside_config=tomllib.loads(outside)
         from global_memory import MARKER
@@ -215,24 +312,28 @@ def transact(native, directory, owned, *, remove=False):
         if not typed_equal(unowned_config(old_config, previous), unowned_config(new_config, None if remove else owned)):
             raise ValueError('Unowned host configuration changed')
         # Parse first; inline-table conflicts must fail before any write.
-        if remove:
-            expected = tomllib.loads(outside)
-        else:
-            expected = tomllib.loads(outside.rstrip() + '\n\n' + owned)
+        expected = tomllib.loads(render_owned(outside, None if remove else owned).decode())
         if new_config != expected: raise ValueError('Unexpected native configuration change')
         if before == after or (not remove and same_owned(previous, owned)):
             if record and record.get('phase')=='rolled-back':
-                old.write(receipt,{'schema':2,'phase':'complete','block':owned,'previous_block':previous,
+                old.write(receipt,{'schema':3,'phase':'complete','block':owned,'previous_block':previous,
                                    'before_sha256':hashlib.sha256(before).hexdigest(),'after_sha256':hashlib.sha256(after).hexdigest(),
                                    'host':host_plan({file:after})})
             return {'status':'global-hook-installed','native_changed':False,'trust':'normal-host-review-required-if-not-already-trusted'}
-        journal = {'schema': 2, 'phase': 'applying', 'block': None if remove else owned, 'previous_block': previous,
+        journal = {'schema': 3, 'phase': 'applying', 'block': None if remove else owned, 'previous_block': previous,
                    'before_sha256': hashlib.sha256(before).hexdigest(), 'after_sha256': hashlib.sha256(after).hexdigest()}
         journal['host']=host_plan({file:after})
-        if journal['host'][str(file)]['before_sha']!=journal['before_sha256']:raise ValueError('Native config changed before transaction')
+        if journal['host'][str(file)]['before_sha']!=journal['before_sha256']:raise HostConfigChanged('Native config changed before transaction')
         try:
+            if file.read_bytes() != before: raise HostConfigChanged('Native config changed before transaction')
             host_apply(journal['host'],lambda:old.write(receipt,journal))
             old.write(receipt,dict(journal,phase='complete'))
+        except HostConfigChanged:
+            # The single staged commit reports this only before writing. Drop
+            # its obsolete intent; never restore over the concurrent editor.
+            if record is not None: old.write(receipt, record)
+            else: receipt.unlink(missing_ok=True)
+            raise
         except Exception:
             host_restore(journal['host'],lambda:old.write(receipt,journal))
             old.write(receipt,dict(journal,phase='rolled-back',block=previous))
@@ -402,7 +503,7 @@ def refresh(home, *, check_only=False):
         raise ValueError('Outside edit to owned global Hook preserved')
     if not same_owned(previous, record.get('block')):
         if not verified_removal(home, previous, record):
-            raise ValueError('Outside edit to owned global Hook preserved')
+            raise owned_conflict(previous, [record.get('block')])
         return absent
     if previous is None: return absent  # Explicit uninstall remains uninstalled.
     pins = {name: old.digest((ROOT / name).read_bytes()) for name in FILES}

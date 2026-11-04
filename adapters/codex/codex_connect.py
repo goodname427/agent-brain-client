@@ -28,6 +28,180 @@ PERSONAL_MANAGED=BEGIN+'\n# Explicit personal memory MCP\nUse agent_brain_server
 sha=lambda data:hashlib.sha256(data).hexdigest()
 
 
+class HostConfigChanged(ValueError):
+    """A staged host write was cancelled before modifying the destination."""
+
+
+def toml_literal(value):
+    """Encode a parsed TOML value, including values in a shared inline table."""
+    import datetime
+    import math
+    if isinstance(value, dict):
+        return '{' + ', '.join(json.dumps(k) + ' = ' + toml_literal(v) for k, v in sorted(value.items())) + '}'
+    if isinstance(value, list): return '[' + ', '.join(map(toml_literal, value)) + ']'
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)): return value.isoformat()
+    if isinstance(value, float) and not math.isfinite(value):
+        return 'nan' if math.isnan(value) else ('inf' if value > 0 else '-inf')
+    return json.dumps(value, ensure_ascii=False)
+
+
+def toml_key(key):
+    return key if re.fullmatch(r'[A-Za-z0-9_-]+', key) else json.dumps(key)
+
+
+def toml_statements(text):
+    """Yield source spans and semantic paths, without interpreting string data.
+
+    tomllib is the syntax authority. A statement ends only when it parses, so
+    header/marker-looking lines in multiline strings and arrays remain data.
+    Paths include array-table indices; quoted and dotted keys are equivalent.
+    """
+    tomllib.loads(text)
+    context, prefix, pending, start, offset = (), '', '', 0, 0
+    for line in text.splitlines(keepends=True):
+        pending += line
+        offset += len(line)
+        try: parsed = tomllib.loads(pending)
+        except tomllib.TOMLDecodeError: continue
+        stripped = pending.lstrip()
+        kind, path = 'comment', None
+        if parsed:
+            if stripped.startswith('['):
+                kind = 'header'
+                tree = parsed
+                names = []
+                while isinstance(tree, (dict, list)) and tree:
+                    if isinstance(tree, list): tree = tree[-1]
+                    else:
+                        key, tree = next(iter(tree.items()))
+                        names.append(key)
+                # Resolve each array table against this exact source prefix.
+                tree = tomllib.loads(prefix + pending)
+                resolved = []
+                for name in names:
+                    tree = tree[name]; resolved.append(name)
+                    if isinstance(tree, list):
+                        resolved.append(len(tree) - 1); tree = tree[-1]
+                context = path = tuple(resolved)
+            else:
+                kind = 'value'
+                # Locate '=' outside a quoted key; parsing the LHS with a
+                # sentinel recovers its path even if its value is a dictionary.
+                quote, escaped = None, False
+                for index, char in enumerate(pending):
+                    if escaped: escaped = False; continue
+                    if quote:
+                        if char == '\\' and quote == '"': escaped = True
+                        elif char == quote: quote = None
+                    elif char in ('"', "'"): quote = char
+                    elif char == '=': break
+                tree = tomllib.loads(pending[:index] + '=0')
+                names = []
+                while isinstance(tree, dict):
+                    name, tree = next(iter(tree.items())); names.append(name)
+                path = context + tuple(names)
+        yield start, offset, kind, path
+        prefix += pending
+        pending, start = '', offset
+    if pending: raise ValueError('Incomplete TOML statement')
+
+
+def toml_get(value, path):
+    for key in path: value = value[key]
+    return value
+
+
+def toml_remove(text, paths):
+    """Remove semantic subtrees, keeping unrelated source bytes and scope.
+
+    Only a shared inline assignment needs re-encoding. All other unrelated
+    statements, comments, whitespace and line endings stay byte-for-byte.
+    Array indices refer to the original document, never to an edited prefix.
+    """
+    config = tomllib.loads(text)
+    result = []
+    for start, end, kind, path in toml_statements(text):
+        source = text[start:end]
+        if path is not None:
+            if any(path[:len(target)] == target for target in paths): continue
+            descendants = [target[len(path):] for target in paths if target[:len(path)] == path]
+            if descendants and kind == 'value':
+                value = copy.deepcopy(toml_get(config, path))
+                # Remove higher array indices before lower ones.
+                for target in sorted(descendants, reverse=True):
+                    parent = toml_get(value, target[:-1]); del parent[target[-1]]
+                    if isinstance(target[-1], int) and not parent:
+                        del toml_get(value, target[:-2])[target[-2]]
+                # Reuse the exact quoted/dotted LHS, found by a sentinel parse.
+                for index, char in enumerate(source):
+                    if char != '=': continue
+                    try: tomllib.loads(source[:index] + '=0')
+                    except tomllib.TOMLDecodeError: continue
+                    source = source[:index + 1] + ' ' + toml_literal(value) + ('\r\n' if source.endswith('\r\n') else '\n')
+                    break
+        result.append(source)
+    return ''.join(result)
+
+
+def toml_replace(text, path, value):
+    """Replace one tree, including when embedded in a shared inline table."""
+    config = tomllib.loads(text)
+    for start, end, kind, current in toml_statements(text):
+        if kind != 'value' or path[:len(current)] != current: continue
+        replacement = copy.deepcopy(toml_get(config, current))
+        if current == path: replacement = value
+        else: toml_get(replacement, path[len(current):-1])[path[-1]] = value
+        source = text[start:end]
+        for index, char in enumerate(source):
+            if char != '=': continue
+            try: tomllib.loads(source[:index] + '=0')
+            except tomllib.TOMLDecodeError: continue
+            newline = '\r\n' if source.endswith('\r\n') else '\n'
+            return text[:start] + source[:index + 1] + ' ' + toml_literal(replacement) + newline + text[end:]
+    outside = toml_remove(text, [path])
+    header = '.'.join(toml_key(key) for key in path)
+    groups = value if isinstance(value, list) else [value]
+    snippet = ''
+    for group in groups:
+        snippet += ('[[' + header + ']]' if isinstance(value, list) else '[' + header + ']') + '\n'
+        snippet += ''.join(toml_key(key) + ' = ' + toml_literal(item) + '\n' for key, item in sorted(group.items()))
+    return outside.rstrip() + '\n\n' + snippet
+
+
+def migration_config_matches(config, current, expected_sha, state, receipt):
+    """Recover a legacy semantic baseline from a hash-authenticated image.
+
+    Old migrations recorded only a full-file hash. Existing transaction journals
+    may retain that exact image. Its hash authenticates the managed table even
+    after unrelated live configuration changes; no current hash is re-pinned.
+    """
+    if sha(current) == expected_sha: return True
+    from brain_lock import private_mode
+    journals = [receipt]
+    for name in ('native-install-receipt.json', 'content-install-receipt.json', 'global-memory/hook-install.json'):
+        path = Path(state) / name
+        if not path.exists(): continue
+        image = host_image(path)
+        private_mode(path, owner=True)
+        if image is not None: journals.append(json.loads(image[0]))
+    actual = tomllib.loads(current.decode()).get('mcp_servers', {}).get(NAME)
+    for journal in journals:
+        before = journal.get('before', {}).get(str(config))
+        host = journal.get('host', {}).get(str(config), {})
+        candidates = [before.get('data') if isinstance(before, dict) else None, host.get('before')]
+        for encoded in candidates:
+            if not isinstance(encoded, str): continue
+            try: original = base64.b64decode(encoded, validate=True)
+            except ValueError: continue
+            if sha(original) != expected_sha: continue
+            expected = tomllib.loads(original.decode()).get('mcp_servers', {}).get(NAME)
+            if not isinstance(expected, dict) or not isinstance(actual, dict): return False
+            if expected.get('enabled') is True and actual.get('enabled') is False:
+                expected = dict(expected, enabled=False)
+            return json.dumps(actual, sort_keys=True) == json.dumps(expected, sort_keys=True)
+    return False
+
+
 def service_label(data_mode):
     return 'synthetic test MCP' if data_mode=='synthetic-only' else 'explicit personal memory MCP'
 
@@ -150,17 +324,17 @@ def host_stage(path, raw, mode, expected):
     path = Path(path)
     image = host_image(path)
     if (image[0] if image is not None else None) != expected:
-        raise ValueError('Host configuration concurrently changed')
+        raise HostConfigChanged('Host configuration concurrently changed')
     if os.name == 'nt' and image is not None:
         with windows_host_file(path) as file:
             st = os.fstat(file.fileno())
             original = file.read(1048577)
             if original != expected or (st.st_dev, st.st_ino) != image[1:3]:
-                raise ValueError('Host configuration concurrently changed')
+                raise HostConfigChanged('Host configuration concurrently changed')
             def commit_inplace():
                 file.seek(0)
                 if file.read(1048577) != expected or host_image(path) != image:
-                    raise ValueError('Host configuration concurrently changed')
+                    raise HostConfigChanged('Host configuration concurrently changed')
                 host_write(file, raw)
             commit_inplace.inplace_identity = {'device': st.st_dev, 'inode': st.st_ino}
             yield commit_inplace
@@ -181,7 +355,7 @@ def host_stage(path, raw, mode, expected):
         staged = host_image(pending)
         def commit():
             if host_image(path) != image or host_image(pending) != staged:
-                raise ValueError('Host configuration concurrently changed')
+                raise HostConfigChanged('Host configuration concurrently changed')
             if image is None:
                 if os.name == 'nt': os.rename(pending, path)
                 else: os.link(pending, path); pending.unlink()
@@ -252,7 +426,10 @@ def host_apply(rows, persist):
     with ExitStack() as staging:
         commits = {}
         for name,row in rows.items():
-            path=Path(name); before,target,current=host_row(path,row)
+            path=Path(name)
+            if (host_image(path) or (None,))[0] != (base64.b64decode(row['before'],validate=True) if row['before'] is not None else None):
+                raise HostConfigChanged('Host configuration concurrently changed')
+            before,target,current=host_row(path,row)
             if current!=before: raise ValueError('Host preimage changed')
             if target is not None:
                 commit=staging.enter_context(host_stage(path,target,row['mode'],before))
@@ -310,7 +487,7 @@ def connect(home, profile_path=None, apply=False, approved_digest=None):
                 receipt=json.loads(receipt_path.read_text(encoding='utf-8'))
                 valid=receipt.get('installation_complete') is True and receipt.get('native_registered') is True and receipt.get('new_registration_path')==str(registration)
                 owned={str(config),str(agents),str(native/'hooks.json'),str(home/'.config/agent-brain/codex/permissions-policy.json'),str(home/'.config/agent-brain/codex/integrity.json'),str(registration)}
-                valid=valid and set(receipt.get('after',{}))==owned and all(Path(p).is_file() and not Path(p).is_symlink() and sha(Path(p).read_bytes())==expected for p,expected in receipt['after'].items())
+                valid=valid and set(receipt.get('after',{}))==owned and all(Path(p).is_file() and not Path(p).is_symlink() and (migration_config_matches(config,config.read_bytes(),expected,state,receipt) if p==str(config) else sha(Path(p).read_bytes())==expected) for p,expected in receipt['after'].items())
         if not valid:return {'status':'native-repair-review-required','native_changed':False,'next_action':'Preserve drifted native files and review the owned migration receipt.'}
         if mcp is not None and (installed!=mcp or registered['data_mode']!=candidate['data_mode']):return {'status':'service-change-review-required','native_changed':False,'next_action':'Review changed SSH identity, fixed command, data mode or destination.'}
         updates=probe(installed)

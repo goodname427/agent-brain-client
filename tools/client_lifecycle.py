@@ -114,17 +114,8 @@ def remove_table(raw):
     parsed = install.tomllib.loads(text)
     if install.NAME not in parsed.get('mcp_servers', {}):
         raise install.InstallBlocked('Owned table missing')
-    pattern = re.compile(r'^\[mcp_servers\.' + install.NAME + r'\][ \t]*(?:#.*)?\r?\n', re.M)
-    matches = list(pattern.finditer(text))
-    if len(matches) != 1:
-        raise install.InstallBlocked('Owned table syntax changed')
-    start, end = matches[0].span()
-    following = re.search(r'^\[', text[end:], re.M)
-    stop=end+following.start() if following else len(text)
-    hook=text.find('# agent-brain-global-memory:begin',end,stop)
-    if hook >= 0:
-        stop = hook
-    desired=(text[:start]+text[stop:]).encode()
+    from codex_connect import toml_remove
+    desired=toml_remove(text,[('mcp_servers',install.NAME)]).encode()
     expected = copy.deepcopy(parsed)
     del expected['mcp_servers'][install.NAME]
     actual = install.tomllib.loads(desired.decode())
@@ -162,7 +153,8 @@ def prepare_removal(home):
         _,hook_block=split_owned(config_before)
         if hook_block is not None:
             record=install.private_json(settings_path(home).parent/'hook-install.json')
-            if record.get("phase") != "complete" or record.get("block") != hook_block:
+            from global_memory_install import same_owned
+            if record.get("phase") != "complete" or not same_owned(record.get("block"), hook_block):
                 raise install.InstallBlocked("Hook ownership changed")
             config_after=split_owned(config_after)[0].encode()
     payload = {native / 'config.toml': config_after, registration: None}
