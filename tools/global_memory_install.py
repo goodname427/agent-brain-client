@@ -1,9 +1,11 @@
 """Owned inline user Hook transaction; leaves legacy hooks.json and MCP intact."""
 import base64
+import copy
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 from brain_lock import command_line,private_directory,private_mode
 import tomllib
 import uuid
@@ -30,7 +32,68 @@ def split_owned(raw):
     start, end = text.index(BEGIN), text.index(END) + len(END)
     if end < start: raise ValueError('Invalid owned global Hook block')
     if text[end:end + 1] == '\n': end += 1
-    return text[:start] + text[end:], text[start:end]
+    # Codex may persist its own hook trust tables within our marker range.
+    # Extract only complete hooks.state tables, verbatim, into the unowned
+    # configuration. Never interpret, create, modify or grant trust.
+    body = text[start:end]
+    lines = body.splitlines(keepends=True)
+    kept, state = [], []
+    i = 0
+    while i < len(lines):
+        if re.match(r'^\s*\[\s*hooks\s*\.\s*state\s*(?:\.|\])', lines[i]):
+            fragment = [lines[i]]
+            i += 1
+            while i < len(lines) and not re.match(r'^\s*\[', lines[i]) and not lines[i].startswith(END):
+                fragment.append(lines[i]); i += 1
+            raw_state = ''.join(fragment)
+            parsed = tomllib.loads(raw_state)
+            if set(parsed) != {'hooks'} or set(parsed['hooks']) != {'state'} or not isinstance(parsed['hooks']['state'], dict):
+                raise ValueError('Invalid host Hook state preserved')
+            state.append(raw_state)
+        else:
+            kept.append(lines[i]); i += 1
+    return text[:start] + ''.join(state) + text[end:], ''.join(kept)
+
+
+def typed_equal(x, y):
+    if type(x) is not type(y): return False
+    if isinstance(x, dict): return x.keys() == y.keys() and all(typed_equal(x[k], y[k]) for k in x)
+    if isinstance(x, list): return len(x) == len(y) and all(typed_equal(u, v) for u, v in zip(x, y))
+    return x == y
+
+
+def same_owned(left, right):
+    """Compare only the parsed owned Hook definitions; never compare trust."""
+    if left == right:
+        return True
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    try:
+        a, b = tomllib.loads(left), tomllib.loads(right)
+        return typed_equal(a, b) and set(a) == {'hooks'} and 'state' not in a['hooks']
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
+def unowned_config(config, owned):
+    """Remove exactly the owned arrays for preservation comparison."""
+    result = copy.deepcopy(config)
+    if owned is None:
+        return result
+    expected = tomllib.loads(owned).get('hooks', {})
+    hooks = result.get('hooks', {})
+    for event, groups in expected.items():
+        actual = hooks.get(event)
+        if not isinstance(groups, list) or not isinstance(actual, list):
+            raise ValueError('Owned Hook event changed')
+        matches = [i for i in range(len(actual) - len(groups) + 1)
+                   if typed_equal(actual[i:i + len(groups)], groups)]
+        if len(matches) != 1: raise ValueError('Owned Hook event ambiguous')
+        i = matches[0]
+        del actual[i:i + len(groups)]
+        if not actual: del hooks[event]
+    if not hooks: result.pop('hooks', None)
+    return result
 
 
 def block(value, *, root=None):
@@ -122,7 +185,7 @@ def transact(native, directory, owned, *, remove=False):
         before = file.read_bytes(); outside, previous = split_owned(before)
         if record:
             candidates = [record.get('block'), record.get('previous_block')] if record.get('phase') == 'prepared' else [record.get('block')]
-            if previous not in candidates:
+            if not any(same_owned(previous, candidate) for candidate in candidates):
                 # A verified normal uninstall removes the owned inline block
                 # while retaining this private receipt and device settings.
                 if not verified_removal(Path(directory).parents[2], previous, record):
@@ -136,13 +199,15 @@ def transact(native, directory, owned, *, remove=False):
         if any(any(h.get('statusMessage')==MARKER for h in group.get('hooks',[])) for groups in outside_config.get('hooks',{}).values() if isinstance(groups,list) for group in groups if isinstance(group,dict)):
             raise ValueError('Unowned duplicate global Hook preserved')
         if old_config.get('mcp_servers') != new_config.get('mcp_servers'): raise ValueError('Global install must preserve all MCP registrations')
+        if not typed_equal(unowned_config(old_config, previous), unowned_config(new_config, None if remove else owned)):
+            raise ValueError('Unowned host configuration changed')
         # Parse first; inline-table conflicts must fail before any write.
         if remove:
             expected = tomllib.loads(outside)
         else:
             expected = tomllib.loads(outside.rstrip() + '\n\n' + owned)
         if new_config != expected: raise ValueError('Unexpected native configuration change')
-        if before == after:
+        if before == after or (not remove and same_owned(previous, owned)):
             if record and record.get('phase')=='rolled-back':
                 old.write(receipt,{'schema':2,'phase':'complete','block':owned,'previous_block':previous,
                                    'before_sha256':hashlib.sha256(before).hexdigest(),'after_sha256':hashlib.sha256(after).hexdigest(),
@@ -228,7 +293,7 @@ def installation_status(value):
     if not receipt.exists():return False
     record=read_receipt(receipt)
     _, owned=split_owned((native/'config.toml').read_bytes())
-    return record.get('phase')=='complete' and owned is not None and owned==record.get('block')
+    return record.get('phase')=='complete' and owned is not None and same_owned(owned, record.get('block'))
 
 
 def recover_code(home):
@@ -322,7 +387,7 @@ def refresh(home, *, check_only=False):
     record = read_receipt(receipt)
     if record.get('phase') not in ('complete', 'rolled-back'):
         raise ValueError('Outside edit to owned global Hook preserved')
-    if previous != record.get('block'):
+    if not same_owned(previous, record.get('block')):
         if not verified_removal(home, previous, record):
             raise ValueError('Outside edit to owned global Hook preserved')
         return absent
@@ -331,7 +396,7 @@ def refresh(home, *, check_only=False):
     target = dict(value, code_sha256=pins)
     root = file.parent / 'code' / old.digest(json.dumps(pins, sort_keys=True).encode())
     owned = block(target, root=root)
-    available = value != target or previous != owned
+    available = value != target or not same_owned(previous, owned)
     result = {'status': 'global-hook-update-available' if available else 'global-hook-current',
               'update_available': available, 'native_changed': False,
               'sources_changed': False, 'model_calls': 0,
