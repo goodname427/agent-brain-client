@@ -40,3 +40,5 @@ Swift helper 构建仅适用 Mac 工具链。SSH 历史兼容候选可使用 `--
 正式发布只使用 [固定发布入口](release-pipeline.md) 与 [发布工作流](../../.github/workflows/client-release.yml)，按最终精确提交、CI 证据和明确发布授权执行。本次文档整理不运行发布、不创建封版 tag、不提升渠道。提交使用精确文件清单，遵守 [文档维护规则](../maintenance.md)。
 
 并发 MCP 启动协调、采集回执及本轮来源核对的实现与验证边界见 [并发启动与采集证据](startup-capture.md)。
+
+Windows 私有文件元数据误报、同 ID 并发补传与 synthetic 服务选择边界见 [并发重试与服务选择](windows-retry-service-routing.md)。

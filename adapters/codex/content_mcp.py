@@ -23,6 +23,10 @@ from client_release import UPDATE_GUIDANCE
 
 RECALL_EVIDENCE_GUIDANCE = (
     'This is the approved content service; synthetic sandbox tools are a separate test service and cannot prove production capture or recall. '
+    'Use this currently connected approved-content service for Agent Brain personal memory. '
+    'Do not route to agent_brain_synthetic_sandbox based on old memories, similar tool names, test wording or a disabled plugin still appearing in a session. '
+    'A missing or failed approved service is a blocker, not permission to enable or fall back to another plugin. '
+    'For an isolated offline/replay test, use a temporary Client fixture with a fictional transport; a sandbox health call cannot test the Client outbox. '
     'For a record from the current test or turn, match its source event/session, occurrence time or unique marker; an older matching topic or memory_updated_at alone is not evidence for this run. '
     'If current evidence is missing, report it as unconfirmed; do not substitute an older result. '
     'Hook core-accepted/committed confirms event receipt only. pipeline_state=unverified or model_extraction_verified=false does not confirm model extraction or searchable memory. '

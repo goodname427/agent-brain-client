@@ -177,6 +177,18 @@ class NativeConnection(unittest.TestCase):
         for p,raw in after.items():self.assertEqual(p.read_bytes(),raw)
         self.assertFalse((self.home/'.codex/hooks.json').exists());self.assertFalse((self.home/'.agents').exists())
 
+    def test_personal_registration_and_reuse_never_recommend_the_synthetic_service(self):
+        profile=json.loads(self.profile.read_bytes());profile['data_mode']='personal-explicit'
+        self.profile.write_text(json.dumps(profile))
+        result=self.register()
+        self.assertIn('explicit personal memory MCP',result['next_action'])
+        self.assertNotIn('synthetic',result['next_action'])
+        self.assertNotIn('synthetic test MCP',self.config.read_text())
+        repeat=remote_connect.connect(self.home,apply=True)
+        self.assertIn('explicit personal memory MCP',repeat['next_action'])
+        self.assertNotIn('synthetic',repeat['next_action'])
+        self.assertIn(native.PERSONAL_MANAGED,self.agents.read_text())
+
     def test_native_drift_and_changed_service_are_preserved(self):
         self.register();self.agents.write_text(self.agents.read_text()+native.END)
         before=self.agents.read_bytes();self.assertEqual(remote_connect.connect(self.home)['status'],'native-repair-review-required');self.assertEqual(self.agents.read_bytes(),before)
