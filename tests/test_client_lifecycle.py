@@ -140,8 +140,19 @@ class Releases(unittest.TestCase):
             if any(str(arg).endswith('remote_mcp.py') for arg in command):
                 commands.append(command);return subprocess.CompletedProcess(command,0)
             return run(command,**kwargs)
-        with patch.object(client_startup.subprocess,'run',side_effect=serve_only):
-            result=client_startup.startup(self.policy_path,self.policy_sha)
+        background=[];thread_type=client_startup.threading.Thread
+        def track_thread(*args,**kwargs):
+            worker=thread_type(*args,**kwargs);background.append(worker);return worker
+        with patch.object(client_startup.threading,'Thread',side_effect=track_thread),patch.object(client_startup.subprocess,'run',side_effect=serve_only):
+            try:
+                result=client_startup.startup(self.policy_path,self.policy_sha)
+            finally:
+                # The real startup check can still write release diagnostics
+                # after serving returns. Own its lifetime before mutating the
+                # package or removing this test's temporary repository.
+                for worker in background:
+                    worker.join(30)
+                    self.assertFalse(worker.is_alive(),'Synthetic startup check did not finish')
         self.assertTrue(result['served']);command=commands[0];self.assertIn(str(Path(old['package'])/'adapters/codex/remote_mcp.py'),command);self.assertEqual(command[-1],'darwin-arm64')
         target=Path(old['package'])/'connect.py';target.write_text('external package change')
         with patch.object(client_startup.subprocess,'run') as runner:
