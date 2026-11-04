@@ -757,19 +757,33 @@ def recalled(p, session):
 
         if query["error"].get("code") not in OFFLINE_TRANSPORT_ERRORS:
             raise ValueError("Shared memory query unavailable")
-        cached = adapter._offline_read(
-            {
-                "request_id": "cached_" + os.urandom(16).hex(),
-                "method": "content_catalog",
-                "params": {"kinds": ["memory"]},
-            }
-        )
-        if "error" in cached:
-            raise ValueError("No approved cached Memory snapshot")
-        items = cached["result"]["artifacts"]
+        def cached_items():
+            cursor = None
+            seen = set()
+            while True:
+                cached = adapter._offline_read(
+                    {
+                        "request_id": "cached_" + os.urandom(16).hex(),
+                        "method": "content_catalog",
+                        "params": dict(kinds=["memory"], **({"cursor": cursor} if cursor else {})),
+                    }
+                )
+                if "error" in cached:
+                    raise ValueError("No approved cached Memory snapshot")
+                page = cached["result"]
+                if not isinstance(page.get("artifacts"), list):
+                    raise ValueError("Unknown cached catalog response")
+                yield from page["artifacts"]
+                cursor = page.get("next_cursor")
+                if cursor is None:
+                    return
+                if cursor in seen:
+                    raise ValueError("Cached catalog did not advance")
+                seen.add(cursor)
+        items = cached_items()
     else:
         items = query["result"].get("topics")
-    if not isinstance(items, list):
+    if not offline and not isinstance(items, list):
         raise ValueError("Unknown memory query response")
     rows = []
     for item in items if offline else items[: p["max_items"]]:

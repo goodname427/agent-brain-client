@@ -84,6 +84,30 @@ class CatalogPages(unittest.TestCase):
         found=self.f.adapter.invoke({'request_id':'synthetic_filtered_page_0001','method':'content_read','params':{'kind':'memory','id':'synthetic-0599'}})
         self.assertTrue(found['local_cache']['stale'])
 
+    def test_offline_automation_finds_later_page_matches_and_stops_when_full(self):
+        from unittest.mock import patch
+        import memory_automation
+        self.assertEqual(self.f.adapter.refresh()['status'],'content-refreshed')
+        self.f.cloud.offline=True
+        settings={'profile':'fictional-profile','profile_sha256':'a'*64,'content_policy':'fictional-content',
+            'content_policy_sha256':'b'*64,'recall_policy':None,'device_home':str(self.f.home),
+            'cache':str(self.f.cache),'codex_home':str(self.f.home/'.codex'),'max_items':1}
+        def private(path,pin):return {'grant':self.f.cloud.grant} if path=='fictional-profile' else fixture.POLICY
+        original=self.f.adapter.invoke
+        def invoke(request):
+            if request['method']=='memory_query':return {'error':{'code':'transport_unconfirmed','retryable':True}}
+            return original(request)
+        with patch.object(memory_automation,'private_json',side_effect=private), \
+                patch('https_content.HTTPSContentClient',return_value=self.f.cloud), \
+                patch('content_cache.ContentAdapter',return_value=self.f.adapter), \
+                patch.object(self.f.adapter,'invoke',side_effect=invoke):
+            for query,pages in (('0',1),('599',3)):
+                with self.subTest(query=query),patch.object(self.f.adapter,'_offline_read',wraps=self.f.adapter._offline_read) as read:
+                    result=memory_automation.recalled(dict(settings,query=query),'fictional-session')
+                    self.assertEqual(len(result),1);self.assertEqual(result[0]['id'],'synthetic-'+query.zfill(4))
+                    self.assertTrue(result[0]['cached_snapshot'])
+                    self.assertEqual(sum(c.args[0]['method']=='content_catalog' for c in read.call_args_list),pages)
+
     def test_tool_schema_exposes_optional_cursor_and_keeps_one_memory_query(self):
         server=ContentServer(self.f.adapter);server.state='ready'
         tools=server.handle({'jsonrpc':'2.0','id':1,'method':'tools/list'})['tools']
