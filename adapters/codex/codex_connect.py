@@ -37,7 +37,7 @@ def toml_literal(value):
     import datetime
     import math
     if isinstance(value, dict):
-        return '{' + ', '.join(json.dumps(k) + ' = ' + toml_literal(v) for k, v in sorted(value.items())) + '}'
+        return '{' + ', '.join(json.dumps(k, ensure_ascii=False) + ' = ' + toml_literal(v) for k, v in sorted(value.items())) + '}'
     if isinstance(value, list): return '[' + ', '.join(map(toml_literal, value)) + ']'
     if isinstance(value, (datetime.datetime, datetime.date, datetime.time)): return value.isoformat()
     if isinstance(value, float) and not math.isfinite(value):
@@ -58,7 +58,7 @@ def toml_equal(left, right):
 
 
 def toml_key(key):
-    return key if re.fullmatch(r'[A-Za-z0-9_-]+', key) else json.dumps(key)
+    return key if re.fullmatch(r'[A-Za-z0-9_-]+', key) else json.dumps(key, ensure_ascii=False)
 
 
 def toml_statements(text):

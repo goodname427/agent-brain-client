@@ -620,12 +620,12 @@ class SemanticConfigMerge(unittest.TestCase):
         import content_install as ci
         from client_lifecycle import remove_table
         import uuid
-        name = 'tool_' + uuid.uuid4().hex
+        name = 'tool_' + uuid.uuid4().hex + '\U0001f3a8'
         forms = [
             '["mcp_servers".\'agent_brain_server\']\ncommand="old"\n',
             'mcp_servers.agent_brain_server.command="old"\n',
             '[mcp_servers]\nagent_brain_server.command="old"\n',
-            'mcp_servers={agent_brain_server={command="old"}, ' + name + '={command="other"}}\n',
+            'mcp_servers={agent_brain_server={command="old"}, ' + json.dumps(name, ensure_ascii=False) + '={command="other"}}\n',
         ]
         target = {'command': 'new', 'enabled': False, 'env': {'z': 'keep', 'a': 'keep'}}
         for form in forms:
