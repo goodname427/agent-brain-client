@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 import unittest
 import unicodedata
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import test_content_outbox as fixture
 from content_mcp import ContentServer, ProtocolError
@@ -138,7 +138,7 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
         self.assertEqual(result['reasons'], ['capture-disabled','source-scope-empty','local-source-approval-required','server-source-approval-unconfirmed'])
         self.assertFalse(result['permissions_changed']); self.assertFalse(result['historical_import'])
 
-    def test_configuration_without_ssh_operator_prepares_exact_packet_and_stays_off(self):
+    def test_approved_configuration_uses_https_and_keeps_fence_when_unconfirmed(self):
         import global_memory_operator as operator
         from brain_lock import private_directory
         directory = gm.settings_path(self.fixture.home).parent
@@ -152,12 +152,14 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
         runtime = {'https_profile':str(profile),'https_profile_sha256':gm.old.digest(profile.read_bytes()),'content_policy_sha256':digest('policy')}
         args = SimpleNamespace(device_home=str(self.fixture.home), include_root=[], isolate_root=[], exclude_root=[],
                                non_project_root=[], approve_scope=digest(scope), packet_output=None, activate_packet=None)
-        with patch.object(gm, 'load', return_value=value), patch.object(gm.old, 'registration', return_value=(None, {'runtime':runtime})), patch.object(gm, 'GlobalClient', return_value=SimpleNamespace(device_id=self.device)), patch.object(operator, 'operator', side_effect=AssertionError('No SSH operation')):
+        client = SimpleNamespace(device_id=self.device, wire=Mock(return_value={'error':{'code':'transport_unconfirmed','retryable':True}}))
+        with patch.object(gm, 'load', return_value=value), patch.object(gm.old, 'registration', return_value=(None, {'runtime':runtime})), patch.object(gm, 'GlobalClient', return_value=client), patch.object(operator, 'operator', side_effect=AssertionError('No SSH operation')):
             result = operator.configure(args)
-        self.assertEqual(result['status'], 'global-memory-device-packet-prepared')
+        self.assertEqual(result['status'], 'global-memory-registration-pending')
         packet = gm.old.private_json(result['packet'])
         self.assertEqual(packet['schema'], 2); self.assertEqual(packet['scope'], scope)
         self.assertEqual(packet['client']['source_device_id'], self.device)
+        client.wire.assert_called_once_with('memory_global_register',packet,'source_'+digest(packet))
         self.assertTrue((directory / 'global.off').exists())
         self.assertFalse(gm.old.private_json(gm.settings_path(self.fixture.home))['enabled'])
 

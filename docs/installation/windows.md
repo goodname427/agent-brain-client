@@ -25,26 +25,25 @@ Set-Location $checkout
 
 安装成功后正常重载 Codex 的 `agent_brain_server` MCP，并按既有 Onboard 流程核对获授权的 Memory/Rule/Skill。模型加载不可观测时仍报告 unknown。完整信任与恢复说明见 [地址与密钥安装](address-key-install.md)。
 
-未来自动采集需单独确认来源。以下仅为用户替换后的固定步骤，不把示例目录当作已获准范围：
+安装入口会在本机继续询问未来采集范围：选择项目根目录、排除目录和非项目根目录，再确认显示的完整范围。选择 Later 不启用采集；既有个人 Memory 读取授权仍可使用 `memory_recall`，不要求本设备先成为采集来源。已批准或暂停的来源保留原样，不会因安装或更新重新选择或恢复。
+
+确认后，Client 使用现有设备 HTTPS 凭据将无凭据来源元数据登记到同一个人记忆池，读回核对设备和范围后才激活。无需把设备包交给 Server operator，不生成新长期凭据，不扫描历史。Server 必须包含 `authenticated-device-v1` 来源登记接口；未确认结果保留本机停止标记与来源包，重试同一请求。
+
+需要单独管理范围时，沿用以下入口，示例路径必须替换为本机实际选择：
 
 ```powershell
 & ./tools/memory-windows.ps1 global-status --check-server
 & ./tools/memory-windows.ps1 global-install --profile-id '<既有个人池32位ID>'
 & ./tools/memory-windows.ps1 global-configure --include-root 'C:/Work' --exclude-root 'C:/Work/Private' --non-project-root 'C:/Notes'
-# 审阅上一步显示的精确 scope 和摘要；确认后生成无凭据来源包：
-& ./tools/memory-windows.ps1 global-configure --approve-scope '<上一步摘要>' --packet-output 'C:/delivery/windows-source.json'
+# 审阅精确 scope 后提交原摘要；正常设备自动完成 Server 登记与读回：
+& ./tools/memory-windows.ps1 global-configure --approve-scope '<上一步摘要>'
+# 仅在已批准的登记中断后，显式重试保存的原包：
+& ./tools/memory-windows.ps1 global-configure --activate-packet '<保存的来源包绝对路径>'
 ```
 
-由既有 Server operator 将该包交给 `tools/manage_global_memory.py prepare`，审查后 `apply`。它验证独立的 active enrollment、平台路径、同一 owner、同一个人池和接收地址，保留原 Mac 策略及账本。此操作是具体设备来源授权，普通代码开发不代替它。确认部署回执后，在 Windows 运行：
+`global-status --check-server` 分别报告 `source_registered`、`recall_authorized` 和采集停止状态。`source_registered=false` 不妨碍已授权的个人池召回；空范围仍不允许采集。当前 checkout 与 Hook pin 不一致时先走正常 update，不能手改摘要。
 
-```powershell
-& ./tools/memory-windows.ps1 global-configure --activate-packet 'C:/delivery/windows-source.json'
-& ./tools/memory-windows.ps1 global-status
-```
-
-已有安装先用只读 `global-status --check-server` 判断下一步。`enabled=false`、空范围表示本地未来来源尚未启用；普通认证读取成功不证明采集已获准。空参数元数据结果中，`source_registered=false` 才明确表示本设备未登记；单独的 `global_source_device_denied` 仍需核查身份、授权和 Server 接口版本，不能直接定性为未登记或禁用。当前 checkout 与 Hook pin 不一致时先走正常 update，不能手改摘要。
-
-用户选择“所有项目、无排除目录”时，为实际存放项目的每个本地盘根传入 `--include-root`，例如 `--include-root 'C:/' --include-root 'D:/'`。只列设备上实际需要的本地盘，不遍历项目树；不传 `--exclude-root` 或 `--non-project-root`。精确预览中的 `exclude_roots`、`non_project_roots` 均应为空。仅有 C 盘不能声称其他盘已覆盖，项目范围也不授权非项目对话。后续仍对该预览摘要准备设备包、由既有 Server operator 应用、再激活原包；不需要新建凭据或重新配对。
+用户选择“所有项目、无排除目录”时，为实际存放项目的每个本地盘根传入 `--include-root`，例如 `--include-root 'C:/' --include-root 'D:/'`。只列设备上实际需要的本地盘，不遍历项目树；不传 `--exclude-root` 或 `--non-project-root`。项目范围不授权非项目对话。确认精确预览后自动登记；现有来源范围的变化仍须显式协调原授权，普通软件更新不扩大范围。
 
 `global-resume` 只恢复原本已批准的来源，不补齐空范围或 Server 登记。空范围、缺少批准或未完成激活时返回 `global-memory-activation-required` 和非零退出码；此路径不调用 Server 或访问凭据。已批准的暂停来源可显式恢复，只有 Server 明确返回 `schema:1`、`stopped:false` 才撤掉本地停止标记。错误、停止状态或缺失确认返回 `global-memory-resume-unconfirmed`，保留标记和错误代码。旧的逐项目采集独立恢复时标为 `global-memory-legacy-resumed`，不声称用户级扩大范围已启用。
 
