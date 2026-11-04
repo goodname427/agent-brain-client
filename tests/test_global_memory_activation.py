@@ -43,6 +43,32 @@ class GlobalMemoryActivation(unittest.TestCase):
         self.assertEqual(self.off.read_bytes(), before)
         self.assertFalse(self.file.exists())
 
+    def test_registration_retries_exact_approved_metadata_without_new_identity(self):
+        value = dict(self.value, enabled=False, server_scope_sha256=None)
+        packet = {'schema':2, 'scope':self.scope, 'approved_scope_sha256':digest(self.scope),
+                  'client':{'source_device_id':'c'*32}}
+        response = {'result':{'source_registered':True,'source_device_id':'c'*32,
+                             'global_profile_id':self.scope['profile_id'],'scope_sha256':digest(self.scope)}}
+        client = SimpleNamespace(device_id='c'*32, wire=Mock(side_effect=[
+            {'error':{'code':'transport_unconfirmed','retryable':True}}, response]))
+        before = copy.deepcopy(value)
+        with (patch.object(gm,'GlobalClient',return_value=client),
+              patch.object(operator,'activate',return_value={'activated':True}) as activate):
+            first = operator.register(value,packet)
+            self.assertFalse(first['activated']); activate.assert_not_called()
+            self.assertEqual(value,before)
+            self.assertTrue(operator.register(value,packet)['activated'])
+        self.assertEqual(client.wire.call_args_list[0],client.wire.call_args_list[1])
+        self.assertEqual(client.wire.call_args.args[2],'source_'+digest(packet))
+        activate.assert_called_once_with(value,self.scope)
+
+    def test_wrong_packet_cannot_register_or_resume(self):
+        value = dict(self.value, enabled=False, server_scope_sha256=None)
+        packet = {'schema':2,'scope':self.scope,'approved_scope_sha256':'0'*64,
+                  'client':{'source_device_id':'c'*32}}
+        with patch.object(gm,'GlobalClient',side_effect=AssertionError('No credential access')):
+            with self.assertRaises(ValueError): operator.register(value,packet)
+
     def test_each_missing_approval_keeps_source_fenced_without_server_request(self):
         for field, missing in (('enabled', False), ('approved_scope_sha256', None),
                                ('server_scope_sha256', None)):

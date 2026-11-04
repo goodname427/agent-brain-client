@@ -1,4 +1,4 @@
-"""Windows install stages and explicit local future-source setup.
+"""Install stages and explicit local future-source setup on Mac and Windows.
 
 No directory scan, native history read, credential creation or Server authority.
 A metadata packet is prepared only after the person chooses roots and approves
@@ -111,7 +111,7 @@ def mapping_refresh(home, policy, mcp, *, runner=subprocess.run):
 
 def source_setup(home, *, choose=input):
     import global_memory as gm
-    from global_memory_operator import configure, activate
+    from global_memory_operator import configure
     from global_memory_scope import validate, digest
 
     value = gm.load(home)
@@ -128,7 +128,7 @@ def source_setup(home, *, choose=input):
             "status": "source-paused-or-admission-pending",
             "collection_enabled": False,
             "packet": str(packet) if packet.exists() else None,
-            "next_action": "Keep the existing scope and pause. Use global-status; after the existing Server operator confirms the saved device packet, use global-configure --activate-packet with that exact packet. Resume an intentionally paused source only by explicit global-resume.",
+            "next_action": "Keep the existing scope and pause. Retry pending registration with global-configure --activate-packet and the saved packet; resume an intentionally paused source only by explicit global-resume.",
         }
     print(
         "Agent Brain global memory: Hook installation does not approve collection.\n"
@@ -198,7 +198,7 @@ def source_setup(home, *, choose=input):
         return {
             "status": "source-selection-required",
             "collection_enabled": False,
-            "next_action": "Rerun the normal Windows install entry and choose sources locally. Select project roots, exclusions and non-project roots, then approve the displayed scope. Until then the Hook returns before reading its input.",
+            "next_action": "Rerun the normal install entry and choose sources locally. Select project roots, exclusions and non-project roots, then approve the displayed scope. Until then the Hook returns before reading its input.",
         }
     if scope["profile_id"] != value["scope"]["profile_id"]:
         if gm.load(home) != value:
@@ -217,25 +217,7 @@ def source_setup(home, *, choose=input):
         packet_output=str(packet),
     )
     result = configure(args)
-    # The authenticated status endpoint can confirm an already admitted device;
-    # it cannot authorize a new source. Failure leaves the local off fence.
-    admitted = None
-    try:
-        admitted = activate(gm.load(home), scope)
-        if admitted.get('activated') is not True:
-            raise ValueError('Source admission is pending')
-        return dict(admitted, collection_enabled=True)
-    except Exception:
-        return dict(
-            result,
-            collection_enabled=False,
-            server_admission=admitted,
-            next_action="Give the saved metadata packet to the existing Server operator for this exact Windows device. Then run & ./tools/memory-windows.ps1 global-configure --activate-packet "
-            + "'"
-            + str(packet).replace("'", "''")
-            + "'"
-            + ". Complete normal Codex Hook trust/reload; no collection is enabled before Server admission.",
-        )
+    return dict(result, collection_enabled=result.get('activated') is True)
 
 
 def complete(home, result, *, choose=input, refresh=mapping_refresh):
@@ -257,7 +239,7 @@ def complete(home, result, *, choose=input, refresh=mapping_refresh):
     try:
         meta = ci.private_json(Path(home) / ".config/agent-brain-client/codex-mcp.json")
         policy, mcp, _, _ = ci.registered_context(home, meta)
-        if not policy["platform"].startswith("win32-"):
+        if not policy["platform"].startswith(("win32-", "darwin-")):
             return result
         if mcp.get("enabled") is False:
             stages.update(
