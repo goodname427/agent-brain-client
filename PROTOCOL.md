@@ -196,6 +196,22 @@ permission and cannot alter the original CAS base. The merged request uses a new
 ID and the read revision. Evidence remains; only its durable confirmation resolves
 the selected conflicts. A disconnected conflict read is retried after reconnect.
 
+The local-only `content_queue_inspect` tool is offered within existing content
+write grants. Empty arguments list at most 64 path-free queue metadata entries;
+`cursor` continues the same snapshot and fails if it changes. An exact
+`request_id` returns the original request, reconciliation references, saved
+response and cached remote conflict snapshot. Inspection never drains, fetches,
+repairs or maps content. The cached conflict snapshot is not a current CAS base;
+read the current target before an explicit merge. No new Server method or queue
+schema is introduced.
+
+A confirmed reconciliation revisits earlier dependent requests in the same
+drain, retaining their original IDs and CAS bases. Unselected conflicts remain
+blocking. An unconfirmed send stops the drain; the same write call's subsequent
+mapping refresh does not resend it. Pending outcomes cannot be reconciled as
+conflicts: recover the exact original request and ID first. Restart/reconnect
+retains the existing exact-request recovery protocol.
+
 First/import-again handling accepts an explicit reviewed private normalized source
 plan selected with --import-plan and --import-plan-sha256. Inventory is persisted
 before upload/mapping; it does not scan any additional sources. Stable source IDs

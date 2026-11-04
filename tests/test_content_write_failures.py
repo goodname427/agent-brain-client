@@ -8,8 +8,8 @@ import unittest
 from unittest.mock import patch
 
 from brain_lock import locked
-from content_mcp import ContentParameterError, ContentServer
-from content_cache import ContentAdapter
+from content_mcp import ContentParameterError, ContentServer, ContentToolUnavailable, enabled_tools
+from content_cache import CacheBlocked, ContentAdapter
 from remote_http import RequestStopped
 import test_content_outbox as fixture
 
@@ -419,6 +419,143 @@ class CollectionCapacity(unittest.TestCase):
         self.assertEqual(json.loads((self.f.cache / 'transaction.json').read_bytes())['phase'], 'rolled-back')
         self.assertEqual((self.f.cache / 'active.json').read_bytes(), active)
         self.assertEqual(self.files(), before)
+
+
+class QueueRecovery(unittest.TestCase):
+    def setUp(self):
+        self.f = fixture.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        self.f.setUp()
+        self.addCleanup(self.f.doCleanups)
+        self.server = ContentServer(self.f.adapter)
+
+    def inspect(self, **arguments):
+        return self.server.invoke('content_queue_inspect', arguments)['structuredContent']
+
+    def conflict(self):
+        self.f.adapter.invoke(self.f.request())
+        request = self.f.request('synthetic_conflict_inspect', body='Retain this unique local proposal')
+        self.f.adapter.invoke(request)
+        return request
+
+    def files(self):
+        return {p.name: p.read_bytes() for p in (self.f.cache / 'outbox').iterdir()}
+
+    def test_inspection_exposes_exact_evidence_without_replay_or_changes(self):
+        conflict = self.conflict()
+        waiting = self.f.request('synthetic_inspect_waiter', body='Another retained proposal')
+        self.f.adapter.invoke(waiting)
+        before = self.files()
+        self.f.cloud.calls.clear()
+        self.f.cloud.offline = True
+        self.server = ContentServer(self.f.restart())
+        listing = self.inspect()
+        self.assertEqual(listing['counts']['conflict'], 1)
+        entry = next(e for e in listing['entries'] if e['request_id'] == waiting['request_id'])
+        self.assertEqual(entry['local_queue']['blocked_by'], [{'request_id': conflict['request_id'], 'state': 'conflict'}])
+        self.assertNotIn('unique local proposal', json.dumps(listing))
+        self.assertNotIn(str(self.f.cache), json.dumps(listing))
+        exact = self.inspect(request_id=conflict['request_id'])
+        self.assertEqual(exact['request'], conflict)
+        self.assertEqual(exact['remote_snapshot']['record'], fixture.MEMORY)
+        self.assertEqual(exact['response']['error']['code'], 'revision_conflict')
+        self.assertFalse(exact['remote_snapshot_current'])
+        self.assertFalse(exact['data_transferred'])
+        self.assertEqual(self.f.cloud.calls, [])
+        self.assertEqual(self.files(), before)
+
+    def test_pages_bind_to_snapshot_and_reject_invalid_or_stale_cursors(self):
+        for index in range(65):
+            request = self.f.request(f'synthetic_inspection_{index:04d}')
+            request['params']['id'] = f'synthetic-topic-{index}'
+            self.f.adapter._enqueue(request)
+        first = self.inspect()
+        second = self.inspect(cursor=first['next_cursor'])
+        self.assertEqual(len(first['entries']), 64)
+        self.assertEqual(len(second['entries']), 1)
+        self.assertIsNone(second['next_cursor'])
+        self.assertEqual(len({e['request_id'] for e in first['entries'] + second['entries']}), 65)
+        self.f.adapter._enqueue(self.f.request('synthetic_cursor_changed'))
+        with self.assertRaises(ContentParameterError):
+            self.inspect(cursor=first['next_cursor'])
+        for arguments in ({'request_id': '../private'}, {'cursor': None}, {'request_id': None},
+                          {'cursor': 'bad'}, {'request_id': 'synthetic_inspection_0000', 'cursor': first['next_cursor']}):
+            with self.subTest(arguments=arguments), self.assertRaises(ContentParameterError):
+                self.server.invoke('content_queue_inspect', arguments)
+        self.assertEqual(self.inspect(request_id='synthetic_not_retained')['status'], 'not-found')
+        self.assertEqual(self.f.cloud.calls, [])
+
+    def test_no_write_grant_cannot_offer_or_invoke_inspection(self):
+        grant = copy.deepcopy(self.f.cloud.grant)
+        grant['scopes'] = ['read']
+        self.assertNotIn('content_queue_inspect', enabled_tools(fixture.POLICY, grant))
+        self.f.cloud.grant = grant
+        self.server.state = 'ready'
+        listing = self.server.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})
+        self.assertNotIn('content_queue_inspect', {t['name'] for t in listing['tools']})
+        with self.assertRaises(ContentToolUnavailable):
+            self.inspect()
+        self.assertEqual(self.f.cloud.calls, [])
+
+    def test_identity_drift_preserves_queue_and_exposes_no_body(self):
+        self.conflict()
+        before = self.files()
+        self.f.adapter.queue_sha = 'a' * 64
+        with self.assertRaises(CacheBlocked):
+            self.f.adapter.inspect_queue()
+        self.assertEqual(self.files(), before)
+
+    def test_confirmed_resolver_revisits_older_waiter_in_one_drain(self):
+        conflict = self.conflict()
+        remote = self.f.adapter._load('outbox/' + conflict['request_id'] + '.json')['remote']
+        merged = self.f.request('synthetic_inspect_resolver', body='Merge of remote and local', revision=remote['revision'])
+        waiter = self.f.request('synthetic_older_waiter', body='Later reviewed proposal',
+                                revision=fixture.contract.envelope('memory', 'synthetic-topic', merged['params']['record'])['revision'])
+        self.f.adapter._enqueue(waiter)
+        self.f.adapter._enqueue(merged, {'request_ids': [conflict['request_id']], 'source_keys': []})
+        self.f.cloud.calls.clear()
+        self.f.restart()._drain()
+        writes = [r for r in self.f.cloud.calls if r['method'] == 'content_put']
+        self.assertEqual(writes, [merged, waiter])
+        self.assertEqual(self.f.adapter.queue_status()['pending'], 0)
+        self.assertEqual(self.f.adapter.queue_status()['reconciled'], 1)
+        self.assertEqual(self.f.cloud.records['memory', 'synthetic-topic'], waiter['params']['record'])
+        original = self.inspect(request_id=conflict['request_id'])
+        self.assertEqual(original['request'], conflict)
+        self.assertEqual(original['local_queue']['resolution_request_id'], merged['request_id'])
+
+    def test_uncertain_waiter_stops_drain_until_exact_retry(self):
+        conflict = self.conflict()
+        remote = self.f.adapter._load('outbox/' + conflict['request_id'] + '.json')['remote']
+        merged = self.f.request('synthetic_uncertain_resolver', body='Reviewed merge', revision=remote['revision'])
+        waiter = self.f.request('synthetic_uncertain_waiter', body='Retained waiter',
+                                revision=fixture.contract.envelope('memory', 'synthetic-topic', merged['params']['record'])['revision'])
+        self.f.adapter._enqueue(waiter)
+        refs = {'request_ids': [conflict['request_id']], 'source_keys': []}
+        self.f.adapter._enqueue(merged, refs)
+        original = self.f.cloud.request
+
+        def lose_waiter_ack(request):
+            if request['request_id'] == waiter['request_id']:
+                self.f.cloud.lose_ack = True
+            return original(request)
+
+        self.f.cloud.calls.clear()
+        with patch.object(self.f.cloud, 'request', side_effect=lose_waiter_ack):
+            result = self.f.adapter.invoke(merged, reconciles=refs)
+        self.assertTrue(result['local_queue']['server_saved'])
+        self.assertEqual(result['local_refresh']['queue']['pending'], 1)
+        self.assertEqual([r for r in self.f.cloud.calls if r['method'] == 'content_put'], [merged, waiter])
+        self.assertEqual(self.f.cloud.puts, 3)
+        exact = self.inspect(request_id=waiter['request_id'])
+        self.assertEqual(exact['local_queue']['state'], 'pending')
+        self.assertFalse(exact['local_queue']['server_saved'])
+        # A pending outcome cannot be declared resolved or silently replaced.
+        replacement = self.f.request('synthetic_unsafe_replacement', revision=remote['revision'])
+        with self.assertRaises(CacheBlocked):
+            self.f.adapter._enqueue(replacement, {'request_ids': [waiter['request_id']], 'source_keys': []})
+        result = self.f.restart().invoke(exact['request'], reconciles=exact['reconciles'])
+        self.assertTrue(result['local_queue']['server_saved'])
+        self.assertEqual(self.f.cloud.puts, 3)
 
 
 if __name__ == "__main__":

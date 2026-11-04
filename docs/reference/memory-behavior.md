@@ -10,9 +10,13 @@
 
 同一目标前面存在未解决的 `conflict` 或 `blocked` 请求时，后续请求仍保留 `pending`，返回 `content_queue_blocked`、`retryable:false`；`local_queue.blocked_by` 列出实际阻塞的请求 ID 与状态，`next_action` 说明恢复步骤。这表示先解决依赖才能继续，不能把它报告成普通网络等待，也不能假定所有 pending 都来自冲突。这些诊断由现有队列计算，不改写队列格式、请求内容或 ID，不返回记忆正文或本地路径。
 
+`content_queue_inspect({})` 只读本机保留队列，每页最多 64 条元数据，使用 `next_cursor` 继续；队列变化后重新从第一页检查。它列出请求 ID、目标、状态、CAS 基线和阻塞项，不发送或重试请求。`content_queue_inspect({"request_id":"…"})` 返回该请求原文、`reconciles`、原回执与已缓存的冲突版本，供 Agent 完整审阅。缓存版本可能过期，合并前仍通过 `content_read` 读当前版本。该工具仅在现有内容写入授权内声明，不扫描其他设备、原生记忆来源或历史会话；普通更新按同源工具契约登记它。
+
 对于 CAS 冲突，保留原始提案，使用 `content_read` 读取当前版本，并审阅本地提案和远端版本。显式确认合并后，以新的稳定 `request_id`、当前 `expected_revision` 和 `reconciles.request_ids` 指向确切冲突，提交新的 `content_put`。这是新的合并操作，不能仅换 ID 重发原写入。已有 pending 请求的参数及 reconciliation 引用不可修改。只有合并请求取得有效服务器保存回执后，旧冲突才标为 `reconciled` 并保留 `resolution_request_id`；丢失回执时沿用合并请求原 ID 恢复。后续原请求仍使用自己的 CAS 基线，过期时会明确冲突，不自动覆盖或重定基线。未选中的冲突继续阻塞。
 
 非 CAS 的 `blocked` 请求需先审阅原错误、修复原因，再显式重试完全相同的请求；刷新不会自动重试它。禁止通过删除队列或修改用户数据解除阻塞。实际设备队列的诊断和恢复验收需另行进行，合成测试不能证明 Windows 或 Mac 上已有 pending 已送达。
+
+合并确认后，同次队列处理会回头继续处理排在合并请求之前的等待项。发送遇到丢回执或其他未确认结果时立即停止，该调用随后的映射刷新不会再次发送。结果不明的 pending 不能被合并标记为已解决；应取回原请求及原 reconciliation 引用，显式原样重试以恢复同 ID 回执。全过程保留原请求、用户内容和旧冲突，不清队列、不改 CAS。
 
 ## 安装后的 Onboard 交接\n\n安装与再次安装成功后，Client 返回 `coverage-check-required`、`source_scan_performed:false` 和 `data_transferred:false`。执行 Agent 按当前加载的 `agent-brain-onboard` Skill 继续；这些字段仅表示 Client 未执行来源扫描或迁移。\n\n## 辅助query
 
