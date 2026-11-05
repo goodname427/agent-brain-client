@@ -42,7 +42,7 @@ Windows 使用 `CreateFileW` 的 `OPEN_EXISTING`、`FILE_FLAG_OPEN_REPARSE_POINT
 
 ## 本批边界
 
-源码测试不写生产 Rule/Skill/Memory，不采集新来源或执行真实生命周期验收。未来新增短记或纠正复用 content_put；既有 read/put 不增加 delete/admin/activation。行为指引与查询的源码实现、发布、部署和实际运行验收分别报告。
+源码测试不写生产 Rule/Skill/Memory，不采集新来源或执行真实生命周期验收。未来新增短记或纠正复用 content_put；既有 read/put 不增加 delete/admin；Rule/Skill 的明确用户启停由独立 content_set_enabled 处理，普通正文编辑仍保留 enabled，见 [启停与同步](rule-skill-management.md)。行为指引与查询的源码实现、发布、部署和实际运行验收分别报告。
 
 安装结果交接和本机 status 随仓库安装入口源码交付；运行期 MCP 的新指引及 `model_loaded:"unknown"` 回执需发布并激活经过审核的活动 Client 包后才生效，运行中的旧 worker 不会热替换。共享三套 Skill 的正文如需调整，应另用受控内容更新流程，不能直接修改受管映射或仅凭源码更新宣称服务端 Skill 已改变。
 

@@ -8,6 +8,7 @@
 | [多平台开发](multiplatform-development.md) | 共用业务核心、Codex 适配、薄 OS 层及后续 Harness |
 | [宿主配置写入与恢复](windows-host-config-writes.md) | 0.5.7 起保留安全描述符的原位写入、日志与恢复限制 |
 | [owner collection](personal-owner-scope.md) | 0.2.5 起的个人 read/put 范围，历史邀请细节仅供兼容 |
+| [Rule / Skill 启停](rule-skill-management.md) | 本机管理页、明确启停、跨端拉取与失败恢复 |
 | [Client 记忆接口](memory-behavior.md) | 当前工具、来源和回执，正文与记忆政策本轮不调整 |
 | [适配器历史参考](../../ADAPTERS.md) | 含旧签名组件、SSH、Notify 候选；不能整体视为当前合同 |
 | [无凭据连接示例](../connection.example.json) | 合成旧格式，不是可用信任锚 |

@@ -21,6 +21,13 @@ def old_contract(manifest, output):
         raise ValueError('Frozen 0.6.2 contract fixture changed')
     (output/'adapters/codex/content_mcp.py').write_bytes(raw)
     manifest['files']['adapters/codex/content_mcp.py']=ci.sha(raw)
+    # Pin the matching published contract too: evolving source must not add
+    # methods to the old worker through its contract import.
+    contract=(FROZEN.parent/'content_contract.py.fixture').read_bytes()
+    if ci.sha(contract)!='d31b506060ffe5f19d97f59a59fbc00797e9df72600bc0f9ee1fa2ddbe1dc1af':
+        raise ValueError('Frozen published 0.6.2 typed contract fixture changed')
+    (output/'adapters/codex/content_contract.py').write_bytes(contract)
+    manifest['files']['adapters/codex/content_contract.py']=ci.sha(contract)
 
 
 def retired_recall_contract(manifest,output):
@@ -84,16 +91,16 @@ class BindingMigration(unittest.TestCase):
             checked=wizard.manage_update(self.f.home,'check-update',channel_factory=factory)
             self.assertEqual(checked['status'],'client-update-available',checked)
             self.assertEqual(checked['registered_tool_count'],9)
-            self.assertEqual(checked['tool_discovery']['blocked_by_registration'],['content_queue_inspect'])
+            self.assertEqual(checked['tool_discovery']['blocked_by_registration'],['content_queue_inspect','content_set_enabled'])
             self.assertEqual(self.f.native_files(),files)
             result=wizard.manage_update(self.f.home,'update',channel_factory=factory)
         self.assertEqual(result['status'],'client-update-current',result)
         self.assertTrue(result['native_changed']);self.assertIsNone(result['reload_required'])
         self.assertTrue(result['reload_check']['mcp_registration_changed'])
-        self.assertEqual(result['registered_tool_count'],10)
+        self.assertEqual(result['registered_tool_count'],11)
         self.assertEqual(result['registered_launcher_version'],'0.6.4')
         table=ci.tomllib.loads(self.f.config.read_text())['mcp_servers'][ci.NAME]
-        self.assertIn('memory_query',table['enabled_tools']);self.assertEqual(len(table['enabled_tools']),10)
+        self.assertIn('memory_query',table['enabled_tools']);self.assertEqual(len(table['enabled_tools']),11)
         self.assertTrue(ci.inspect(self.f.home)['registration_verified'])
         metadata=ci.private_json(self.f.home/'.config/agent-brain-client/codex-mcp.json')
         self.assertNotEqual(metadata['package'],self.old_metadata['package'])
@@ -155,13 +162,13 @@ class LegacyFilterMigration(unittest.TestCase):
         self.assertEqual(updated['status'],'client-update-current',updated)
         self.assertTrue(updated['native_changed']);self.assertIsNone(updated['reload_required'])
         self.assertTrue(updated['reload_check']['mcp_registration_changed'])
-        self.assertEqual(updated['registered_tool_count'],10)
+        self.assertEqual(updated['registered_tool_count'],11)
         self.assertEqual(updated['tool_discovery']['blocked_by_registration'],[])
         self.assertFalse(updated['tool_discovery']['registration_update_required'])
         self.assertEqual(updated['tool_discovery']['host_tool_discovery'],'unknown')
         table=ci.tomllib.loads(self.f.config.read_text())['mcp_servers'][ci.NAME]
         self.assertIn('memory_query',table['enabled_tools'])
-        self.assertEqual(len(table['enabled_tools']),10)
+        self.assertEqual(len(table['enabled_tools']),11)
         self.assertEqual(self.f.profile.read_bytes(),profile)
         self.assertEqual(self.f.policy_path.read_bytes(),policy)
         self.assertEqual(pending.read_bytes(),b'{"synthetic":"pending-preserve-exactly"}')

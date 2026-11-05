@@ -33,13 +33,16 @@ func allowsID(_ ids: [String:Any],_ kind: String,_ identity: String) -> Bool { k
 func authorizeRequest(_ request: [String:Any],_ grant: [String:Any]) throws {
     let ids=try validateIDs(grant)
     guard Set(request.keys)==Set(["request_id","method","params"]),let rid=request["request_id"] as? String,rid.range(of:"^[A-Za-z0-9_-]{16,128}$",options:.regularExpression) != nil,let method=request["method"] as? String,let params=request["params"] as? [String:Any],let scopes=grant["scopes"] as? [String],let types=grant["artifact_types"] as? [String] else { throw Blocked() }
-    let fields: [String:Set<String>]=["content_catalog":["kinds"],"content_read":["kind","id"],"content_put":["kind","id","record","expected_revision"],"content_remove":["kind","id","expected_revision"]]
+    let fields: [String:Set<String>]=["content_catalog":["kinds"],"content_read":["kind","id"],"content_put":["kind","id","record","expected_revision"],"content_remove":["kind","id","expected_revision"],"content_set_enabled":["kind","id","enabled","expected_revision"]]
     var supplied=Set(params.keys)
     if method=="content_catalog",let cursor=params["cursor"] {
         guard let value=cursor as? String,value.range(of:"^[a-f0-9]{64}:[0-9]{1,20}$",options:.regularExpression) != nil else { throw Blocked() }
         supplied.remove("cursor")
     }
-    guard let expected=fields[method],supplied==expected,scopes.contains(["content_put","content_remove"].contains(method) ? "write":"read") else { throw Blocked() }
+    guard let expected=fields[method],supplied==expected,scopes.contains(["content_put","content_remove","content_set_enabled"].contains(method) ? "write":"read") else { throw Blocked() }
+    if method=="content_set_enabled" {
+        guard ["rule","skill"].contains(params["kind"] as? String ?? ""),let enabled=params["enabled"] as? NSNumber,CFGetTypeID(enabled)==CFBooleanGetTypeID(),let revision=params["expected_revision"] as? String,revision.range(of:"^[a-f0-9]{64}$",options:.regularExpression) != nil else { throw Blocked() }
+    }
     if method=="content_catalog" {
         guard let kinds=params["kinds"] as? [String],!kinds.isEmpty,Set(kinds).count==kinds.count,kinds.allSatisfy({types.contains($0)}) else { throw Blocked() }
     } else {
@@ -183,7 +186,7 @@ final class HTTPTransport: PairTransport,OperatorIssuer {
         try authorizeRequest(value,profile.grant)
         var result=try post("v1/requests",value,saved.credential,true)
         guard result["request_id"] as? String == value["request_id"] as? String,!String(data:try json(result),encoding:.utf8)!.contains(saved.credential) else { throw Blocked() }
-        if ["content_put","content_remove"].contains(value["method"] as? String ?? ""),result["error"]==nil {
+        if ["content_put","content_remove","content_set_enabled"].contains(value["method"] as? String ?? ""),result["error"]==nil {
             guard let persistence=result["persistence"] as? [String:Any],persistence["durable"] as? Bool == true else { throw Blocked() }
         }
         if value["method"] as? String == "content_catalog",result["error"]==nil {
@@ -275,10 +278,15 @@ func selfCheck() throws -> [String:Any] {
         var denied=false;do { try authorizeRequest(request,grant) } catch { denied=true };guard denied else { throw Blocked() }
     }
     let writeGrant: [String:Any]=["scopes":["read","write"],"artifact_types":["rule"],"ids":["rule":["rule-a"]]]
-    for method in ["content_read","content_put","content_remove"] {
+    try authorizeRequest(["request_id":"SYNTHETIC_REQUEST_ID","method":"content_set_enabled","params":["kind":"rule","id":"rule-a","enabled":true,"expected_revision":String(repeating:"a",count:64)]],writeGrant)
+    for enabled: Any in [1,"true",NSNull()] {
+        var denied=false;do { try authorizeRequest(["request_id":"SYNTHETIC_REQUEST_ID","method":"content_set_enabled","params":["kind":"rule","id":"rule-a","enabled":enabled,"expected_revision":String(repeating:"a",count:64)]],writeGrant) } catch { denied=true };guard denied else { throw Blocked() }
+    }
+    for method in ["content_read","content_put","content_remove","content_set_enabled"] {
         var params: [String:Any]=["kind":"rule","id":"rule-b"]
         if method != "content_read" { params["expected_revision"]="missing" }
         if method == "content_put" { params["record"]=[String:Any]() }
+        if method == "content_set_enabled" { params["enabled"]=true;params["expected_revision"]=String(repeating:"a",count:64) }
         var denied=false;do { try authorizeRequest(["request_id":"SYNTHETIC_REQUEST_ID","method":method,"params":params],writeGrant) } catch { denied=true };guard denied else { throw Blocked() }
     }
     return ["device_component_self_check":"passed","keychain_accessed":false,"gui_opened":false,"network_used":false,"native_changed":false]

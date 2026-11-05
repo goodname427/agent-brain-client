@@ -34,7 +34,7 @@ sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action update
 
 安装／重装成功的 `onboard_check:coverage-check-required` 仅交接当前 `agent-brain-onboard` Skill；不证明覆盖完成，也不批准扫描或上传。模型加载不可观测时报告 `model_loaded:"unknown"`。完整目录使用 `content_catalog` 的 `kinds`，省略 query/since/until/limit；Memory-only 查询别名与 `memory_query` 沿用原生可配置 L1 数量及独立 L2/L3，上下文仍受传输预算保护，不能证明全量覆盖。每轮记录实际版本、目录／读取次数和结果，历史超时单列，见 [验收模板](docs/acceptance/mac-install-onboard.md)。
 
-日常保存／检索由当前加载的 `agent-brain-memory` Skill 定义；Client 工具、范围和回执语义见 [记忆接口](docs/reference/memory-behavior.md)，项目记忆入口见 [AUTOMATIC_MEMORY.md](AUTOMATIC_MEMORY.md)。本文档整理不变更记忆内容、组织或生产 catalog。新 Rule/Skill 默认 disabled，owner 范围见 [合同参考](docs/reference/personal-owner-scope.md)。`local_durable:true` 与 GitHub 确认 `durable:true` 分别报告，详见 [协议](PROTOCOL.md)。
+日常保存／检索由当前加载的 `agent-brain-memory` Skill 定义；Client 工具、范围和回执语义见 [记忆接口](docs/reference/memory-behavior.md)，项目记忆入口见 [AUTOMATIC_MEMORY.md](AUTOMATIC_MEMORY.md)。本文档整理不变更记忆内容、组织或生产 catalog。新 Rule/Skill 默认 disabled；明确启停与跨端拉取使用 [Rule / Skill 管理页](docs/reference/rule-skill-management.md)，源码合入与实际发布分开。owner 范围见 [合同参考](docs/reference/personal-owner-scope.md)。`local_durable:true` 与 GitHub 确认 `durable:true` 分别报告，详见 [协议](PROTOCOL.md)。
 
 ## 开发与验证
 

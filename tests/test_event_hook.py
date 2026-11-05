@@ -257,7 +257,7 @@ class EventHook(unittest.TestCase):
         self.assertFalse(result['native_changed'])
         self.assertTrue(all(request['method']=='content_catalog' for request in cloud.calls))
         self.assertEqual(fixture.contract.mcp_methods(['read','put'])-{'memory_query'},
-                         {'content_catalog','content_read','content_put'})
+                         {'content_catalog','content_read','content_put','content_set_enabled'})
 
     def test_same_transport_exact_core_receipt_and_endpoint(self):
         self.prompt();self.stop();request=self.sent[0]

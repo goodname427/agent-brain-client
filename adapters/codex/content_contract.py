@@ -15,15 +15,16 @@ TYPES={'memory','rule','skill'}
 FIELDS={'memory_status':{'project_id','session_id'},'memory_resume':{'project_id','session_id'},'memory_stop':{'project_id','session_id'},'memory_revoke':{'project_id','session_id'},'memory_sync':{'project_id','session_id'},'memory_query':{'kind','query','since','until','limit'},'content_read':{'kind','id'},'content_catalog':{'kinds'},
         'memory_event_submit':{'kind','id','event'},
         'content_put':{'kind','id','record','expected_revision'},
-        'content_remove':{'kind','id','expected_revision'}}
-WRITES={'content_put','content_remove','memory_event_submit'}
+        'content_remove':{'kind','id','expected_revision'},
+        'content_set_enabled':{'kind','id','enabled','expected_revision'}}
+WRITES={'content_set_enabled','content_put','content_remove','memory_event_submit'}
 HOOK_METHODS={'memory_event_submit'}|{'memory_status','memory_resume','memory_stop','memory_revoke','memory_sync'}
 SCOPES={'read','put','write','remove'}
 
 def normalized_scopes(scopes):return {'put' if scope=='write' else scope for scope in scopes}
 
 def permits_scope(scopes,method):
-    if method in ('content_put','memory_event_submit'):return 'put' in normalized_scopes(scopes)
+    if method in ('content_set_enabled','content_put','memory_event_submit'):return 'put' in normalized_scopes(scopes)
     if method=='content_remove':return 'remove' in scopes
     return 'read' in scopes
 
@@ -90,7 +91,9 @@ def validate(method,params):
         if params['kind']!='memory':raise ValueError('Memory event required')
         event(params['event'])
         if params['id']!=params['event']['event_id']:raise ValueError('Event identity mismatch')
-    if method in ('content_put','content_remove') and (not isinstance(params['expected_revision'],str) or not re.fullmatch(r'missing|[a-f0-9]{64}',params['expected_revision'])):raise ValueError('Read revision required')
+    if method in ('content_set_enabled','content_put','content_remove') and (not isinstance(params['expected_revision'],str) or not re.fullmatch(r'missing|[a-f0-9]{64}',params['expected_revision'])):raise ValueError('Read revision required')
+    if method=='content_set_enabled':
+        if params['kind'] not in ('rule','skill') or type(params['enabled']) is not bool or params['expected_revision']=='missing':raise ValueError('Existing Rule/Skill and explicit enabled state required')
     if method=='content_put':record(params['kind'],params['record'],params['id'])
 
 def event_identifier(value):

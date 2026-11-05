@@ -11,7 +11,6 @@ from brain_lock import WINDOWS_PLATFORMS, native_platform
 from client_release import ClientReleases, dependency_environment, version
 from content_contract import encode
 from content_install import prepare, private_json, raw, safe, save, sha, render, validate_recovery, digest_or_none
-from content_mcp import LOCAL_TOOLS
 
 # Exact pre-fix platform detector shipped by runtime 0.5.0 / installer 0.5.2.
 LEGACY_DETECTOR = '60a0b040b70216684c752ee7a49374a0c122dbf16f0af8e5bb74b9dea923a6f2'
@@ -197,17 +196,27 @@ def legacy_plan(current):
     """Reconstruct only the exact historical server-method-only plan bytes."""
     old = copy.deepcopy(current)
     old.pop('tool_contract_version', None)
-    old['mcp']['enabled_tools'] = sorted(set(current['mcp']['enabled_tools']) - LOCAL_TOOLS - {'memory_query'})
+    old['mcp']['enabled_tools'] = sorted(set(current['mcp']['enabled_tools']) & {'content_catalog','content_read','content_put','content_remove'})
     config = raw(Path(current['codex_home']) / 'config.toml')
     old['config_after_sha256'] = sha(render(config, old['mcp'], False))
     return old
+
+
+def previous_tool_plans(current):
+    """Exact earlier contracts, never an arbitrary subset of a tool filter."""
+    previous = copy.deepcopy(current)
+    previous['tool_contract_version'] = 2
+    previous['mcp']['enabled_tools'] = sorted(set(previous['mcp']['enabled_tools']) - {'content_set_enabled'})
+    config = raw(Path(current['codex_home']) / 'config.toml')
+    previous['config_after_sha256'] = sha(render(config, previous['mcp'], False))
+    return (legacy_plan(current), previous)
 
 
 def verified_pending(plan):
     current = prepare(plan['device_home'], plan['package'], plan['release_policy'],
                       plan['release_policy_sha256'], plan['replace_existing'])
     if plan != current and (plan['replace_existing'] or plan['legacy_agents'] is not None
-                            or plan != legacy_plan(current)):
+                            or plan not in previous_tool_plans(current)):
         raise ValueError('Pending installation inputs changed')
     return current
 
@@ -218,7 +227,7 @@ def tool_journal(journal, plan):
             or plan not in (journal['before'], journal['after'])):
         raise ValueError('Pending tool recovery changed')
     old, new, attempt = journal['before'], journal['after'], journal['attempt']
-    if verified_pending(old) != new or verified_pending(new) != new or legacy_plan(new) != old:
+    if verified_pending(old) != new or verified_pending(new) != new or old not in previous_tool_plans(new):
         raise ValueError('Pending tool recovery scope changed')
     if attempt is not None and attempt != {'schema': 1, 'plan_sha256': sha(encode(old))}:
         raise ValueError('Original pairing attempt changed')
@@ -289,7 +298,7 @@ def refresh_plan(path, update):
         old, new, attempt = tool_journal(journal, plan)
     else:
         old, new = plan, current
-        if old['replace_existing'] or old['legacy_agents'] is not None or legacy_plan(new) != old:
+        if old['replace_existing'] or old['legacy_agents'] is not None or old not in previous_tool_plans(new):
             raise ValueError('Pending tool recovery scope changed')
         attempt_path = path.parent / 'pairing-attempt.json'
         attempt = private_json(attempt_path) if attempt_path.exists() else None

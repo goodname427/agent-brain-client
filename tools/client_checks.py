@@ -38,6 +38,8 @@ COMMANDS = {
         ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'adapters/codex/content_cache.py', 'adapters/codex/remote_http.py', 'adapters/codex/content_contract.py'],
         ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'tools/pending_install_recovery.py', 'tools/bootstrap_main.py'],
         ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', 'tools/client_checks.py', 'tests/test_client_checks.py'],
+        ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', '--ignore', 'E402', 'tools/content_manage.py', 'tests/test_content_activation.py'],
+        ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'tools/content_manage.py'],
         ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'F', 'tools/release_client.py'],
         ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'tools/client_checks.py'],
     ],
