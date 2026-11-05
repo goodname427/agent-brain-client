@@ -1110,7 +1110,7 @@ class ContentAdapter:
         self._skill_dirs(owned['files'])
         return owned
 
-    def _skill_dirs(self,names):
+    def _skill_dirs(self,names,owned=None):
         managed={name.split('/')[2] for name in names if name.startswith('.agents/skills/')}
         for identity in managed:
             directory=self.home/'.agents/skills'/identity;self._safe(directory,self.home)
@@ -1118,6 +1118,7 @@ class ContentAdapter:
                 self._safe(entry,self.home)
                 if entry.is_dir():continue
                 if not entry.is_file():raise CacheBlocked()
+                if owned is not None and entry.relative_to(self.home).as_posix() not in owned:raise CacheBlocked()
 
     def _directory_ownership(self):
         state=self._load('skill-directories.json',{'directories':{}})

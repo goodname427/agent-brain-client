@@ -151,6 +151,7 @@ def prepare_removal(home):
     if transaction and transaction.get('phase') not in ('complete', 'rolled-back'):
         raise install.InstallBlocked('Mapping transaction needs repair')
     owned = adapter._owned()
+    adapter._skill_dirs(owned['files'],owned['files'])
     config_before=install.raw(native/'config.toml')
     config_after=remove_table(config_before)
     hook_block=None
@@ -369,17 +370,7 @@ def finish_removal(home, journal):
             install.atomic(path, desired, journal['before'][name]['mode'])
     journal['phase'] = 'complete'
     install.save(journal_path(home), journal)
-    # Empty skill directories no longer expose an installed skill. Never recurse-delete.
-    for name in journal['before']:
-        path = Path(name)
-        if '.agents/skills' in str(path):
-            for parent in path.parents:
-                if parent == home / '.agents/skills':
-                    break
-                try:
-                    parent.rmdir()
-                except OSError:
-                    break
+    adapter._prune_skill_directories({})
     return {'status': 'client-uninstalled', 'installed': False, 'native_changed': True,
             'removed_mapping_files': journal['removed_mapping_files'], 'queue': journal['queue'],
             'retained': ['identity-in-login-Keychain', 'fixed-helper-and-bootstrap', 'profiles-and-install-receipts', 'outbox-imports-and-snapshots'],
