@@ -160,7 +160,8 @@ class ReleaseEngine:
             p=PurePosixPath(path)
             if p.is_absolute() or '..' in p.parts or '\\' in path or not re.fullmatch(r'[a-f0-9]{64}',sha):
                 raise UpdateBlocked('Unsafe release path/hash')
-            if not any(path.startswith(prefix) for prefix in self.policy['file_prefixes']):
+            if (not any(path.startswith(prefix) for prefix in self.policy['file_prefixes'])
+                    and not getattr(self.adapter,'allows_shared_file',lambda name:False)(path)):
                 raise UpdateBlocked('File outside approved runtime scope')
         for step in manifest['migrations']:
             if set(step)!={'id','sha256'} or step['id'] not in self.migrations:

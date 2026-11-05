@@ -3,7 +3,7 @@ import argparse,hashlib,json,shutil,sys
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'adapters/codex'));sys.path.insert(0,str(ROOT/'scripts'))
-from client_release import WINDOWS_HTTPS_CONTENT_CLIENT_FILES,CLIENT_FILES,CONTENT_CLIENT_FILES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CLIENT_FILES,CAPABILITIES,PERSONAL_CAPABILITIES,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES
+from client_release import LEGACY_HTTPS_CONTENT_CLIENT_FILES,SHARED_CLIENT_FILES,WINDOWS_HTTPS_CONTENT_CLIENT_FILES,CLIENT_FILES,CONTENT_CLIENT_FILES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CLIENT_FILES,CAPABILITIES,PERSONAL_CAPABILITIES,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES
 from brain_release import version as validate_version
 from publication_check import require_publishable
 FILES={n:n for n in CLIENT_FILES}
@@ -26,7 +26,7 @@ def export(source,output,pairing_candidate=False,content_candidate=False,ssh_con
     output.mkdir(parents=True)
     for name,data in payload.items():
         p=output/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(data)
-    manifest={'schema':1,'review_status':'unpublished-candidate','files':{n:hashlib.sha256(v).hexdigest() for n,v in payload.items()},'git_history_copied':False,'core_exported':False,'native_install_wired':not any((pairing_candidate,content_candidate,ssh_content_candidate,https_content_candidate)),'actual_deployment':'not-performed-by-build','source_authority':'independent-client-repository','release_policy_scope_delta':{'added':[],'removed':[]},'production_release_policy_scope_compatibility':'unchanged-approved-file-scope'}
+    manifest={'schema':1,'review_status':'unpublished-candidate','files':{n:hashlib.sha256(v).hexdigest() for n,v in payload.items()},'git_history_copied':False,'core_exported':False,'native_install_wired':not any((pairing_candidate,content_candidate,ssh_content_candidate,https_content_candidate)),'actual_deployment':'not-performed-by-build','source_authority':'independent-client-repository','release_policy_scope_delta':{'added':[name for name in SHARED_CLIENT_FILES if name in names],'removed':[]},'production_release_policy_scope_compatibility':'explicit-shared-runtime-dependencies'}
     if https_content_candidate:manifest.update(content='https-system-credential-uninstalled-candidate',production_release_policy_compatible=False,production_release_policy_compatibility_reason='Candidate has not been installed or deployed; production compatibility is not claimed.',credential_helper_installed=False,keychain_accessed=False)
     if ssh_content_candidate:manifest.update(content='ssh-server-credential-uninstalled-candidate',production_release_policy_compatible=False,production_release_policy_compatibility_reason='Candidate has not been installed or deployed; production compatibility is not claimed.')
     if pairing_candidate or content_candidate:manifest.update(pairing='source-only-uninstalled-unsigned-candidate',production_release_policy_compatible=False,production_release_policy_compatibility_reason='Candidate has not been installed or deployed; production compatibility is not claimed.',existing_ssh_checkpoint_available=True)

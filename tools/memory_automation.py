@@ -20,6 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 ENTRY = Path(__file__).resolve()
 MARKER = "Agent Brain project memory"
 RUNTIME = (
+    "scripts/brain_content.py",
+    "scripts/brain_http.py",
+    "scripts/brain_memory.py",
     "adapters/codex/https_content.py",
     "adapters/codex/content_mcp.py",
     "adapters/codex/content_cache.py",

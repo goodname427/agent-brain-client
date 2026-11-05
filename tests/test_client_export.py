@@ -48,8 +48,8 @@ class ClientExport(unittest.TestCase):
         relative = 'adapters/codex/codex_notify_mux.py'
         self.assertNotIn(relative, manifest['files'])
         self.assertFalse((output / relative).exists())
-        self.assertEqual(manifest['release_policy_scope_delta'], {'added': [], 'removed': []})
-        self.assertEqual(manifest['production_release_policy_scope_compatibility'], 'unchanged-approved-file-scope')
+        self.assertEqual(manifest['release_policy_scope_delta'], {'added': list(build_client_export.SHARED_CLIENT_FILES), 'removed': []})
+        self.assertEqual(manifest['production_release_policy_scope_compatibility'], 'explicit-shared-runtime-dependencies')
         self.assertFalse(manifest['production_release_policy_compatible'])
         self.assertIn('production_release_policy_compatibility_reason', manifest)
 
@@ -62,7 +62,7 @@ class ClientExport(unittest.TestCase):
         manifest = json.loads(committed_bytes)
         self.assertEqual(manifest['version'], '0.3.1')
         self.assertNotIn('commit', manifest)
-        self.assertEqual(set(manifest['files']), set(build_client_export.HTTPS_CONTENT_CLIENT_FILES))
+        self.assertEqual(set(manifest['files']), set(build_client_export.LEGACY_HTTPS_CONTENT_CLIENT_FILES))
 
     def test_unpublished_https_export_matches_current_source_without_relabeling_release(self):
         frozen = (ROOT / 'releases/manifest.json').read_bytes()
