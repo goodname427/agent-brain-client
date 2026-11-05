@@ -56,7 +56,7 @@ COMMANDS = {
         ['python', '-B', '-m', 'unittest', 'test_mcp_wire_encoding', 'test_mcp_queue_deadlines', 'test_content_read_requests.HTTPRequests'],
         ['python', '-B', 'tools/build_client.py', '--scan'],
         ['python', '-B', 'tools/check_source.py'],
-        ['python', '-B', '-m', 'unittest', 'test_content_write_failures'],
+        ['python', '-B', '-m', 'unittest', 'test_content_write_failures', 'test_content_activation', 'test_content_incremental_refresh'],
         ['python', '-B', '-m', 'unittest', 'test_layered_recall', 'test_runtime_reload'],
         ['pwsh', '-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference = 'Stop'; foreach ($file in @('tools/install-windows.ps1', 'tools/memory-windows.ps1')) { $errors = $null; [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd $file), [ref]$null, [ref]$errors) | Out-Null; if ($errors.Count) { throw ($errors | Out-String) } }"],
     ],

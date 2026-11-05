@@ -154,7 +154,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -B tools/check_source.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -B -m unittest test_content_write_failures
+          python -B -m unittest test_content_write_failures test_content_activation test_content_incremental_refresh
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -B -m unittest test_layered_recall test_runtime_reload
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
