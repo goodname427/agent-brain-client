@@ -1157,7 +1157,10 @@ def _manage_update(home, action, *, channel_factory=None):
             if environment is not None:
                 os.environ.clear()
                 os.environ.update(environment, HOME=str(home), LANG='en_US.UTF-8')
-            channel = (channel_factory or ClientReleases)(meta['release_policy'], meta['release_policy_sha256'])
+            # Explicit maintenance can wait through ordinary network jitter;
+            # automatic MCP startup retains its short best-effort budget.
+            channel = (channel_factory(meta['release_policy'], meta['release_policy_sha256'])
+                       if channel_factory else ClientReleases(meta['release_policy'], meta['release_policy_sha256'],discovery_timeout=15))
             before = channel.verified_active()
             if before is None:
                 return dict(result, reason='verified-active-package-required')

@@ -37,7 +37,7 @@ class PublicUpdate(unittest.TestCase):
         test = self
 
         class Channel:
-            def __init__(self, policy, digest):
+            def __init__(self, policy, digest, *, discovery_timeout=5):
                 self.engine = SimpleNamespace(local=test.home / 'synthetic-packages')
                 meta = json.loads(test.registration)
                 test.assertEqual(
@@ -110,6 +110,34 @@ class PublicUpdate(unittest.TestCase):
         self.assertIsNone(result["running_worker_version"])
         self.assertFalse(result["active_package_changed"])
         self.assertEqual(wizard.lifecycle_exit("check-update", result), 0)
+
+    def test_explicit_maintenance_tolerates_a_six_second_fetch(self):
+        class SlowChannel(self.channel):
+            def __init__(self, policy, digest, *, discovery_timeout=5):
+                super().__init__(policy, digest)
+                self.timeout = discovery_timeout
+
+            def discover(self, *args):
+                if self.timeout < 6:
+                    return {'status': 'release-unavailable', 'releases': []}
+                return super().discover(*args)
+
+            def update(self):
+                if self.timeout < 6:
+                    return {'status': 'offline'}
+                return super().update()
+
+        with (patch.object(wizard, 'ClientReleases', SlowChannel),
+              patch.object(self.f.f.backend, 'load', side_effect=AssertionError('No credential access')),
+              patch.object(hooks, 'install', return_value={'status':'global-hook-installed','native_changed':False})):
+            checked = wizard.manage_update(self.home, 'check-update')
+            self.assertEqual(checked['status'], 'client-update-available', checked)
+            self.assertFalse(checked['active_package_changed'])
+            updated = wizard.manage_update(self.home, 'update')
+            self.assertEqual(updated['status'], 'client-update-updated', updated)
+        self.assertEqual(self.f.f.config.read_bytes(), self.native_before)
+        self.assertEqual((self.f.state / 'codex-mcp.json').read_bytes(), self.registration)
+        self.assertEqual(self.f.f.backend.record, self.identity_before)
 
     def test_update_and_repeat_use_existing_policy_and_require_observed_worker(self):
         result = self.action("update")
