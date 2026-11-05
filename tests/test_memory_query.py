@@ -55,7 +55,8 @@ class MemoryQueryClient(unittest.TestCase):
         self.assertEqual(observed[-1]['params']['limit'],8)
         self.assertEqual(observed[-1]['params']['recall']['scoreThreshold'],0.2)
         for options in ({'scoreThreshold':float('nan')},{'maxTotalRecallChars':-1},{'provider':'new-endpoint'}):
-            with self.assertRaises(ProtocolError):server.invoke('memory_query',dict(self.f.params,recall=options))
+            with self.assertRaises(ProtocolError):
+                server.invoke('memory_query',dict(self.f.params,recall=options))
 
     def test_transport_failure_is_unconfirmed_without_lexical_fallback(self):
         def unavailable(request):
