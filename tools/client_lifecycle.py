@@ -85,7 +85,7 @@ def queue_counts(adapter):
     adapter._safe(directory, adapter.cache)
     rows = list(directory.iterdir()) if directory.exists() else []
     if directory.exists():
-        private_mode(directory, directory=True, owner=True, blocked=install.InstallBlocked)
+        cache_mode(directory, directory=True, owner=True, blocked=install.InstallBlocked)
     if len(rows) > 2048:
         raise install.InstallBlocked('Queue inventory requires recovery')
     binding = None
@@ -363,6 +363,8 @@ def finish_removal(home, journal):
             raise install.InstallBlocked('Outside edit retained')
         if desired is None:
             path.unlink(missing_ok=True)
+        elif adapter.cache in path.parents:
+            install.atomic(path, desired, journal['before'][name]['mode'], cache=True)
         else:
             install.atomic(path, desired, journal['before'][name]['mode'])
     journal['phase'] = 'complete'

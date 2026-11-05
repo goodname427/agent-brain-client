@@ -13,7 +13,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / n) for n in ('scripts', 'adapters/codex', 'tools', 'tests')]
-from brain_lock import private_directory, private_mode, locked, LockTimeout, command_line, native_platform
+from brain_lock import private_directory, private_mode, locked, LockTimeout, command_line, native_platform, cache_mode
 
 
 def host_security(path, information=7):
@@ -155,6 +155,8 @@ class WindowsNative(unittest.TestCase):
             with self.assertRaises(ValueError): private_mode(cache, directory=True)
             restarted = ContentAdapter(home, cache, POLICY, cloud, codex_home=r['codex_home'])
             self.assertEqual(restarted._queued()[0]['request'], request)
+            from client_lifecycle import queue_counts
+            self.assertEqual(queue_counts(restarted)['pending'], 1)
             cloud.request = lambda req: (sent.append(copy.deepcopy(req)), accepted(req))[1]
             self.assertEqual(gm.submit_hook(value, local, stop)['local_queue']['state'], 'confirmed')
             self.assertEqual(sent, [request, request])
@@ -744,7 +746,7 @@ class WindowsNative(unittest.TestCase):
         self.assertEqual(host_security(native),directory_security)
         config.write_bytes(config.read_bytes().replace(b'enabled = true',b'enabled = false'))
         self.assertEqual(lifecycle.uninstall(self.home,lambda message:'Continue')['status'],'client-uninstalled')
-        private_mode(Path(runtime['content_cache']),directory=True,owner=True)
+        cache_mode(Path(runtime['content_cache']),directory=True,owner=True)
         options['secure_input']=lambda:self.fail('No new credential input for MCP-only reinstall')
         restored=wizard.run(self.home,native,connection,wizard.sha(wizard.canonical(connection)),updater=update,**options)
         self.assertTrue(restored['installed'],restored);self.assertEqual(backend.record,identity)
@@ -809,7 +811,7 @@ class WindowsNative(unittest.TestCase):
         self.assertEqual(adapter().refresh()['status'], 'content-refreshed')
         self.assertEqual(cloud.puts, 1)
         self.assertEqual(adapter().queue_status()['confirmed'], 1)
-        private_mode(cache / 'active.json', owner=True)
+        cache_mode(cache / 'active.json', owner=True)
         self.assertEqual([r for r in cloud.calls if r['method']=='content_put'], [request, request])
 
     def test_refresh_skips_unchanged_agents_held_by_read_only_host(self):
