@@ -188,6 +188,8 @@ class LayeredRecall(unittest.TestCase):
         receipt = gm.recall_observation(self.value)
         self.assertEqual(receipt['retrieval']['candidate_count'], 3)
         self.assertEqual(receipt['retrieval']['omitted_for_budget'], 1)
+        self.assertEqual(len(receipt['retrieval']['returned']), 3)
+        self.assertNotIn(receipt['retrieval']['returned'][0], receipt['retrieval']['selected'])
         self.assertEqual(receipt['item_count'], 2)
 
     def test_request_receipt_survives_later_query_and_failed_query_has_receipt(self):

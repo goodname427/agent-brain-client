@@ -41,7 +41,7 @@ The question Hook now saves one private `recall-receipts/<request_key>.json`
 per attempt as well as the latest summary in `last-recall.json`. The request key
 binds the approved scope, origin, session, turn and full question. The wire
 request ID is `global_recall_<request_key>`. Schema 2 receipts contain hashes of
-the session, turn, actual query, selected record IDs, selected content and emitted
+the session, turn, actual query, returned and selected record IDs/content, and emitted
 context, plus layer/count/byte totals and the number omitted for budget. They
 contain no query, memory text, source paths, credentials or exception values.
 Later queries cannot overwrite a different request's evidence. Old schema 1

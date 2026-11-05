@@ -272,7 +272,7 @@ def recall(value, local, session, query='personal preferences and task progress'
                 items = [dict(item,offline_cache=True,remote_confirmation=False) for item in saved['items']]
                 selected = bounded_context_items(items)
                 refs = [ref for item, ref in zip(items, saved.get('selected', [])) if any(item is kept for kept in selected)]
-                if observe is not None: observe.update(candidate_count=len(items), selected=refs, omitted_for_budget=len(items)-len(selected))
+                if observe is not None: observe.update(candidate_count=len(items), returned=saved.get('selected', []), selected=refs, omitted_for_budget=len(items)-len(selected))
                 return selected
         raise ValueError('Global recall unavailable')
     data = response['result']
@@ -316,7 +316,7 @@ def recall(value, local, session, query='personal preferences and task progress'
                                    'content_sha256': digest(row['content'])})
     selected = bounded_context_items(items)
     refs = [ref for item, ref in zip(items, references) if any(item is kept for kept in selected)]
-    if observe is not None: observe.update(candidate_count=len(items), selected=refs, omitted_for_budget=len(items)-len(selected))
+    if observe is not None: observe.update(candidate_count=len(items), returned=references, selected=refs, omitted_for_budget=len(items)-len(selected))
     items = selected
     cache = settings_path(value['device_home']).parent / ('recall-' + digest(local) + '.json')
     old.write(cache, {'scope_sha256': digest(value['scope']), 'query_sha256': digest(query), 'items': items, 'selected': refs})
@@ -383,12 +383,13 @@ def recall_observation(value, request_key=None):
                 or type(saved.get('at')) not in (int, float) or not math.isfinite(saved['at'])
                 or saved['context_sha256'] is not None and not re.fullmatch('[a-f0-9]{64}', saved['context_sha256'])
                 or saved['error_type'] is not None and not re.fullmatch('[A-Za-z][A-Za-z0-9_]{0,63}', saved['error_type'])
-                or not isinstance(retrieval, dict) or set(retrieval) != {'candidate_count', 'selected', 'omitted_for_budget'}
+                or not isinstance(retrieval, dict) or set(retrieval) != {'candidate_count', 'returned', 'selected', 'omitted_for_budget'}
                 or any(type(retrieval.get(k)) is not int or not 0 <= retrieval[k] <= 738 for k in ('candidate_count', 'omitted_for_budget'))
                 or not isinstance(retrieval.get('selected'), list) or len(retrieval['selected']) > 3
+                or not isinstance(retrieval.get('returned'), list) or len(retrieval['returned']) > 738
                 or any(not isinstance(ref, dict) or set(ref) != {'layer', 'record_sha256', 'content_sha256'}
                        or ref['layer'] not in counts or any(not isinstance(ref[k], str) or not re.fullmatch('[a-f0-9]{64}', ref[k])
-                                                         for k in ('record_sha256', 'content_sha256')) for ref in retrieval['selected'])):
+                                                         for k in ('record_sha256', 'content_sha256')) for ref in [*retrieval['selected'], *retrieval['returned']])):
             raise ValueError('Invalid request recall receipt')
         return saved
     fields = {'schema', 'at', 'stage', 'status', 'layer_counts', 'item_count', 'context_bytes', 'offline_cache', 'model_used'}
@@ -433,7 +434,7 @@ def hook(value, *, observe=None):
                        'query_sha256': digest(query), 'output_written': False, 'model_used': 'unknown',
                        'status': 'failed', 'error_type': None, 'layer_counts': {'L1': 0, 'L2': 0, 'L3': 0},
                        'item_count': 0, 'context_bytes': 0, 'context_sha256': None, 'offline_cache': False,
-                       'retrieval': {'candidate_count': 0, 'selected': [], 'omitted_for_budget': 0}}
+                       'retrieval': {'candidate_count': 0, 'returned': [], 'selected': [], 'omitted_for_budget': 0}}
             try:
                 with operation_stage('global-recall'):
                     items = recall(value, local, payload['session_id'], query, request_id=receipt['request_id'], observe=receipt['retrieval'])
