@@ -7,7 +7,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from brain_lock import locked
+from brain_lock import cache_locked as locked
 from content_mcp import ContentParameterError, ContentServer, ContentToolUnavailable, enabled_tools
 from content_cache import CacheBlocked, ContentAdapter
 from remote_http import RequestStopped
