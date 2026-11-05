@@ -1,5 +1,7 @@
 # 开发与发布维护
 
+CodeBuddy 的专属代码量、共用接口及验证边界见 [CodeBuddy 适配边界](codebuddy-adapter.md)。
+
 > 当前维护；Client 源码独立构建。安装器／Windows 核对基线 0.5.9，Mac 运行渠道另行固定。
 
 先读根目录 [AGENTS](../../AGENTS.md) 和 [多平台开发](../reference/multiplatform-development.md)。测试只使用合成资料；不跨仓导入 Server/Core，不读取生产 Data、配置、凭据或聊天会话。
