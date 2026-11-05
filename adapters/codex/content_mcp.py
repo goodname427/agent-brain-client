@@ -415,9 +415,8 @@ def native_hook_fields(policy,payload):
     kind=payload['hook_event_name']
     if kind=='Stop' and payload.get('stop_hook_active') is not False:raise ValueError('Recursive or unspecified Stop rejected')
     content=payload.get('prompt' if kind=='UserPromptSubmit' else 'last_assistant_message')
-    contract.text(content,32768)
-    if len(content.encode('utf-16-le'))//2>8192:raise ValueError('Native text exceeds bound')
-    key=hashlib.sha256(contract.encode([scope,turn])).hexdigest()
+    from brain_memory import normalized_turn
+    key=normalized_turn(scope,turn,'prompt' if kind=='UserPromptSubmit' else 'final',content)
     return scope,turn,kind,content,key
 
 
@@ -427,42 +426,13 @@ def run_event_hook(adapter,policy,payload,*,clock=None,source_gate=None):
     The caller validates the pinned policy before reading stdin and activating
     the credential store. Tests inject only the ordinary public Client classes.
     """
-    from datetime import datetime,timezone
     if not hook_enabled(policy):return {'status':'disabled','data_transferred':False}
     if policy.get('schema')==2 and not callable(source_gate):raise ValueError('Persistent capture requires the managed source entry')
     if getattr(adapter.client,'profile_sha',policy['profile_sha256'])!=policy['profile_sha256']:raise ValueError('Hook Client destination changed')
     scope,turn,kind,content,key=native_hook_fields(policy,payload)
-    session=scope['session_id']
-    name='hook-turns/'+key+'.json'
-    with cache_locked(adapter.cache/'event-hook.lock'):
-        if not hook_enabled(policy):return {'status':'disabled','data_transferred':False}
-        row=adapter._load(name)
-        if kind=='UserPromptSubmit':
-            if row is not None:
-                if row['scope']!=scope or row['turn_id']!=turn or row['prompt']!=content:raise ValueError('Native turn changed; preserve evidence')
-                return {'status':'staged','data_transferred':False}
-            directory=adapter.cache/'hook-turns';adapter._safe(directory,adapter.cache)
-            if directory.exists() and len(list(directory.iterdir()))>=1024:raise ValueError('Hook staging capacity reached')
-            now=clock() if clock else datetime.now(timezone.utc)
-            stamp=now.isoformat(timespec='milliseconds').replace('+00:00','Z')
-            row={'schema':1,'scope':scope,'turn_id':turn,'prompt':content,'occurred_at':stamp,'final':None}
-            adapter._save(name,row)
-            return {'status':'staged','data_transferred':False}
-        if row is None:return {'status':'skipped-no-prompt','data_transferred':False}
-        if set(row)!={'schema','scope','turn_id','prompt','occurred_at','final'} or row['schema']!=1 or row['scope']!=scope or row['turn_id']!=turn or row['final'] not in (None,content):raise ValueError('Native staging changed')
-        row['final']=content;adapter._save(name,row)
-        event={'contract':'agentbrain.event.v1','event_id':'evt-'+key[:56],
-               'project_id':scope['project_id'],'session_id':session,'occurred_at':row['occurred_at'],
-               'messages':[{'role':'user','content':row['prompt']},{'role':'assistant','content':content}]}
-        request={'request_id':'agentbrain_event_'+key,'method':'memory_event_submit',
-                 'params':{'kind':'memory','id':event['event_id'],'event':event}}
-        if not hook_enabled(policy):return {'status':'disabled','data_transferred':False}
-        # Refresh/write transport can hold content.lock beyond the hook wait.
-        # Persist this exact event first under the short append lock. Automatic
-        # drains skip it; invoke still owns content.lock before any transfer and
-        # rechecks the same immutable request plus the current off gate.
-        adapter._enqueue(request)
-        return adapter.invoke(request,event_gate=lambda:hook_enabled(policy) and (source_gate is None or source_gate()))
+    from brain_memory import submit_turn
+    return submit_turn(adapter,scope,turn,'prompt' if kind=='UserPromptSubmit' else 'final',content,enabled=lambda:hook_enabled(policy),
+                       lock=cache_locked,clock=clock,source_gate=source_gate)
 
 def self_check():
     class Adapter:
