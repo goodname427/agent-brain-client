@@ -41,11 +41,13 @@ def main():
     modules = tests or sorted(path.stem for path in Path('tests').glob('test*.py'))
     if not modules:
         raise ValueError('No test modules found')
-    groups = [modules[index::args.workers] for index in range(args.workers)]
+    # Feed one module at a time to each available worker. Adding a file must
+    # not reshuffle two fixed batches and leave one worker idle for minutes.
+    groups = [[module] for module in modules]
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        results = list(pool.map(run_group, [group for group in groups if group]))
-    for index, (code, log, seconds) in enumerate(results):
-        print(f'Worker {index + 1}: {seconds}s, exit {code}', flush=True)
+        results = list(pool.map(run_group, groups))
+    for module, (code, log, seconds) in zip(modules, results):
+        print(f'{module}: {seconds}s, exit {code}', flush=True)
         print(log, end='', flush=True)
     raise SystemExit(1 if any(code for code, _, _ in results) else 0)
 
