@@ -387,13 +387,13 @@ def install(args):
     if profile_id:
         import re
         if not re.fullmatch('[a-f0-9]{32}', profile_id): raise ValueError('Exact existing personal pool identity required')
-        if file.exists() and value['scope']['profile_id'] != profile_id:
-            # A default, never-approved empty installation has no source or
-            # journal identity to migrate. Joining a pool is an explicit choice.
-            if (value['enabled'] or value['approved_scope_sha256'] is not None or value['server_scope_sha256'] is not None
-                    or value['scope']['include_roots'] or value['scope']['non_project_roots'] or value['scope']['exclude_roots'] or value['legacy_projects']):
-                raise ValueError('Existing source identity preserved')
-        value['scope']['profile_id'] = profile_id
+        if value['scope']['profile_id'] != profile_id and value['server_scope_sha256'] is None:
+            value['scope']['profile_id'] = profile_id
+            if value['approved_scope_sha256'] is not None:
+                from global_memory_scope import digest
+                value['approved_scope_sha256'] = digest(value['scope'])
+        # A registered source is reconciled through authenticated configure,
+        # never rebound just because a caller supplied a profile hint.
     routes = {row['root']: row for row in value['legacy_projects']}
     base = home / '.config/agent-brain-client/project-memory'
     if os.name!='nt' and base.exists():
@@ -413,7 +413,7 @@ def install(args):
     old.write(file, value)
     result = transact(native, file.parent, block(value))
     result.update(expanded_sources_enabled=approved(value),
-                  pending_sources_default_disabled=True, legacy_project_roots=list(routes), settings=str(file), model_calls=0)
+                  automatic_all_projects=True, legacy_project_roots=list(routes), settings=str(file), model_calls=0)
     return result
 
 

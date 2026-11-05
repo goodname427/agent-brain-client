@@ -31,18 +31,16 @@ The result includes `launcher_update` and independent `installation_stages`:
 - Global Hook: the owned inline block is installed in `config.toml`. Other Hooks,
   MCP registrations and legacy `hooks.json` are preserved. Complete normal Codex
   Hook trust review; the installer does not mark its own Hook trusted.
-- Future sources: choose `Choose sources` in the local installer, enter project
-  roots, exclusions and non-project roots, then approve the displayed scope with
-  `Approve`. `Later`, EOF or cancel leaves collection disabled. No history,
-  transcript, memory body or project tree is scanned by this setup flow.
+- Future sources: install and update automatically enable future sessions from
+  every project on this device, using its existing HTTPS identity and service.
+  Setup reads the authenticated pool identity before registration. It does not
+  scan history, import past sessions, or require repeated digest approvals.
 
-Source approval belongs to this device. A prior Mac approval is not a Windows
-approval. Explicit local approval creates a private metadata packet. The existing
-Server must admit that exact device and scope before activation. If admission is
-missing, the result gives the packet path and exact activation command for after
-the existing Server operator applies it. This Client cannot grant itself Server
-administration. A missing approval is a pending setup stage, not a Hook execution
-failure. Already paused settings remain paused across installer reentry.
+Existing exclusions, project isolation, identities, data and queues are retained.
+Connection or registration failures preserve the current capture configuration.
+Rerun the same install/update entry to recover; a lost response uses the saved
+packet and authenticated source readback. No SSH operator or manual profile ID is
+required. Collection success and software update success are reported separately.
 
 `installation_complete` remains false until host loading can be observed;
 `local_setup_complete` describes the finite local stages only. The CLI does not

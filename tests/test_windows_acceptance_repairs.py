@@ -128,7 +128,10 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
             stored = json.loads(file.read_bytes()); self.assertEqual(stored['scope']['profile_id'], 'b'*32)
             self.assertIsNone(stored['approved_scope_sha256'])
             stored['approved_scope_sha256'] = digest(stored['scope']); gm.old.write(file, stored)
-            with self.assertRaises(ValueError): install.install(SimpleNamespace(**dict(vars(args), profile_id='c'*32)))
+            install.install(SimpleNamespace(**dict(vars(args), profile_id='c'*32)))
+            stored = gm.old.private_json(file)
+            self.assertEqual(stored['scope']['profile_id'], 'c'*32)
+            self.assertEqual(stored['approved_scope_sha256'], digest(stored['scope']))
 
     def test_local_status_lists_all_fences_without_credentials_or_source_reads(self):
         value = {'device_home':str(self.fixture.home),'enabled':False,
@@ -153,16 +156,18 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
         runtime = {'https_profile':str(profile),'https_profile_sha256':gm.old.digest(profile.read_bytes()),'content_policy_sha256':digest('policy')}
         args = SimpleNamespace(device_home=str(self.fixture.home), include_root=[], isolate_root=[], exclude_root=[],
                                non_project_root=[], approve_scope=digest(scope), packet_output=None, activate_packet=None)
-        client = SimpleNamespace(device_id=self.device, wire=Mock(return_value={'error':{'code':'transport_unconfirmed','retryable':True}}))
+        client = SimpleNamespace(device_id=self.device, wire=Mock(side_effect=[
+            {'result':{'metadata_only':True,'source_registered':False,'source_device_id':self.device,'global_profile_id':scope['profile_id']}},
+            {'error':{'code':'transport_unconfirmed','retryable':True}}]))
         with patch.object(gm, 'load', return_value=value), patch.object(gm.old, 'registration', return_value=(None, {'runtime':runtime})), patch.object(gm, 'GlobalClient', return_value=client), patch.object(operator, 'operator', side_effect=AssertionError('No SSH operation')):
             result = operator.configure(args)
         self.assertEqual(result['status'], 'global-memory-registration-pending')
         packet = gm.old.private_json(result['packet'])
-        self.assertEqual(packet['schema'], 2); self.assertEqual(packet['scope'], scope)
+        self.assertEqual(packet['schema'], 2); self.assertEqual(packet['scope'], dict(scope, all_projects=True))
         self.assertEqual(packet['client']['source_device_id'], self.device)
-        client.wire.assert_called_once_with('memory_global_register',packet,'source_'+digest(packet))
-        self.assertTrue((directory / 'global.off').exists())
-        self.assertFalse(gm.old.private_json(gm.settings_path(self.fixture.home))['enabled'])
+        self.assertEqual(client.wire.call_args.args, ('memory_global_register',packet,'source_'+digest(packet)))
+        self.assertFalse((directory / 'global.off').exists())
+        self.assertFalse(gm.settings_path(self.fixture.home).exists())
 
     def test_failed_activation_reports_exact_denial_without_enabling(self):
         import global_memory_operator as operator

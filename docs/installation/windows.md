@@ -25,25 +25,24 @@ Set-Location $checkout
 
 安装成功后正常重载 Codex 的 `agent_brain_server` MCP，并按既有 Onboard 流程核对获授权的 Memory/Rule/Skill。模型加载不可观测时仍报告 unknown。完整信任与恢复说明见 [地址与密钥安装](address-key-install.md)。
 
-安装入口会在本机继续询问未来采集范围：选择项目根目录、排除目录和非项目根目录，再确认显示的完整范围。选择 Later 不启用采集；既有个人 Memory 读取授权仍可使用 `memory_query`，不要求本设备先成为采集来源。已批准或暂停的来源保留原样，不会因安装或更新重新选择或恢复。
+安装和更新默认开启本设备所有项目的今后会话采集，复用已有 HTTPS 设备身份。先读取已认证服务的个人池，再登记和开启，不再要求重复批准摘要、手填 profile ID 或 SSH 管理操作。已有排除目录、项目隔离、非项目设置、数据与队列保留；不会补传历史。
 
-确认后，Client 使用现有设备 HTTPS 凭据将无凭据来源元数据登记到同一个人记忆池，读回核对设备和范围后才激活。无需把设备包交给 Server operator，不生成新长期凭据，不扫描历史。Server 必须包含 `authenticated-device-v1` 来源登记接口；未确认结果保留本机停止标记与来源包，重试同一请求。
+Client 使用现有设备 HTTPS 凭据将无凭据来源元数据登记到同一个人记忆池，读回核对设备和范围后才激活。无需把设备包交给 Server operator，不生成新长期凭据，不扫描历史。Server 必须包含 `authenticated-device-v1` 来源登记接口；未确认结果保留原采集配置与来源包，重跑同一安装或更新入口恢复。
 
-需要单独管理范围时，沿用以下入口，示例路径必须替换为本机实际选择：
+需要单独修复来源登记时，可使用以下入口：
 
 ```powershell
 & ./tools/memory-windows.ps1 global-status --check-server
-& ./tools/memory-windows.ps1 global-install --profile-id '<既有个人池32位ID>'
-& ./tools/memory-windows.ps1 global-configure --include-root 'C:/Work' --exclude-root 'C:/Work/Private' --non-project-root 'C:/Notes'
-# 审阅精确 scope 后提交原摘要；正常设备自动完成 Server 登记与读回：
-& ./tools/memory-windows.ps1 global-configure --approve-scope '<上一步摘要>'
-# 仅在已批准的登记中断后，显式重试保存的原包：
-& ./tools/memory-windows.ps1 global-configure --activate-packet '<保存的来源包绝对路径>'
+# 正常安装或更新自动完成全项目接入；中断时重跑同一入口即可。
+& ./tools/install-windows.ps1 -Action update
+# 只修复来源登记也可以使用：
+& ./tools/memory-windows.ps1 global-configure --all-projects
+& ./tools/memory-windows.ps1 global-status --check-server
 ```
 
 `global-status --check-server` 分别报告 `source_registered`、`recall_authorized` 和采集停止状态。`source_registered=false` 不妨碍已授权的个人池召回；空范围仍不允许采集。当前 checkout 与 Hook pin 不一致时先走正常 update，不能手改摘要。
 
-用户选择“所有项目、无排除目录”时，为实际存放项目的每个本地盘根传入 `--include-root`，例如 `--include-root 'C:/' --include-root 'D:/'`。只列设备上实际需要的本地盘，不遍历项目树；不传 `--exclude-root` 或 `--non-project-root`。项目范围不授权非项目对话。确认精确预览后自动登记；现有来源范围的变化仍须显式协调原授权，普通软件更新不扩大范围。
+全项目范围由 `all_projects: true` 表示，不需要列举盘符或项目根目录；新盘和新项目同样适用。保留已有的排除目录与项目隔离规则，不额外开启非项目对话。
 
 `global-resume` 只恢复原本已批准的来源，不补齐空范围或 Server 登记。空范围、缺少批准或未完成激活时返回 `global-memory-activation-required` 和非零退出码；此路径不调用 Server 或访问凭据。已批准的暂停来源可显式恢复，只有 Server 明确返回 `schema:1`、`stopped:false` 才撤掉本地停止标记。错误、停止状态或缺失确认返回 `global-memory-resume-unconfirmed`，保留标记和错误代码。旧的逐项目采集独立恢复时标为 `global-memory-legacy-resumed`，不声称用户级扩大范围已启用。
 
@@ -62,8 +61,8 @@ Set-Location $checkout
 
 升级复用现有 policy、凭据、信任锚、缓存和幂等队列；不重新配对。不确定/冲突回执保留，断网读明确标为旧缓存，恢复后重放原 request_id。卸载前正常停止该 MCP worker，再移除 owned Hook；普通卸载不清凭据和记忆。显示 `review-required` 时保留原材料，用 status/repair 处理未完成事务。安装目录或 Python/Git 被移动/升级而摘要变化时，需要精确依赖迁移，不能替换摘要掩盖漂移。
 
-正常 update 同时交接旧固定启动器，并刷新已安装全局 Hook 的代码及命令。Hook 代码保存在设备私有缓存，保留原采集范围、批准、暂停、路由及身份；未安装或已卸载的 Hook 不会新增。按 Codex 正常提示审核更新后的 Hook，再重新加载 Agent Brain。check-update 仅报告候选和 Hook 待刷新状态。Hook 刷新未确认时即使活动包已更新也退出非零；重试同一 update 入口恢复事务，不重复批准来源或配对。
+正常 update 同时交接旧固定启动器，安装或刷新全局 Hook，并自动登记及开启全项目今后采集，包含旧设备和非交互更新。现有数据、队列、排除目录、隔离规则和设备身份保留。按 Codex 正常提示审核更新后的 Hook，再重新加载 Agent Brain。check-update 仅报告候选和 Hook 待刷新状态。Hook 刷新未确认时即使活动包已更新也退出非零；重试同一 update 入口恢复事务，不重复批准来源或配对。
 
-Windows 凭据使用用户 Credential Manager；私有状态检查 DACL、owner 和 reparse point，锁使用 LockFileEx。没有轮询聊天目录的本地常驻采集器；后台提取消费在 Server，MCP worker 由 Codex 管理生命周期。0.5.9 已包含 Mac／Windows 的有界原生 `CODEX_HOME/memories` 导入，具体边界见 [现有接口说明](../reference/memory-behavior.md)；该能力不包含 `memories_v2`、SQLite 或聊天历史，也不代替未来 Hook 来源批准。未实现 DeepSeek Harness；DeepSeek 当前只是提取 provider。
+Windows 凭据使用用户 Credential Manager；私有状态检查 DACL、owner 和 reparse point，锁使用 LockFileEx。没有轮询聊天目录的本地常驻采集器；后台提取消费在 Server，MCP worker 由 Codex 管理生命周期。0.5.9 已包含 Mac／Windows 的有界原生 `CODEX_HOME/memories` 导入，具体边界见 [现有接口说明](../reference/memory-behavior.md)；该能力不包含 `memories_v2`、SQLite 或聊天历史，今后 Hook 采集不要求重复来源批准。未实现 DeepSeek Harness；DeepSeek 当前只是提取 provider。
 
 协议依据：[Codex Hooks](https://learn.chatgpt.com/docs/hooks)、[Windows Sandbox](https://learn.chatgpt.com/docs/windows/windows-sandbox)、[Win32 Credential](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw)、[LockFileEx](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfileex)。

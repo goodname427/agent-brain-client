@@ -582,166 +582,97 @@ class SourceClosure(unittest.TestCase):
             )
         )
 
-    def answers(self, approve=True):
-        return iter(
-            [
-                "Choose sources",
-                str(self.home),
-                "",
-                "",
-                "",
-                "Approve" if approve else "Later",
-            ]
-        )
-
-    def test_normal_entry_reports_mapping_hook_and_source_stages_without_claiming_load(
-        self,
-    ):
-        original = ci.registered_context
-
-        def windows_policy(*args, **kwargs):
-            policy, mcp, sha, native = original(*args, **kwargs)
-            policy = copy.deepcopy(policy)
-            policy["platform"] = "win32-amd64"
-            return policy, mcp, sha, native
-
-        with (
-            patch.object(ci, "registered_context", side_effect=windows_policy),
-            patch.object(sys, "stdout", io.StringIO()),
-        ):
-            result = guide.complete(
-                self.home,
-                {"installed": True},
-                choose=lambda prompt: "Later",
-                refresh=lambda *a: {
-                    "status": "content-refreshed",
-                    "model_loaded": "unknown",
-                },
-            )
-        self.assertEqual(
-            result["installation_stages"]["mapping"]["status"], "content-refreshed"
-        )
-        self.assertEqual(
-            result["installation_stages"]["hook"]["status"], "global-hook-installed"
-        )
-        self.assertEqual(
-            result["installation_stages"]["sources"]["status"],
-            "source-selection-required",
-        )
-        self.assertEqual(
-            result["installation_stages"]["worker"], "unobserved"
-        )
-        self.assertFalse(result["installation_complete"])
-
-    def test_defer_or_cancel_never_reads_sources_or_activates_credentials(self):
-        before = gm.settings_path(self.home).read_bytes()
-        for answers in (iter(["Later"]),):
-            with (
-                patch.object(
-                    gm, "GlobalClient", side_effect=AssertionError("No credentials")
-                ),
-                patch.object(gm, "discover", side_effect=AssertionError("No scan")),
-                patch.object(sys, "stdout", io.StringIO()),
-            ):
-                result = guide.source_setup(
-                    self.home, choose=lambda prompt: next(answers)
-                )
-            self.assertFalse(result["collection_enabled"])
-        self.assertEqual(gm.settings_path(self.home).read_bytes(), before)
-
-    def test_cancel_after_pool_lookup_preserves_local_settings(self):
-        before = gm.settings_path(self.home).read_bytes()
-        client = SimpleNamespace(device_id="d" * 32, wire=lambda *a: {"result": {
-            "metadata_only": True, "source_device_id": "d" * 32,
-            "source_registered": False, "global_profile_id": "e" * 32}})
-        answers = self.answers(False)
-        with (patch.object(gm, "GlobalClient", return_value=client),
-              patch.object(gm, "discover", side_effect=AssertionError("No scan")),
-              patch.object(sys, "stdout", io.StringIO())):
-            result = guide.source_setup(self.home, choose=lambda prompt: next(answers))
-        self.assertFalse(result["collection_enabled"])
-        self.assertEqual(gm.settings_path(self.home).read_bytes(), before)
-
-    def test_existing_or_unconfirmed_server_source_is_not_overwritten(self):
-        before = gm.settings_path(self.home).read_bytes()
-        for response in (
-            {"error": {"code": "global_source_device_denied"}},
-            {"result": {"metadata_only": True, "source_device_id": "d" * 32,
-                        "source_registered": True, "global_profile_id": "e" * 32}},
-            {"result": {"metadata_only": True, "source_device_id": "f" * 32,
-                        "source_registered": False, "global_profile_id": "e" * 32}},
-        ):
-            client = SimpleNamespace(device_id="d" * 32, wire=lambda *a: response)
-            with (self.subTest(response=response),
-                  patch.object(gm, "GlobalClient", return_value=client),
-                  patch.object(sys, "stdout", io.StringIO())):
-                result = guide.source_setup(self.home, choose=lambda prompt: "Choose sources")
-                self.assertEqual(result["status"], "source-server-status-review-required")
-                self.assertFalse(result["collection_enabled"])
-                self.assertEqual(gm.settings_path(self.home).read_bytes(), before)
-
-    def test_explicit_local_selection_packet_and_authenticated_activation(self):
-        events = []
-
+    def server(self, scope=None, fail=None):
+        state = {'scope':copy.deepcopy(scope), 'calls':[], 'fail':fail}
         class Client:
-            def __init__(self, value):
-                self.value = value
-                self.device_id = "d" * 32
-
+            device_id = 'd'*32
+            def __init__(self, value): pass
             def wire(self, method, params, rid=None):
-                events.append(method)
+                state['calls'].append(method)
+                if state['fail'] == method:
+                    return {'error':{'code':'transport_unconfirmed','retryable':True}}
+                current = state['scope']
+                if method == 'memory_global_status':
+                    return {'result':{'metadata_only':True,'source_registered':current is not None,
+                        'source_device_id':self.device_id,'global_profile_id':'e'*32,
+                        'scope_sha256':digest(current) if current else None}}
                 if method == 'memory_global_register':
-                    return {'result':{'source_registered':True, 'scope_sha256':digest(params['scope']),
-                        'source_device_id':self.device_id, 'global_profile_id':params['scope']['profile_id']}}
+                    if params['scope']['profile_id'] != 'e'*32:
+                        return {'error':{'code':'global_source_profile_mismatch'}}
+                    state['scope'] = copy.deepcopy(params['scope'])
+                    return {'result':{'source_registered':True,'scope_sha256':digest(params['scope']),
+                        'source_device_id':self.device_id,'global_profile_id':'e'*32}}
                 if method == 'memory_global_resume':
-                    return {'result': {'schema': 1, 'stopped': False}}
-                if method == "memory_global_status" and params == {}:
-                    return {"result": {"metadata_only": True, "source_device_id": self.device_id,
-                                       "source_registered": False, "global_profile_id": "e" * 32}}
-                return {
-                    "result": {
-                        "scope_sha256": digest(self.value["scope"]),
-                        "global_profile_id": self.value["scope"]["profile_id"],
-                        "source_device_id": self.device_id,
-                    }
-                }
+                    return {'result':{'schema':1,'stopped':False}}
+                raise AssertionError('No history or model operation: ' + method)
+        return state, Client
 
-        answers = self.answers()
-        with (
-            patch.object(gm, "GlobalClient", Client),
-            patch.object(gm, "discover", side_effect=AssertionError("No scan")),
-            patch.object(sys, "stdout", io.StringIO()),
-        ):
-            result = guide.source_setup(self.home, choose=lambda prompt: next(answers))
-        self.assertTrue(result["collection_enabled"])
-        self.assertTrue(gm.approved(gm.load(self.home)))
-        self.assertEqual(events, ["memory_global_status", "memory_global_register", "memory_global_status", "memory_global_resume"])
-        self.assertEqual(gm.load(self.home)["scope"]["profile_id"], "e" * 32)
-        self.assertTrue(hooks.installation_status(gm.load(self.home)))
-        self.assertTrue(
-            (gm.settings_path(self.home).parent / "device-source-packet.json").is_file()
-        )
+    def test_install_automatically_enables_every_project_without_prompt_or_scan(self):
+        state, client = self.server()
+        with (patch.object(gm, 'GlobalClient', client),
+              patch.object(gm, 'discover', side_effect=AssertionError('No history scan'))):
+            result = guide.complete(self.home, {'installed':True},
+                choose=lambda _:self.fail('No repeated authorization'),
+                refresh=lambda *a:{'status':'content-current'})
+        self.assertTrue(result['installation_stages']['sources']['collection_enabled'])
+        self.assertTrue(result['local_setup_complete'])
+        self.assertEqual(result['installation_stages']['worker'], 'unobserved')
+        self.assertTrue(gm.load(self.home)['scope']['all_projects'])
+        self.assertEqual(state['calls'], ['memory_global_status','memory_global_register','memory_global_status','memory_global_resume'])
 
-    def test_missing_server_admission_has_packet_specific_todo_and_stays_fenced(self):
-        class Client:
-            def __init__(self, value):
-                self.device_id = "d" * 32
+    def test_previously_approved_placeholder_recovers_without_reapproval(self):
+        value = gm.load(self.home)
+        value['scope']['include_roots'] = [{'root':str(self.home),'sharing':'personal'}]
+        value['approved_scope_sha256'] = digest(value['scope'])
+        gm.old.write(gm.settings_path(self.home), value)
+        off = gm.settings_path(self.home).parent/'global.off'
+        off.touch()
+        state, client = self.server()
+        with patch.object(gm, 'GlobalClient', client): result = guide.source_setup(self.home)
+        self.assertTrue(result['collection_enabled'])
+        self.assertEqual(gm.load(self.home)['scope']['profile_id'], 'e'*32)
+        self.assertFalse(off.exists())
+        self.assertTrue(state['scope']['all_projects'])
 
-            def wire(self, *args):
-                if args == ("memory_global_status", {}):
-                    return {"result": {"metadata_only": True, "source_device_id": self.device_id,
-                                       "source_registered": False, "global_profile_id": "e" * 32}}
-                return {"error": {"code": "source-not-admitted"}}
+    def test_registration_failure_keeps_existing_capture_configuration_and_pause(self):
+        value = gm.load(self.home)
+        value.update(enabled=True, approved_scope_sha256=digest(value['scope']), server_scope_sha256=digest(value['scope']))
+        file = gm.settings_path(self.home)
+        gm.old.write(file, value)
+        before = file.read_bytes()
+        state, client = self.server(fail='memory_global_register')
+        with patch.object(gm, 'GlobalClient', client): result = guide.source_setup(self.home)
+        self.assertFalse(result['collection_enabled'])
+        self.assertEqual(file.read_bytes(), before)
+        self.assertFalse((file.parent/'global.off').exists())
+        self.assertNotIn('memory_global_stop', state['calls'])
+        self.assertTrue(Path(result['packet']).exists())
 
-        answers = self.answers()
-        with (
-            patch.object(gm, "GlobalClient", Client),
-            patch.object(sys, "stdout", io.StringIO()),
-        ):
-            result = guide.source_setup(self.home, choose=lambda prompt: next(answers))
-        self.assertFalse(result["collection_enabled"])
-        self.assertFalse(gm.approved(gm.load(self.home)))
-        self.assertIn("--activate-packet", result["next_action"])
+    def test_resume_response_loss_retries_registered_source_without_new_registration(self):
+        state, client = self.server(fail='memory_global_resume')
+        with patch.object(gm, 'GlobalClient', client):
+            self.assertFalse(guide.source_setup(self.home)['collection_enabled'])
+            state['fail'] = None
+            self.assertTrue(guide.source_setup(self.home)['collection_enabled'])
+        self.assertEqual(state['calls'].count('memory_global_register'), 1)
+
+    def test_failed_preflight_preserves_settings_without_source_changes(self):
+        before = gm.settings_path(self.home).read_bytes()
+        state, client = self.server(fail='memory_global_status')
+        with patch.object(gm, 'GlobalClient', client): result = guide.source_setup(self.home)
+        self.assertFalse(result['collection_enabled'])
+        self.assertEqual(gm.settings_path(self.home).read_bytes(), before)
+        self.assertEqual(state['calls'], ['memory_global_status'])
+
+    def test_old_registered_device_is_upgraded_to_all_projects(self):
+        value = gm.load(self.home)
+        scope = dict(value['scope'], profile_id='e'*32)
+        scope['include_roots'] = [{'root':str(self.home),'sharing':'personal'}]
+        state, client = self.server(scope)
+        with patch.object(gm, 'GlobalClient', client): result = guide.source_setup(self.home)
+        self.assertTrue(result['collection_enabled'])
+        self.assertTrue(state['scope']['all_projects'])
+        self.assertNotIn('memory_global_stop', state['calls'])
 
     def test_hook_torn_write_recovers_and_keeps_user_toml_and_mcp(self):
         config = self.f.native / "config.toml"

@@ -10,7 +10,7 @@ import subprocess
 from urllib.parse import urlsplit
 
 import memory_automation as old
-from global_memory_scope import validate, digest, within, select
+from global_memory_scope import validate, digest
 
 
 def operator(value, packet):
@@ -55,40 +55,56 @@ raise SystemExit(r.returncode)
     return receipt
 
 
-def activate(value, scope):
-    """Authenticate server admission before enabling future local Hook capture."""
-    from global_memory import GlobalClient, settings_path, resume
+def preflight(value):
+    """Read the existing service identity before changing any local source state."""
+    from global_memory import GlobalClient
     client = GlobalClient(value)
-    if scope['include_roots']:
-        root = scope['include_roots'][0]['root']
-        local = {'kind': 'project', 'cwd': root, 'project_root': root, 'repository_root': root}
-    elif scope['non_project_roots']:
-        local = {'kind': 'non-project', 'cwd': scope['non_project_roots'][0], 'project_root': None, 'repository_root': None}
-    else: raise ValueError('Approved source root required')
-    response = client.wire('memory_global_status', {'origin': local, 'session_id': 'device-activation-status'})
-    if 'error' in response:
-        return {'status':'global-memory-admission-unconfirmed','activated':False,'server_error':response['error'],
-                'next_action':'Check global-status --check-server and have the existing Server operator apply this device metadata packet; preserve the local fence.',
-                'model_calls':0,'permissions_changed':False}
+    response = client.wire('memory_global_status', {})
+    result = response.get('result', {})
+    import re
+    if ('error' in response or result.get('metadata_only') is not True
+            or result.get('source_device_id') != client.device_id
+            or type(result.get('source_registered')) is not bool
+            or not re.fullmatch('[a-f0-9]{32}', str(result.get('global_profile_id')))):
+        return client, None, {'status':'global-memory-connection-pending', 'activated':False,
+            'server_error':response.get('error'), 'preserve_existing_state':True,
+            'next_action':'Retry the normal install or update entry; the existing configuration is retained.', 'model_calls':0}
+    return client, result, None
+
+
+def activate(value, scope):
+    """Read back registration and resume, without fencing an already active source."""
+    from global_memory import settings_path, GlobalClient
+    client = GlobalClient(value)
+    response = client.wire('memory_global_status', {})
     result = response.get('result', {})
     pin = digest(scope)
-    if result.get('scope_sha256') != pin or result.get('global_profile_id') != scope['profile_id'] or result.get('source_device_id') != client.device_id:
-        raise ValueError('Authenticated source admission unconfirmed')
-    off = settings_path(value['device_home']).parent / 'global.off'
-    off.touch(mode=0o600)
+    if ('error' in response or result.get('source_registered') is not True
+            or result.get('scope_sha256') != pin
+            or result.get('global_profile_id') != scope['profile_id']
+            or result.get('source_device_id') != client.device_id):
+        return {'status':'global-memory-admission-pending', 'activated':False, 'collection_enabled':False,
+            'server_error':response.get('error'), 'preserve_existing_state':True,
+            'next_action':'Retry the normal install or update entry; no new authorization is needed.', 'model_calls':0}
+    response = client.wire('memory_global_resume', {})
+    result = response.get('result', {})
+    if 'error' in response or result.get('schema') != 1 or result.get('stopped') is not False:
+        return {'status':'global-memory-resume-unconfirmed', 'activated':False,
+            'collection_enabled':False, 'server_error':response.get('error'),
+            'next_action':'Retry the normal install or update entry.', 'model_calls':0}
     value.update(scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin, enabled=True)
     old.write(settings_path(value['device_home']), value)
-    resumed = resume(value)
-    if not resumed['remote_confirmed']: return dict(resumed, activated=False)
-    return {'status': 'global-memory-configured', 'scope_sha256': pin, 'source_device_id': client.device_id,
-            'activated': True, 'model_calls': 0, 'auto_recharge': False, 'trust': 'normal-host-hook-review-required'}
+    (settings_path(value['device_home']).parent / 'global.off').unlink(missing_ok=True)
+    return {'status':'global-memory-configured', 'scope_sha256':pin, 'source_device_id':client.device_id,
+            'activated':True, 'collection_enabled':True, 'historical_import':False, 'model_calls':0}
 
 
 def register(value, packet):
-    """Send approved metadata with the original device credential, never pair."""
+    """Register this enrolled device; retries retain the exact packet identity."""
     from global_memory import GlobalClient
-    if packet['schema'] != 2 or packet['scope'] != value['scope'] or packet['approved_scope_sha256'] != value['approved_scope_sha256']:
-        raise ValueError('Original approved device packet required')
+    validate(packet['scope'])
+    if packet['schema'] != 2 or packet['approved_scope_sha256'] != digest(packet['scope']):
+        raise ValueError('Original device packet required')
     client = GlobalClient(value)
     if packet['client']['source_device_id'] != client.device_id:
         raise ValueError('Original enrolled device required')
@@ -99,102 +115,59 @@ def register(value, packet):
             or result.get('source_device_id') != client.device_id
             or result.get('global_profile_id') != packet['scope']['profile_id']):
         return {'status':'global-memory-registration-pending', 'activated':False,
-                'server_error':response.get('error'), 'model_calls':0,
-                'next_action':'Retry global-configure --activate-packet with the saved approved packet; retain the device identity, scope and local stop fence.'}
+                'server_error':response.get('error'), 'model_calls':0, 'preserve_existing_state':True,
+                'next_action':'Retry the normal install or update entry; the saved packet and existing device are reused.'}
     return activate(value, packet['scope'])
 
 
 def configure(args):
-    from global_memory import load, settings_path, GlobalClient, resume
-    value = load(args.device_home); directory = settings_path(args.device_home).parent
+    from global_memory import load, settings_path
+    value = load(args.device_home, verify_code=False)
+    directory = settings_path(args.device_home).parent
     pending = directory / 'pending-scope.json'
-    if getattr(args, 'activate_packet', None):
-        packet = old.private_json(args.activate_packet)
-        if packet['scope'] != value['scope'] or packet['approved_scope_sha256'] != value['approved_scope_sha256']:
-            raise ValueError('Original approved source packet required')
-        client = GlobalClient(value)
-        if packet['client']['source_device_id'] != client.device_id: raise ValueError('Original device identity required')
-        return register(value, packet) if packet['schema'] == 2 else activate(value, packet['scope'])
-    changed = args.include_root or args.isolate_root or args.exclude_root or args.non_project_root
-    if changed:
+    explicit = args.include_root or args.isolate_root or args.exclude_root or args.non_project_root
+    packet_path = getattr(args, 'activate_packet', None)
+    if packet_path:
+        previous = old.private_json(packet_path)
+        scope = copy.deepcopy(validate(previous['scope']))
+    elif explicit:
         scope = copy.deepcopy(value['scope'])
         def canonical(root): return str(Path(root).expanduser().resolve())
-        scope.update(include_roots=[{'root': canonical(x), 'sharing': 'personal'} for x in args.include_root]
-                     + [{'root': canonical(x), 'sharing': 'project'} for x in args.isolate_root],
+        scope.update(include_roots=[{'root':canonical(x), 'sharing':'personal'} for x in args.include_root]
+                     + [{'root':canonical(x), 'sharing':'project'} for x in args.isolate_root],
                      exclude_roots=[canonical(x) for x in args.exclude_root],
                      non_project_roots=[canonical(x) for x in args.non_project_root])
-        validate(scope); old.write(pending, scope)
+    elif pending.exists():
+        scope = copy.deepcopy(validate(old.private_json(pending)))
     else:
-        scope = old.private_json(pending) if pending.exists() else copy.deepcopy(value['scope'])
-        validate(scope)
+        scope = copy.deepcopy(value['scope'])
+    if getattr(args, 'all_projects', False) or not (explicit or packet_path or pending.exists()):
+        scope['all_projects'] = True
+    validate(scope)
+    client, state, failure = preflight(value)
+    if failure: return failure
+    # A local placeholder (including an unsuccessfully approved one) is not a
+    # Server identity. Bind to the authenticated existing pool before registration.
+    scope['profile_id'] = state['global_profile_id']
     pin = digest(scope)
-    if not scope['include_roots'] and not scope['non_project_roots']:
-        return {'status':'global-memory-source-scope-required','activated':False,'scope':scope,
-                'next_action':'Preview the explicitly requested project roots with --include-root; project roots do not authorize non-project capture.',
-                'model_calls':0,'permissions_changed':False}
-    if args.approve_scope != pin:
-        import os
-        entry = '& ./tools/memory-windows.ps1' if os.name == 'nt' else 'sh tools/memory.sh'
-        return {'status': 'global-memory-source-approval-required', 'scope': scope, 'scope_sha256': pin,
-                'operator_configured': bool(value['operator']), 'activated': False,
-                'next_command': entry + ' global-configure --approve-scope ' + pin,
-                'recipient': 'existing Server and configured DeepSeek Flash', 'budget': 'existing unlimited cumulative accounting; no recharge', 'model_calls': 0}
-    off = directory / 'global.off'; off.touch(mode=0o600)
-    # Hand future legacy collection to the unified pool only after exact source
-    # approval. Retain its configuration, data and outbox without replay/import.
-    for row in value['legacy_projects']:
-        local = {'kind': 'project', 'cwd': row['root'], 'project_root': row['root'], 'repository_root': row['root']}
-        choice = select(scope, local)
-        excluded = any(within(row['root'], denied) for denied in scope['exclude_roots'])
-        if excluded or choice is not None and choice['sharing'] == 'personal':
-            source = old.load(row['settings'], row['settings_sha256'])
-            Path(source['off_file']).touch(mode=0o600)
-            state = old.daily_command(source, 'stop')
-            if state.get('source_admitted') is not False: raise ValueError('Legacy source handoff unconfirmed')
-            row['capture_delegated'] = False
-    old.write(settings_path(args.device_home), value)
-    if value['server_scope_sha256']:
-        response = GlobalClient(value).wire('memory_global_stop', {})
-        if 'error' in response: raise ValueError('Previous global source stop unconfirmed')
-    _, registered = old.registration(args.device_home); r = registered['runtime']
-    profile = old.private_json(r['https_profile'], r['https_profile_sha256'])
-    if value['legacy_projects']:
-        existing = old.load(value['legacy_projects'][0]['settings'], value['legacy_projects'][0]['settings_sha256'])
-        recall = old.private_json(existing['recall_policy'], existing['recall_policy_sha256'])
-        device_id = recall['source_device_id']
-    else:
-        device_id = GlobalClient(value).device_id
-    packet = {'schema': 1, 'scope': scope, 'approved_scope_sha256': pin,
-              'client': {'profile_sha256': r['https_profile_sha256'], 'content_policy_sha256': r['content_policy_sha256'],
-                         'endpoint': profile['endpoint'], 'directory': str(directory),
-                         'legacy_projects': {row['root']: row['project_id'] for row in value['legacy_projects'] if row.get('capture_delegated', True)},
-                         'actor': profile['grant']['actor'], 'source_device_id': device_id}}
-    if not value['legacy_projects']:
-        packet['schema'] = 2
-        packet['client']['grant'] = profile['grant']
-    packet_output = getattr(args, 'packet_output', None)
-    if packet_output or not value['operator']:
-        # A normal Windows client has no SSH operator. Prepare the exact
-        # approved metadata for the existing operator rather than fail after
-        # asking the Agent to perform an unsupported privileged operation.
-        target = old.canonical(packet_output or directory / ('device-packet-' + pin + '.json'))
-        if target.exists():
-            if old.private_json(target) != packet: raise ValueError('Existing device packet preserved')
-        else: old.write(target, packet)
-        value.update(scope=scope, approved_scope_sha256=pin, enabled=False)
-        old.write(settings_path(args.device_home), value)
-        if packet['schema'] == 2:
-            result = register(value, packet)
-            return dict(result, packet=str(target), packet_sha256=old.digest(target.read_bytes()))
-        return {'status': 'global-memory-device-packet-prepared', 'packet': str(target),
-                'packet_sha256': old.digest(target.read_bytes()), 'scope_sha256': pin,
-                'source_device_id': device_id, 'activated': False, 'model_calls': 0,
-                'next_action': 'Existing Server operator applies this exact metadata packet; then run global-configure --activate-packet with this file.'}
-    receipt = operator(value, packet)
-    value.update(scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin, enabled=True)
-    old.write(settings_path(args.device_home), value)
-    old.write(directory / 'server-configuration-receipt.json', receipt)
-    resumed = resume(value)
-    if not resumed['remote_confirmed']: return dict(resumed, activated=False)
-    return {'status': 'global-memory-configured', 'scope_sha256': pin, 'scope': scope,
-            'model_calls': 0, 'auto_recharge': False, 'native_delivery': 'requires-supported-host-and-normal-hook-trust'}
+    if (state['source_registered'] and state.get('scope_sha256') == pin):
+        return activate(value, scope)
+    _, registered = old.registration(args.device_home)
+    runtime = registered['runtime']
+    profile = old.private_json(runtime['https_profile'], runtime['https_profile_sha256'])
+    packet = {'schema':2, 'scope':scope, 'approved_scope_sha256':pin,
+              'client':{'profile_sha256':runtime['https_profile_sha256'],
+                        'content_policy_sha256':runtime['content_policy_sha256'],
+                        'endpoint':profile['endpoint'], 'directory':str(directory), 'legacy_projects':{},
+                        'actor':profile['grant']['actor'], 'source_device_id':client.device_id,
+                        'grant':profile['grant']}}
+    # Persist intent separately: connection/registration failure must never
+    # disable the previous source, remove its approvals, or stop legacy capture.
+    old.write(pending, scope)
+    target = directory / ('device-packet-' + digest(packet) + '.json')
+    if not target.exists(): old.write(target, packet)
+    result = register(value, packet)
+    if result.get('activated'):
+        output = getattr(args, 'packet_output', None)
+        if output: old.write(old.canonical(output), packet)
+    return dict(result, packet=str(target), packet_sha256=old.digest(target.read_bytes()))

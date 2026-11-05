@@ -336,6 +336,12 @@ class HTTPSContent(unittest.TestCase):
             config.write_bytes(content_install.render(config.read_bytes(),paused,True));config.chmod(0o600)
             self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
             pre_bridge_state={p:p.read_bytes() for p in (config,registration,state/'content-install-receipt.json',cache/'active.json')}
+            # Each synthetic rewind restores the complete pre-update Hook
+            # state too: updates now install it automatically on old devices.
+            global_root=state/'global-memory'
+            pre_bridge_state.update({p:p.read_bytes() if p.exists() else None for p in
+                (global_root/'settings.json',global_root/'hook-install.json',
+                 global_root/'code-refresh.json',global_root/'pending-scope.json',global_root/'global.off')})
             def apply_bridge_with_bootstrap_check(plan,approved_digest,check=None):
                 def verify(value):
                     self.assertEqual(channel.verified_active()['version'],'0.3.0')
@@ -370,7 +376,8 @@ class HTTPSContent(unittest.TestCase):
         # If channel activation raises after the handover transaction commits,
         # report the native registration change to the caller.
         for target,data in pre_bridge_state.items():
-            target.write_bytes(data);target.chmod(0o600)
+            if data is None: target.unlink(missing_ok=True)
+            else: target.write_bytes(data);target.chmod(0o600)
         with patch.object(channel,'update',side_effect=RuntimeError('Synthetic activation failure')):
             failed_activation=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
         self.assertEqual(failed_activation['status'],'client-update-review-required',failed_activation)
@@ -378,7 +385,8 @@ class HTTPSContent(unittest.TestCase):
         self.assertEqual(channel.verified_active()['version'],'0.3.0')
         self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
         for target,data in pre_bridge_state.items():
-            target.write_bytes(data);target.chmod(0o600)
+            if data is None: target.unlink(missing_ok=True)
+            else: target.write_bytes(data);target.chmod(0o600)
         plan_path=state/'bootstrap-handover-plan.json';receipt_path=state/'content-install-receipt.json'
         original_save=content_install.save
         def interrupt_after_journal(target,value):
@@ -396,7 +404,8 @@ class HTTPSContent(unittest.TestCase):
         self.assertFalse(plan_path.exists())
         self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
         for target,data in pre_bridge_state.items():
-            target.write_bytes(data);target.chmod(0o600)
+            if data is None: target.unlink(missing_ok=True)
+            else: target.write_bytes(data);target.chmod(0o600)
         original_unlink=Path.unlink
         def interrupt_plan_cleanup(target,*args,**kwargs):
             if target==plan_path:raise KeyboardInterrupt()
