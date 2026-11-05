@@ -28,6 +28,16 @@ class RunnerContract(unittest.TestCase):
         self.assertEqual(status.exception.code, 1)
         self.assertEqual(run.call_count, 2)
 
+    def test_parallel_dispatches_every_module_individually(self):
+        with patch.dict(os.environ, CI_TESTS='["test_a", "test_b", "test_c", "test_d"]'), \
+                patch.object(sys, 'argv', ['run_ci_tests', '--workers', '2']), \
+                patch.object(runner, 'run_group', return_value=(0, '', 0.0)) as run:
+            with self.assertRaises(SystemExit) as status:
+                runner.main()
+        self.assertEqual(status.exception.code, 0)
+        self.assertEqual(sorted(tuple(call.args[0]) for call in run.call_args_list),
+                         [('test_a',), ('test_b',), ('test_c',), ('test_d',)])
+
     def test_empty_selection_keeps_full_discovery(self):
         with patch.dict(os.environ, CI_TESTS='[]'), \
                 patch.object(sys, 'argv', ['run_ci_tests']), \
