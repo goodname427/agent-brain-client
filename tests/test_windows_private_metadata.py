@@ -100,6 +100,21 @@ class PrivateMetadata(unittest.TestCase):
             storage.windows_private(self.path)
         self.kernel.CloseHandle.assert_called_once_with(123)
 
+    def test_cache_metadata_does_not_require_security_descriptor_access(self):
+        self.api.GetSecurityInfo.side_effect = AssertionError('Cache ACL gate removed')
+        with (
+            patch.object(storage, 'require_platform'),
+            patch.object(storage, 'os', SimpleNamespace(name='nt')),
+        ):
+            self.assertEqual(storage.cache_mode(self.path), self.path)
+            self.kernel.CreateFileW.assert_called_once_with(
+                str(self.path), 0x80, 7, None, 3, 0x02200000, None
+            )
+            self.info['links'] = 2
+            with self.assertRaisesRegex(ValueError, 'Owned private'):
+                storage.cache_mode(self.path)
+        self.api.GetSecurityInfo.assert_not_called()
+
     def test_legacy_new_file_postcheck_revalidates_owned_handle_and_never_closes_it(
         self,
     ):
@@ -183,6 +198,17 @@ class PrivateMetadata(unittest.TestCase):
                 with storage.locked(self.path):
                     self.fail("Unsafe lock was yielded")
         handle.close.assert_called_once()
+
+    def test_cache_lock_creation_uses_native_inheritance_without_sid_gate(self):
+        native = SimpleNamespace(open_osfhandle=Mock(return_value=5))
+        with (
+            patch.dict('sys.modules', {'msvcrt':native}),
+            patch.object(storage, 'os', SimpleNamespace(O_RDWR=2, O_BINARY=0x8000)),
+            patch.object(windows, 'user_sid', side_effect=AssertionError('No cache SID list')),
+        ):
+            self.assertEqual(storage._windows_open_lock(self.path, cache=True), 5)
+        self.assertIsNone(self.kernel.CreateFileW.call_args.args[3])
+        self.kernel.LocalFree.assert_not_called()
 
 
 if __name__ == "__main__":

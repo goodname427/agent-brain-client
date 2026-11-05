@@ -183,9 +183,9 @@ class MappingClosure(unittest.TestCase):
     ):
         private = cache.atomic
 
-        def private_only(path, raw, mode):
+        def private_only(path, raw, mode, **options):
             self.assertTrue(self.cache == path.parent or self.cache in path.parents)
-            return private(path, raw, mode)
+            return private(path, raw, mode, **options)
 
         with patch.object(cache, "atomic", side_effect=private_only):
             self.assertEqual(self.adapter().refresh()["status"], "content-refreshed")

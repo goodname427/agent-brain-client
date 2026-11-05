@@ -293,7 +293,7 @@ class ReadRequests(unittest.TestCase):
         self.assertEqual(self.f.cloud.puts, 0)
 
     def test_offline_read_cancel_releases_waiting_lock_without_touching_snapshot(self):
-        from brain_lock import locked
+        from brain_lock import cache_locked as locked
 
         self.f.adapter.refresh()
         self.f.cloud.offline = True

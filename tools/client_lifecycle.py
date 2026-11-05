@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import content_install as install
 from content_cache import ContentAdapter, BEGIN, END, BLOCK
 from content_mcp import pinned
-from brain_lock import locked, require_platform, private_mode, file_mode, private_directory
+from brain_lock import locked, require_platform, private_mode, file_mode, cache_mode, cache_directory
 from client_release import HTTPS_CONTENT_CAPABILITIES,CHECK_UPDATE_COMMAND,UPDATE_COMMAND
 
 
@@ -28,17 +28,21 @@ def read_removal(home):
     return json.loads(install.raw(path, 3 * 1048576), object_pairs_hook=install.pairs)
 
 
-def lease(path):
+def lease(path, *, cache=False):
     path = install.safe(path)
     parent = path.parent.stat()
     if os.name=='nt':
-        private_mode(path.parent,directory=True,owner=True)
+        if cache:
+            cache_mode(path.parent,directory=True)
+        else:
+            private_mode(path.parent,directory=True,owner=True)
     if not path.parent.is_dir() or os.name!='nt' and (parent.st_uid != os.getuid() or parent.st_mode & 0o022):
         raise install.InstallBlocked('Non-writable owned lock directory required')
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
-            file_mode(fd,0o600)
+            if not cache or os.name != 'nt':
+                file_mode(fd,0o600)
         finally:
             os.close(fd)
     except FileExistsError:
@@ -47,10 +51,13 @@ def lease(path):
     # Keep their inode/mode; never follow a link or reset the kernel lease.
     stat = path.stat()
     if os.name=='nt':
-        private_mode(path,owner=True)
+        if cache:
+            cache_mode(path)
+        else:
+            private_mode(path,owner=True)
     if not path.is_file() or os.name!='nt' and stat.st_uid != os.getuid() or stat.st_nlink != 1:
         raise install.InstallBlocked('Owned lock required')
-    return locked(path, timeout=0)
+    return locked(path, timeout=0, cache=cache)
 
 
 def adapter_for(home, meta, config_image=None):
@@ -78,7 +85,7 @@ def queue_counts(adapter):
     adapter._safe(directory, adapter.cache)
     rows = list(directory.iterdir()) if directory.exists() else []
     if directory.exists():
-        private_mode(directory, directory=True, owner=True, blocked=install.InstallBlocked)
+        cache_mode(directory, directory=True, owner=True, blocked=install.InstallBlocked)
     if len(rows) > 2048:
         raise install.InstallBlocked('Queue inventory requires recovery')
     binding = None
@@ -356,6 +363,8 @@ def finish_removal(home, journal):
             raise install.InstallBlocked('Outside edit retained')
         if desired is None:
             path.unlink(missing_ok=True)
+        elif adapter.cache in path.parents:
+            install.atomic(path, desired, journal['before'][name]['mode'], cache=True)
         else:
             install.atomic(path, desired, journal['before'][name]['mode'])
     journal['phase'] = 'complete'
@@ -403,9 +412,9 @@ def uninstall(home, confirm):
             adapter=validate_journal(home,previous)
         else:
             adapter, _, _ = adapter_for(home, meta)
-        private_directory(adapter.cache)
-        private_mode(adapter.cache, directory=True, owner=True, blocked=install.InstallBlocked)
-        with lease(adapter.cache / '.content-runtime.lock'), lease(adapter.cache / 'content.lock'):
+        cache_directory(adapter.cache)
+        cache_mode(adapter.cache, directory=True, owner=True, blocked=install.InstallBlocked)
+        with lease(adapter.cache / '.content-runtime.lock', cache=True), lease(adapter.cache / 'content.lock', cache=True):
             if continuing:
                 assert previous is not None
                 journal = previous

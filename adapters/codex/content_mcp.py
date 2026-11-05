@@ -16,7 +16,10 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 from remote_mcp import Server,ProtocolError,keys,pairs,MAX_MESSAGE,write_response
 from content_cache import CacheBlocked,ContentAdapter,contract,validate_policy,operation_diagnostics,ROOT as CLIENT_ROOT
 from client_pairing import ComponentClient
-from brain_lock import LockTimeout,PlatformUnsupported,require_platform,private_mode,locked
+from brain_lock import LockTimeout,PlatformUnsupported,require_platform,private_mode,private_directory,locked
+import brain_lock
+cache_locked=getattr(brain_lock,'cache_locked',locked)
+cache_directory=getattr(brain_lock,'cache_directory',private_directory)
 from remote_http import RequestControl,RequestStopped
 from client_release import UPDATE_GUIDANCE
 
@@ -423,7 +426,7 @@ def run_event_hook(adapter,policy,payload,*,clock=None,source_gate=None):
     scope,turn,kind,content,key=native_hook_fields(policy,payload)
     session=scope['session_id']
     name='hook-turns/'+key+'.json'
-    with locked(adapter.cache/'event-hook.lock'):
+    with cache_locked(adapter.cache/'event-hook.lock'):
         if not hook_enabled(policy):return {'status':'disabled','data_transferred':False}
         row=adapter._load(name)
         if kind=='UserPromptSubmit':
@@ -804,9 +807,8 @@ def cli():
         # holds its own shared LockFileEx lease, including if its launcher dies.
         if os.name=='nt' and '--cache' in sys.argv and '--installation-check' not in sys.argv:
             cache=Path(sys.argv[sys.argv.index('--cache')+1])
-            from brain_lock import private_directory
-            private_directory(cache)
-            with locked(cache/'.content-runtime.lock',timeout=0,shared=True):
+            cache_directory(cache)
+            with cache_locked(cache/'.content-runtime.lock',timeout=0,shared=True):
                 from content_install import inspect
                 home=Path(sys.argv[sys.argv.index('--device-home')+1])
                 if not inspect(home).get('installed'):

@@ -23,6 +23,11 @@ sys.path.insert(0,str(ROOT/'scripts'))
 import content_contract as contract
 from codex_connect import atomic,host_atomic,host_plan,host_apply,host_restore
 from brain_lock import locked,require_platform,private_mode,sync_directory,private_directory
+import brain_lock
+# Pre-native legacy recovery imports before its platform detector is replaced.
+cache_mode=getattr(brain_lock,'cache_mode',private_mode)
+cache_directory=getattr(brain_lock,'cache_directory',private_directory)
+locked=getattr(brain_lock,'cache_locked',locked)
 from remote_http import check_request,RequestStopped
 
 BEGIN='<!-- agent-brain-content:begin -->';END='<!-- agent-brain-content:end -->'
@@ -350,8 +355,8 @@ class ContentAdapter:
         if self.home==self.cache or self.cache in self.home.parents:raise CacheBlocked()
         if any(self.cache==self.home/name or self.home/name in self.cache.parents for name in ('.codex','.agents','.config/agent-brain-client/content')):raise CacheBlocked()
         self._safe(self.home,self.home);self._safe(self.cache,self.cache)
-        private_directory(self.cache)
-        private_mode(self.cache,directory=True,blocked=CacheBlocked)
+        cache_directory(self.cache)
+        cache_mode(self.cache,directory=True,blocked=CacheBlocked)
         sync_directory(self.cache.parent)
 
     def _safe(self,path,base):
@@ -391,14 +396,14 @@ class ContentAdapter:
         if not path.exists():return default
         limit=cache_bytes(name)
         if not path.is_file() or path.stat().st_size>limit:raise CacheBlocked()
-        private_mode(path,blocked=CacheBlocked)
+        cache_mode(path,blocked=CacheBlocked)
         return json.loads(path.read_text(encoding='utf-8'))
 
     def _save(self,name,value):
         require_platform('cache-storage',self.platform)
         raw=contract.encode(value)
         if len(raw)>cache_bytes(name):raise CollectionCapacityExceeded()
-        path=self.cache/name;self._safe(path,self.cache);atomic(path,raw,0o600)
+        path=self.cache/name;self._safe(path,self.cache);atomic(path,raw,0o600,cache=True)
         for directory in [path.parent,*path.parent.parents]:
             sync_directory(directory)
             if directory==self.cache:break
@@ -413,7 +418,7 @@ class ContentAdapter:
     def _queued(self):
         require_platform('cache-storage',self.platform)
         directory=self.cache/'outbox';self._safe(directory,self.cache)
-        if directory.exists():private_mode(directory,directory=True,blocked=CacheBlocked)
+        if directory.exists():cache_mode(directory,directory=True,blocked=CacheBlocked)
         paths=list(directory.iterdir()) if directory.exists() else []
         if len(paths)>2048:raise CacheBlocked()
         rows=[]
@@ -423,7 +428,7 @@ class ContentAdapter:
             # renamed request files so a lost confirmation remains recoverable.
             if re.fullmatch(r'\.client-native-[A-Za-z0-9_-]+',path.name):
                 if not path.is_file() or path.stat().st_size>1048576:raise CacheBlocked()
-                private_mode(path,blocked=CacheBlocked)
+                cache_mode(path,blocked=CacheBlocked)
                 continue
             if not re.fullmatch(r'[A-Za-z0-9_-]{16,128}\.json',path.name):raise CacheBlocked()
             row=self._load('outbox/'+path.name)

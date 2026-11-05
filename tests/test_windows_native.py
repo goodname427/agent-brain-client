@@ -13,7 +13,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / n) for n in ('scripts', 'adapters/codex', 'tools', 'tests')]
-from brain_lock import private_directory, private_mode, locked, LockTimeout, command_line, native_platform
+from brain_lock import private_directory, private_mode, locked, LockTimeout, command_line, native_platform, cache_mode
 
 
 def host_security(path, information=7):
@@ -97,6 +97,75 @@ class WindowsNative(unittest.TestCase):
         host_atomic(path, b'model="updated"\n', 0o600, path.read_bytes())
         self.assertEqual(host_security(path), security)
         self.assertEqual(host_security(native), original)
+
+    def test_global_capture_accepts_existing_cache_acls_and_replays_original_queue(self):
+        from unittest.mock import patch
+        import global_memory as gm
+        from global_memory_scope import digest
+        from codex_connect import atomic
+        from content_cache import ContentAdapter
+        from test_content_outbox import Cloud, POLICY
+        from test_event_hook import accepted
+        home = self.home
+        project = home / 'project'; project.mkdir()
+        local = {'kind':'project', 'cwd':str(project), 'project_root':str(project), 'repository_root':str(project)}
+        scope = {'schema':1, 'profile_id':'a'*32, 'all_projects':True, 'include_roots':[],
+                 'exclude_roots':[], 'non_project_roots':[], 'recall_personal':True}
+        value = {'device_home':str(home), 'enabled':True, 'scope':scope,
+                 'approved_scope_sha256':digest(scope), 'server_scope_sha256':digest(scope)}
+        settings = gm.settings_path(home).parent
+        private_directory(settings)
+        profile = settings / 'profile.json'; policy = settings / 'content.json'
+        atomic(profile, json.dumps({'grant':{'actor':'synthetic-owner'}}).encode(), 0o600)
+        atomic(policy, json.dumps(POLICY).encode(), 0o600)
+        r = {'https_profile':str(profile), 'https_profile_sha256':gm.old.digest(profile.read_bytes()),
+             'content_policy':str(policy), 'content_policy_sha256':gm.old.digest(policy.read_bytes()),
+             'codex_home':str(home / '.codex')}
+        cloud = Cloud(); cloud.profile_sha = r['https_profile_sha256']
+        cloud.status = lambda session: {'source_admitted':True}
+        cache = settings / 'outboxes' / digest(local)
+        # Match the old global adapter's ordinary mkdir, then add a legitimate
+        # inherited host principal. Neither update nor capture may rewrite it.
+        cache.mkdir(parents=True)
+        original_security = self.host_acl(cache)
+        retained = cache / 'retained-evidence'; retained.write_bytes(b'synthetic retained data')
+        payload = {'cwd':str(project), 'session_id':'synthetic-session', 'turn_id':'synthetic-turn',
+                   'hook_event_name':'UserPromptSubmit', 'prompt':'Synthetic capture ACL regression'}
+        stop = dict(payload, hook_event_name='Stop', stop_hook_active=False,
+                    last_assistant_message='Synthetic final answer')
+        sent = []
+        def offline(request):
+            sent.append(copy.deepcopy(request))
+            return {'request_id':request['request_id'], 'error':{'code':'transport_unconfirmed','retryable':True},
+                    'persistence':{'durable':False}}
+        cloud.request = offline
+        with patch.object(gm.old, 'registration', return_value=({}, {'runtime':r})), patch.object(gm, 'GlobalClient', return_value=cloud):
+            self.assertEqual(gm.submit_hook(value, local, payload)['status'], 'staged')
+            sandbox = 'S-1-5-21-111111111-222222222-333333333-1002'
+            for item in (cache / 'hook-turns', cache / 'event-hook.lock', next((cache / 'hook-turns').glob('*.json'))):
+                self.assertIn(sandbox, host_security(item))
+            pending = gm.submit_hook(value, local, stop)
+            self.assertEqual(pending['local_queue']['state'], 'pending')
+            request = sent[0]
+            # Simulate existing data/locks from a prior run acquiring the same
+            # host ACE. Strict credential checks must still reject that ACL.
+            security = {}
+            for item in cache.rglob('*'):
+                security[item] = self.host_acl(item)
+            with self.assertRaises(ValueError): private_mode(cache, directory=True)
+            restarted = ContentAdapter(home, cache, POLICY, cloud, codex_home=r['codex_home'])
+            self.assertEqual(restarted._queued()[0]['request'], request)
+            from client_lifecycle import queue_counts
+            self.assertEqual(queue_counts(restarted)['pending'], 1)
+            cloud.request = lambda req: (sent.append(copy.deepcopy(req)), accepted(req))[1]
+            self.assertEqual(gm.submit_hook(value, local, stop)['local_queue']['state'], 'confirmed')
+            self.assertEqual(sent, [request, request])
+            self.assertEqual(len(list((cache / 'outbox').glob('*.json'))), 1)
+            # The existing lock and directory objects retain their ACLs.
+            for item, before in security.items():
+                if item.is_dir() or item.suffix == '.lock': self.assertEqual(host_security(item), before)
+        self.assertEqual(host_security(cache), original_security)
+        self.assertEqual(retained.read_bytes(), b'synthetic retained data')
 
     def test_administrator_owned_host_directory_and_file_keep_security(self):
         from codex_connect import host_atomic
@@ -677,7 +746,7 @@ class WindowsNative(unittest.TestCase):
         self.assertEqual(host_security(native),directory_security)
         config.write_bytes(config.read_bytes().replace(b'enabled = true',b'enabled = false'))
         self.assertEqual(lifecycle.uninstall(self.home,lambda message:'Continue')['status'],'client-uninstalled')
-        private_mode(Path(runtime['content_cache']),directory=True,owner=True)
+        cache_mode(Path(runtime['content_cache']),directory=True,owner=True)
         options['secure_input']=lambda:self.fail('No new credential input for MCP-only reinstall')
         restored=wizard.run(self.home,native,connection,wizard.sha(wizard.canonical(connection)),updater=update,**options)
         self.assertTrue(restored['installed'],restored);self.assertEqual(backend.record,identity)
@@ -742,7 +811,7 @@ class WindowsNative(unittest.TestCase):
         self.assertEqual(adapter().refresh()['status'], 'content-refreshed')
         self.assertEqual(cloud.puts, 1)
         self.assertEqual(adapter().queue_status()['confirmed'], 1)
-        private_mode(cache / 'active.json', owner=True)
+        cache_mode(cache / 'active.json', owner=True)
         self.assertEqual([r for r in cloud.calls if r['method']=='content_put'], [request, request])
 
     def test_refresh_skips_unchanged_agents_held_by_read_only_host(self):

@@ -13,7 +13,7 @@ import test_mac_first_install as fixture
 from test_content_outbox import Cloud, MEMORY, RULE, SKILL
 from content_cache import ContentAdapter, BEGIN
 from https_content import HTTPSContentClient
-from brain_lock import locked, PlatformUnsupported
+from brain_lock import cache_locked as locked, PlatformUnsupported
 import content_install as install
 import client_lifecycle as lifecycle
 

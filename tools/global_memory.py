@@ -17,6 +17,7 @@ from urllib.request import Request
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import memory_automation as old
+from brain_lock import cache_directory
 from global_memory_scope import validate, select, source_id, namespace, digest, within, restricted, source_context
 
 MARKER = 'Agent Brain global memory'
@@ -223,13 +224,14 @@ class GlobalClient:
 
 
 def adapter(value, local):
-    from content_cache import ContentAdapter
+    from content_cache import ContentAdapter, operation_stage
     _, registered = old.registration(value['device_home']); r = registered['runtime']
     client = GlobalClient(value, local)
     policy = old.private_json(r['content_policy'], r['content_policy_sha256'])
     cache = settings_path(value['device_home']).parent / 'outboxes' / digest(local)
-    cache.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return client, ContentAdapter(value['device_home'], str(cache), policy, client, codex_home=r['codex_home'])
+    with operation_stage('global-cache-open'):
+        cache_directory(cache)
+        return client, ContentAdapter(value['device_home'], str(cache), policy, client, codex_home=r['codex_home'])
 
 
 def submit_hook(value, local, payload):
@@ -248,13 +250,13 @@ def submit_hook(value, local, payload):
     blocked = directory / ('excluded-' + key + '.json')
     if blocked.exists(): return {'status': 'excluded-turn', 'data_transferred': False}
     file = directory / 'hook-turns' / (key + '.json')
-    staged = old.private_json(file) if file.exists() else None
+    staged = old.private_json(file, cache=True) if file.exists() else None
     if (old.private_content(text) or restricted(text)) or isinstance(staged, dict) and (old.private_content(staged.get('prompt', '')) or restricted(staged.get('prompt', ''))):
-        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        old.write(blocked, {'schema': 1, 'reason': 'local-only-or-sensitive'}, exclusive=True)
+        cache_directory(directory)
+        old.write(blocked, {'schema': 1, 'reason': 'local-only-or-sensitive'}, exclusive=True, cache=True)
         return {'status': 'excluded-local-only-or-sensitive', 'data_transferred': False}
     client, queue = adapter(value, local)
-    old.write(queue.cache / 'origin.json', local)
+    old.write(queue.cache / 'origin.json', local, cache=True)
     return run_event_hook(queue, cap, payload, source_gate=lambda: approved(value) and select(value['scope'], local) is not None and client.status(payload['session_id']).get('source_admitted') is True)
 
 
@@ -350,7 +352,9 @@ def hook(value, *, observe=None):
     kind = payload.get('hook_event_name')
     if kind in ('UserPromptSubmit', 'Stop'):
         if legacy(value, local) is not None: return {}
-        result = submit_hook(value, local, payload)
+        from content_cache import operation_stage
+        with operation_stage('global-capture'):
+            result = submit_hook(value, local, payload)
         if kind != 'UserPromptSubmit' or result.get('status') != 'staged': return {}
         question = payload.get('prompt')
         if not isinstance(question, str) or not question.strip() or old.private_content(question) or restricted(question): return {}
@@ -359,7 +363,8 @@ def hook(value, *, observe=None):
         stamp = directory / ('prompt-' + digest([digest(value['scope']), local, payload.get('session_id'), payload.get('turn_id'), question]) + '.json')
         with locked(directory / 'prompt-recall.lock'):
             if stamp.exists(): return {}
-            items = recall(value, local, payload['session_id'], question[:1024])
+            with operation_stage('global-recall'):
+                items = recall(value, local, payload['session_id'], question[:1024])
             result = hook_context(kind, items)
             receipt = {'schema': 1, 'at': time.time(), 'stage': 'agentbrain-global-recall',
                        'status': 'context-prepared' if result else 'empty',
@@ -381,7 +386,7 @@ def flush(value):
     if not root.exists(): return {'status': 'no-global-outbox'}
     for directory in root.iterdir():
         if directory.is_symlink() or not directory.is_dir(): continue
-        local = old.private_json(directory / 'origin.json')
+        local = old.private_json(directory / 'origin.json', cache=True)
         if not approved(value) or select(value['scope'], local) is None: continue
         client, queue = adapter(value, local)
         outbox = queue.cache / 'outbox'
@@ -414,6 +419,7 @@ def main():
     p.add_argument('--query', default='personal preferences and task progress')
     a = p.parse_args()
     observation = {}
+    diagnostic = {'stage': 'global-settings'}
     try:
         if a.action in ('global-install', 'global-uninstall'):
             from global_memory_install import install, uninstall
@@ -432,9 +438,13 @@ def main():
             if a.action == 'global-hook':
                 old.imports()
                 from remote_http import RequestControl
+                from content_cache import operation_diagnostics
                 control=RequestControl(110)
                 try:
-                    with control.activate(): result=hook(value, observe=observation.update)
+                    with operation_diagnostics() as progress:
+                        try:
+                            with control.activate(): result=hook(value, observe=observation.update)
+                        finally: diagnostic.update(progress)
                 finally: control.close()
             elif a.action == 'global-status':
                 from global_memory_install import installation_status
@@ -479,9 +489,13 @@ def main():
             print(json.dumps(dict(observation, status='hook-output-written', recall_status=observation['status'])), file=sys.stderr)
         failed_activation = a.action == 'global-configure' and result.get('activated') is not True
         return 2 if failed_activation or result.get('status') in ('global-memory-activation-required', 'global-memory-resume-unconfirmed') else 0
-    except Exception:
+    except Exception as error:
         if a.action == 'global-hook':
-            print('{}'); print('{"stage":"agentbrain-global-memory","status":"review-required"}', file=sys.stderr); return 0
+            print('{}')
+            print(json.dumps({'stage':'agentbrain-global-memory', 'status':'review-required',
+                              'operation_stage':diagnostic['stage'], 'error_type':type(error).__name__,
+                              'preserve_existing_state':True}), file=sys.stderr)
+            return 0
         print(json.dumps({'status': 'global-memory-review-required', 'operation': a.action, 'credentials_returned': False, 'preserve_existing_state': True})); return 2
 
 
