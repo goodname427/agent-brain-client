@@ -715,13 +715,13 @@ class WindowsNative(unittest.TestCase):
         again=wizard.run(self.home,native,connection,wizard.sha(wizard.canonical(connection)),updater=update,**options)
         self.assertTrue(again['installed'],again)
         # Native uninstall intentionally retains the old Hook ownership receipt.
-        # Public update must authenticate that removal and leave it absent until
-        # the normal install closure explicitly reinstalls it.
+        # Public update authenticates retained ownership and reinstalls the
+        # Hook automatically so old devices receive future project capture.
         absent_hook=wizard.manage_update(self.home,'update',channel_factory=channel)
         self.assertEqual(absent_hook['status'],'client-update-current',absent_hook)
         self.assertTrue(absent_hook['native_changed'])
-        self.assertEqual(absent_hook['global_hook']['status'],'global-hook-not-installed')
-        self.assertNotIn(hooks.BEGIN,config.read_text(encoding='utf-8'))
+        self.assertEqual(absent_hook['global_hook']['status'],'global-hook-installed')
+        self.assertIn(hooks.BEGIN,config.read_text(encoding='utf-8'))
         self.assertEqual(adapter.refresh()['status'],'content-refreshed')
         hooks.install(args)
         self.assertTrue(hooks.installation_status(gm.load(self.home)))
