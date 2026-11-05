@@ -22,7 +22,12 @@ ROOT=BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 import content_contract as contract
 from codex_connect import atomic,host_atomic,host_plan,host_apply,host_restore
-from brain_lock import cache_locked as locked,require_platform,cache_mode,sync_directory,cache_directory
+from brain_lock import locked,require_platform,private_mode,sync_directory,private_directory
+import brain_lock
+# Pre-native legacy recovery imports before its platform detector is replaced.
+cache_mode=getattr(brain_lock,'cache_mode',private_mode)
+cache_directory=getattr(brain_lock,'cache_directory',private_directory)
+locked=getattr(brain_lock,'cache_locked',locked)
 from remote_http import check_request,RequestStopped
 
 BEGIN='<!-- agent-brain-content:begin -->';END='<!-- agent-brain-content:end -->'

@@ -13,7 +13,11 @@ import threading
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from client_release import ClientReleases,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES,LEGACY_PRESERVATION,DEPENDENCY_RUNTIME,version
-from brain_lock import file_mode,require_platform,PlatformUnsupported,cache_directory,cache_mode,cache_locked
+from brain_lock import file_mode,require_platform,PlatformUnsupported,private_directory,private_mode,locked
+import brain_lock
+cache_directory=getattr(brain_lock,'cache_directory',private_directory)
+cache_mode=getattr(brain_lock,'cache_mode',private_mode)
+cache_locked=getattr(brain_lock,'cache_locked',locked)
 
 OUTBOX_MIN_VERSION='0.2.1'
 
