@@ -553,6 +553,20 @@ class ClientUninstall(unittest.TestCase):
         self.assertIn('Outside edit', agents.read_text())
         self.assertTrue((self.state / 'codex-mcp.json').exists())
 
+    def test_uninstall_preserves_preexisting_empty_skill_directory(self):
+        directory=self.home/'.agents/skills/synthetic-skill'
+        # Simulate an older mapping with no proof of directory creation.
+        (self.adapter.cache/'skill-directories.json').unlink()
+        self.remove()
+        self.assertTrue(directory.is_dir())
+        self.assertEqual(list(directory.iterdir()),[])
+
+    def test_uninstall_prunes_created_skill_directory(self):
+        directory=self.home/'.agents/skills/synthetic-skill'
+        self.remove()
+        self.assertFalse(directory.exists())
+        self.assertTrue(directory.parent.is_dir())
+
     def test_live_shared_worker_lease_blocks_without_force_or_mutation(self):
         before = self.f.config.read_bytes()
         with locked(self.adapter.cache / '.content-runtime.lock', shared=True):

@@ -107,6 +107,90 @@ class Activation(unittest.TestCase):
         manager.pull({})
         self.assertNotIn(fixture.RULE['body'], (other_home / '.codex/AGENTS.md').read_text())
 
+    def resource_skill(self):
+        self.cloud.records['skill','synthetic-skill']['files']['scripts/nested/helper.py']='# synthetic resource'
+        self.manager.change(self.action('skill',True))
+        return self.home/'.agents/skills/synthetic-skill'
+
+    def test_disable_prunes_only_created_empty_resource_directories_and_is_repeatable(self):
+        directory=self.resource_skill()
+        self.assertTrue((directory/'scripts/nested/helper.py').is_file())
+        reply=self.manager.change(self.action('skill',False))
+        self.assertEqual(reply['local_refresh']['status'],'content-refreshed')
+        self.assertFalse(directory.exists())
+        self.assertTrue(directory.parent.is_dir())
+        self.assertEqual(self.restart().refresh()['status'],'content-current')
+        self.manager.change(self.action('skill',True))
+        self.assertTrue((directory/'scripts/nested/helper.py').is_file())
+
+    def test_custom_files_and_preexisting_empty_directories_are_preserved(self):
+        directory=self.home/'.agents/skills/synthetic-skill'
+        (directory/'scripts').mkdir(parents=True)
+        self.resource_skill()
+        custom=directory/'scripts/user notes.txt'
+        custom.write_text('user content')
+        self.manager.change(self.action('skill',False))
+        self.assertEqual(custom.read_text(),'user content')
+        self.assertFalse((directory/'scripts/nested').exists())
+        custom.unlink()
+        self.restart().refresh()
+        self.assertTrue((directory/'scripts').is_dir())
+        self.assertTrue(directory.is_dir())
+
+    def test_removed_resources_prune_empty_children_but_keep_active_skill(self):
+        directory=self.resource_skill()
+        del self.cloud.records['skill','synthetic-skill']['files']['scripts/nested/helper.py']
+        self.cloud.puts+=1
+        self.assertEqual(self.restart().refresh()['status'],'content-refreshed')
+        self.assertFalse((directory/'scripts').exists())
+        self.assertTrue((directory/'SKILL.md').is_file())
+
+    def test_failed_apply_rolls_back_new_directories(self):
+        self.cloud.records['skill','synthetic-skill']['files']['scripts/helper.py']='# synthetic'
+        with patch('content_cache.host_apply',side_effect=PermissionError('Synthetic busy file')):
+            reply=self.manager.change(self.action('skill',True))
+        self.assertEqual(reply['local_refresh']['status'],'content-refresh-blocked')
+        self.assertFalse((self.home/'.agents/skills/synthetic-skill').exists())
+        self.assertEqual(self.restart().refresh()['status'],'content-refreshed')
+
+    def test_empty_only_removal_preserves_concurrently_added_file(self):
+        directory=self.resource_skill()
+        original=Path.rmdir
+        def concurrent(path):
+            if path==directory/'scripts/nested':
+                (path/'custom.txt').write_text('keep')
+            return original(path)
+        with patch.object(Path,'rmdir',concurrent):
+            self.manager.change(self.action('skill',False))
+        self.assertEqual((directory/'scripts/nested/custom.txt').read_text(),'keep')
+
+    def test_legacy_mapping_does_not_claim_unproven_directory_ownership(self):
+        directory=self.resource_skill()
+        (self.cache/'skill-directories.json').unlink()
+        self.manager.change(self.action('skill',False))
+        self.assertTrue((directory/'scripts/nested').is_dir())
+        self.assertEqual(list(directory.rglob('*')),[directory/'scripts',directory/'scripts/nested'])
+
+    def test_replaced_directory_is_not_removed(self):
+        directory=self.resource_skill()
+        state=json.loads((self.cache/'skill-directories.json').read_text())
+        key='.agents/skills/synthetic-skill/scripts/nested'
+        state['directories'][key][1]+=1
+        (self.cache/'skill-directories.json').write_text(json.dumps(state))
+        self.manager.change(self.action('skill',False))
+        self.assertTrue((directory/'scripts/nested').is_dir())
+
+    def test_unicode_and_spaces_in_device_path(self):
+        home=self.root/'synthetic 用户 Home'
+        home.mkdir()
+        adapter=self.restart(home,self.root/'unicode-cache')
+        manager=Management(adapter)
+        self.cloud.records['skill','synthetic-skill']['files']['resources/marker.txt']='synthetic resource'
+        manager.change(self.action('skill',True))
+        self.assertTrue((home/'.agents/skills/synthetic-skill/resources/marker.txt').is_file())
+        manager.change(self.action('skill',False))
+        self.assertFalse((home/'.agents/skills/synthetic-skill').exists())
+
     def test_lost_ack_restart_and_identical_retry(self):
         request = self.action('rule', True)
         self.cloud.lose_ack = True

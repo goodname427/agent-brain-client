@@ -1107,17 +1107,59 @@ class ContentAdapter:
         for name,digest in owned['files'].items():
             raw=self._raw(name)
             if raw is None or sha(raw)!=digest:raise CacheBlocked()
-        self._skill_dirs(owned['files'],owned['files'])
+        self._skill_dirs(owned['files'])
         return owned
 
-    def _skill_dirs(self,names,owned):
+    def _skill_dirs(self,names,owned=None):
         managed={name.split('/')[2] for name in names if name.startswith('.agents/skills/')}
         for identity in managed:
             directory=self.home/'.agents/skills'/identity;self._safe(directory,self.home)
             for entry in directory.rglob('*'):
                 self._safe(entry,self.home)
                 if entry.is_dir():continue
-                if not entry.is_file() or entry.relative_to(self.home).as_posix() not in owned:raise CacheBlocked()
+                if not entry.is_file():raise CacheBlocked()
+                if owned is not None and entry.relative_to(self.home).as_posix() not in owned:raise CacheBlocked()
+
+    def _directory_ownership(self):
+        state=self._load('skill-directories.json',{'directories':{}})
+        if not isinstance(state,dict) or set(state)!={'directories'} or not isinstance(state['directories'],dict):raise CacheBlocked()
+        for name,identity in state['directories'].items():
+            if not isinstance(name,str) or not re.fullmatch(r'\.agents/skills/[a-z0-9-]+(?:/.+)?',name):raise CacheBlocked()
+            self._path(name+'/x')
+            if not isinstance(identity,list) or len(identity)!=2 or any(type(v)!=int or v<0 for v in identity):raise CacheBlocked()
+        return state
+
+    def _prepare_skill_directories(self,desired):
+        state=self._directory_ownership()
+        for name in sorted(desired):
+            if not name.startswith('.agents/skills/'):continue
+            path=self._path(name).parent;pending=[]
+            while path!=self.home/'.agents/skills':
+                pending.append(path);path=path.parent
+            for directory in reversed(pending):
+                self._safe(directory,self.home)
+                directory.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+                try:directory.mkdir(mode=0o700)
+                except FileExistsError:continue  # Never adopt pre-existing directories.
+                info=directory.stat()
+                state['directories'][directory.relative_to(self.home).as_posix()]=[info.st_dev,info.st_ino]
+                self._save('skill-directories.json',state)
+
+    def _prune_skill_directories(self,files):
+        state=self._directory_ownership();previous=dict(state['directories']);removed=False
+        for name,identity in sorted(list(state['directories'].items()),key=lambda row:row[0].count('/'),reverse=True):
+            if any(file.startswith(name+'/') for file in files):continue
+            directory=self.home/name
+            try:
+                self._safe(directory,self.home);info=directory.lstat()
+                if stat.S_ISDIR(info.st_mode) and [info.st_dev,info.st_ino]==identity:
+                    directory.rmdir()  # Atomic empty-only removal, never recursive.
+                    removed=True
+                del state['directories'][name]
+            except FileNotFoundError:state['directories'].pop(name,None)
+            except OSError:pass  # Nonempty/busy directories and custom contents stay.
+        if state['directories']!=previous:self._save('skill-directories.json',state)
+        return removed
 
     def _restore(self,journal):
         require_platform('cache-recovery',self.platform)
@@ -1132,6 +1174,7 @@ class ContentAdapter:
             host_restore(rows,lambda:self._save('transaction.json',journal))
             self._save('owned.json',journal['owned']);self._save('active.json',journal['active'])
             self._save('transaction.json',dict(journal,phase='rolled-back'))
+            self._prune_skill_directories(journal['owned']['files'])
             return
         for name,old in journal['before'].items():
             if set(old)!={'data','sha','mode'} or type(old['mode'])!=int or old['mode']&~0o777:raise CacheBlocked()
@@ -1145,6 +1188,7 @@ class ContentAdapter:
             else:host_atomic(path,base64.b64decode(old['data'],validate=True),old['mode'],self._raw(name))
         self._save('owned.json',journal['owned']);self._save('active.json',journal['active'])
         self._save('transaction.json',dict(journal,phase='rolled-back'))
+        self._prune_skill_directories(journal['owned']['files'])
 
     def _recover(self):
         journal=self._load('transaction.json')
@@ -1352,7 +1396,7 @@ class ContentAdapter:
                 stage='owned-files';owned=self._owned()
                 stage='remote-snapshot';snapshot=self._fetch()
                 stage='native-mapping';desired=self._mapping(snapshot,owned)
-                self._skill_dirs(desired,owned['files'])
+                self._skill_dirs(desired)
                 if any(self.cache==self._path(name) or self.cache in self._path(name).parents for name in desired):raise CacheBlocked()
                 active=self._load('active.json')
                 mapping_matches = (set(owned['files']) == set(desired) and
@@ -1361,7 +1405,7 @@ class ContentAdapter:
                 if (active=={'commit':snapshot['commit'],'snapshot_sha':sha(contract.encode(snapshot))} and
                         self._load('snapshots/'+snapshot['commit']+'.json')==snapshot and mapping_matches):
                     self._pin_offline_snapshot(snapshot)
-                    return {'status':'content-current','native_changed':False,'model_loaded':'unknown'}
+                    return {'status':'content-current','native_changed':self._prune_skill_directories(desired),'model_loaded':'unknown'}
                 stage='native-preflight';before={};after={}
                 for name in set(owned['files'])|set(desired):
                     raw=self._raw(name)
@@ -1378,6 +1422,7 @@ class ContentAdapter:
                 self._save('transaction.json',journal)
                 try:
                     stage='native-apply'
+                    self._prepare_skill_directories(desired)
                     host_apply(journal['host'],lambda:self._save('transaction.json',journal))
                     stage='snapshot-save'
                     self._save('snapshots/'+snapshot['commit']+'.json',snapshot)
@@ -1385,6 +1430,7 @@ class ContentAdapter:
                     self._save('active.json',{'commit':snapshot['commit'],'snapshot_sha':sha(contract.encode(snapshot))})
                     stage='verification';self.health();self._owned();self._pin_offline_snapshot(snapshot);self._save('transaction.json',dict(journal,phase='complete'))
                 except Exception:self._restore(journal);raise
+                self._prune_skill_directories(desired)
                 return {'status':'content-refreshed','native_changed':bool(before),'model_loaded':'unknown','commit':snapshot['commit']}
         except Exception as error:
             try:journal=self._load('transaction.json');uncertain=journal and journal['phase']=='applying'
