@@ -27,9 +27,9 @@ Set-Location $checkout
 
 安装和更新默认开启本设备所有项目的今后会话采集，复用已有 HTTPS 设备身份。先读取已认证服务的个人池，再登记和开启，不再要求重复批准摘要、手填 profile ID 或 SSH 管理操作。已有排除目录、项目隔离、非项目设置、数据与队列保留；不会补传历史。
 
-确认后，Client 使用现有设备 HTTPS 凭据将无凭据来源元数据登记到同一个人记忆池，读回核对设备和范围后才激活。无需把设备包交给 Server operator，不生成新长期凭据，不扫描历史。Server 必须包含 `authenticated-device-v1` 来源登记接口；未确认结果保留本机停止标记与来源包，重试同一请求。
+Client 使用现有设备 HTTPS 凭据将无凭据来源元数据登记到同一个人记忆池，读回核对设备和范围后才激活。无需把设备包交给 Server operator，不生成新长期凭据，不扫描历史。Server 必须包含 `authenticated-device-v1` 来源登记接口；未确认结果保留原采集配置与来源包，重跑同一安装或更新入口恢复。
 
-需要单独管理范围时，沿用以下入口，示例路径必须替换为本机实际选择：
+需要单独修复来源登记时，可使用以下入口：
 
 ```powershell
 & ./tools/memory-windows.ps1 global-status --check-server
@@ -42,7 +42,7 @@ Set-Location $checkout
 
 `global-status --check-server` 分别报告 `source_registered`、`recall_authorized` 和采集停止状态。`source_registered=false` 不妨碍已授权的个人池召回；空范围仍不允许采集。当前 checkout 与 Hook pin 不一致时先走正常 update，不能手改摘要。
 
-用户选择“所有项目、无排除目录”时，为实际存放项目的每个本地盘根传入 `--include-root`，例如 `--include-root 'C:/' --include-root 'D:/'`。只列设备上实际需要的本地盘，不遍历项目树；不传 `--exclude-root` 或 `--non-project-root`。项目范围不授权非项目对话。确认精确预览后自动登记；现有来源范围的变化仍须显式协调原授权，普通软件更新不扩大范围。
+全项目范围由 `all_projects: true` 表示，不需要列举盘符或项目根目录；新盘和新项目同样适用。保留已有的排除目录与项目隔离规则，不额外开启非项目对话。
 
 `global-resume` 只恢复原本已批准的来源，不补齐空范围或 Server 登记。空范围、缺少批准或未完成激活时返回 `global-memory-activation-required` 和非零退出码；此路径不调用 Server 或访问凭据。已批准的暂停来源可显式恢复，只有 Server 明确返回 `schema:1`、`stopped:false` 才撤掉本地停止标记。错误、停止状态或缺失确认返回 `global-memory-resume-unconfirmed`，保留标记和错误代码。旧的逐项目采集独立恢复时标为 `global-memory-legacy-resumed`，不声称用户级扩大范围已启用。
 
