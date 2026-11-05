@@ -81,7 +81,7 @@ def observe(home, payload, core):
             identity, offset = None, 0
         text = payload['prompt']
         row = {'schema': 1, 'binding': binding, 'identity': identity, 'offset': offset,
-               'excluded': bool(core.old.private_content(text) or restricted(text) or existing and not existing['complete'] and not payload.get('generation_id')), 'complete': False}
+               'excluded': bool(core.old.private_content(text) or restricted(text) or existing and not existing['complete'] and not payload.get('generation_id')), 'complete': False, 'stopped': False}
         core.old.write(file, row, cache=True)
 
 
@@ -126,6 +126,9 @@ def assistant(home, payload, core):
     binding = row['binding']
     if binding['session_id'] != payload['session_id'] or binding['generation_id'] != payload.get('generation_id') or binding['cwd'] != payload['cwd']:
         raise ValueError('Native Stop scope changed')
+    if not row.get('stopped'):
+        row['stopped'] = True
+        core.old.write(file, row, cache=True)
     if row['excluded'] or row['complete']:
         return [], row, file
     direct = payload.get('last_assistant_message')
@@ -159,6 +162,8 @@ def assistant(home, payload, core):
         requests = [r for r in index.get('requests', []) if r.get('id') == payload['generation_id']]
         if len(requests) != 1:
             raise ValueError('IDE current generation unavailable')
+        if requests[0].get('state') == 'running':
+            raise ValueError('IDE current generation still being persisted')
         ids = requests[0].get('messages')
         if not isinstance(ids, list) or len(ids) > 1000 or any(not isinstance(mid, str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}', mid) for mid in ids):
             raise ValueError('IDE generation message references invalid')
@@ -166,6 +171,8 @@ def assistant(home, payload, core):
         for mid in ids:
             if mid not in metadata:
                 continue
+            if metadata[mid].get('isComplete') is False:
+                raise ValueError('IDE assistant message still being persisted')
             native = path.parent / 'messages' / (mid + '.json')
             item = json.loads(read_bound(native), object_pairs_hook=unique)
             if item.get('id') != mid or item.get('role') != 'assistant':

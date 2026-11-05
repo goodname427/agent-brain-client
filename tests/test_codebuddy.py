@@ -2,7 +2,9 @@
 import copy
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -266,6 +268,31 @@ class Hooks(unittest.TestCase):
 
 
 class Protocol(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'darwin', 'Mac wrapper fixture')
+    def test_existing_backend_is_upgraded_before_codebuddy_binding(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            tools = root / 'tools'
+            tools.mkdir()
+            home = root / 'home'
+            home.mkdir()
+            log = root / 'operations'
+            script = tools / 'install-codebuddy.sh'
+            script.write_bytes((ROOT / 'tools/install-codebuddy.sh').read_bytes())
+            (tools / 'codebuddy.py').write_text('import os,sys\nfrom pathlib import Path\nif sys.argv[1]=="backend-home": print(str(Path.home()/"shared-native"))\nelse: Path(os.environ["SYNTHETIC_LOG"]).open("a").write("bind\\n")\n')
+            (tools / 'install-mac.sh').write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$SYNTHETIC_LOG"\n')
+            env = dict(os.environ, HOME=str(home), SYNTHETIC_LOG=str(log))
+            fresh = subprocess.run(['sh', str(script), '--server', 'https://synthetic.invalid'], env=env, capture_output=True)
+            self.assertEqual(fresh.returncode, 0, fresh.stderr)
+            self.assertEqual(log.read_text().splitlines(), ['--server https://synthetic.invalid', 'bind'])
+            log.write_text('')
+            registration = home / '.config/agent-brain-client/codex-mcp.json'
+            registration.parent.mkdir(parents=True)
+            registration.write_text('{}')
+            existing = subprocess.run(['sh', str(script)], env=env, capture_output=True)
+            self.assertEqual(existing.returncode, 0, existing.stderr)
+            self.assertEqual(log.read_text().splitlines(), ['', '--action check-update', '--action update', 'bind'])
+
     def test_capture_queue_uses_shared_core_and_separate_host_binding(self):
         from brain_memory import ContentOutbox
         source = fixture.Outbox('test_same_id_cannot_change_request_or_cas_base')
@@ -394,6 +421,21 @@ class Transcript(Hooks):
         _, result = self.stop()
         self.assertEqual(result['local_queue']['state'], 'confirmed')
         self.assertEqual(self.sent[-1]['params']['event']['messages'][0]['content'], 'IDE actual final answer')
+
+    def test_ide_persistence_lag_is_retried_on_a_later_hook(self):
+        path = self.native_file('.json')
+        path.write_text(json.dumps({'messages': [{'id': 'assistant', 'role': 'assistant', 'isComplete': False}],
+                                    'requests': [{'id': 'generation-1', 'messages': ['assistant']}]}))
+        self.hook()
+        with self.assertRaises(ValueError):
+            self.stop()
+        path.write_text(json.dumps({'messages': [{'id': 'assistant', 'role': 'assistant', 'isComplete': True}],
+                                    'requests': [{'id': 'generation-1', 'messages': ['assistant']}]}))
+        messages = path.parent / 'messages'
+        messages.mkdir()
+        (messages / 'assistant.json').write_text(json.dumps({'id': 'assistant', 'role': 'assistant', 'message': {'content': 'Fully persisted IDE answer'}}))
+        self.hook(hook_event_name='SessionStart')
+        self.assertEqual(self.sent[-1]['params']['event']['messages'][0]['content'], 'Fully persisted IDE answer')
 
     def test_unknown_history_outside_path_and_rotation_never_transfers(self):
         path = self.native_file()

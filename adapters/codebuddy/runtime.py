@@ -56,6 +56,8 @@ def load_core(home):
     pins = value.get('code_sha256')
     if not isinstance(pins, dict) or not 1 <= len(pins) <= 256:
         raise ValueError('Existing frozen Client runtime required')
+    if not {'scripts/brain_content.py', 'scripts/brain_http.py', 'scripts/brain_memory.py'} <= set(pins):
+        raise ValueError('Upgrade the shared Client runtime to 0.7 before binding CodeBuddy')
     root = canonical(directory / 'code' / digest(json.dumps(pins, sort_keys=True).encode()))
     for name, pin in pins.items():
         path = PurePosixPath(name)
@@ -242,23 +244,23 @@ def hook(home, stream, *, core=None):
         replay(core, value, local)
     except Exception:
         pass  # Pending evidence remains; current capture/recall stay usable.
+    if kind != 'Stop':
+        directory = Path(home) / '.config/agent-brain-client/codebuddy/turns'
+        for file in directory.glob('*.json'):
+            try:
+                row = core.old.private_json(file, cache=True)
+                binding = row['binding']
+                if row['complete'] or not row.get('stopped') or binding['cwd'] != payload['cwd'] or not binding['generation_id']:
+                    continue
+                native = dict(binding, hook_event_name='Stop', stop_hook_active=False, transcript_path=binding['path'])
+                finish_assistant(home, core, value, local, native)
+            except Exception:
+                continue  # An unavailable turn must not starve other pending turns.
+            break
     if kind == 'Stop':
         if payload.get('stop_hook_active') is not False:
             return {}, {'status': 'recursive-stop-skipped', 'data_transferred': False}
-        import transcript
-        messages, row, file = transcript.assistant(home, payload, core)
-        if not messages:
-            if row['excluded'] and not row['complete']:
-                row['complete'] = True
-                core.old.write(file, row, cache=True)
-            return {}, {'status': 'assistant-text-unavailable-or-already-collected', 'data_transferred': False}
-        # Bind retries without generation IDs to the observed prompt cursor.
-        native = dict(payload, generation_id=payload.get('generation_id') or digest(json.dumps(row, sort_keys=True).encode()))
-        result = capture_messages(core, value, local, native, messages, 'assistant')
-        if result.get('local_queue', {}).get('state') == 'confirmed':
-            row['complete'] = True
-            core.old.write(file, row, cache=True)
-        return {}, result
+        return {}, finish_assistant(home, core, value, local, payload)
     # Failure to capture must not remove independently available recall.
     if kind == 'UserPromptSubmit':
         native_status = 'unavailable'
@@ -285,3 +287,22 @@ def hook(home, stream, *, core=None):
         return core.hook_context(kind, items), diagnostic
     except Exception as error:
         return {}, dict(diagnostic, recall_status='unavailable', recall_error_type=type(error).__name__)
+
+
+def finish_assistant(home, core, value, local, payload):
+    import transcript
+    messages, row, file = transcript.assistant(home, payload, core)
+    if not messages:
+        if row['excluded'] and not row['complete']:
+            row['complete'] = True
+            core.old.write(file, row, cache=True)
+        return {'status': 'assistant-text-unavailable-or-already-collected', 'data_transferred': False}
+    # Bind retries without generation IDs to the observed prompt cursor.
+    native = dict(payload, generation_id=payload.get('generation_id') or digest(json.dumps(row, sort_keys=True).encode()))
+    result = capture_messages(core, value, local, native, messages, 'assistant')
+    if result.get('local_queue', {}).get('saved'):
+        # All batches were already saved before transfer. "complete" marks
+        # native collection only; the outbox/Server receipt owns save status.
+        row['complete'] = True
+        core.old.write(file, row, cache=True)
+    return result

@@ -10,6 +10,7 @@ $python = Resolve-AgentBrainPython
 $previousNativeHome = $env:CODEX_HOME
 $previousConsoleEncoding = [Console]::OutputEncoding
 $previousPipeEncoding = $OutputEncoding
+$existingBackend = Test-Path (Join-Path $env:USERPROFILE '.config/agent-brain-client/codex-mcp.json')
 try {
     [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
     $OutputEncoding = [Console]::OutputEncoding
@@ -17,6 +18,12 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Existing shared Client binding could not be verified.' }
     & (Join-Path $PSScriptRoot 'install-windows.ps1') -Action $Action -Server $Server
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if ($existingBackend -and $Action -eq 'install') {
+        & (Join-Path $PSScriptRoot 'install-windows.ps1') -Action check-update
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & (Join-Path $PSScriptRoot 'install-windows.ps1') -Action update
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
     & $python -X utf8 -I -B (Join-Path $root 'tools/codebuddy.py') install
     exit $LASTEXITCODE
 } finally {
