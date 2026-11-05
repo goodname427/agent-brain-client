@@ -1,5 +1,7 @@
 # Client 安装／更新统一入口
 
+CodeBuddy IDE／CLI 接入使用 [CodeBuddy 安装入口](docs/installation/codebuddy.md)。Mac 执行 `sh tools/install-codebuddy.sh`，Windows 执行 `& ./tools/install-codebuddy.ps1`；它们复用下面的共享 Client 安装流程，新设备不依赖 Codex 应用。CodeBuddy 自动采集仅使用未来实际观察到的 Hook 与该轮原生正文，不扫描或补传历史。以下保留既有 Codex 入口约定。
+
 用户把本仓库链接发给本地 Codex，即以此作为 Agent Brain 接入入口；无需额外附上安装提示。执行 Agent 按下列流程识别平台、检测并安装或升级。用户明确只想阅读、开发或执行其他工作时，以用户的目的为准。
 
 先读 README.md 和 PROTOCOL.md。安装使用审核后固定的发布源、manifest、运行配置、设备范围和安装计划；保留原生工具工作流，不读取原生会话或数据库。不要运行旧混合仓的 brain.py/sync，也不要从旧仓拉取源码。

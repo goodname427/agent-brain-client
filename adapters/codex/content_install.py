@@ -15,7 +15,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from client_release import https_files,policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,HTTPS_CONTENT_CLIENT_FILES,LEGACY_030_HTTPS_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases,dependency_environment
+from client_release import legacy_file_sets,https_files,policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,HTTPS_CONTENT_CLIENT_FILES,LEGACY_030_HTTPS_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases,dependency_environment
 from content_mcp import pinned,pairs,enabled_tools,TOOL_CONTRACT_VERSION
 from content_cache import validate_policy,sha,contract
 from client_pairing import ComponentClient
@@ -57,15 +57,12 @@ def package_check(package,policy,*,allow_legacy_030_active=False):
         ReleaseEngine(policy['cache'],policy,None,ClientPackage(policy),{}).validate(manifest,None)
     else:manifest=json.loads(raw(package/'export-manifest.json'))
     files=https_files(policy['platform']) if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES else SSH_CONTENT_CLIENT_FILES if policy['capabilities']==SSH_CONTENT_CAPABILITIES else CONTENT_CLIENT_FILES
-    legacy_030_active=(allow_legacy_030_active and policy['capabilities']==HTTPS_CONTENT_CAPABILITIES
-                       and policy['file_prefixes']==list(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES)
-                       and manifest.get('version')=='0.3.0'
-                       and set(manifest['files'])==set(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES))
-    if legacy_030_active:files=LEGACY_030_HTTPS_CONTENT_CLIENT_FILES
+    if allow_legacy_030_active:
+        files=next((old for old in legacy_file_sets(policy) if set(manifest['files'])==set(old)),files)
     if set(manifest['files'])!=set(files):raise InstallBlocked('Candidate package membership changed')
     for name,digest in manifest['files'].items():
         if sha(raw(package/name))!=digest:raise InstallBlocked('Candidate package changed')
-    ClientPackage(policy).preflight(package,{'version':manifest.get('version'),'files':manifest['files'],'migrations':[]},allow_legacy_030_active=legacy_030_active)
+    ClientPackage(policy).preflight(package,{'version':manifest.get('version'),'files':manifest['files'],'migrations':[]},allow_legacy_030_active=allow_legacy_030_active)
     return sha(contract.encode(manifest['files']))
 
 def context(home,package,policy_path,policy_sha,*,inspection=False,allow_legacy_030_active=False):
@@ -119,8 +116,8 @@ def package_tools(package, content, grant):
     source=Path(__file__).resolve().parents[2]
     # The usual same-source path also preserves the injectable contract used by
     # isolated installation checks. Historical packages use their frozen code.
-    names=('content_mcp.py','content_contract.py','content_cache.py')
-    if all(raw(package/'adapters/codex'/name,1048576)==raw(source/'adapters/codex'/name,1048576) for name in names):
+    names=('adapters/codex/content_mcp.py','adapters/codex/content_contract.py','adapters/codex/content_cache.py','scripts/brain_content.py','scripts/brain_memory.py')
+    if all(raw(package/name,1048576)==raw(source/name,1048576) for name in names):
         return enabled_tools(content,grant)
     code='''import json,sys
 from pathlib import Path
