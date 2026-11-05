@@ -49,9 +49,11 @@ class ContentErrors(unittest.TestCase):
             self.assertIn("integer limit", error.exception.message)
             self.assertNotIn("Writes", error.exception.message)
         self.assertEqual(self.adapter.calls, [])
-        for limit in (100, 0, 4):
+        for limit in (100, 4):
             self.server.invoke("content_catalog", {"kinds": ["memory"], "limit": limit})
-            self.assertIn(self.adapter.calls[-1]["params"]["limit"], (1,3))
+            self.assertEqual(self.adapter.calls[-1]["params"]["limit"], limit)
+        with self.assertRaises(ContentParameterError):
+            self.server.invoke("content_catalog", {"kinds":["memory"],"limit":0})
         self.adapter.calls.clear()
         result = self.server.invoke("content_catalog", {"kinds": ["memory"]})
         self.assertEqual(len(result["structuredContent"]["result"]["artifacts"]), 23)

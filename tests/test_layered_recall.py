@@ -129,12 +129,20 @@ class LayeredRecall(unittest.TestCase):
         self.value['scope']['recall_personal'] = False
         with self.assertRaises(ValueError): self.read()
 
-    def test_empty_peer_groups_and_three_item_limit_are_bounded(self):
+    def test_hook_receipts_preserve_more_than_three_native_results(self):
+        self.response['result']['namespace_results']=[self.group(),self.group()]
+        result=self.run_hook()
+        self.assertTrue(result)
+        receipt=gm.recall_observation(self.value)
+        self.assertEqual(receipt['item_count'],6)
+        self.assertEqual(len(receipt['retrieval']['selected']),6)
+
+    def test_empty_peer_groups_preserve_native_per_namespace_results(self):
         empty = self.group(); empty['recall'].update(L1=[], L2=[], L3={'content': None, 'provenance': {}})
         self.response['result']['namespace_results'] = [empty, empty, self.group()]
         self.assertEqual(len(self.read()), 3)
         self.response['result']['namespace_results'] = [self.group(), self.group()]
-        self.assertEqual(len(self.read()), 3)
+        self.assertEqual(len(self.read()), 6)
         self.response['result']['namespace_results'] = [empty] * 19
         with self.assertRaises(ValueError): self.read()
 

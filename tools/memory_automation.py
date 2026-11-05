@@ -1437,7 +1437,7 @@ def connect_project(args):
         lifecycle="until-disabled",
         device_id=client.device_id,
         profile_sha256=r["https_profile_sha256"],
-        max_results=3,
+        max_results=5,
         off_file=p["off_file"],
         **{
             k: link[k]

@@ -63,8 +63,8 @@ sh tools/memory.sh global-resume
 sh tools/memory.sh global-uninstall
 ```
 
-Run recall from an approved context. It returns at most three provenance-checked
-derived items and no L0. Recognized transport failures may return scope-bound
+Run recall from an approved context. It returns native-configured L1 results per namespace, independently assembled
+L2/L3 and no L0, retaining provenance and source applicability. Recognized transport failures may return scope-bound
 cached items marked offline/unconfirmed. Sync retries the original admitted
 outbox operations, rechecking source exclusions and LocalOnly/recognized secret
 patterns; it never invents a new model request ID to bypass uncertainty.

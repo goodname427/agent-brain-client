@@ -42,6 +42,21 @@ class MemoryQueryClient(unittest.TestCase):
                 "memory_query", dict(self.f.params, since="2026-01-01T00:00:00Z")
             )
 
+    def test_native_options_and_count_are_not_clamped(self):
+        observed=[]
+        original=self.f.client.transport.request
+        def request(value):
+            observed.append(value)
+            return original(value)
+        self.f.client.transport.request=request
+        server=ContentServer(self.f.adapter)
+        result=server.invoke('memory_query',dict(self.f.params,limit=8,recall={'scoreThreshold':0.2,'maxCharsPerMemory':0,'maxTotalRecallChars':1000}))
+        self.assertFalse(result['isError'])
+        self.assertEqual(observed[-1]['params']['limit'],8)
+        self.assertEqual(observed[-1]['params']['recall']['scoreThreshold'],0.2)
+        for options in ({'scoreThreshold':float('nan')},{'maxTotalRecallChars':-1},{'provider':'new-endpoint'}):
+            with self.assertRaises(ProtocolError):server.invoke('memory_query',dict(self.f.params,recall=options))
+
     def test_transport_failure_is_unconfirmed_without_lexical_fallback(self):
         def unavailable(request):
             raise OSError("Synthetic offline")
