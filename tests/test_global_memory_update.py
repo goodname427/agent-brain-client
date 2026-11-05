@@ -89,6 +89,17 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.no_client.start()
         self.addCleanup(self.no_client.stop)
 
+    def test_refresh_migrates_owned_async_stop_without_removing_pending_data(self):
+        previous = hooks.block(self.value).replace('async = false', 'async = true')
+        hooks.transact(self.native, self.file.parent, previous)
+        pending = self.file.parent / 'fictional-pending.json'
+        old.write(pending, {'request_id': 'fictional-retained-request'})
+        before = pending.read_bytes()
+        hooks.refresh(self.home)
+        stop = hooks.tomllib.loads(self.config.read_text())['hooks']['Stop'][0]['hooks'][0]
+        self.assertIs(stop['async'], False)
+        self.assertEqual(pending.read_bytes(), before)
+
     def preserved(self):
         actual = old.private_json(self.file)
         self.assertEqual(
@@ -245,7 +256,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
 
     def test_foreign_tables_do_not_hide_owned_hook_edits(self):
         foreign = b'[mcp_servers.node_repl]\ncommand = "synthetic-node"\n'
-        before = self.config.read_bytes().replace(b'[[hooks.Stop]]', foreign + b'[[hooks.Stop]]').replace(b'async = true', b'async = false')
+        before = self.config.read_bytes().replace(b'[[hooks.Stop]]', foreign + b'[[hooks.Stop]]').replace(b'async = false', b'async = true')
         self.config.write_bytes(before)
         for action in (lambda: hooks.refresh(self.home, check_only=True),
                        lambda: hooks.refresh(self.home),

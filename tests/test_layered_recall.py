@@ -41,7 +41,7 @@ class LayeredRecall(unittest.TestCase):
         self.sent = []
         client = SimpleNamespace(actor='synthetic-owner', device=self.device,
                                  params=lambda session: {'origin': self.local, 'session_id': session},
-                                 wire=lambda method, params: self.send(method, params))
+                                 wire=lambda method, params, **kwargs: self.send(method, params))
         for target in (patch.object(gm, 'GlobalClient', return_value=client),
                        patch.object(gm, 'settings_path', return_value=self.root/'settings.json')):
             target.start(); self.addCleanup(target.stop)
@@ -54,7 +54,7 @@ class LayeredRecall(unittest.TestCase):
         self.sent.append((method, params)); return copy.deepcopy(self.response)
 
     def row(self, layer):
-        return {'content': 'Synthetic ' + layer + ' answer marker',
+        return {'id': 'synthetic-' + layer, 'content': 'Synthetic ' + layer + ' answer marker',
                 'provenance': {'status': 'verified-native-generation-graph', 'generation_ids': ['generation'],
                                'event_ids': ['event'], 'model_output_truth_verified': False,
                                'sources': [{'event_id': 'event', 'state': 'committed',
@@ -134,7 +134,7 @@ class LayeredRecall(unittest.TestCase):
         self.response['result']['namespace_results'] = [empty, empty, self.group()]
         self.assertEqual(len(self.read()), 3)
         self.response['result']['namespace_results'] = [self.group(), self.group()]
-        with self.assertRaises(ValueError): self.read()
+        self.assertEqual(len(self.read()), 3)
         self.response['result']['namespace_results'] = [empty] * 19
         with self.assertRaises(ValueError): self.read()
 
@@ -167,6 +167,50 @@ class LayeredRecall(unittest.TestCase):
         self.assertEqual(receipt['status'], 'empty'); self.assertEqual(receipt['item_count'], 0)
         self.assertEqual(receipt['context_bytes'], 0)
 
+    def test_cjk_budget_uses_delivered_utf8_and_keeps_whole_facts(self):
+        group = self.response['result']['namespace_results'][0]
+        for layer in ('L1', 'L2', 'L3'):
+            row = group['recall'][layer] if layer == 'L3' else group['recall'][layer][0]
+            row['content'] = '虚构中文记忆。' * 200
+        self.assertGreater(len(json.dumps(group).encode()), 24576)
+        result = self.run_hook()
+        self.assertTrue(result)
+        self.assertLessEqual(len(result['hookSpecificOutput']['additionalContext'].encode()), 24576)
+        receipt = gm.recall_observation(self.value)
+        self.assertEqual(receipt['item_count'], 3)
+        self.assertEqual(receipt['retrieval']['omitted_for_budget'], 0)
+
+    def test_oversized_context_skips_whole_row_and_retains_other_results(self):
+        group = self.response['result']['namespace_results'][0]
+        group['recall']['L1'][0]['content'] = 'x' * 25000
+        result = self.run_hook()
+        self.assertIn('Synthetic L2 answer marker', result['hookSpecificOutput']['additionalContext'])
+        receipt = gm.recall_observation(self.value)
+        self.assertEqual(receipt['retrieval']['candidate_count'], 3)
+        self.assertEqual(receipt['retrieval']['omitted_for_budget'], 1)
+        self.assertEqual(len(receipt['retrieval']['returned']), 3)
+        self.assertNotIn(receipt['retrieval']['returned'][0], receipt['retrieval']['selected'])
+        self.assertEqual(receipt['item_count'], 2)
+
+    def test_request_receipt_survives_later_query_and_failed_query_has_receipt(self):
+        self.run_hook()
+        first = gm.recall_observation(self.value)
+        self.assertFalse(first['output_written'])
+        self.assertEqual(first['query_sha256'], digest('Synthetic question marker'))
+        self.assertEqual(first['retrieval']['selected'][0]['content_sha256'], digest('Synthetic L1 answer marker'))
+        self.assertEqual(first['retrieval']['selected'][0]['record_sha256'], digest('synthetic-L1'))
+        original = self.prompt
+        def next_prompt():
+            data = json.loads(original().buffer.read()); data['turn_id'] += '-next'
+            return SimpleNamespace(buffer=io.BytesIO(json.dumps(data).encode()))
+        with patch.object(self, 'prompt', side_effect=next_prompt), patch.object(gm, 'recall', side_effect=ValueError('FICTIONAL_PRIVATE_ERROR')):
+            with self.assertRaises(ValueError): self.run_hook()
+        failed = gm.recall_observation(self.value)
+        self.assertEqual(failed['status'], 'failed'); self.assertEqual(failed['error_type'], 'ValueError')
+        self.assertNotEqual(first['request_key'], failed['request_key'])
+        self.assertEqual(gm.recall_observation(self.value, first['request_key']), first)
+        self.assertNotIn('FICTIONAL_PRIVATE_ERROR', json.dumps(failed))
+
     def test_cli_observes_stdout_and_redacts_failure(self):
         output, diagnostic = io.StringIO(), io.StringIO()
         with patch.object(sys, 'argv', ['global_memory', 'global-hook']), patch.object(gm, 'load', return_value=self.value), patch.object(gm, 'eligible', return_value=self.local), patch.object(gm, 'submit_hook', return_value={'status': 'staged'}), patch.object(sys, 'stdin', self.prompt()), patch.object(sys, 'stdout', output), patch.object(sys, 'stderr', diagnostic):
@@ -174,6 +218,7 @@ class LayeredRecall(unittest.TestCase):
         self.assertIn('additionalContext', output.getvalue())
         receipt = json.loads(diagnostic.getvalue())
         self.assertEqual(receipt['status'], 'hook-output-written'); self.assertEqual(receipt['recall_status'], 'context-prepared')
+        self.assertTrue(gm.recall_observation(self.value, receipt['request_key'])['output_written'])
         self.assertNotIn('answer marker', diagnostic.getvalue()); self.assertEqual(receipt['model_used'], 'unknown')
         with patch.object(sys, 'argv', ['global_memory', 'global-hook']), patch.object(gm, 'load', side_effect=RuntimeError('SYNTHETIC_SECRET')), patch.object(sys, 'stdout', io.StringIO()), patch.object(sys, 'stderr', io.StringIO()) as errors:
             self.assertEqual(gm.main(), 0)

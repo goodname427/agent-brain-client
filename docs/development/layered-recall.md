@@ -37,21 +37,45 @@ it is never part of a release and never activates host credentials.
 
 ## Content-free receipts
 
-After a successful query, the Hook writes `last-recall.json` beside its private
-settings. `global-status` returns it as `recall_observation`. It contains only
-time, stage, status, L1/L2/L3 counts, item count, context byte count, offline cache
-flag, schema, and `model_used: unknown`. It contains no query, memory text,
-session ID, source path, device ID, credential or exception message. This is the
-last successful preparation observation, not a claim about the current turn or
-every historical attempt. A later failure leaves the previous timestamp intact.
+The question Hook now saves one private `recall-receipts/<request_key>.json`
+per attempt as well as the latest summary in `last-recall.json`. The request key
+binds the approved scope, origin, session, turn and full question. The wire
+request ID is `global_recall_<request_key>`. Schema 2 receipts contain hashes of
+the session, turn, actual query, returned and selected record IDs/content, and emitted
+context, plus layer/count/byte totals and the number omitted for budget. They
+contain no query, memory text, source paths, credentials or exception values.
+Later queries cannot overwrite a different request's evidence. Old schema 1
+summaries remain readable but cannot establish request identity.
 
-- `unobserved`: the receipt is absent. Old timestamp-only prompt stamps cannot
-  prove which layer was found.
+Use `global-status --request-key <request_key>` to inspect the exact attempt.
+The matching key is included in the Hook's content-free stderr receipt and its
+private prompt stamp filename. Hashes use the existing canonical JSON SHA-256
+function in `global_memory_scope.digest`, including for string values.
+
+- `failed`: the attempt failed before preparing context; `error_type` names the
+  class only. No successful deduplication stamp is written, so a retry is possible.
 - `empty`: the query completed with no injectable results.
-- `context-prepared`: results passed validation and Hook context was prepared.
-- A separate content-free stderr receipt, `hook-output-written`, is emitted
-  after stdout is written and flushed. It cannot prove that the host accepted
-  the output or that an Agent used it in its answer.
+- `context-prepared`: source validation and selection completed. Record/content
+  hashes establish which selected results belonged to this request.
+- `output_written: true` is persisted only after stdout has been flushed. The
+  stderr `hook-output-written` receipt carries the same request key and context
+  hash. Neither proves host acceptance or model use; `model_used` stays `unknown`.
+
+The Hook fits up to three whole results to 24 KiB of actual UTF-8 context,
+including origin metadata and the policy prefix. It does not measure escaped
+ASCII JSON or fail the entire recall because another candidate is too large.
+Oversized candidates are omitted with a count; stored memory is never truncated.
+
+The owned Stop Hook is synchronous, with the existing 120-second host timeout
+and 110-second client deadline. This lets a short-lived `codex exec --json` wait
+for the durable outbox path. An isolated CLI 0.166.0-alpha.5.1 probe with a local
+fictional Responses provider observed only UserPromptSubmit with asynchronous
+Stop; synchronous Stop received and completed the event before exit. Both runs
+included UserPromptSubmit additionalContext in the outgoing model request.
+This is host/version-specific evidence, not a guarantee for a host that omits
+Stop (including failed/interrupted turns). Such turns retain their staged prompt;
+there is no transcript scan, fabricated Stop, or historical backfill. For an
+unsupported host use the existing explicit `record` notes path.
 
 Model use needs controlled host acceptance: seed fictional L2/L3 markers in an
 isolated test Server, start an independent Codex session on each OS, ask an
