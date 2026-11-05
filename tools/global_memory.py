@@ -34,8 +34,13 @@ def validate_settings(value, home):
     """Validate persisted approval without executing an older pinned runtime."""
     keys = {'schema', 'enabled', 'scope', 'approved_scope_sha256', 'server_scope_sha256',
             'device_home', 'legacy_projects', 'code_sha256', 'operator', 'operator_sha256'}
-    if not isinstance(value, dict) or set(value) != keys or value['schema'] != 1 or type(value['enabled']) is not bool or value['device_home'] != str(Path(home)):
+    if not isinstance(value, dict) or set(value) - {'recall'} != keys or value['schema'] != 1 or type(value['enabled']) is not bool or value['device_home'] != str(Path(home)):
         raise ValueError('Exact global memory settings required')
+    old.imports()
+    from content_contract import recall_options
+    options=dict(value.get('recall', {})); limit=options.pop('maxResults',5)
+    if type(limit) is not int or not 1<=limit<=2**31-1: raise ValueError('Native L1 count required')
+    recall_options(options)
     validate(value['scope'])
     pins = value['code_sha256']
     if not isinstance(pins, dict) or set(pins) != set(FILES) or any(not isinstance(p, str) or not re.fullmatch('[a-f0-9]{64}', p) for p in pins.values()):
@@ -262,13 +267,16 @@ def submit_hook(value, local, payload):
 
 def recall(value, local, session, query='personal preferences and task progress', *, request_id=None, observe=None):
     client = GlobalClient(value, local)
-    params = dict(client.params(session), query=query, limit=3)
+    options=dict(value.get('recall', {}))
+    params = dict(client.params(session), query=query, limit=options.pop('maxResults',5))
+    params['recall']=options
+    cache_query=digest([query,params['limit'],options])
     response = client.wire('memory_query', params, **({'rid': request_id} if request_id else {}))
     if 'error' in response:
         cache=settings_path(value['device_home']).parent/('recall-'+digest(local)+'.json')
         if response['error'].get('code')=='transport_unconfirmed' and cache.exists():
             saved=old.private_json(cache)
-            if saved.get('scope_sha256')==digest(value['scope']) and saved.get('query_sha256') == digest(query) and approved(value) and select(value['scope'],local) is not None:
+            if saved.get('scope_sha256')==digest(value['scope']) and saved.get('query_sha256') == cache_query and approved(value) and select(value['scope'],local) is not None:
                 items = [dict(item,offline_cache=True,remote_confirmation=False) for item in saved['items']]
                 selected = bounded_context_items(items)
                 refs = [ref for item, ref in zip(items, saved.get('selected', [])) if any(item is kept for kept in selected)]
@@ -319,7 +327,7 @@ def recall(value, local, session, query='personal preferences and task progress'
     if observe is not None: observe.update(candidate_count=len(items), returned=references, selected=refs, omitted_for_budget=len(items)-len(selected))
     items = selected
     cache = settings_path(value['device_home']).parent / ('recall-' + digest(local) + '.json')
-    old.write(cache, {'scope_sha256': digest(value['scope']), 'query_sha256': digest(query), 'items': items, 'selected': refs})
+    old.write(cache, {'scope_sha256': digest(value['scope']), 'query_sha256': cache_query, 'items': items, 'selected': refs})
     return items
 
 
@@ -336,8 +344,7 @@ def bounded_context_items(items):
     must not discard all other valid results or mutate the saved memory.
     """
     selected = []
-    for item in sorted(items, key=lambda item: {'L1': 0, 'L3': 1, 'L2': 2}.get(item.get('layer'), 3)):
-        if len(selected) == 3: break
+    for item in items:
         candidate = [*selected, item]
         context = hook_context('UserPromptSubmit', candidate)['hookSpecificOutput']['additionalContext']
         if len(context.encode('utf-8')) <= 24576: selected.append(item)
@@ -377,16 +384,16 @@ def recall_observation(value, request_key=None):
                 or request_key is not None and saved['request_key'] != request_key
                 or type(saved.get('output_written')) is not bool or type(saved.get('offline_cache')) is not bool
                 or not isinstance(counts, dict) or set(counts) != {'L1', 'L2', 'L3'}
-                or any(type(n) is not int or not 0 <= n <= 3 for n in counts.values())
-                or type(saved.get('item_count')) is not int or saved['item_count'] != sum(counts.values()) or saved['item_count'] > 3
+                or any(type(n) is not int or n < 0 for n in counts.values())
+                or type(saved.get('item_count')) is not int or saved['item_count'] != sum(counts.values())
                 or type(saved.get('context_bytes')) is not int or not 0 <= saved['context_bytes'] <= 24576
                 or type(saved.get('at')) not in (int, float) or not math.isfinite(saved['at'])
                 or saved['context_sha256'] is not None and not re.fullmatch('[a-f0-9]{64}', saved['context_sha256'])
                 or saved['error_type'] is not None and not re.fullmatch('[A-Za-z][A-Za-z0-9_]{0,63}', saved['error_type'])
                 or not isinstance(retrieval, dict) or set(retrieval) != {'candidate_count', 'returned', 'selected', 'omitted_for_budget'}
-                or any(type(retrieval.get(k)) is not int or not 0 <= retrieval[k] <= 738 for k in ('candidate_count', 'omitted_for_budget'))
-                or not isinstance(retrieval.get('selected'), list) or len(retrieval['selected']) > 3
-                or not isinstance(retrieval.get('returned'), list) or len(retrieval['returned']) > 738
+                or any(type(retrieval.get(k)) is not int or retrieval[k] < 0 for k in ('candidate_count', 'omitted_for_budget'))
+                or not isinstance(retrieval.get('selected'), list)
+                or not isinstance(retrieval.get('returned'), list)
                 or any(not isinstance(ref, dict) or set(ref) != {'layer', 'record_sha256', 'content_sha256'}
                        or ref['layer'] not in counts or any(not isinstance(ref[k], str) or not re.fullmatch('[a-f0-9]{64}', ref[k])
                                                          for k in ('record_sha256', 'content_sha256')) for ref in [*retrieval['selected'], *retrieval['returned']])):
@@ -423,7 +430,7 @@ def hook(value, *, observe=None):
         if not isinstance(question, str) or not question.strip() or old.private_content(question) or restricted(question): return {}
         from brain_lock import locked
         directory = settings_path(value['device_home']).parent
-        key = digest([digest(value['scope']), local, payload.get('session_id'), payload.get('turn_id'), question])
+        key = digest([digest(value['scope']), local, payload.get('session_id'), payload.get('turn_id'), question, *([value['recall']] if value.get('recall') else [])])
         stamp = directory / ('prompt-' + key + '.json')
         with locked(directory / 'prompt-recall.lock'):
             if stamp.exists(): return {}
@@ -482,7 +489,7 @@ def flush(value):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action', choices=('global-install', 'global-uninstall', 'global-status', 'global-hook', 'global-configure', 'global-stop', 'global-resume', 'global-sync', 'global-recall'))
+    p.add_argument('action', choices=('global-install', 'global-uninstall', 'global-status', 'global-hook', 'global-configure', 'global-recall-configure', 'global-stop', 'global-resume', 'global-sync', 'global-recall'))
     p.add_argument('--device-home', default=str(Path.home()))
     p.add_argument('--include-root', action='append', default=[])
     p.add_argument('--isolate-root', action='append', default=[])
@@ -496,6 +503,7 @@ def main():
     p.add_argument('--check-server', action='store_true', help='Authenticated metadata-only source registration check; does not enable capture')
     p.add_argument('--request-key', help='Read a specific private recall receipt with global-status')
     p.add_argument('--operator'); p.add_argument('--operator-sha256')
+    p.add_argument('--recall-options', help='JSON native recall settings; maxResults is the per-namespace L1 count')
     p.add_argument('--query', default='personal preferences and task progress')
     a = p.parse_args()
     observation = {}
@@ -515,7 +523,17 @@ def main():
             # legitimately differ from the installed frozen Hook code; do not
             # use that mismatch to suppress the authenticated status probe.
             value = load(a.device_home, verify_code=a.action != 'global-status')
-            if a.action == 'global-hook':
+            if a.action == 'global-recall-configure':
+                from content_contract import recall_options
+                options=json.loads(a.recall_options) if a.recall_options is not None else {}
+                if not isinstance(options,dict): raise ValueError('Native recall options required')
+                settings=dict(options); limit=settings.pop('maxResults',5)
+                if type(limit) is not int or not 1<=limit<=2**31-1: raise ValueError('Native L1 count required')
+                recall_options(settings)
+                value['recall']=options
+                old.write(settings_path(value['device_home']),value)
+                result={'status':'native-recall-configured','recall':options,'source_scope_changed':False,'model_calls':0}
+            elif a.action == 'global-hook':
                 old.imports()
                 from remote_http import RequestControl
                 from content_cache import operation_diagnostics

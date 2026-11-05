@@ -6,6 +6,7 @@ registry is intentionally small and extensible; clients cannot invent types.
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import PurePosixPath, PureWindowsPath
 import re
 import unicodedata
@@ -32,7 +33,23 @@ def mcp_methods(scopes):return methods(scopes)-HOOK_METHODS
 
 def encode(value):return json.dumps(value,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()
 
+def recall_options(value):
+    if not isinstance(value, dict) or set(value) - {'strategy','scoreThreshold','maxCharsPerMemory','maxTotalRecallChars','timeoutMs'}:
+        raise ValueError('Native recall options required')
+    for key, number in value.items():
+        if key == 'strategy':
+            if number not in ('keyword','embedding','hybrid'): raise ValueError('Native recall strategy required')
+        elif key == 'scoreThreshold':
+            if type(number) not in (int,float) or not math.isfinite(number): raise ValueError('Native relevance threshold required')
+        elif type(number) is not int or not (1 if key == 'timeoutMs' else 0) <= number <= 2**31-1:
+            raise ValueError('Native recall budget required')
+    return value
+
+
 def validate(method,params):
+    if method=='memory_query' and isinstance(params,dict) and 'recall' in params:
+        recall_options(params['recall'])
+        params={k:v for k,v in params.items() if k!='recall'}
     if method=='content_put' and isinstance(params,dict) and 'source_context' in params:
         context=params['source_context']
         if params.get('kind')!='memory' or not isinstance(context,dict) or set(context)!={'origin','session_id'}:raise ValueError('Memory source context required')
@@ -48,7 +65,7 @@ def validate(method,params):
         return
     if method=='memory_query':
         if 'source_scope' in params and params['source_scope']!='approved-project':raise ValueError('Approved project source required')
-        if params['kind']!='memory' or not isinstance(params['query'],str) or len(params['query'])>1024 or type(params['limit']) is not int or not 1<=params['limit']<=3:raise ValueError('Bounded Memory query required')
+        if params['kind']!='memory' or not isinstance(params['query'],str) or len(params['query'])>1024 or type(params['limit']) is not int or not 1<=params['limit']<=2**31-1:raise ValueError('Bounded Memory query required')
         since,until=query_time(params['since']),query_time(params['until'])
         if since is not None and until is not None and since>until:raise ValueError('Ordered query range required')
         if 'context' in params:
@@ -292,7 +309,7 @@ def core_recall(value,context):
     recall=value['recall']
     if not isinstance(recall,dict) or set(recall)!={'L0','L1','L2','L3','cross_session','model_extraction_verified'} or recall['cross_session'] is not True or recall['model_extraction_verified'] is not False or len(encode(recall))>240000:raise ValueError('Bounded Core recall required')
     for name in ('L0','L1','L2'):
-        if not isinstance(recall[name],list) or len(recall[name])>20 or any(not isinstance(row,dict) or not isinstance(row.get('provenance'),dict) for row in recall[name]):raise ValueError('Bounded sourced Core rows required')
+        if not isinstance(recall[name],list) or any(not isinstance(row,dict) or not isinstance(row.get('provenance'),dict) for row in recall[name]):raise ValueError('Bounded sourced Core rows required')
     if not isinstance(recall['L3'],dict) or not isinstance(recall['L3'].get('provenance'),dict) or recall['L3'].get('content') is not None and not isinstance(recall['L3'].get('content'),str):raise ValueError('Sourced Core profile required')
 
 
@@ -317,9 +334,10 @@ def recall_origin(value):
 
 
 def global_recall_params(params):
-    if not isinstance(params, dict) or set(params) != {'origin', 'session_id', 'query', 'limit'}: raise ValueError('Exact layered recall request required')
+    if not isinstance(params, dict) or set(params) - {'recall'} != {'origin', 'session_id', 'query', 'limit'}: raise ValueError('Exact layered recall request required')
+    recall_options(params.get('recall', {}))
     recall_origin(params['origin']); event_identifier(params['session_id'])
-    if not isinstance(params['query'], str) or not params['query'].strip() or len(params['query']) > 1024 or type(params['limit']) is not int or not 1 <= params['limit'] <= 3: raise ValueError('Bounded recall query required')
+    if not isinstance(params['query'], str) or not params['query'].strip() or len(params['query']) > 1024 or type(params['limit']) is not int or not 1 <= params['limit'] <= 2**31-1: raise ValueError('Bounded recall query required')
     if private_recall_text(params['query']): raise ValueError('Private recall text excluded')
 
 
@@ -361,7 +379,6 @@ def global_recall_result(value, params, device):
     """Keep layer, committed event proof and source applicability intact."""
     global_recall_params(params)
     if not isinstance(value, dict) or set(value) != {'schema', 'namespace_results'} or value['schema'] != 1 or not isinstance(value['namespace_results'], list) or len(value['namespace_results']) > 18 or len(encode(value)) > 240000: raise ValueError('Bounded layered response required')
-    count = 0
     current = recall_origin(params['origin'])
     for group in value['namespace_results']:
         if not isinstance(group, dict) or set(group) not in ({'project_id', 'sharing', 'recall'}, {'project_id', 'sharing', 'recall', 'source_device_id'}) or group['sharing'] not in ('personal', 'project') or not re.fullmatch(r'abp-[a-f0-9]{32}', str(group['project_id'])): raise ValueError('Verified namespace required')
@@ -382,8 +399,7 @@ def global_recall_result(value, params, device):
             matches = [recall_origin(origin) == current for origin in source['origins']]
             relation = 'unknown-source' if not matches else 'current-source' if all(matches) else 'other-source' if not any(matches) else 'mixed-source'
             if source['relation'] != relation: raise ValueError('Source relation changed')
-            count += 1
-    if count > params['limit']: raise ValueError('Recall exceeds requested limit')
+        if len(found['L1']) > params['limit']: raise ValueError('L1 exceeds native namespace limit')
 
 
 def validate_capture_selection(value):

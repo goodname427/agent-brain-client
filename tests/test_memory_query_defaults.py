@@ -41,7 +41,8 @@ for arguments in ({'query':'虚构测试项目 最新代号'}, {'query':'虚构�
  result=server.invoke('memory_query',arguments)
  assert not result['isError'],result
  params=result['structuredContent']['result']
- assert params['limit']==3
+ assert params['limit']==arguments.get('limit',5)
+ assert params['recall']=={}
  assert params['origin']['kind']=='non-project' or params['origin']['repository_root'] is not None
  assert params['session_id'].startswith('reader-')
 assert 'global_memory' not in sys.modules

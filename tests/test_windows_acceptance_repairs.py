@@ -106,7 +106,7 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
             self.client.transport.request = reply
             with self.subTest(change=change): self.assertTrue(ContentServer(self.adapter).invoke('memory_query', self.params)['isError'])
         self.client.transport.request = self.response
-        self.assertTrue(ContentServer(self.adapter).invoke('memory_query', dict(self.params, limit=1))['isError'])
+        self.assertFalse(ContentServer(self.adapter).invoke('memory_query', dict(self.params, limit=1))['isError'])
         with self.assertRaises(ProtocolError): ContentServer(self.adapter).invoke('memory_query', dict(self.params, enable=True))
         self.fixture.cloud.grant['scopes'] = ['put']
         with self.assertRaises(ProtocolError): ContentServer(self.adapter).invoke('memory_query', self.params)

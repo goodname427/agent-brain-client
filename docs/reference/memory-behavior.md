@@ -48,6 +48,15 @@ Windows 使用 `CreateFileW` 的 `OPEN_EXISTING`、`FILE_FLAG_OPEN_REPARSE_POINT
 
 ## 查询默认值与手动来源
 
-正式 MCP 的 `memory_query` 只需 `query`。当前目录来源在安装包内读取，不依赖开发仓库工具；结果数量自动限制到 1～3。普通目录可按 non-project 查询，项目来源省略 repository_root 时复用 project_root。内部执行错误不会再误报为 JSON 解析失败。
+正式 MCP 的 `memory_query` 只需 `query`。当前目录来源在安装包内读取，不依赖开发仓库工具；L1 结果按原生可配置数量返回，默认每 namespace 5 条，L2/L3 另行组装。普通目录可按 non-project 查询，项目来源省略 repository_root 时复用 project_root。内部执行错误不会再误报为 JSON 解析失败。
 
 Memory 写入自动附带当前目录元数据；宿主提供 `CODEX_THREAD_ID` 时记录该真实会话，也可显式传 `source_context`。不可用的会话或位置记为 null，不从正文猜测，也不沿用服务端迁移会话。来源在请求首次入队时固定，重启及重试复用原请求。旧客户端未提供来源时返回 `unknown-source`；历史记录中已知设备不一致的迁移来源只在读取时标为未知位置与会话，保留原账本。Server 应先于 Client 升级以支持可选字段。
+
+Native Memory Query uses a configurable L1 count (default 5 per namespace),
+relevance threshold and character budgets, with L2/L3 assembled separately.
+Follow [the shared Hook contract](../development/layered-recall.md). At coordinated
+release, managed agent-brain-memory/agent-brain-onboard Skill text must remove the
+old fixed three-topic retrieval instruction through the official read/CAS path;
+keep existing privacy, scope, source coverage, revision and receipt semantics.
+Installer refresh preserves these settings on both platforms. Updating code does
+not itself update a cloud Skill record or prove a running model reloaded it.
