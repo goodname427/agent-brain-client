@@ -32,10 +32,12 @@ def within(value, root):
 
 
 def validate(scope):
-    if not isinstance(scope, dict) or set(scope) != {'schema', 'profile_id', 'include_roots', 'exclude_roots', 'non_project_roots', 'recall_personal'}:
+    if not isinstance(scope, dict) or set(scope) - {'all_projects'} != {'schema', 'profile_id', 'include_roots', 'exclude_roots', 'non_project_roots', 'recall_personal'}:
         raise ValueError('Exact global source policy required')
     if scope['schema'] != 1 or not re.fullmatch(r'[a-f0-9]{32}', str(scope['profile_id'])) or type(scope['recall_personal']) is not bool:
         raise ValueError('Explicit global source identity required')
+    if type(scope.get('all_projects', False)) is not bool:
+        raise ValueError('Boolean all-projects selection required')
     roots = scope['include_roots']
     if not isinstance(roots, list) or len(roots) > 128:
         raise ValueError('Bounded source rules required')
@@ -76,7 +78,7 @@ def select(scope, value):
     if value['kind'] == 'non-project':
         return {'sharing': 'personal', 'root': None} if any(within(value['cwd'], p) for p in scope['non_project_roots']) else None
     matches = [r for r in scope['include_roots'] if within(value['project_root'], r['root'])]
-    return max(matches, key=lambda r: len(path(r['root']))) if matches else None
+    return max(matches, key=lambda r: len(path(r['root']))) if matches else ({'sharing': 'personal', 'root': None} if scope.get('all_projects') else None)
 
 
 def source_id(scope, value, sharing):

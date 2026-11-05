@@ -1,11 +1,10 @@
 """Install stages and explicit local future-source setup on Mac and Windows.
 
 No directory scan, native history read, credential creation or Server authority.
-A metadata packet is prepared only after the person chooses roots and approves
-that exact scope in this local flow. Server admission and host trust stay separate.
+The existing device joins its existing service automatically for future project
+sessions. Mapping, collection and host loading report separate results.
 """
 
-import copy
 import json
 import os
 from pathlib import Path
@@ -110,113 +109,11 @@ def mapping_refresh(home, policy, mcp, *, runner=subprocess.run):
 
 
 def source_setup(home, *, choose=input):
-    import global_memory as gm
+    """Installation and updates enable future collection for every project."""
     from global_memory_operator import configure
-    from global_memory_scope import validate, digest
-
-    value = gm.load(home)
-    directory = gm.settings_path(home).parent
-    if gm.approved(value):
-        return {
-            "status": "source-active",
-            "collection_enabled": True,
-            "scope_sha256": digest(value["scope"]),
-        }
-    if value["approved_scope_sha256"] or (directory / "global.off").exists():
-        packet = directory / "device-source-packet.json"
-        return {
-            "status": "source-paused-or-admission-pending",
-            "collection_enabled": False,
-            "packet": str(packet) if packet.exists() else None,
-            "next_action": "Keep the existing scope and pause. Retry pending registration with global-configure --activate-packet and the saved packet; resume an intentionally paused source only by explicit global-resume.",
-        }
-    print(
-        "Agent Brain global memory: Hook installation does not approve collection.\n"
-        "Choose local roots explicitly. Only future Hook events in the chosen scope are eligible; no history will be scanned.\n"
-        "Personal roots share personal memory across projects; exclusions remain excluded.\n"
-        "Choose sources / Later"
-    )
-    try:
-        if choose("> ").strip() != "Choose sources":
-            raise EOFError()
-        scope = copy.deepcopy(value["scope"])
-        # An empty local install starts with a random placeholder pool. Bind the
-        # preview to the authenticated existing pool, not that placeholder.
-        # Never overwrite an already registered server source from this flow.
-        if not (scope["include_roots"] or scope["exclude_roots"] or scope["non_project_roots"] or value["legacy_projects"] or value["server_scope_sha256"]):
-            import re
-            client = gm.GlobalClient(value)
-            response = client.wire("memory_global_status", {})
-            admission = response.get("result", {})
-            pool = admission.get("global_profile_id")
-            if ("error" in response or admission.get("metadata_only") is not True
-                    or admission.get("source_device_id") != client.device_id
-                    or admission.get("source_registered") is not False
-                    or not isinstance(pool, str) or not re.fullmatch(r"[a-f0-9]{32}", pool)):
-                return {
-                    "status": "source-server-status-review-required",
-                    "collection_enabled": False,
-                    "server_error": response.get("error"),
-                    "next_action": "Check global-status --check-server. Preserve existing device and source configuration; do not replace a registered Server source or guess the personal pool.",
-                }
-            scope["profile_id"] = pool
-        for key, prompt in (
-            ("include_roots", "Personal project root"),
-            ("exclude_roots", "Excluded root"),
-            ("non_project_roots", "Personal non-project root"),
-        ):
-            rows = []
-            for _ in range(128):
-                root = choose(prompt + " (absolute path; blank to finish): ").strip()
-                if not root:
-                    break
-                path = Path(root).expanduser()
-                if (
-                    not path.is_absolute()
-                    or any(p.is_symlink() for p in (path, *path.parents))
-                    or not path.is_dir()
-                ):
-                    raise ValueError("Choose an existing canonical local directory")
-                root = str(path.resolve())
-                rows.append(
-                    {"root": root, "sharing": "personal"}
-                    if key == "include_roots"
-                    else root
-                )
-            scope[key] = rows
-        validate(scope)
-        if not (scope["include_roots"] or scope["non_project_roots"]):
-            raise ValueError("Choose at least one source")
-        print(json.dumps(scope, ensure_ascii=False, indent=2))
-        print(
-            "Recipient: the existing Agent Brain Server and its configured memory processor.\n"
-            "This approves the displayed future sources on this device; no past messages are imported.\nApprove / Later"
-        )
-        if choose("> ").strip() != "Approve":
-            raise EOFError()
-    except (EOFError, KeyboardInterrupt):
-        return {
-            "status": "source-selection-required",
-            "collection_enabled": False,
-            "next_action": "Rerun the normal install entry and choose sources locally. Select project roots, exclusions and non-project roots, then approve the displayed scope. Until then the Hook returns before reading its input.",
-        }
-    if scope["profile_id"] != value["scope"]["profile_id"]:
-        if gm.load(home) != value:
-            raise ValueError("Global settings changed during source review")
-        value["scope"]["profile_id"] = scope["profile_id"]
-        gm.old.write(gm.settings_path(home), value)
-    packet = directory / "device-source-packet.json"
-    args = SimpleNamespace(
-        device_home=str(home),
-        include_root=[r["root"] for r in scope["include_roots"]],
-        isolate_root=[],
-        exclude_root=scope["exclude_roots"],
-        non_project_root=scope["non_project_roots"],
-        approve_scope=digest(scope),
-        activate_packet=None,
-        packet_output=str(packet),
-    )
-    result = configure(args)
+    result = configure(SimpleNamespace(device_home=str(home), include_root=[], isolate_root=[],
+        exclude_root=[], non_project_root=[], all_projects=True, activate_packet=None,
+        approve_scope=None, packet_output=None))
     return dict(result, collection_enabled=result.get('activated') is True)
 
 

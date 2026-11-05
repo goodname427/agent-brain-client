@@ -75,15 +75,19 @@ class PublicUpdate(unittest.TestCase):
         self.channel = Channel
         # This fixture isolates channel reporting. Actual launcher transactions
         # have their own synthetic package/registration integration tests.
+        import windows_install_complete as guide
+        setup = patch.object(guide, 'source_setup', return_value={'collection_enabled':True})
+        setup.start()
+        self.addCleanup(setup.stop)
         handover = patch.object(wizard, 'windows_launcher_handover', return_value=False)
         handover.start()
         self.addCleanup(handover.stop)
 
     def action(self, action):
         before_env = dict(os.environ)
-        with patch.object(
+        with (patch.object(
             self.f.f.backend, "load", side_effect=AssertionError("No credential access")
-        ):
+        ), patch.object(hooks, 'install', return_value={'status':'global-hook-installed','native_changed':False})):
             result = wizard.manage_update(
                 self.home, action, channel_factory=self.channel
             )

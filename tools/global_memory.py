@@ -56,7 +56,7 @@ def load(home, *, verify_code=True):
 
 def approved(value):
     pin = digest(value['scope'])
-    return (value['enabled'] and bool(value['scope']['include_roots'] or value['scope']['non_project_roots']) and value['approved_scope_sha256'] == pin
+    return (value['enabled'] and bool(value['scope'].get('all_projects') or value['scope']['include_roots'] or value['scope']['non_project_roots']) and value['approved_scope_sha256'] == pin
             and value['server_scope_sha256'] == pin
             and not (settings_path(value['device_home']).parent / 'global.off').exists())
 
@@ -65,7 +65,7 @@ def admission_state(value):
     """Explain each local fence without credentials, content reads or writes."""
     pin = digest(value['scope']); reasons = []
     if not value['enabled']: reasons.append('capture-disabled')
-    if not (value['scope']['include_roots'] or value['scope']['non_project_roots']): reasons.append('source-scope-empty')
+    if not (value['scope'].get('all_projects') or value['scope']['include_roots'] or value['scope']['non_project_roots']): reasons.append('source-scope-empty')
     if value['approved_scope_sha256'] != pin: reasons.append('local-source-approval-required')
     if value['server_scope_sha256'] != pin: reasons.append('server-source-approval-unconfirmed')
     if (settings_path(value['device_home']).parent / 'global.off').exists(): reasons.append('local-stop-fence')
@@ -136,7 +136,7 @@ def eligible(value, cwd):
     # Avoid receiving content for a directory outside every approved area.
     scope = value['scope']
     if any(within(str(Path(cwd).resolve()), denied) for denied in scope['exclude_roots']):return None
-    if not any(within(str(Path(cwd).resolve()), r) for r in [*[x['root'] for x in scope['include_roots']], *scope['non_project_roots']]):
+    if not scope.get('all_projects') and not any(within(str(Path(cwd).resolve()), r) for r in [*[x['root'] for x in scope['include_roots']], *scope['non_project_roots']]):
         return None
     local = discover(cwd)
     return local if select(scope, local) is not None else None
@@ -404,7 +404,8 @@ def main():
     p.add_argument('--isolate-root', action='append', default=[])
     p.add_argument('--exclude-root', action='append', default=[])
     p.add_argument('--non-project-root', action='append', default=[])
-    p.add_argument('--approve-scope')
+    p.add_argument('--approve-scope', help='Compatibility argument; configuration no longer requires a repeated digest approval')
+    p.add_argument('--all-projects', action='store_true')
     p.add_argument('--profile-id')
     p.add_argument('--packet-output')
     p.add_argument('--activate-packet')
@@ -417,6 +418,9 @@ def main():
         if a.action in ('global-install', 'global-uninstall'):
             from global_memory_install import install, uninstall
             result = install(a) if a.action == 'global-install' else uninstall(a)
+            if a.action == 'global-install':
+                from windows_install_complete import source_setup
+                result['source_setup'] = source_setup(a.device_home)
         elif a.action == 'global-configure':
             from global_memory_operator import configure
             result = configure(a)
@@ -473,7 +477,7 @@ def main():
         print(json.dumps(result, ensure_ascii=False), flush=True)
         if a.action == 'global-hook' and observation:
             print(json.dumps(dict(observation, status='hook-output-written', recall_status=observation['status'])), file=sys.stderr)
-        failed_activation = a.action == 'global-configure' and a.activate_packet and result.get('activated') is not True
+        failed_activation = a.action == 'global-configure' and result.get('activated') is not True
         return 2 if failed_activation or result.get('status') in ('global-memory-activation-required', 'global-memory-resume-unconfirmed') else 0
     except Exception:
         if a.action == 'global-hook':

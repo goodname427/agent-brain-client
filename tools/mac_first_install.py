@@ -1004,6 +1004,23 @@ def manage_update(home, action, *, channel_factory=None):
             'Hook configuration/trust and mapped Rules/Skills have separate host loading states; review them only when changed. '
             'Do not infer model context loading from a package or worker version.'
         )
+    if action == 'update' and result.get('status') in ('client-update-current', 'client-update-updated'):
+        from types import SimpleNamespace
+        import global_memory_install as hooks
+        from windows_install_complete import source_setup
+        try:
+            from global_memory import settings_path
+            if not settings_path(home).exists() or result.get('global_hook', {}).get('status') == 'global-hook-not-installed':
+                result['global_hook'] = hooks.install(SimpleNamespace(device_home=str(home), profile_id=None,
+                    operator=None, operator_sha256=None))
+                changed = result['global_hook'].get('native_changed', False)
+                result['native_changed'] = result.get('native_changed', False) or changed
+                result['hook_configuration_changed'] = result.get('hook_configuration_changed', False) or changed
+                result['reload_check']['hook_configuration_changed'] = result['hook_configuration_changed']
+            result['source_setup'] = source_setup(home)
+        except Exception:
+            result['source_setup'] = {'status':'global-memory-connection-pending', 'collection_enabled':False,
+                'next_action':'Retry the same update entry; existing configuration is retained.'}
     return result
 
 
@@ -1328,16 +1345,6 @@ def main():
                     if delegated is not None:
                         return delegated
                     value = manage_update(home, args.action)
-                    if (args.action == 'update' and value.get('status') in ('client-update-current','client-update-updated')
-                            and sys.stdin.isatty()):
-                        from windows_install_complete import source_setup
-                        from global_memory import settings_path
-                        if settings_path(home).exists():
-                            try:
-                                value['source_setup'] = source_setup(home)
-                            except Exception:
-                                value['source_setup'] = {'status':'source-setup-resume-required', 'collection_enabled':False,
-                                    'next_action':'Retry source setup with the original saved scope and packet; the software update result above is preserved.'}
                 except Exception:
                     value = {'operation': args.action, 'status': 'client-update-review-required',
                              'reason': 'existing-runtime-or-registration-unverified',

@@ -165,31 +165,92 @@ class GlobalMemoryActivation(unittest.TestCase):
 
     def test_activation_does_not_clear_fence_on_missing_resume_confirmation(self):
         value = dict(self.value, enabled=False, server_scope_sha256=None)
-        status = {'result':{'scope_sha256':digest(self.scope),
+        status = {'result':{'source_registered':True, 'scope_sha256':digest(self.scope),
                             'global_profile_id':self.scope['profile_id'], 'source_device_id':'c' * 32}}
         client = SimpleNamespace(device_id='c' * 32, wire=Mock(side_effect=[status, {'result':{}}]))
         with patch.object(gm, 'GlobalClient', return_value=client):
             result = operator.activate(value, self.scope)
         self.assertFalse(result['activated'])
         self.assertFalse(result['collection_enabled'])
-        self.assertTrue(self.off.exists())
-        self.assertFalse(gm.approved(value))
+        self.assertFalse(self.off.exists())
+        self.assertEqual(value, dict(self.value, enabled=False, server_scope_sha256=None))
 
-    def test_all_selected_project_roots_preview_clears_exclusions_without_nonproject_capture(self):
-        value = copy.deepcopy(self.value)
-        value['scope']['exclude_roots'] = [str(self.home / 'synthetic-old-exclusion')]
-        args = SimpleNamespace(device_home=str(self.home), include_root=[str(self.home)],
-                               isolate_root=[], exclude_root=[], non_project_root=[],
-                               activate_packet=None, approve_scope=None)
-        with (patch.object(gm, 'load', return_value=value),
-              patch.object(gm, 'GlobalClient', side_effect=AssertionError('No credentials'))):
+    def test_configuration_connection_failure_keeps_current_source_active(self):
+        before = copy.deepcopy(self.value)
+        args = SimpleNamespace(device_home=str(self.home), include_root=[], isolate_root=[],
+            exclude_root=[], non_project_root=[], all_projects=True, activate_packet=None)
+        client = SimpleNamespace(device_id='c'*32, wire=Mock(return_value={'error':{'code':'transport_unconfirmed'}}))
+        with patch.object(gm, 'load', return_value=self.value), patch.object(gm, 'GlobalClient', return_value=client):
             result = operator.configure(args)
-        self.assertEqual(result['status'], 'global-memory-source-approval-required')
-        self.assertEqual(result['scope']['include_roots'], self.scope['include_roots'])
-        self.assertEqual(result['scope']['exclude_roots'], [])
-        self.assertEqual(result['scope']['non_project_roots'], [])
-        self.assertFalse(result['activated'])
+        self.assertEqual(result['status'], 'global-memory-connection-pending')
+        self.assertEqual(self.value, before)
+        self.assertFalse(self.off.exists())
         self.assertFalse(self.file.exists())
+        client.wire.assert_called_once_with('memory_global_status', {})
+
+
+class AutomaticCapture(unittest.TestCase):
+    setUp = GlobalMemoryActivation.setUp
+
+    def test_automatic_setup_binds_failed_placeholder_and_retries_lost_resume(self):
+        from windows_install_complete import source_setup
+        from global_memory_scope import select
+        value = dict(self.value, enabled=False, server_scope_sha256=None)
+        gm.old.write(self.file, value)
+        profile = self.file.parent/'synthetic-profile.json'
+        gm.old.write(profile, {'endpoint':'https://synthetic.invalid',
+            'grant':{'actor':'synthetic-owner','platform':'win32-amd64','scopes':['read','put']}})
+        runtime = {'https_profile':str(profile),'https_profile_sha256':gm.old.digest(profile.read_bytes()),
+            'content_policy_sha256':'f'*64}
+        state = {'scope':None,'fail_resume':True,'calls':[]}
+        def wire(method, params, rid=None):
+            state['calls'].append(method)
+            scope = state['scope']
+            if method == 'memory_global_status':
+                return {'result':{'metadata_only':True,'source_registered':scope is not None,
+                    'source_device_id':'c'*32,'global_profile_id':'b'*32,
+                    'scope_sha256':digest(scope) if scope else None}}
+            if method == 'memory_global_register':
+                self.assertEqual(params['scope']['profile_id'], 'b'*32)
+                state['scope'] = copy.deepcopy(params['scope'])
+                return {'result':{'source_registered':True,'source_device_id':'c'*32,
+                    'global_profile_id':'b'*32,'scope_sha256':digest(state['scope'])}}
+            if method == 'memory_global_resume':
+                return {'error':{'code':'transport_unconfirmed'}} if state['fail_resume'] else {'result':{'schema':1,'stopped':False}}
+            self.fail('No model or history request: ' + method)
+        client = SimpleNamespace(device_id='c'*32, wire=wire)
+        def load(*args, **kwargs): return gm.old.private_json(self.file)
+        with (patch.object(gm, 'load', side_effect=load),
+              patch.object(gm, 'GlobalClient', return_value=client),
+              patch.object(gm.old, 'registration', return_value=(None, {'runtime':runtime})),
+              patch.object(gm, 'discover', side_effect=AssertionError('No history scan'))):
+            before = self.file.read_bytes()
+            self.assertFalse(source_setup(self.home, choose=lambda _:self.fail('No approval prompt'))['collection_enabled'])
+            self.assertEqual(self.file.read_bytes(), before)
+            state['fail_resume'] = False
+            self.assertTrue(source_setup(self.home)['collection_enabled'])
+        self.assertEqual(state['calls'].count('memory_global_register'), 1)
+        stored = load()
+        self.assertTrue(stored['scope']['all_projects'])
+        self.assertTrue(gm.approved(stored))
+        for root in ('C:/synthetic/new-project', 'Z:/future-volume/project', '/synthetic/elsewhere'):
+            local = {'kind':'project','cwd':root,'project_root':root,'repository_root':root}
+            self.assertEqual(select(stored['scope'], local)['sharing'], 'personal')
+        self.assertIsNone(select(stored['scope'], {'kind':'non-project','cwd':str(self.home),
+            'project_root':None,'repository_root':None}))
+
+    def test_noninteractive_update_runs_source_setup_and_status_does_not(self):
+        import mac_first_install as wizard
+        import windows_install_complete as guide
+        result = {'status':'client-update-current','channel_checked':True}
+        with (patch.object(wizard, '_manage_update', return_value=result),
+              patch.object(guide, 'source_setup', return_value={'collection_enabled':True}) as setup):
+            gm.old.write(self.file, self.value)
+            self.assertTrue(wizard.manage_update(self.home, 'update')['source_setup']['collection_enabled'])
+            setup.assert_called_once_with(self.home)
+            setup.reset_mock()
+            wizard.manage_update(self.home, 'check-update')
+            setup.assert_not_called()
 
 
 if __name__ == '__main__': unittest.main()
