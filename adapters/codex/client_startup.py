@@ -13,7 +13,11 @@ import threading
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from client_release import ClientReleases,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES,LEGACY_PRESERVATION,DEPENDENCY_RUNTIME,version
-from brain_lock import file_mode,private_directory,locked,require_platform,private_mode,PlatformUnsupported
+from brain_lock import file_mode,require_platform,PlatformUnsupported,private_directory,private_mode,locked
+import brain_lock
+cache_directory=getattr(brain_lock,'cache_directory',private_directory)
+cache_mode=getattr(brain_lock,'cache_mode',private_mode)
+cache_locked=getattr(brain_lock,'cache_locked',locked)
 
 OUTBOX_MIN_VERSION='0.2.1'
 
@@ -54,18 +58,19 @@ def serve_content(command,active,policy,status):
     cache=Path(policy['runtime']['content_cache'])
     try:
         if cache.is_symlink():raise ValueError('Linked content cache')
-        private_directory(cache)
-        private_mode(cache,directory=True,owner=True)
+        cache_directory(cache)
+        cache_mode(cache,directory=True,owner=True)
         path=cache/'.content-runtime.lock'
         try:
             fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
-            try: file_mode(fd,0o600)
+            try:
+                if os.name != 'nt': file_mode(fd,0o600)
             finally: os.close(fd)
         except FileExistsError:pass
         if path.is_symlink():raise ValueError('Content lease changed')
-        private_mode(path,owner=True)
+        cache_mode(path,owner=True)
         modern=version(active['version'])>=version(OUTBOX_MIN_VERSION)
-        with locked(path,timeout=0,shared=modern) as lease:
+        with cache_locked(path,timeout=0,shared=modern) as lease:
             from content_install import inspect
             if not inspect(policy['runtime']['device_home']).get('installed'):
                 return {'status':'content-native-install-pending','served':False,'native_changed':False,

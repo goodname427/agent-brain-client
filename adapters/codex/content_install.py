@@ -41,10 +41,13 @@ def raw(path,limit=262144):
 
 def save(path,value):atomic(safe(path),contract.encode(value),0o600)
 def digest_or_none(value):return sha(value) if value is not None else None
-def private_json(path):
+def private_json(path, *, cache=False):
     require_platform('private-metadata')
     path=safe(path)
-    private_mode(path,blocked=InstallBlocked)
+    if cache:
+        from brain_lock import cache_mode
+        cache_mode(path,blocked=InstallBlocked)
+    else: private_mode(path,blocked=InstallBlocked)
     return json.loads(raw(path,1048576),object_pairs_hook=pairs)
 
 def package_check(package,policy,*,allow_legacy_030_active=False):
@@ -531,7 +534,7 @@ def inspect(home):
                 if current_mcp!=mcp or meta.get('mcp_sha256')!=registered_mcp_digest(current_mcp):raise InstallBlocked('Installed MCP binding drift')
                 continue
             if path!=str(native/'AGENTS.md'):raise InstallBlocked('Installed ownership drift')
-            runtime=policy['runtime'];owned=private_json(Path(runtime['content_cache'])/'owned.json');content=pinned(runtime['content_policy'],runtime['content_policy_sha256'])
+            runtime=policy['runtime'];owned=private_json(Path(runtime['content_cache'])/'owned.json',cache=True);content=pinned(runtime['content_policy'],runtime['content_policy_sha256'])
             binding={'device_home':str(home),'codex_home':str(native)}
             if set(owned)!={'policy_sha','binding','files'} or owned['binding']!=binding or owned['policy_sha']!=sha(contract.encode({'policy':content,'binding':binding})) or owned['files'].get('.codex/AGENTS.md')!=current or BEGIN.encode() in raw(path) or END.encode() in raw(path):raise InstallBlocked('Mapped instruction ownership drift')
         if receipt.get('phase')!='complete' or receipt.get('plan_sha256')!=meta['plan_sha256'] or package_sha!=meta['package_sha256'] or meta.get('mcp_sha256')!=registered_mcp_digest(mcp) or tomllib.loads(raw(native/'config.toml').decode()).get('mcp_servers',{}).get(NAME)!=mcp:raise InstallBlocked('Installed ownership drift')
