@@ -23,6 +23,11 @@ sys.path.insert(0,str(ROOT/'scripts'))
 import content_contract as contract
 from codex_connect import atomic,host_atomic,host_plan,host_apply,host_restore
 from brain_lock import locked,require_platform,private_mode,sync_directory,private_directory
+import brain_lock
+# Pre-native legacy recovery imports before its platform detector is replaced.
+cache_mode=getattr(brain_lock,'cache_mode',private_mode)
+cache_directory=getattr(brain_lock,'cache_directory',private_directory)
+locked=getattr(brain_lock,'cache_locked',locked)
 from remote_http import check_request,RequestStopped
 
 BEGIN='<!-- agent-brain-content:begin -->';END='<!-- agent-brain-content:end -->'
@@ -350,8 +355,8 @@ class ContentAdapter:
         if self.home==self.cache or self.cache in self.home.parents:raise CacheBlocked()
         if any(self.cache==self.home/name or self.home/name in self.cache.parents for name in ('.codex','.agents','.config/agent-brain-client/content')):raise CacheBlocked()
         self._safe(self.home,self.home);self._safe(self.cache,self.cache)
-        private_directory(self.cache)
-        private_mode(self.cache,directory=True,blocked=CacheBlocked)
+        cache_directory(self.cache)
+        cache_mode(self.cache,directory=True,blocked=CacheBlocked)
         sync_directory(self.cache.parent)
 
     def _safe(self,path,base):
@@ -391,14 +396,14 @@ class ContentAdapter:
         if not path.exists():return default
         limit=cache_bytes(name)
         if not path.is_file() or path.stat().st_size>limit:raise CacheBlocked()
-        private_mode(path,blocked=CacheBlocked)
+        cache_mode(path,blocked=CacheBlocked)
         return json.loads(path.read_text(encoding='utf-8'))
 
     def _save(self,name,value):
         require_platform('cache-storage',self.platform)
         raw=contract.encode(value)
         if len(raw)>cache_bytes(name):raise CollectionCapacityExceeded()
-        path=self.cache/name;self._safe(path,self.cache);atomic(path,raw,0o600)
+        path=self.cache/name;self._safe(path,self.cache);atomic(path,raw,0o600,cache=True)
         for directory in [path.parent,*path.parent.parents]:
             sync_directory(directory)
             if directory==self.cache:break
@@ -413,7 +418,7 @@ class ContentAdapter:
     def _queued(self):
         require_platform('cache-storage',self.platform)
         directory=self.cache/'outbox';self._safe(directory,self.cache)
-        if directory.exists():private_mode(directory,directory=True,blocked=CacheBlocked)
+        if directory.exists():cache_mode(directory,directory=True,blocked=CacheBlocked)
         paths=list(directory.iterdir()) if directory.exists() else []
         if len(paths)>2048:raise CacheBlocked()
         rows=[]
@@ -423,7 +428,7 @@ class ContentAdapter:
             # renamed request files so a lost confirmation remains recoverable.
             if re.fullmatch(r'\.client-native-[A-Za-z0-9_-]+',path.name):
                 if not path.is_file() or path.stat().st_size>1048576:raise CacheBlocked()
-                private_mode(path,blocked=CacheBlocked)
+                cache_mode(path,blocked=CacheBlocked)
                 continue
             if not re.fullmatch(r'[A-Za-z0-9_-]{16,128}\.json',path.name):raise CacheBlocked()
             row=self._load('outbox/'+path.name)
@@ -442,6 +447,16 @@ class ContentAdapter:
         with operation_lock(path,'outbox-lock'):
             with operation_stage('outbox-enqueue'):
                 return self._enqueue_locked(request,reconciles)
+
+    def prepare_memory_write(self,request,context):
+        """Freeze provenance once, including retries made after a host restart."""
+        if 'source_context' in request['params']:return request
+        with operation_lock(self.cache/'content.lock','content-lock'):
+            old=self._load('outbox/'+request['request_id']+'.json')
+        if old is not None:
+            context=old['request']['params'].get('source_context')
+            if context is None:return request  # Exact legacy replay stays exact.
+        return dict(request,params=dict(request['params'],source_context=context))
 
     def _enqueue_locked(self,request,reconciles=None):
         self._check_write(request)
@@ -515,7 +530,6 @@ class ContentAdapter:
         while self._drain_pass(event_request_id,event_gate):pass
 
     def _drain_pass(self,event_request_id=None,event_gate=None):
-        blocked:dict[tuple[str,str],set[str]]={}
         resolved=False
         for row in self._queued():
             request=row['request'];params=request['params'];target=(params['kind'],params['id'])
@@ -527,12 +541,13 @@ class ContentAdapter:
                     try:
                         row['remote']=self._read_target(*target);self._save('outbox/'+request['request_id']+'.json',row)
                     except Exception:pass
-                blocked.setdefault(target,set()).add(request['request_id']);continue
+                # A terminal refusal has no unknown remote outcome. Retain it
+                # for review, but let a fresh CAS write proceed independently.
+                continue
             if row['state']=='confirmed':
                 resolved=self._finish_reconciliation(row) or resolved
-                blocked.get(target,set()).difference_update(row['reconciles']['request_ids'])
                 continue
-            if row['state']!='pending' or blocked.get(target,set())-set(row['reconciles']['request_ids']):continue
+            if row['state']!='pending':continue
             try:self._assert_sources_shareable(row['reconciles']['source_keys'])
             except CacheBlocked:
                 row.update(state='blocked',response={'request_id':request['request_id'],'error':{'code':'native_source_review_revoked','retryable':False},'persistence':{'durable':False}})
@@ -542,7 +557,7 @@ class ContentAdapter:
                     if key in state['items'] and state['items'][key]['status'] in ('inventoried','pending'):
                         state['items'][key].update(status='blocked',request_id=request['request_id'])
                 self._save('imports.json',state)
-                blocked.setdefault(target,set()).add(request['request_id']);continue
+                continue
             if not self._event_allowed(request,event_gate):return False
             try:response=self.client.request(json.loads(contract.encode(request)))
             except Exception:return False
@@ -560,13 +575,10 @@ class ContentAdapter:
                 elif error.get('retryable') is False and error.get('code') not in ('server_proxy_unconfirmed','ssh_proxy_unconfirmed','persistence_pending','pending_write_must_retry'):
                     row.update(state='blocked',response=response)
                 else:return False
-                blocked.setdefault(target,set()).add(request['request_id'])
             with operation_stage('outbox-confirmation' if row['state']=='confirmed' else 'outbox-response'):
                 self._save('outbox/'+request['request_id']+'.json',row)
             with operation_stage('outbox-reconciliation'):
                 resolved=self._finish_reconciliation(row) or resolved
-                if row['state']=='confirmed':
-                    blocked.get(target,set()).difference_update(row['reconciles']['request_ids'])
         return resolved
 
     def queue_status(self):
@@ -625,24 +637,12 @@ class ContentAdapter:
         result=row['response'] if row['state']!='pending' else {'request_id':row['request']['request_id'],'error':{'code':'content_upload_queued','retryable':True},'persistence':{'durable':False}}
         # Derived diagnostics only: never edit a retained request, its CAS base,
         # reconciliation references or ID to make a queued write go through.
-        blockers=[]
-        if row['state']=='pending':
-            target=(row['request']['params']['kind'],row['request']['params']['id'])
-            for previous in self._queued() if rows is None else rows:
-                if previous['request']['request_id']==row['request']['request_id']:break
-                params=previous['request']['params'];rid=previous['request']['request_id']
-                if (previous['request']['method']!='memory_event_submit' and
-                        (params['kind'],params['id'])==target and
-                        previous['state'] in ('conflict','blocked') and
-                        rid not in row['reconciles']['request_ids']):
-                    blockers.append({'request_id':rid,'state':previous['state']})
-            if blockers:
-                result=dict(result,error={'code':'content_queue_blocked','retryable':False})
+        blockers:list[dict[str,str]]=[]
         if blockers or row['state']=='conflict':
             next_action=('Inspect blockers and retained local proposals with content_queue_inspect, then read the current target with content_read. '
                          'Resolve conflicts with an explicitly reviewed content_put using a new stable request_id, the current expected_revision and reconciles.request_ids selecting the exact conflicts. '
                          'A blocked request requires review of its original error and an explicit identical retry after its cause is fixed. '
-                         'After confirmed reconciliation, dependents continue with their original CAS; review any resulting stale-revision conflicts. '
+                         'Fresh CAS writes can proceed independently; reconciliation is optional evidence tracking for reviewed merges. '
                          'Do not delete queue entries, change their CAS bases or use a new ID merely to retry an existing write.')
         elif row['state']=='blocked':
             next_action='Inspect the original request and error with content_queue_inspect, fix its cause, then explicitly retry the exact saved request and request_id. Refresh does not retry blocked writes.'

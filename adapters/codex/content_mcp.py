@@ -16,7 +16,10 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 from remote_mcp import Server,ProtocolError,keys,pairs,MAX_MESSAGE,write_response
 from content_cache import CacheBlocked,ContentAdapter,contract,validate_policy,operation_diagnostics,ROOT as CLIENT_ROOT
 from client_pairing import ComponentClient
-from brain_lock import LockTimeout,PlatformUnsupported,require_platform,private_mode,locked
+from brain_lock import LockTimeout,PlatformUnsupported,require_platform,private_mode,private_directory,locked
+import brain_lock
+cache_locked=getattr(brain_lock,'cache_locked',locked)
+cache_directory=getattr(brain_lock,'cache_directory',private_directory)
 from remote_http import RequestControl,RequestStopped
 from client_release import UPDATE_GUIDANCE
 
@@ -41,12 +44,32 @@ class ContentParameterError(ProtocolError):
 TOOL_CONTRACT_VERSION = 2
 
 
+def current_origin():
+    """Directory metadata only; available inside the immutable MCP package."""
+    current=Path.cwd().resolve()
+    for root in (current,*current.parents):
+        marker=root/'.git'
+        if marker.is_dir() or marker.is_file():
+            repository=root
+            if marker.is_file():
+                try:
+                    if marker.stat().st_size<=4096:
+                        line=marker.read_text(encoding='utf-8').strip()
+                        if line.startswith('gitdir: '):
+                            gitdir=Path(line[8:]);gitdir=(root/gitdir).resolve() if not gitdir.is_absolute() else gitdir.resolve()
+                            common=gitdir.parent.parent
+                            if gitdir.parent.name=='worktrees' and common.name=='.git':repository=common.parent
+                except (OSError,UnicodeError):pass
+            return {'kind':'project','cwd':str(current),'project_root':str(root),'repository_root':str(repository)}
+    return {'kind':'non-project','cwd':str(current),'project_root':None,'repository_root':None}
+
+
 def local_tools(kinds, memory_sources, layered_recall=False):
     tools = []
-    tools.append({'name':'content_queue_inspect','description':'Inspect this Client\'s retained write queue without sending, retrying or changing requests. With no arguments, list a page of path-free metadata and exact blocking request IDs; use next_cursor for more. With request_id, read the exact original proposal, CAS base, reconciliation references, saved response and cached remote conflict snapshot. The snapshot may be stale: call content_read before an explicit reviewed merge through content_put with a new stable request_id and reconciles.request_ids. Unknown pending outcomes require the identical original request and ID; never replace, rebase or delete them. Confirmed reconciliation releases dependents with their original CAS, so a newly stale dependent requires its own review. No device or source discovery.','inputSchema':{'type':'object','properties':{'request_id':{'type':'string','pattern':'^[A-Za-z0-9_-]{16,128}$'},'cursor':{'type':'string','maxLength':96}},'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
+    tools.append({'name':'content_queue_inspect','description':'Inspect this Client\'s retained write queue without sending, retrying or changing requests. With no arguments, list a page of path-free metadata and exact blocking request IDs; use next_cursor for more. With request_id, read the exact original proposal, CAS base, reconciliation references, saved response and cached remote conflict snapshot. The snapshot may be stale: call content_read before an explicit reviewed merge through content_put with a new stable request_id and reconciles.request_ids. Unknown pending outcomes require the identical original request and ID; never replace, rebase or delete them. Terminal conflicts remain reviewable and do not block fresh CAS writes. Uncertain pending outcomes still require exact replay. No device or source discovery.','inputSchema':{'type':'object','properties':{'request_id':{'type':'string','pattern':'^[A-Za-z0-9_-]{16,128}$'},'cursor':{'type':'string','maxLength':96}},'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
     if layered_recall:
         origin = {'type':'object','properties':{'kind':{'type':'string','enum':['project','non-project']},'cwd':{'type':'string'},'project_root':{'type':['string','null']},'repository_root':{'type':['string','null']}},'required':['kind','cwd','project_root','repository_root'],'additionalProperties':False}
-        tools.append({'name':'memory_query','description':'The single memory query and automatic recall entry. Read shared L1/L2/L3 memory through the approved HTTPS Server using the existing device identity. Optional origin defaults to current directory metadata; optional session_id defaults to a distinct reader ID. Server source approval is required; this tool cannot enable capture, enroll a device, import old conversations or call a model. Returns layer-specific committed event provenance and source applicability. Direct and automatically extracted facts share L1 and the same L2/L3 derivation. Empty layers remain unconfirmed. '+RECALL_EVIDENCE_GUIDANCE,'inputSchema':{'type':'object','properties':{'origin':origin,'session_id':{'type':'string','pattern':'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'},'query':{'type':'string','minLength':1,'maxLength':1024},'limit':{'type':'integer','minimum':1,'maximum':3,'default':3}},'required':['query'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
+        tools.append({'name':'memory_query','description':'The single memory query and automatic recall entry. Read shared L1/L2/L3 memory through the approved HTTPS Server using the existing device identity. Optional origin defaults to current directory metadata; optional session_id defaults to a distinct reader ID. Server source approval is required; this tool cannot enable capture, enroll a device, import old conversations or call a model. Returns layer-specific committed event provenance and source applicability. Direct and automatically extracted facts share L1 and the same L2/L3 derivation. Empty layers remain unconfirmed. '+RECALL_EVIDENCE_GUIDANCE,'inputSchema':{'type':'object','properties':{'origin':origin,'session_id':{'type':'string','pattern':'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'},'query':{'type':'string','minLength':1,'maxLength':1024},'limit':{'type':'integer','default':3,'description':'Result budget is clamped to 1 through 3.'}},'required':['query'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
     tools.append({'name':'content_request_id','description':'Generate a deterministic idempotent write request_id from the completed Codex turn digest, operation and AgentBrain target identity. Different targets/operations in one turn receive different IDs; retries of the same operation get the same ID. Local-only; no transfer.','inputSchema':{'type':'object','properties':{'turn_sha256':{'type':'string','pattern':'^[a-f0-9]{64}$'},'method':{'type':'string','enum':['content_put','content_remove']},'kind':{'type':'string','enum':kinds},'id':{'type':'string','pattern':'^[a-z0-9][a-z0-9-]{0,63}$'}},'required':['turn_sha256','method','kind','id'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
     if memory_sources:
         tools.append({'name':'content_sources_inventory','description':'Enumerate only the Codex persistent memories directory. Returns path-free IDs, file fingerprints and per-item processing status in pages of 64; never returns memory text or reads session/transcript files. Inventory is not semantic review or import coverage. Use the returned cursor for the next page; restart if it changes. Local-only read; no Server request or data transfer.','inputSchema':{'type':'object','properties':{'cursor':{'type':'string','maxLength':96}},'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
@@ -161,14 +184,17 @@ class ContentServer(Server):
             arguments.pop('request_id',None)
             if arguments.get('query','')=='':arguments['query']='personal preferences and task progress'
             if 'origin' not in arguments:
-                sys.path.insert(0,str(CLIENT_ROOT/'tools'))
-                from global_memory import discover
-                arguments['origin']=discover(str(Path.cwd()))
+                arguments['origin']=current_origin()
+            elif isinstance(arguments['origin'],dict) and arguments['origin'].get('kind')=='project' and arguments['origin'].get('repository_root') is None:
+                arguments['origin']=dict(arguments['origin'],repository_root=arguments['origin'].get('project_root'))
             arguments.setdefault('session_id','reader-'+uuid.uuid4().hex)
+            if type(arguments.get('limit')) is int:arguments['limit']=max(1,min(3,arguments['limit']))
             params = dict({'limit':3}, **arguments)
             contract.global_recall_params(params)
         except (ValueError, TypeError):
-            raise ContentParameterError('Layered recall requires current origin, reader session_id, query and optional limit from 1 to 3.') from None
+            raise ContentParameterError('Use a text query and optional integer limit. Origin and reader session default automatically.') from None
+        except (OSError,ImportError):
+            raise ProtocolError(-32010,'Current directory metadata unavailable; supply origin explicitly.') from None
         rid = uuid.uuid4().hex
         try:
             result = self.adapter.recall({'request_id':rid,'method':'memory_query','params':params})
@@ -238,11 +264,10 @@ class ContentServer(Server):
             if not isinstance(arguments,dict):raise ContentParameterError('Content tool arguments must be an object.')
             if name=='content_catalog' and set(arguments)&{'query','since','until','limit'}:
                 if arguments.get('kinds')!=['memory']:raise ContentParameterError('Catalog query options are a Memory-only retrieval alias. For complete coverage pass kinds only.')
-                if 'limit' in arguments and (type(arguments['limit']) is not int or not 1<=arguments['limit']<=3):raise ContentParameterError('content_catalog uses next_cursor for inventory pages. Memory retrieval alias limit must be an integer from 1 to 3.')
                 if set(arguments)-{'kinds','query','since','until','limit','request_id'}:raise ValueError()
                 return self.layered_recall({key:value for key,value in arguments.items() if key!='kinds'})
             required=contract.FIELDS[name]|({'request_id'} if name in contract.WRITES else set())
-            allowed=contract.FIELDS[name]|({'cursor'} if name=='content_catalog' else set())|{'request_id'}|({'reconciles'} if name=='content_put' else set())
+            allowed=contract.FIELDS[name]|({'cursor'} if name=='content_catalog' else set())|{'request_id'}|({'reconciles','source_context'} if name=='content_put' else set())
             if set(arguments)-allowed or required-set(arguments):raise ValueError()
             params=dict(arguments);reconciles=params.pop('reconciles',None);rid=params.pop('request_id',uuid.uuid4().hex);contract.validate(name,params)
             if not isinstance(rid,str) or not 16<=len(rid)<=128 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in rid):raise ValueError()
@@ -260,6 +285,12 @@ class ContentServer(Server):
         with operation_diagnostics() as diagnostic:
             try:
                 request={'request_id':rid,'method':name,'params':params}
+                if name=='content_put' and params['kind']=='memory' and hasattr(self.adapter,'prepare_memory_write'):
+                    session=os.environ.get('CODEX_THREAD_ID')
+                    if not isinstance(session,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}',session):session=None
+                    try:origin=current_origin()
+                    except OSError:origin=None
+                    request=self.adapter.prepare_memory_write(request,{'origin':origin,'session_id':session})
                 result=self.adapter.invoke(request,reconciles=reconciles) if reconciles is not None else self.adapter.invoke(request)
             except RequestStopped:raise
             except Exception as error:
@@ -305,6 +336,7 @@ class ContentServer(Server):
                 required=[] if name=='memory_query' else list(sorted(fields))
                 if name in contract.WRITES:properties['request_id']={'type':'string','pattern':'^[A-Za-z0-9_-]{16,128}$'};required.append('request_id')
                 if name=='content_put':properties['reconciles']={'type':'object','description':'Local-only references to staged source plans or write conflicts; never sent to Server. Inspect retained proposals with content_queue_inspect and read the current target before merging. request_ids select only retained conflicts; recover pending outcomes by identical retry first. A still-inventoried source plan can be reconciled only by the exact staged record; a conflicted source plan requires an explicit merge of source and remote versions. Server persistence confirmation resolves selected conflicts.','properties':{'request_ids':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256},'source_keys':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256}},'required':['request_ids','source_keys'],'additionalProperties':False}
+                if name=='content_put':properties['source_context']={'type':'object','description':'Optional current Memory writing origin and actual host session_id. Directory metadata defaults locally; unavailable session is null, never guessed from the Server. Preserved unchanged on retries.','properties':{'origin':{'type':['object','null']},'session_id':{'type':['string','null']}},'required':['origin','session_id'],'additionalProperties':False}
                 description='Approved cloud content only. Server is the sole write boundary; retain CAS revision and request_id on write retries. Transport failures may return a verified stale snapshot with local_cache.stale=true; cache misses never prove remote absence. Local cache refresh does not reload existing model context. '
                 if name=='content_catalog':description+='AgentBrain destination records only; this does not discover Harness-native sources. Omit cursor for the first authorized inventory page, then follow next_cursor until absent. Use memory_query for retrieval. '
                 if name in ('memory_query','content_read','content_catalog'):description+=RECALL_EVIDENCE_GUIDANCE
@@ -394,7 +426,7 @@ def run_event_hook(adapter,policy,payload,*,clock=None,source_gate=None):
     scope,turn,kind,content,key=native_hook_fields(policy,payload)
     session=scope['session_id']
     name='hook-turns/'+key+'.json'
-    with locked(adapter.cache/'event-hook.lock'):
+    with cache_locked(adapter.cache/'event-hook.lock'):
         if not hook_enabled(policy):return {'status':'disabled','data_transferred':False}
         row=adapter._load(name)
         if kind=='UserPromptSubmit':
@@ -619,7 +651,7 @@ def serve(server, source, output, *, request_timeout=90, max_pending=256):
                 elif isinstance(error,ContentParameterError):payload['data']={'stage':'parameters','client_runtime':server.client_runtime}
                 elif error.code==-32002:payload['data']={'stage':'handshake','error_code':'mcp-not-ready'}
                 emit(rid,error=payload)
-            except Exception:emit(rid,error={'code':-32700,'message':'Invalid JSON message.'})
+            except Exception:emit(rid,error={'code':-32603,'message':'MCP operation failed; request JSON was valid.'})
             finally:
                 if control is not None:
                     control.close()
@@ -775,9 +807,8 @@ def cli():
         # holds its own shared LockFileEx lease, including if its launcher dies.
         if os.name=='nt' and '--cache' in sys.argv and '--installation-check' not in sys.argv:
             cache=Path(sys.argv[sys.argv.index('--cache')+1])
-            from brain_lock import private_directory
-            private_directory(cache)
-            with locked(cache/'.content-runtime.lock',timeout=0,shared=True):
+            cache_directory(cache)
+            with cache_locked(cache/'.content-runtime.lock',timeout=0,shared=True):
                 from content_install import inspect
                 home=Path(sys.argv[sys.argv.index('--device-home')+1])
                 if not inspect(home).get('installed'):
