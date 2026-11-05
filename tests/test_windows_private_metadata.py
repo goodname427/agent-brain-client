@@ -100,6 +100,21 @@ class PrivateMetadata(unittest.TestCase):
             storage.windows_private(self.path)
         self.kernel.CloseHandle.assert_called_once_with(123)
 
+    def test_cache_metadata_does_not_require_security_descriptor_access(self):
+        self.api.GetSecurityInfo.side_effect = AssertionError('Cache ACL gate removed')
+        with (
+            patch.object(storage, 'require_platform'),
+            patch.object(storage, 'os', SimpleNamespace(name='nt')),
+        ):
+            self.assertEqual(storage.cache_mode(self.path), self.path)
+            self.kernel.CreateFileW.assert_called_once_with(
+                str(self.path), 0x80, 7, None, 3, 0x02200000, None
+            )
+            self.info['links'] = 2
+            with self.assertRaisesRegex(ValueError, 'Owned private'):
+                storage.cache_mode(self.path)
+        self.api.GetSecurityInfo.assert_not_called()
+
     def test_legacy_new_file_postcheck_revalidates_owned_handle_and_never_closes_it(
         self,
     ):

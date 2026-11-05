@@ -113,7 +113,7 @@ def _windows_open_lock(path):
 
 
 
-def _windows_private_handle(handle, *, directory=False, owner=False, blocked=ValueError):
+def _windows_private_handle(handle, *, directory=False, owner=False, blocked=ValueError, check_access=True):
     from brain_windows import libraries, user_sid, sid_text
     api, kernel = libraries()
     kernel.GetFileInformationByHandle.argtypes = [W.HANDLE, C.POINTER(_WindowsFileInformation)]
@@ -130,6 +130,8 @@ def _windows_private_handle(handle, *, directory=False, owner=False, blocked=Val
             raise blocked('Windows private metadata unavailable')
         if info.attributes & 0x400 or bool(info.attributes & 0x10) != directory or not directory and info.links != 1:
             raise blocked('Owned private Windows item required')
+        if not check_access:
+            return
         if api.GetSecurityInfo(handle, 1, 5, C.byref(owner_sid), None, C.byref(acl), None, C.byref(descriptor)):
             raise blocked('Windows DACL could not be checked')
         current = user_sid()
@@ -150,7 +152,7 @@ def _windows_private_handle(handle, *, directory=False, owner=False, blocked=Val
     finally:
         if descriptor: kernel.LocalFree(descriptor)
 
-def windows_private(path, *, directory=False, owner=False, blocked=ValueError):
+def windows_private(path, *, directory=False, owner=False, blocked=ValueError, check_access=True):
     from brain_windows import canonical, libraries
     path = canonical(path); _, kernel = libraries()
     # CPython's Windows stat fallback can report nlink=0 from directory data
@@ -161,10 +163,10 @@ def windows_private(path, *, directory=False, owner=False, blocked=ValueError):
     kernel.CloseHandle.argtypes = [W.HANDLE]
     # FILE_READ_ATTRIBUTES | READ_CONTROL; share read/write/delete permits
     # concurrent locks/atomic writes without granting access to another user.
-    handle = kernel.CreateFileW(str(path), 0x80 | 0x20000, 7, None, 3, 0x02000000 | 0x00200000, None)
+    handle = kernel.CreateFileW(str(path), 0x80 | (0x20000 if check_access else 0), 7, None, 3, 0x02000000 | 0x00200000, None)
     if handle in (None, C.c_void_p(-1).value):
         raise blocked('Windows private metadata unavailable')
-    try: _windows_private_handle(handle, directory=directory, owner=owner, blocked=blocked)
+    try: _windows_private_handle(handle, directory=directory, owner=owner, blocked=blocked, check_access=check_access)
     finally: kernel.CloseHandle(handle)
     return path
 
@@ -181,6 +183,39 @@ def private_mode(path, *, directory=False, owner=False, blocked=ValueError):
     if owner and (st.st_uid != os.getuid() or not directory and st.st_nlink != 1):
         raise blocked('Owned private filesystem item required')
     return path
+
+
+def cache_mode(path, *, directory=False, blocked=ValueError):
+    """Validate cache objects without imposing a Windows principal list.
+
+    Windows decides actual read/write access. Inherited enterprise or Harness
+    ACEs do not invalidate a cache; existing security descriptors stay intact.
+    Credentials, policies and executable packages still use private_mode.
+    """
+    require_platform('cache-storage')
+    if os.name == 'nt':
+        return windows_private(path, directory=directory, blocked=blocked, check_access=False)
+    return private_mode(path, directory=directory, blocked=blocked)
+
+
+def cache_directory(path):
+    """Create new private cache directories; accept existing Windows ACLs."""
+    if os.name != 'nt':
+        return private_directory(path)
+    require_platform('cache-storage')
+    from brain_windows import canonical, protect_new
+    path = canonical(path)
+    if not path.exists():
+        if not path.parent.exists(): cache_directory(path.parent)
+        try: path.mkdir()
+        except FileExistsError: pass
+        else: protect_new(path, directory=True)
+    cache_mode(path, directory=True)
+    return path
+
+
+def cache_locked(path, **options):
+    return locked(path, cache=True, **options)
 
 
 def sync_directory(path):
@@ -264,7 +299,7 @@ def command_line(argv):
 
 
 @contextmanager
-def locked(path, timeout=20, shared=False, cancel_check=None):
+def locked(path, timeout=20, shared=False, cancel_check=None, *, cache=False):
     """Yield the owned handle; POSIX shared leases may be inherited deliberately.
 
     Existing callers retain exclusive locking by default. Windows workers take
@@ -275,7 +310,7 @@ def locked(path, timeout=20, shared=False, cancel_check=None):
     if os.name == 'nt':
         from brain_windows import canonical
         canonical(path)
-        private_directory(path.parent)
+        (cache_directory if cache else private_directory)(path.parent)
         fd = _windows_open_lock(path)
         try: handle = os.fdopen(fd, 'r+b')
         except BaseException:
@@ -291,7 +326,7 @@ def locked(path, timeout=20, shared=False, cancel_check=None):
     try:
         if os.name == 'nt':
             import msvcrt
-            _windows_private_handle(msvcrt.get_osfhandle(handle.fileno()), owner=True)
+            _windows_private_handle(msvcrt.get_osfhandle(handle.fileno()), owner=True, check_access=not cache)
         # LockFileEx supports ranges beyond EOF. Writing an initialization byte
         # before locking races another caller that already owns that byte.
         if os.name != 'nt' and path.stat().st_size == 0:

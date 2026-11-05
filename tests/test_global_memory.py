@@ -54,6 +54,27 @@ class GlobalMemoryFixtures(unittest.TestCase):
         with patch.object(gm, 'eligible', return_value=local), patch.object(sys, 'stdin', type('Input', (), {'buffer': io.BytesIO(json.dumps(payload).encode())})()), patch.object(gm, 'submit_hook', side_effect=AssertionError('duplicate capture')):
             self.assertEqual(gm.hook(value), {})
 
+    def test_hook_failure_reports_stage_without_content_or_exception_text(self):
+        from content_cache import operation_stage
+        def failed(*args, **kwargs):
+            with operation_stage('global-cache-open'):
+                raise PermissionError('SYNTHETIC_SECRET path and request body')
+        output, diagnostic = io.StringIO(), io.StringIO()
+        with (
+            patch.object(sys, 'argv', ['global_memory', 'global-hook']),
+            patch.object(gm, 'load', return_value={}),
+            patch.object(gm, 'hook', side_effect=failed),
+            patch.object(sys, 'stdout', output),
+            patch.object(sys, 'stderr', diagnostic),
+        ):
+            self.assertEqual(gm.main(), 0)
+        self.assertEqual(output.getvalue(), '{}\n')
+        result = json.loads(diagnostic.getvalue())
+        self.assertEqual(result['operation_stage'], 'global-cache-open')
+        self.assertEqual(result['error_type'], 'PermissionError')
+        self.assertTrue(result['preserve_existing_state'])
+        self.assertNotIn('SYNTHETIC_SECRET', diagnostic.getvalue())
+
     def test_question_drives_recall_without_promoting_other_project_rules(self):
         from global_memory_scope import source_context, restricted
         local = self.origin('/synthetic/personal/one')

@@ -271,10 +271,10 @@ def probe(mcp):
     return rows[2]['result']['structuredContent']['result']
 
 
-def atomic(path,raw,mode):
+def atomic(path,raw,mode,*,cache=False):
     require_platform('private-write')
-    from brain_lock import private_directory,atomic_replace,file_mode
-    private_directory(path.parent)
+    from brain_lock import private_directory,cache_directory,atomic_replace,file_mode
+    (cache_directory if cache else private_directory)(path.parent)
     fd,name=tempfile.mkstemp(prefix='.client-native-',dir=path.parent)
     try:
         with os.fdopen(fd,'wb') as file:file_mode(file.fileno(),mode);file.write(raw);file.flush();os.fsync(file.fileno())

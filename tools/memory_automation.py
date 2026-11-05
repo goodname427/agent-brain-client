@@ -13,7 +13,7 @@ import sys
 import time
 import tempfile
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from brain_lock import private_mode,private_directory,file_mode,atomic_replace,sync_directory,locked,command_line
+from brain_lock import cache_mode,private_mode,private_directory,file_mode,atomic_replace,sync_directory,locked,command_line
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,9 +63,10 @@ def canonical(path, *, existing=False):
     return p
 
 
-def private_json(path, sha=None):
+def private_json(path, sha=None, *, cache=False):
     p = canonical(path, existing=True)
-    private_mode(p,owner=True)
+    if cache: cache_mode(p)
+    else: private_mode(p,owner=True)
     if p.stat().st_size > 262144:
         raise ValueError("Private owned metadata required")
     raw = p.read_bytes()
