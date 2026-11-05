@@ -30,7 +30,6 @@ class Classification(unittest.TestCase):
                  (['tools/windows_install_complete.py'], True, True),
                  (['scripts/brain_lock.py'], True, True),
                  (['adapters/codex/content_contract.py'], True, True),
-                 (['tests/test_content_install.py'], True, True),
                  (['tests/fixtures/windows_platform_050/brain_lock.py.fixture'], True, True),
                  (['tools/install-mac.sh', 'tools/install-windows.ps1'], True, True),
                  (['docs/README.md', 'connect.py'], True, True)]
@@ -40,7 +39,7 @@ class Classification(unittest.TestCase):
 
     def test_unknown_dependencies_workflows_and_fixed_data_are_full(self):
         for path in ('.github/workflows/client-checks.yml', '.github/workflows/client-release.yml',
-                     'tools/ci_scope.py', 'tests/test_ci_scope.py', 'tools/build_client.py',
+                     'tools/build_client.py',
                      'tools/release_client.py', 'requirements.txt', 'pyproject.toml',
                      'releases/manifest.json', 'FREEZE-0.5.json', '.gitattributes',
                      'docs/connection.example.json', 'docs/new.py', 'new/file',
@@ -59,6 +58,58 @@ class Classification(unittest.TestCase):
                 self.assertTrue(ci.plan_event(name, event)['full'])
         with patch.object(ci, 'git', side_effect=OSError('Synthetic unavailable history')):
             self.assertTrue(ci.plan_event('push', {'before': 'a' * 40, 'after': 'b' * 40})['full'])
+
+
+class FocusedTests(unittest.TestCase):
+    def test_parallel_worker_isolates_homes_and_preserves_failure(self):
+        import run_ci_tests
+        result = subprocess.CompletedProcess([], 7, 'synthetic failure')
+        with patch.object(run_ci_tests.subprocess, 'run', return_value=result) as run:
+            code, log, _ = run_ci_tests.run_group(['test_synthetic'])
+        self.assertEqual((code, log), (7, 'synthetic failure'))
+        env = run.call_args.kwargs['env']
+        self.assertNotEqual(env['HOME'], os.environ['HOME'])
+        self.assertEqual(env['HOME'], env['USERPROFILE'])
+        self.assertNotEqual(env['HOME'], env['CODEX_HOME'])
+        self.assertEqual(run.call_args.args[0][-1], 'test_synthetic')
+
+    def test_fixture_consumers_are_transitive_and_broken_test_parse_falls_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'tests').mkdir()
+            for name, source in (('test_a.py', 'pass'), ('test_b.py', 'import test_a'),
+                                 ('test_c.py', 'from tests import test_b')):
+                (root / 'tests' / name).write_text(source)
+            self.assertEqual(ci.test_selection(['tests/test_a.py'], root),
+                             ['test_a', 'test_b', 'test_c'])
+            (root / 'tests/test_c.py').write_text('invalid syntax !')
+            self.assertIsNone(ci.test_selection(['tests/test_a.py'], root))
+
+    def test_test_only_modules_include_fixture_consumers_and_exclude_native_helper(self):
+        plan = ci.classify(['tests/test_mac_first_install.py'])
+        self.assertFalse(plan['full'])
+        self.assertTrue(plan['mac'])
+        self.assertIn('test_client_uninstall', plan['tests'])
+        self.assertIn('test_mac_first_install', plan['tests'])
+        self.assertTrue(ci.classify(['tests/fixtures/checkpoint_probe.py'])['full'])
+        self.assertTrue(ci.classify(['tests/test_missing.py'])['full'])
+        self.assertTrue(ci.classify(['tests/test_mac_first_install.py', 'scripts/brain_lock.py'])['full'])
+
+    def test_windows_contract_test_edits_keep_both_native_versions(self):
+        plan = ci.classify(['tests/test_windows_native.py'])
+        self.assertTrue(plan['windows'])
+        self.assertFalse(plan['full'])
+
+    def test_ci_only_does_not_start_native_jobs(self):
+        plan = ci.classify(['tools/ci_scope.py', 'tests/test_ci_scope.py', 'README.md'])
+        self.assertTrue(plan['code'])
+        self.assertFalse(plan['mac'] or plan['windows'] or plan['full'])
+
+    def test_test_runner_rejects_shell_fragments_and_failed_tests(self):
+        env = dict(os.environ, CI_TESTS='["test_dummy; echo injected"]')
+        result = subprocess.run([sys.executable, '-B', str(ci.ROOT / 'tools/run_ci_tests.py')],
+                                env=env, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
 
 
 class GitHistory(unittest.TestCase):

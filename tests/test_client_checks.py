@@ -222,6 +222,9 @@ class LocalChecks(unittest.TestCase):
                 elif words[:2] not in (['git', 'diff'], ['sh', '-n']):
                     continue
                 words = [word.replace('$TEST_ROOT/', '{temp}/') for word in words]
+                if words == ['python', '-B', 'tools/run_ci_tests.py', '--workers', '2']:
+                    self.assertIn(['python', '-B', '-m', 'unittest', 'discover', '-s', 'tests'], cc.COMMANDS[scope])
+                    continue
                 if words[:4] == ['python', '-B', '-m', 'unittest']:
                     covered = {item for command in cc.COMMANDS[scope]
                                if command[:4] == words[:4] for item in command[4:]}
