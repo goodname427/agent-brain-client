@@ -141,6 +141,9 @@ class WindowsNative(unittest.TestCase):
         cloud.request = offline
         with patch.object(gm.old, 'registration', return_value=({}, {'runtime':r})), patch.object(gm, 'GlobalClient', return_value=cloud):
             self.assertEqual(gm.submit_hook(value, local, payload)['status'], 'staged')
+            sandbox = 'S-1-5-21-111111111-222222222-333333333-1002'
+            for item in (cache / 'hook-turns', cache / 'event-hook.lock', next((cache / 'hook-turns').glob('*.json'))):
+                self.assertIn(sandbox, host_security(item))
             pending = gm.submit_hook(value, local, stop)
             self.assertEqual(pending['local_queue']['state'], 'pending')
             request = sent[0]

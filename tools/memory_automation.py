@@ -75,14 +75,14 @@ def private_json(path, sha=None, *, cache=False):
     return json.loads(raw, object_pairs_hook=unique)
 
 
-def write(path, value, *, exclusive=False, mode=0o600):
+def write(path, value, *, exclusive=False, mode=0o600, cache=False):
     p = canonical(path)
     raw = (
         json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
     ).encode()
     if exclusive:
         with p.open("xb") as stream:
-            file_mode(stream.fileno(), mode)
+            if not cache or os.name != 'nt': file_mode(stream.fileno(), mode)
             stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
@@ -90,7 +90,7 @@ def write(path, value, *, exclusive=False, mode=0o600):
         fd, pending = tempfile.mkstemp(prefix="." + p.name + "-", dir=p.parent)
         try:
             with os.fdopen(fd, "wb") as stream:
-                file_mode(stream.fileno(), mode)
+                if not cache or os.name != 'nt': file_mode(stream.fileno(), mode)
                 stream.write(raw)
                 stream.flush()
                 os.fsync(stream.fileno())

@@ -253,10 +253,10 @@ def submit_hook(value, local, payload):
     staged = old.private_json(file, cache=True) if file.exists() else None
     if (old.private_content(text) or restricted(text)) or isinstance(staged, dict) and (old.private_content(staged.get('prompt', '')) or restricted(staged.get('prompt', ''))):
         cache_directory(directory)
-        old.write(blocked, {'schema': 1, 'reason': 'local-only-or-sensitive'}, exclusive=True)
+        old.write(blocked, {'schema': 1, 'reason': 'local-only-or-sensitive'}, exclusive=True, cache=True)
         return {'status': 'excluded-local-only-or-sensitive', 'data_transferred': False}
     client, queue = adapter(value, local)
-    old.write(queue.cache / 'origin.json', local)
+    old.write(queue.cache / 'origin.json', local, cache=True)
     return run_event_hook(queue, cap, payload, source_gate=lambda: approved(value) and select(value['scope'], local) is not None and client.status(payload['session_id']).get('source_admitted') is True)
 
 

@@ -87,15 +87,17 @@ class _WindowsSecurityAttributes(C.Structure):
     _fields_ = [('length', W.DWORD), ('descriptor', C.c_void_p), ('inherit', W.BOOL)]
 
 
-def _windows_open_lock(path):
+def _windows_open_lock(path, *, cache=False):
     """Create with the final owner/DACL, or open an existing item unchanged."""
     import msvcrt
     from brain_windows import libraries, user_sid
-    api, kernel = libraries(); descriptor = C.c_void_p(); current = user_sid()
-    sddl = 'O:' + current + 'D:P' + ''.join('(A;;FA;;;' + sid + ')' for sid in (current, 'SY', 'BA'))
-    api.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [W.LPCWSTR, W.DWORD, C.POINTER(C.c_void_p), C.c_void_p]
-    if not api.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, C.byref(descriptor), None):
-        raise ValueError('Private Windows lock security unavailable')
+    api, kernel = libraries(); descriptor = C.c_void_p()
+    if not cache:
+        current = user_sid()
+        sddl = 'O:' + current + 'D:P' + ''.join('(A;;FA;;;' + sid + ')' for sid in (current, 'SY', 'BA'))
+        api.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [W.LPCWSTR, W.DWORD, C.POINTER(C.c_void_p), C.c_void_p]
+        if not api.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, C.byref(descriptor), None):
+            raise ValueError('Private Windows lock security unavailable')
     try:
         security = _WindowsSecurityAttributes(C.sizeof(_WindowsSecurityAttributes), descriptor, False)
         kernel.CreateFileW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, C.c_void_p, W.DWORD, W.DWORD, W.HANDLE]
@@ -103,13 +105,14 @@ def _windows_open_lock(path):
         kernel.CloseHandle.argtypes = [W.HANDLE]
         # OPEN_ALWAYS ignores the descriptor for an existing lock. Do not share
         # deletion: every caller must lock the same persistent filesystem item.
-        handle = kernel.CreateFileW(str(path), 0xC0000000, 3, C.byref(security), 4, 0x00200080, None)
+        handle = kernel.CreateFileW(str(path), 0xC0000000, 3, None if cache else C.byref(security), 4, 0x00200080, None)
         if handle in (None, C.c_void_p(-1).value):
             raise ValueError('Private Windows lock unavailable')
         try: return msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
         except BaseException:
             kernel.CloseHandle(handle); raise
-    finally: kernel.LocalFree(descriptor)
+    finally:
+        if descriptor: kernel.LocalFree(descriptor)
 
 
 
@@ -199,17 +202,16 @@ def cache_mode(path, *, directory=False, blocked=ValueError):
 
 
 def cache_directory(path):
-    """Create new private cache directories; accept existing Windows ACLs."""
+    """Use native inherited cache access on Windows; leave existing ACLs intact."""
     if os.name != 'nt':
         return private_directory(path)
     require_platform('cache-storage')
-    from brain_windows import canonical, protect_new
+    from brain_windows import canonical
     path = canonical(path)
     if not path.exists():
         if not path.parent.exists(): cache_directory(path.parent)
         try: path.mkdir()
         except FileExistsError: pass
-        else: protect_new(path, directory=True)
     cache_mode(path, directory=True)
     return path
 
@@ -311,7 +313,7 @@ def locked(path, timeout=20, shared=False, cancel_check=None, *, cache=False):
         from brain_windows import canonical
         canonical(path)
         (cache_directory if cache else private_directory)(path.parent)
-        fd = _windows_open_lock(path)
+        fd = _windows_open_lock(path, cache=cache)
         try: handle = os.fdopen(fd, 'r+b')
         except BaseException:
             os.close(fd); raise

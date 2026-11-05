@@ -41,7 +41,8 @@ def lease(path, *, cache=False):
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
-            file_mode(fd,0o600)
+            if not cache or os.name != 'nt':
+                file_mode(fd,0o600)
         finally:
             os.close(fd)
     except FileExistsError:

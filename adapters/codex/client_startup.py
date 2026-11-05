@@ -59,7 +59,8 @@ def serve_content(command,active,policy,status):
         path=cache/'.content-runtime.lock'
         try:
             fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
-            try: file_mode(fd,0o600)
+            try:
+                if os.name != 'nt': file_mode(fd,0o600)
             finally: os.close(fd)
         except FileExistsError:pass
         if path.is_symlink():raise ValueError('Content lease changed')
