@@ -300,7 +300,7 @@ def recall(value, local, session, query='personal preferences and task progress'
                 # The authenticated Server checks a peer's own approved origins.
                 # Client paths describe this device and cannot authorize a peer's
                 # filesystem. Retain structural/applicability checks for both.
-                if not isinstance(context, dict) or source_context(context.get('origins', []), local) != context or not peer and any(select(value['scope'], x) is None for x in context['origins']):
+                if not isinstance(context, dict) or source_context(context.get('origins', []), local) != context or not peer and not proof.get('manual_sources') and any(select(value['scope'], x) is None for x in context['origins']):
                     raise ValueError('Verified origin applicability required')
                 if old.private_content(row['content']) or restricted(row['content']): continue
                 items.append({'scope': group['sharing'], 'layer': layer, 'content': row['content'], 'source_context': context,

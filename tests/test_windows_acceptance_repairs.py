@@ -111,6 +111,27 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
         self.fixture.cloud.grant['scopes'] = ['put']
         with self.assertRaises(ProtocolError): ContentServer(self.adapter).invoke('memory_query', self.params)
 
+    def test_manual_writer_device_can_differ_from_storage_device_and_unknown_context_is_explicit(self):
+        for origin in (self.local,None):
+            proof={'status':'verified-l1-source-graph','event_ids':[],'generation_ids':[],
+                   'sources':[],'model_output_truth_verified':False,'manual_sources':[{
+                    'kind':'agent','actor':'synthetic-owner','device_id':self.device,
+                    'identity':{'device_id':self.device,'project_id':self.project,'session_id':None},
+                    'origin':origin,'original_id':'synthetic-direct','revision':'d'*64,'record_id':'abm-'+'e'*64,'state':'committed'}]}
+            row={'content':'Synthetic direct fact','provenance':proof,
+                 'source_context':source_context([] if origin is None else [origin],self.local)}
+            def response(request):
+                return {'request_id':request['request_id'],'result':{'schema':1,'namespace_results':[
+                    {'project_id':self.project,'sharing':'personal','source_device_id':self.peer,
+                     'recall':{'L0':[],'L1':[row],'L2':[],'L3':{'content':None,'provenance':{}},
+                               'cross_session':True,'model_extraction_verified':False}}]}}
+            self.client.transport.request=response
+            result=ContentServer(self.adapter).invoke('memory_query',self.params)
+            self.assertFalse(result['isError'],result)
+            if origin is None:self.assertEqual(row['source_context']['relation'],'unknown-source')
+            proof['manual_sources'][0]['identity']['device_id']=self.peer
+            self.assertTrue(ContentServer(self.adapter).invoke('memory_query',self.params)['isError'])
+
     def test_empty_never_approved_install_can_explicitly_select_existing_pool(self):
         home = self.fixture.home
         file = gm.settings_path(home)

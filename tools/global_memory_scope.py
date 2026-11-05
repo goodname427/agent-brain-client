@@ -104,11 +104,11 @@ def source_context(origins, current):
     """Location applicability is separate from searchable memory content."""
     origin(current)
     rows = {digest(origin(item)): item for item in origins}
-    if not rows or len(rows) > 32:
+    if len(rows) > 32:
         raise ValueError('Bounded verified origin context required')
     def key(item):
         return (item['kind'], path(item['repository_root'] or item['cwd']).casefold())
     matches = [key(item) == key(current) for item in rows.values()]
-    relation = 'current-source' if all(matches) else 'other-source' if not any(matches) else 'mixed-source'
+    relation = 'unknown-source' if not rows else 'current-source' if all(matches) else 'other-source' if not any(matches) else 'mixed-source'
     return {'origins': [rows[k] for k in sorted(rows)], 'relation': relation,
             'use': 'reference-only', 'global_rule': False}

@@ -10,11 +10,11 @@
 
 有效的内容写入回执另附 `write_status`，首先明确“服务器已保存”。GitHub 备份单独标为 `confirmed`、`pending` 或 `needs-attention`。Server 返回正常 `automatic_retry.state=waiting` 时无需重复写入或轮询；暂停、需审查和 `attention_required=true` 会明确提示处理备份，MCP 保存结果仍为成功。原始 `persistence`、备份诊断及本机队列完整保留；旧 Server 缺少重试元数据时只报告备份尚未确认，不推断后台正在工作。离线、CAS 冲突及非法回执不会得到保存成功摘要。此摘要不用于自动采集的 Core 接收回执。
 
-同一目标前面存在未解决的 `conflict` 或 `blocked` 请求时，后续请求仍保留 `pending`，返回 `content_queue_blocked`、`retryable:false`；`local_queue.blocked_by` 列出实际阻塞的请求 ID 与状态，`next_action` 说明恢复步骤。这表示先解决依赖才能继续，不能把它报告成普通网络等待，也不能假定所有 pending 都来自冲突。这些诊断由现有队列计算，不改写队列格式、请求内容或 ID，不返回记忆正文或本地路径。
+已明确拒绝的 `conflict` 和 `blocked` 保留原始提案、错误及冲突快照，但不再阻止新请求。新保存直接使用 `content_read` 的当前 CAS 版本；服务器仍拒绝过期版本，不自动覆盖或重定基线。未知结果的 pending 仍先按原请求和原 ID 恢复，不能通过换 ID 绕过。
 
 `content_queue_inspect({})` 只读本机保留队列，每页最多 64 条元数据，使用 `next_cursor` 继续；队列变化后重新从第一页检查。它列出请求 ID、目标、状态、CAS 基线和阻塞项，不发送或重试请求。`content_queue_inspect({"request_id":"…"})` 返回该请求原文、`reconciles`、原回执与已缓存的冲突版本，供 Agent 完整审阅。缓存版本可能过期，合并前仍通过 `content_read` 读当前版本。该工具仅在现有内容写入授权内声明，不扫描其他设备、原生记忆来源或历史会话；普通更新按同源工具契约登记它。
 
-对于 CAS 冲突，保留原始提案，使用 `content_read` 读取当前版本，并审阅本地提案和远端版本。显式确认合并后，以新的稳定 `request_id`、当前 `expected_revision` 和 `reconciles.request_ids` 指向确切冲突，提交新的 `content_put`。这是新的合并操作，不能仅换 ID 重发原写入。已有 pending 请求的参数及 reconciliation 引用不可修改。只有合并请求取得有效服务器保存回执后，旧冲突才标为 `reconciled` 并保留 `resolution_request_id`；丢失回执时沿用合并请求原 ID 恢复。后续原请求仍使用自己的 CAS 基线，过期时会明确冲突，不自动覆盖或重定基线。未选中的冲突继续阻塞。
+对于 CAS 冲突，保留原始提案，使用 `content_read` 读取当前版本，并审阅本地提案和远端版本。显式确认合并后，以新的稳定 `request_id`、当前 `expected_revision` 和 `reconciles.request_ids` 指向确切冲突，提交新的 `content_put`。这是新的合并操作，不能仅换 ID 重发原写入。已有 pending 请求的参数及 reconciliation 引用不可修改。只有合并请求取得有效服务器保存回执后，旧冲突才标为 `reconciled` 并保留 `resolution_request_id`；丢失回执时沿用合并请求原 ID 恢复。后续原请求仍使用自己的 CAS 基线，过期时会明确冲突，不自动覆盖或重定基线。未选中的冲突继续保留，供后续审阅，不阻塞其他有效 CAS 写入。
 
 非 CAS 的 `blocked` 请求需先审阅原错误、修复原因，再显式重试完全相同的请求；刷新不会自动重试它。禁止通过删除队列或修改用户数据解除阻塞。实际设备队列的诊断和恢复验收需另行进行，合成测试不能证明 Windows 或 Mac 上已有 pending 已送达。
 
@@ -45,3 +45,9 @@ Windows 使用 `CreateFileW` 的 `OPEN_EXISTING`、`FILE_FLAG_OPEN_REPARSE_POINT
 源码测试不写生产 Rule/Skill/Memory，不采集新来源或执行真实生命周期验收。未来新增短记或纠正复用 content_put；既有 read/put 不增加 delete/admin/activation。行为指引与查询的源码实现、发布、部署和实际运行验收分别报告。
 
 安装结果交接和本机 status 随仓库安装入口源码交付；运行期 MCP 的新指引及 `model_loaded:"unknown"` 回执需发布并激活经过审核的活动 Client 包后才生效，运行中的旧 worker 不会热替换。共享三套 Skill 的正文如需调整，应另用受控内容更新流程，不能直接修改受管映射或仅凭源码更新宣称服务端 Skill 已改变。
+
+## 查询默认值与手动来源
+
+正式 MCP 的 `memory_query` 只需 `query`。当前目录来源在安装包内读取，不依赖开发仓库工具；结果数量自动限制到 1～3。普通目录可按 non-project 查询，项目来源省略 repository_root 时复用 project_root。内部执行错误不会再误报为 JSON 解析失败。
+
+Memory 写入自动附带当前目录元数据；宿主提供 `CODEX_THREAD_ID` 时记录该真实会话，也可显式传 `source_context`。不可用的会话或位置记为 null，不从正文猜测，也不沿用服务端迁移会话。来源在请求首次入队时固定，重启及重试复用原请求。旧客户端未提供来源时返回 `unknown-source`；历史记录中已知设备不一致的迁移来源只在读取时标为未知位置与会话，保留原账本。Server 应先于 Client 升级以支持可选字段。
