@@ -366,9 +366,9 @@ class RemoteClient:
         req.add_header('X-Agent-Brain-Protocol', '1')
         req.add_header('X-Agent-Brain-State-Schema', '1')
         if self.data_mode=='personal':req.add_header('X-Agent-Brain-Data-Mode','personal')
-        if self.write_receipt is not None and request.get('method') in ('remember','forget','content_put','content_remove'):
+        if self.write_receipt is not None and request.get('method') in ('remember','forget','content_put','content_remove','content_set_enabled'):
             req.add_header('X-Agent-Brain-Write-Receipt',self.write_receipt)
-        write=request.get('method') in ('remember','forget','content_put','content_remove','memory_event_submit','memory_extract')
+        write=request.get('method') in ('remember','forget','content_put','content_remove','content_set_enabled','memory_event_submit','memory_extract')
         core=(request.get('method') in ('memory_event_submit','memory_extract','memory_global_query') or request.get('method')=='memory_query'
               and isinstance(request.get('params'),dict) and ('context' in request['params'] or 'origin' in request['params']))
         def response_json(raw):
