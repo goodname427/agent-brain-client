@@ -388,7 +388,31 @@ class ContentAdapter:
     def methods(self):
         grant=getattr(self.client,'grant',{'scopes':['read','write'],'artifact_types':self.policy['kinds']})
         methods=contract.methods(grant['scopes']) if set(self.policy['kinds'])<=set(grant['artifact_types']) else set()
+        if not set(self.policy['kinds']) & {'rule','skill'}:methods.discard('content_set_enabled')
         return methods if 'memory' in self.policy['kinds'] else methods-{'memory_query','memory_event_submit'}
+
+    def mapping_status(self,kind,identity,revision):
+        """Inspect verified local files against a live revision without refreshing."""
+        contract.validate('content_read',{'kind':kind,'id':identity})
+        if kind not in self.policy['kinds'] or not self._allows(kind,identity):raise CacheBlocked()
+        try:
+            with locked(self.cache/'content.lock',cancel_check=check_request):
+                journal=self._load('transaction.json')
+                if journal is not None and journal.get('phase') not in ('complete','rolled-back'):raise CacheBlocked()
+                self._owned()
+                active=self._load('active.json')
+                if active is None:return {'status':'pull-required','model_loaded':'unknown'}
+                if (not isinstance(active,dict) or set(active)!={'commit','snapshot_sha'} or
+                        not isinstance(active['commit'],str) or not re.fullmatch(r'[a-f0-9]{40}',active['commit'])):raise CacheBlocked()
+                snapshot=self._load('snapshots/'+active['commit']+'.json')
+                if (not isinstance(snapshot,dict) or snapshot.get('commit')!=active['commit'] or
+                        sha(contract.encode(snapshot))!=active['snapshot_sha']):raise CacheBlocked()
+                value=next((v for v in snapshot['records'] if (v['kind'],v['id'])==(kind,identity)),None)
+                if value is not None:self._validate_target(value,kind,identity)
+                current=value is not None and value['revision']==revision
+                return {'status':'current' if current else 'pull-required','model_loaded':'unknown'}
+        except RequestStopped:raise
+        except Exception:return {'status':'review-required','model_loaded':'unknown'}
 
     def _load(self,name,default=None):
         require_platform('cache-storage',self.platform)
@@ -466,6 +490,7 @@ class ContentAdapter:
             values=reconciles[field]
             if not isinstance(values,list) or len(values)>256 or any(not isinstance(v,str) or not re.fullmatch(pattern,v) for v in values) or len(set(values))!=len(values):raise CacheBlocked()
         # A prior idempotent outbox entry must not bypass a later review revocation.
+        if request['method']=='content_set_enabled' and reconciles['source_keys']:raise CacheBlocked()
         self._assert_sources_shareable(reconciles['source_keys'])
         request=json.loads(contract.encode(request));digest=sha(contract.encode(request))
         name='outbox/'+request['request_id']+'.json';old=self._load(name)
@@ -478,6 +503,7 @@ class ContentAdapter:
         for rid in reconciles['request_ids']:
             previous=next((r for r in rows if r['request']['request_id']==rid),None)
             if previous is None or previous['state']!='conflict' or (previous['request']['params']['kind'],previous['request']['params']['id'])!=target:raise CacheBlocked()
+            if request['method']=='content_set_enabled' and previous['request']['method']!='content_set_enabled':raise CacheBlocked()
         for key in reconciles['source_keys']:
             item=self._imports()['items'].get(key)
             if item is None or item['status'] not in ('conflict','inventoried') or (item['source']['kind'],item['source']['id'])!=target:raise CacheBlocked()
@@ -631,6 +657,8 @@ class ContentAdapter:
         if not (remote or local):return False
         try:self._validate_target(value,params['kind'],params['id'])
         except Exception:return False
+        if request['method']=='content_set_enabled':
+            return value['record'] is not None and value['record']['enabled'] is params['enabled']
         return self._import_same(params['kind'],params.get('record'),value['record'],preserve_enabled=False)
 
     def _queue_result(self,row,rows=None):

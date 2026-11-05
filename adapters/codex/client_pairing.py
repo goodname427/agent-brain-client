@@ -137,9 +137,12 @@ class ComponentClient:
         try:
             if not isinstance(rid,str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,128}',rid) or set(request)!={'request_id','method','params'}:return blocked('invalid_content_request')
             name,params=request['method'],request['params']
-            if name not in ('content_read','content_catalog','content_put','content_remove') or not isinstance(params,dict):return blocked('invalid_content_request')
+            if name not in ('content_read','content_catalog','content_put','content_remove','content_set_enabled') or not isinstance(params,dict):return blocked('invalid_content_request')
+            if name=='content_set_enabled':
+                from content_contract import validate
+                validate(name,params)
             if name=='content_remove':return blocked('device_scope_review_required')
-            if ('write' if name in ('content_put','content_remove') else 'read') not in self.grant['scopes']:return blocked('device_scope_review_required')
+            if ('write' if name in ('content_put','content_remove','content_set_enabled') else 'read') not in self.grant['scopes']:return blocked('device_scope_review_required')
             kinds=params.get('kinds') if name=='content_catalog' else [params.get('kind')]
             if not isinstance(kinds,list) or not kinds or any(k not in self.grant['artifact_types'] for k in kinds):return blocked('device_scope_review_required')
             if name!='content_catalog' and (not isinstance(params.get('id'),str) or not allowed_id(self.grant['ids'],params['kind'],params['id'])):return blocked('device_scope_review_required')
@@ -156,7 +159,7 @@ class ComponentClient:
             if result.returncode or len(result.stdout)>262144:return failure
             response=json.loads(result.stdout)
             if not isinstance(response,dict) or response.get('request_id')!=rid or not isinstance(response.get('result',response.get('error')),dict):return failure
-            if request.get('method') in ('content_put','content_remove') and 'error' not in response and response.get('persistence',{}).get('durable') is not True:return failure
+            if request.get('method') in ('content_put','content_remove','content_set_enabled') and 'error' not in response and response.get('persistence',{}).get('durable') is not True:return failure
             if name=='content_catalog' and 'error' not in response:
                 artifacts=response['result'].get('artifacts')
                 if not isinstance(artifacts,list) or any(not isinstance(v,dict) or v.get('kind') not in kinds or not isinstance(v.get('id'),str) for v in artifacts):return failure

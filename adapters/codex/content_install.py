@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tomllib
 from client_release import https_files,policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,HTTPS_CONTENT_CLIENT_FILES,LEGACY_030_HTTPS_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases,dependency_environment
-from content_mcp import pinned,pairs,enabled_tools,LOCAL_TOOLS,TOOL_CONTRACT_VERSION
+from content_mcp import pinned,pairs,enabled_tools,TOOL_CONTRACT_VERSION
 from content_cache import validate_policy,sha,contract
 from client_pairing import ComponentClient
 from codex_connect import atomic,host_stage,host_atomic,host_image,NAME,BEGIN,END,BLOCK,toml_replace,migration_config_matches,toml_equal
@@ -186,7 +186,9 @@ def registered_context(home,metadata,config_image=None):
     if recorded.get('enabled') is False:mcp['enabled']=False
     # Existing installed tables retain their authenticated legacy whitelist.
     # Inspection never enables local tools or rewrites native configuration.
-    if recorded.get('enabled_tools') == sorted(set(mcp['enabled_tools'])-LOCAL_TOOLS-{'memory_query'}):
+    historical_tools=(sorted(set(mcp['enabled_tools']) & {'content_catalog','content_read','content_put','content_remove'}),
+                      sorted(set(mcp['enabled_tools'])-{'content_set_enabled'}))
+    if recorded.get('enabled_tools') in historical_tools:
         mcp['enabled_tools']=recorded['enabled_tools']
     if recorded!=mcp:raise InstallBlocked('Installed MCP binding drift')
     return policy,mcp,package_sha,native
@@ -291,7 +293,7 @@ def probe_bootstrap(plan):
 
 def validate_install_scope(plan):
     keys={'schema','adapter','platform','device_home','codex_home','package','package_sha256','release_policy','release_policy_sha256','replace_existing','mcp','before','config_after_sha256','legacy_agents'}
-    if not isinstance(plan,dict) or set(plan) not in (keys, keys|{'tool_contract_version'}) or ('tool_contract_version' in plan and (type(plan['tool_contract_version']) is not int or plan['tool_contract_version']!=TOOL_CONTRACT_VERSION)) or plan['schema']!=1 or plan['adapter']!='codex' or type(plan['replace_existing'])!=bool:raise InstallBlocked('Unsupported install plan')
+    if not isinstance(plan,dict) or set(plan) not in (keys, keys|{'tool_contract_version'}) or ('tool_contract_version' in plan and (type(plan['tool_contract_version']) is not int or plan['tool_contract_version'] not in (2,TOOL_CONTRACT_VERSION))) or plan['schema']!=1 or plan['adapter']!='codex' or type(plan['replace_existing'])!=bool:raise InstallBlocked('Unsupported install plan')
     path_type=platform_paths(plan['platform'])
     home,native=path_type(plan['device_home']),path_type(plan['codex_home'])
     if any(not p.is_absolute() or '..' in p.parts for p in (home,native)):raise InstallBlocked('Absolute native paths required')

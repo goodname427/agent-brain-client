@@ -41,7 +41,7 @@ class ContentParameterError(ProtocolError):
         super().__init__(-32602,message)
 
 
-TOOL_CONTRACT_VERSION = 2
+TOOL_CONTRACT_VERSION = 3
 
 
 def current_origin():
@@ -69,8 +69,8 @@ def local_tools(kinds, memory_sources, layered_recall=False):
     tools.append({'name':'content_queue_inspect','description':'Inspect this Client\'s retained write queue without sending, retrying or changing requests. With no arguments, list a page of path-free metadata and exact blocking request IDs; use next_cursor for more. With request_id, read the exact original proposal, CAS base, reconciliation references, saved response and cached remote conflict snapshot. The snapshot may be stale: call content_read before an explicit reviewed merge through content_put with a new stable request_id and reconciles.request_ids. Unknown pending outcomes require the identical original request and ID; never replace, rebase or delete them. Terminal conflicts remain reviewable and do not block fresh CAS writes. Uncertain pending outcomes still require exact replay. No device or source discovery.','inputSchema':{'type':'object','properties':{'request_id':{'type':'string','pattern':'^[A-Za-z0-9_-]{16,128}$'},'cursor':{'type':'string','maxLength':96}},'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
     if layered_recall:
         origin = {'type':'object','properties':{'kind':{'type':'string','enum':['project','non-project']},'cwd':{'type':'string'},'project_root':{'type':['string','null']},'repository_root':{'type':['string','null']}},'required':['kind','cwd','project_root','repository_root'],'additionalProperties':False}
-        tools.append({'name':'memory_query','description':'The single memory query and automatic recall entry. Read shared L1/L2/L3 memory through the approved HTTPS Server using the existing device identity. Optional origin defaults to current directory metadata; optional session_id defaults to a distinct reader ID. Server source approval is required; this tool cannot enable capture, enroll a device, import old conversations or call a model. Returns layer-specific committed event provenance and source applicability. Direct and automatically extracted facts share L1 and the same L2/L3 derivation. Empty layers remain unconfirmed. '+RECALL_EVIDENCE_GUIDANCE,'inputSchema':{'type':'object','properties':{'origin':origin,'session_id':{'type':'string','pattern':'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'},'query':{'type':'string','minLength':1,'maxLength':1024},'limit':{'type':'integer','default':3,'description':'Result budget is clamped to 1 through 3.'}},'required':['query'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
-    tools.append({'name':'content_request_id','description':'Generate a deterministic idempotent write request_id from the completed Codex turn digest, operation and AgentBrain target identity. Different targets/operations in one turn receive different IDs; retries of the same operation get the same ID. Local-only; no transfer.','inputSchema':{'type':'object','properties':{'turn_sha256':{'type':'string','pattern':'^[a-f0-9]{64}$'},'method':{'type':'string','enum':['content_put','content_remove']},'kind':{'type':'string','enum':kinds},'id':{'type':'string','pattern':'^[a-z0-9][a-z0-9-]{0,63}$'}},'required':['turn_sha256','method','kind','id'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
+        tools.append({'name':'memory_query','description':'The single memory query and automatic recall entry. Read shared L1/L2/L3 memory through the approved HTTPS Server using the existing device identity. Optional origin defaults to current directory metadata; optional session_id defaults to a distinct reader ID. Server source approval is required; this tool cannot enable capture, enroll a device, import old conversations or call a model. Returns layer-specific committed event provenance and source applicability. Direct and automatically extracted facts share L1 and the same L2/L3 derivation. Empty layers remain unconfirmed. '+RECALL_EVIDENCE_GUIDANCE,'inputSchema':{'type':'object','properties':{'origin':origin,'session_id':{'type':'string','pattern':'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'},'query':{'type':'string','minLength':1,'maxLength':1024},'limit':{'type':'integer','minimum':1,'default':5,'description':'Native L1 maxResults per namespace; L2/L3 are assembled separately.'},'recall':{'type':'object','properties':{'strategy':{'type':'string','enum':['keyword','embedding','hybrid']},'scoreThreshold':{'type':'number'},'maxCharsPerMemory':{'type':'integer','minimum':0},'maxTotalRecallChars':{'type':'integer','minimum':0},'timeoutMs':{'type':'integer','minimum':1}},'additionalProperties':False,'description':'Native recall settings. Zero character budgets are unlimited; unavailable embeddings use native FTS fallback.'}},'required':['query'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
+    tools.append({'name':'content_request_id','description':'Generate a deterministic idempotent write request_id from the completed Codex turn digest, operation and AgentBrain target identity. Different targets/operations in one turn receive different IDs; retries of the same operation get the same ID. Local-only; no transfer.','inputSchema':{'type':'object','properties':{'turn_sha256':{'type':'string','pattern':'^[a-f0-9]{64}$'},'method':{'type':'string','enum':['content_put','content_remove','content_set_enabled']},'kind':{'type':'string','enum':kinds},'id':{'type':'string','pattern':'^[a-z0-9][a-z0-9-]{0,63}$'}},'required':['turn_sha256','method','kind','id'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
     if memory_sources:
         tools.append({'name':'content_sources_inventory','description':'Enumerate only the Codex persistent memories directory. Returns path-free IDs, file fingerprints and per-item processing status in pages of 64; never returns memory text or reads session/transcript files. Inventory is not semantic review or import coverage. Use the returned cursor for the next page; restart if it changes. Local-only read; no Server request or data transfer.','inputSchema':{'type':'object','properties':{'cursor':{'type':'string','maxLength':96}},'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
         tools.append({'name':'content_sources_read','description':'Read the bounded body of exactly one previously inventoried Codex persistent Memory file, matching its ID and fingerprint. Local-only; never reads transcript/session paths and does not transfer data. Review the returned text for secrets, LocalOnly, customer/employer confidential data and cross-project scope before staging.','inputSchema':{'type':'object','properties':{'source_id':{'type':'string','pattern':'^codex-memory:[a-f0-9]{64}$'},'source_fingerprint':{'type':'string','pattern':'^[a-f0-9]{64}$'}},'required':['source_id','source_fingerprint'],'additionalProperties':False},'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True}})
@@ -95,7 +95,7 @@ def memory_sources_authorized(policy, grant):
 def tool_names(methods, memory_sources):
     names = set(methods) - contract.HOOK_METHODS
     names |= {tool['name'] for tool in local_tools([], memory_sources, memory_sources and 'memory_query' in methods)}
-    if not set(methods) & {'content_put','content_remove'}:names.discard('content_queue_inspect')
+    if not set(methods) & {'content_put','content_remove','content_set_enabled'}:names.discard('content_queue_inspect')
     return sorted(names)
 
 
@@ -108,6 +108,7 @@ def enabled_tools(policy, grant):
     validate_policy(policy, grant)
     methods = contract.mcp_methods(grant['scopes'])
     if 'memory' not in policy['kinds']:methods -= {'memory_query'}
+    if not set(policy['kinds']) & {'rule','skill'}:methods.discard('content_set_enabled')
     return tool_names(methods, memory_sources_authorized(policy, grant))
 
 
@@ -188,8 +189,7 @@ class ContentServer(Server):
             elif isinstance(arguments['origin'],dict) and arguments['origin'].get('kind')=='project' and arguments['origin'].get('repository_root') is None:
                 arguments['origin']=dict(arguments['origin'],repository_root=arguments['origin'].get('project_root'))
             arguments.setdefault('session_id','reader-'+uuid.uuid4().hex)
-            if type(arguments.get('limit')) is int:arguments['limit']=max(1,min(3,arguments['limit']))
-            params = dict({'limit':3}, **arguments)
+            params = dict({'limit':5,'recall':{}}, **arguments)
             contract.global_recall_params(params)
         except (ValueError, TypeError):
             raise ContentParameterError('Use a text query and optional integer limit. Origin and reader session default automatically.') from None
@@ -228,7 +228,7 @@ class ContentServer(Server):
                 required={'turn_sha256','method','kind','id'}
                 if not isinstance(arguments,dict) or set(arguments)!=required:raise ContentParameterError('Generate an idempotent request ID for one target and operation.')
                 if not isinstance(arguments['turn_sha256'],str) or not re.fullmatch(r'[a-f0-9]{64}',arguments['turn_sha256']):raise ContentParameterError('turn_sha256 must be the digest from the active Codex notify event.')
-                if arguments['method'] not in ('content_put','content_remove'):raise ContentParameterError('Only content_put or content_remove request IDs are supported.')
+                if arguments['method'] not in ('content_put','content_remove','content_set_enabled'):raise ContentParameterError('Only content write request IDs are supported.')
                 contract.validate('content_read',{'kind':arguments['kind'],'id':arguments['id']})
                 rid='agentbrain_'+hashlib.sha256(contract.encode([arguments['turn_sha256'],arguments['method'],arguments['kind'],arguments['id']])).hexdigest()
                 result={'request_id':rid,'data_transferred':False,'native_changed':False}
@@ -264,10 +264,10 @@ class ContentServer(Server):
             if not isinstance(arguments,dict):raise ContentParameterError('Content tool arguments must be an object.')
             if name=='content_catalog' and set(arguments)&{'query','since','until','limit'}:
                 if arguments.get('kinds')!=['memory']:raise ContentParameterError('Catalog query options are a Memory-only retrieval alias. For complete coverage pass kinds only.')
-                if set(arguments)-{'kinds','query','since','until','limit','request_id'}:raise ValueError()
+                if set(arguments)-{'kinds','query','since','until','limit','recall','request_id'}:raise ValueError()
                 return self.layered_recall({key:value for key,value in arguments.items() if key!='kinds'})
             required=contract.FIELDS[name]|({'request_id'} if name in contract.WRITES else set())
-            allowed=contract.FIELDS[name]|({'cursor'} if name=='content_catalog' else set())|{'request_id'}|({'reconciles','source_context'} if name=='content_put' else set())
+            allowed=contract.FIELDS[name]|({'cursor'} if name=='content_catalog' else set())|{'request_id'}|({'reconciles','source_context'} if name=='content_put' else {'reconciles'} if name=='content_set_enabled' else set())
             if set(arguments)-allowed or required-set(arguments):raise ValueError()
             params=dict(arguments);reconciles=params.pop('reconciles',None);rid=params.pop('request_id',uuid.uuid4().hex);contract.validate(name,params)
             if not isinstance(rid,str) or not 16<=len(rid)<=128 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in rid):raise ValueError()
@@ -327,6 +327,9 @@ class ContentServer(Server):
                 if name=='content_catalog':properties['cursor']={'type':'string','pattern':'^[a-f0-9]{64}:[0-9]{1,20}$','description':'Use next_cursor from the preceding page; omit to restart.'}
                 if 'kinds' in fields:properties['kinds']={'type':'array','items':{'type':'string','enum':kinds},'minItems':1,'uniqueItems':True}
                 if 'kind' in fields:properties['kind']['enum']=kinds
+                if name=='content_set_enabled':
+                    properties['kind']['enum']=[kind for kind in kinds if kind in ('rule','skill')]
+                    properties['enabled']={'type':'boolean'}
                 if 'record' in fields:
                     properties['record']={'oneOf':[
                         {'type':'object','properties':{'title':{'type':'string','maxLength':1024},'description':{'type':'string','maxLength':1024},'body':{'type':'string'},'type':{'type':'string','enum':['user','feedback','reference']}},'required':['title','description','body','type'],'additionalProperties':False},
@@ -335,9 +338,14 @@ class ContentServer(Server):
                     ],'description':'Typed v1 Memory, Rule, or Skill record. Server validates the selected record against kind.'}
                 required=[] if name=='memory_query' else list(sorted(fields))
                 if name in contract.WRITES:properties['request_id']={'type':'string','pattern':'^[A-Za-z0-9_-]{16,128}$'};required.append('request_id')
-                if name=='content_put':properties['reconciles']={'type':'object','description':'Local-only references to staged source plans or write conflicts; never sent to Server. Inspect retained proposals with content_queue_inspect and read the current target before merging. request_ids select only retained conflicts; recover pending outcomes by identical retry first. A still-inventoried source plan can be reconciled only by the exact staged record; a conflicted source plan requires an explicit merge of source and remote versions. Server persistence confirmation resolves selected conflicts.','properties':{'request_ids':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256},'source_keys':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256}},'required':['request_ids','source_keys'],'additionalProperties':False}
+                if name in ('content_put','content_set_enabled'):properties['reconciles']={'type':'object','description':'Local-only references to staged source plans or write conflicts; never sent to Server. Inspect retained proposals with content_queue_inspect and read the current target before merging. request_ids select only retained conflicts; recover pending outcomes by identical retry first. A still-inventoried source plan can be reconciled only by the exact staged record; a conflicted source plan requires an explicit merge of source and remote versions. Server persistence confirmation resolves selected conflicts.','properties':{'request_ids':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256},'source_keys':{'type':'array','items':{'type':'string'},'uniqueItems':True,'maxItems':256}},'required':['request_ids','source_keys'],'additionalProperties':False}
+                if name=='content_set_enabled':
+                    properties['reconciles']['properties']['source_keys']['maxItems']=0
+                    properties['reconciles']['description']='Optional explicit reconciliation of retained activation conflicts on this same target. Read the current target first; use a new request_id and current CAS revision. Source imports and ordinary edit conflicts cannot be resolved by activation.'
                 if name=='content_put':properties['source_context']={'type':'object','description':'Optional current Memory writing origin and actual host session_id. Directory metadata defaults locally; unavailable session is null, never guessed from the Server. Preserved unchanged on retries.','properties':{'origin':{'type':['object','null']},'session_id':{'type':['string','null']}},'required':['origin','session_id'],'additionalProperties':False}
                 description='Approved cloud content only. Server is the sole write boundary; retain CAS revision and request_id on write retries. Transport failures may return a verified stale snapshot with local_cache.stale=true; cache misses never prove remote absence. Local cache refresh does not reload existing model context. '
+                if name=='content_set_enabled':description+='Only on an explicit user enable/disable request for this exact Rule/Skill. Changes enabled alone on an existing record; ordinary content_put edits must preserve enabled. Check local_refresh separately from persistence; a saved change may still require a local mapping retry. '
+                if name=='content_put':description+='Preserve existing Rule/Skill enabled state; create disabled. Use content_set_enabled only for explicit user activation requests. '
                 if name=='content_catalog':description+='AgentBrain destination records only; this does not discover Harness-native sources. Omit cursor for the first authorized inventory page, then follow next_cursor until absent. Use memory_query for retrieval. '
                 if name in ('memory_query','content_read','content_catalog'):description+=RECALL_EVIDENCE_GUIDANCE
                 description+='Running worker version: '+self.client_version+'. '+UPDATE_GUIDANCE
@@ -349,7 +357,7 @@ class ContentServer(Server):
             mapping=self.adapter.refresh()
             result['content_mapping']=mapping
             result['serverInfo']['name']='agent-brain-content-codex-candidate'
-            result['instructions']=RECALL_EVIDENCE_GUIDANCE+contract.MEMORY_GUIDANCE+'content_catalog lists authorized AgentBrain destination records only; it does not discover Harness-native sources. '+'Writes require the current expected_revision and stable request_id; retain exact request arguments on retries. '+'Pending/local-confirmed/remote-confirmed and durable fields distinguish client, Server and backup status. '+'Rules/Skills retain enabled state; refreshing mappings does not reload an already running model. '+'Only granted methods and IDs are exposed; pairing and publication remain separate. '+'Native mapping result: '+json.dumps(mapping,sort_keys=True)+'. '+UPDATE_GUIDANCE
+            result['instructions']=RECALL_EVIDENCE_GUIDANCE+contract.MEMORY_GUIDANCE+'content_catalog lists authorized AgentBrain destination records only; it does not discover Harness-native sources. '+'Writes require the current expected_revision and stable request_id; retain exact request arguments on retries. '+'Pending/local-confirmed/remote-confirmed and durable fields distinguish client, Server and backup status. '+'Ordinary edits retain Rule/Skill enabled state; content_set_enabled requires an explicit user activation request. Refreshing mappings does not reload an already running model. '+'Only granted methods and IDs are exposed; pairing and publication remain separate. '+'Native mapping result: '+json.dumps(mapping,sort_keys=True)+'. '+UPDATE_GUIDANCE
         return result
 
 def pinned(path,digest):

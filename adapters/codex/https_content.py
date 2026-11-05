@@ -240,7 +240,7 @@ class PinnedDeviceTask:
         if (set(e)!={'project_id','session_id'} or any(not isinstance(x,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',x) for x in e.values())
                 or set(r)!={'kind','query','since','until','limit','context'}
                 or r['kind']!='memory' or r['since'] is not None or r['until'] is not None
-                or type(r['limit']) is not int or not 1<=r['limit']<=3
+                or type(r['limit']) is not int or not 1<=r['limit']<=2**31-1
                 or not r['query'] or 'REPLACE_' in r['query']
                 or not isinstance(r['context'],dict) or set(r['context'])!={'project_id','session_id','cross_session'}
                 or r['context']['project_id']!=e['project_id'] or r['context']['cross_session'] is not True
@@ -277,7 +277,7 @@ class PinnedRecallPolicy:
                 or not 0<p['expires_at']-p['not_before']<=3600 or p['actor']!=self.profile['grant']['actor']
                 or p['endpoint']!=self.profile['endpoint'] or p['profile_sha256']!=self.profile_sha
                 or not isinstance(p['device_id'],str) or not re.fullmatch(r'[a-f0-9]{32}',p['device_id'])
-                or type(p['max_results']) is not int or not 1<=p['max_results']<=3):raise ValueError('Finite read-only recall policy required')
+                or type(p['max_results']) is not int or not 1<=p['max_results']<=2**31-1):raise ValueError('Finite read-only recall policy required')
         from content_contract import event_identifier
         event_identifier(p['project_id'])
         for name in ('source_sessions','recall_sessions'):
@@ -296,7 +296,7 @@ class PinnedRecallPolicy:
                 or p['source_mode'] not in ('codex-project','operator-notes') or p['actor']!=self.profile['grant']['actor']
                 or p['endpoint']!=self.profile['endpoint'] or p['profile_sha256']!=self.profile_sha
                 or not isinstance(p['device_id'],str) or not re.fullmatch(r'[a-f0-9]{32}',p['device_id'])
-                or type(p['max_results']) is not int or not 1<=p['max_results']<=3):raise ValueError('Persistent project recall policy required')
+                or type(p['max_results']) is not int or not 1<=p['max_results']<=2**31-1):raise ValueError('Persistent project recall policy required')
         for k in ('project_id','source_session_id','recall_session_id','source_device_id'):event_identifier(p[k])
         if p['source_session_id']==p['recall_session_id']:raise ValueError('Distinct logical streams required')
         off=Path(p['off_file'])
@@ -377,13 +377,17 @@ class HTTPSContentClient:
             elif method=='memory_extract' or method=='memory_query' and (self.device_task is not None or 'context' in params or 'selection' in params):
                 if self.device_task is None:raise ValueError('Explicit finite task required')
                 self.device_task.check(request,self.device_id)
-            elif method not in ('memory_query','memory_event_submit','memory_status','memory_resume','memory_stop','memory_revoke','memory_sync','content_catalog','content_read','content_put','client_updates'):raise ValueError('Device-only methods required')
+            elif method not in ('memory_query','memory_event_submit','memory_status','memory_resume','memory_stop','memory_revoke','memory_sync','content_catalog','content_read','content_put','content_set_enabled','client_updates'):raise ValueError('Device-only methods required')
             if method in ('memory_status','memory_resume','memory_stop','memory_revoke','memory_sync'):
                 from content_contract import validate
                 validate(method,params)
                 if 'memory' not in self.grant['artifact_types']:raise ValueError('Memory grant required')
+            if method=='content_set_enabled':
+                from content_contract import validate, permits_scope
+                validate(method,params)
+                if not permits_scope(self.grant['scopes'],method):raise ValueError('Content put grant required')
             if method=='memory_query' and 'memory' not in self.grant['artifact_types']:raise ValueError('Memory read grant required')
-            if method in ('content_read','content_put','memory_event_submit') and not allowed_id(self.grant['ids'],params['kind'],params['id']):raise ValueError('Unreviewed content ID')
+            if method in ('content_read','content_put','content_set_enabled','memory_event_submit') and not allowed_id(self.grant['ids'],params['kind'],params['id']):raise ValueError('Unreviewed content ID')
             result=self.transport.request(request)
             if method=='memory_query' and (self.device_task is not None or self.recall_policy is not None) and 'error' not in result:
                 from content_contract import core_recall
