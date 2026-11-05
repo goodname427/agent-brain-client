@@ -207,13 +207,13 @@ class ClientPackage:
 
 
 class ClientReleases:
-    def __init__(self, path, expected_sha, *, inspection=False):
+    def __init__(self, path, expected_sha, *, inspection=False, discovery_timeout=5):
         self.inspection=inspection
         self.policy=policy_file(path,expected_sha,runtime_check=not inspection)
         repo=Path(self.policy['repository'])
         if not (repo/'.git').is_dir():raise UpdateBlocked('Approved client-only release checkout required; no silent clone')
         # Bound each Git discovery command; MCP negotiation does not wait for it.
-        self.engine=ReleaseEngine(self.policy['cache'],self.policy,GitReleaseSource(repo,self.policy,timeout=5),ClientPackage(self.policy),{})
+        self.engine=ReleaseEngine(self.policy['cache'],self.policy,GitReleaseSource(repo,self.policy,timeout=discovery_timeout),ClientPackage(self.policy),{})
 
     def verified_active(self, *, serving=False):
         require_platform('release-update',self.policy['platform'])
