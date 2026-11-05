@@ -33,11 +33,11 @@ sh tools/install-codebuddy.sh --server 'https://your-server.example'
 | 查询与写入 | 原验证后 MCP 启动链及完整工具集；CAS、幂等键、回执、队列与 Server 同原 Client |
 | 自动召回 | SessionStart 和 UserPromptSubmit，复用原全局召回、来源证据检查、预算及离线标识 |
 | 用户消息采集 | UserPromptSubmit 的实际 prompt；generation_id 可用时去重，不合并两次独立的相同提问 |
-| CLI 助手采集 | 仅读取本轮 prompt Hook 记录的 JSONL 游标之后的 assistant 文本 |
+| CLI 助手采集 | Stop 提供时优先使用 last_assistant_message；缺失时仅读取本轮 prompt Hook 记录的 JSONL 游标之后的 assistant 文本 |
 | IDE 助手采集 | Stop 的 generation_id 精确匹配当前会话 index.json 请求，只读取该请求引用的 assistant 消息文件 |
 | 长回复与断网 | 按原事件协议分批，全部批次先写原 outbox，再联网；后续 Hook 逐条重试原事件，不生成替代请求 |
 
-Stop 本身没有最终正文，适配器不依赖未承诺的 `last_assistant_message`。原生正文格式依据本机官方 IDE 的 `HistoryStorage.getTranscriptPath`、`ConversationManager` 与 JSONL 消息结构实现，并用合成文件验证；这不是实机模型验收。只接受 Hook 给出的 CodeBuddy 原生存储路径和安装后实际观察到的当前轮。不会扫描历史会话、读取旧消息正文、工具输入输出、附件或推理内容。
+官方 Hooks 文档未承诺 Stop 最终正文；另外核对了官方 npm 包 `@tencent-ai/codebuddy-code` 2.180.0 的实际 Hook 输入转换代码，它会转发可用的 `last_assistant_message`，因此优先使用该字段，缺失再走原生正文读取。IDE 格式依据本机官方程序的 `HistoryStorage.getTranscriptPath`、`ConversationManager` 实现，JSONL 格式须匹配识别结构；均用合成文件验证，这不是实机模型验收。只接受 Hook 给出的 CodeBuddy 原生存储路径和安装后实际观察到的当前轮。不会扫描历史会话或读取旧消息正文；不采集工具输入输出、附件或推理内容。
 
 文件缺失、尚未写完、轮次交叠、轮换、未知格式、路径越界或来源停止时保留证据并给出内容无关诊断；查询、正常 MCP 写入和可用的召回不因助手正文缺失而被关闭。原生读取每次至多 4 MiB；超过边界明确失败，不截断后声称完整。没有 generation_id 的 IDE index 格式无法精确定位助手回复，保留 prompt 采集与召回并报告缺口。
 

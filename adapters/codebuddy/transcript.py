@@ -55,13 +55,16 @@ def marker(home, payload):
 def observe(home, payload, core):
     from brain_lock import cache_directory, locked
     from global_memory_scope import restricted
-    path = native_path(home, payload)
+    try:
+        path = native_path(home, payload)
+    except ValueError:
+        path = None  # Current CLI can provide final text directly on Stop.
     file = marker(home, payload)
     cache_directory(file.parent)
     with locked(file.parent / 'turns.lock'):
         existing = core.old.private_json(file, cache=True) if file.exists() else None
         binding = {'session_id': payload['session_id'], 'generation_id': payload.get('generation_id'),
-                   'path': str(path), 'cwd': payload['cwd'], 'prompt_sha256': digest(payload['prompt'].encode())}
+                   'path': str(path) if path else None, 'cwd': payload['cwd'], 'prompt_sha256': digest(payload['prompt'].encode())}
         # A stable generation can be redelivered. Older IDEs without one have
         # only a single active turn per session, and get a new cursor per prompt.
         if existing and payload.get('generation_id'):
@@ -69,6 +72,8 @@ def observe(home, payload, core):
                 raise ValueError('Native turn binding changed')
             return
         try:
+            if path is None:
+                raise FileNotFoundError()
             stream, info = open_native(path)
             stream.close()
             identity, offset = [info.st_dev, info.st_ino], info.st_size
@@ -76,7 +81,7 @@ def observe(home, payload, core):
             identity, offset = None, 0
         text = payload['prompt']
         row = {'schema': 1, 'binding': binding, 'identity': identity, 'offset': offset,
-               'excluded': bool(core.old.private_content(text) or restricted(text)), 'complete': False}
+               'excluded': bool(core.old.private_content(text) or restricted(text) or existing and not existing['complete'] and not payload.get('generation_id')), 'complete': False}
         core.old.write(file, row, cache=True)
 
 
@@ -118,12 +123,17 @@ def assistant(home, payload, core):
     if not file.exists():
         raise ValueError('No observed future prompt; historical import refused')
     row = core.old.private_json(file, cache=True)
-    path = native_path(home, payload)
     binding = row['binding']
-    if binding['path'] != str(path) or binding['session_id'] != payload['session_id'] or binding['generation_id'] != payload.get('generation_id') or binding['cwd'] != payload['cwd']:
+    if binding['session_id'] != payload['session_id'] or binding['generation_id'] != payload.get('generation_id') or binding['cwd'] != payload['cwd']:
         raise ValueError('Native Stop scope changed')
     if row['excluded'] or row['complete']:
         return [], row, file
+    direct = payload.get('last_assistant_message')
+    if isinstance(direct, str) and direct.strip():
+        return [{'role': 'assistant', 'content': direct}], row, file
+    path = native_path(home, payload)
+    if binding['path'] != str(path):
+        raise ValueError('Native transcript binding changed')
     texts = []
     if path.suffix == '.jsonl':
         raw = read_bound(path, offset=row['offset'], identity=row['identity'])

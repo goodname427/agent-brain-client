@@ -342,6 +342,14 @@ class Protocol(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform in ('darwin', 'win32'), 'Native Client filesystem required')
 class Transcript(Hooks):
+    def test_cli_direct_stop_text_uses_observed_turn_without_history_read(self):
+        self.hook()
+        output, result = self.hook(hook_event_name='Stop', stop_hook_active=False,
+                                   last_assistant_message='Actual CLI final reply')
+        self.assertEqual(output, {})
+        self.assertEqual(result['local_queue']['state'], 'confirmed')
+        self.assertEqual(self.sent[-1]['params']['event']['messages'][0]['content'], 'Actual CLI final reply')
+
     def native_file(self, suffix='.jsonl'):
         directory = self.fixture.home / '.codebuddy/projects/synthetic'
         directory.mkdir(parents=True, exist_ok=True)

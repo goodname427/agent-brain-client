@@ -248,6 +248,9 @@ def hook(home, stream, *, core=None):
         import transcript
         messages, row, file = transcript.assistant(home, payload, core)
         if not messages:
+            if row['excluded'] and not row['complete']:
+                row['complete'] = True
+                core.old.write(file, row, cache=True)
             return {}, {'status': 'assistant-text-unavailable-or-already-collected', 'data_transferred': False}
         # Bind retries without generation IDs to the observed prompt cursor.
         native = dict(payload, generation_id=payload.get('generation_id') or digest(json.dumps(row, sort_keys=True).encode()))
