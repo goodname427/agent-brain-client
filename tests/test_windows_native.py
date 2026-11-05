@@ -50,8 +50,11 @@ def check_install_contract(test, plan):
     active = json.loads((state / 'releases/active.json').read_bytes())
     def protocol_command(argv, **options):
         test.assertIn('--installation-check', argv)
+        runtime = content_install.private_json(plan['release_policy'])['runtime']
         return real_run([plan['mcp']['command'], '-I', '-B',
-            str(ROOT / 'tests/fixtures/checkpoint_probe.py'), active['package'], '--installation-result'], **options)
+            str(ROOT / 'tests/fixtures/checkpoint_probe.py'), active['package'], '--installation-result',
+            '--content-policy', runtime['content_policy'], '--content-policy-sha256', runtime['content_policy_sha256'],
+            '--https-profile', runtime['https_profile'], '--https-profile-sha256', runtime['https_profile_sha256']], **options)
     with patch.object(content_install.subprocess, 'run', side_effect=protocol_command):
         content_install.probe(plan)
 
@@ -322,7 +325,7 @@ class WindowsNative(unittest.TestCase):
             first = wizard.run(self.home, native, connection, wizard.sha(wizard.canonical(connection)), updater=updater(old_version), **options)
             self.assertTrue(first['installed'], first)
             self.assertTrue(content_install.inspect(self.home)['installed'])
-            self.assertEqual(len(content_install.private_json(self.home / '.config/agent-brain-client/first-install/install-plan.json')['mcp']['enabled_tools']), 10)
+            self.assertEqual(len(content_install.private_json(self.home / '.config/agent-brain-client/first-install/install-plan.json')['mcp']['enabled_tools']), 11)
             return
         with patch.object(wizard, 'export', side_effect=old_export), patch.object(wizard, 'prepare', side_effect=old_prepare), patch.object(content_install, 'prepare', side_effect=old_prepare):
             first = wizard.run(self.home, native, connection, wizard.sha(wizard.canonical(connection)), updater=updater(old_version), **options)
@@ -675,7 +678,7 @@ class WindowsNative(unittest.TestCase):
         self.assertTrue(first['installed'],first);identity=copy.deepcopy(backend.record)
         state=self.home/'.config/agent-brain-client';meta=ci.private_json(state/'codex-mcp.json')
         table=ci.tomllib.loads(config.read_text(encoding='utf-8'))['mcp_servers'][ci.NAME]
-        self.assertEqual(len(table['enabled_tools']),10)
+        self.assertEqual(len(table['enabled_tools']),11)
         # Execute the historical validator in its own process. It reconstructs
         # three tools and rejects the authenticated nine-tool registration.
         code="import sys,json;sys.path.insert(0,sys.argv[1]);import content_install;print(json.dumps(content_install.inspect(sys.argv[2])))"

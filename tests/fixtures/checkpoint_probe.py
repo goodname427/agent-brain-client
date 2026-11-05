@@ -21,6 +21,19 @@ policy = {'schema': 1, 'adapter': 'codex', 'kinds': ['memory'], 'ids': {'memory'
           'dependencies': {'commands': [], 'python_modules': []}}
 
 
+# Installation probes use the actual pinned synthetic profile/policy. A
+# Memory-only stand-in cannot prove Rule/Skill-specific tool declarations.
+if '--content-policy' in sys.argv:
+    from content_mcp import pinned
+    from content_cache import validate_policy
+    def argument(name):
+        return sys.argv[sys.argv.index(name) + 1]
+    policy = pinned(argument('--content-policy'), argument('--content-policy-sha256'))
+    profile = pinned(argument('--https-profile'), argument('--https-profile-sha256'))
+    grant = profile['grant']
+    validate_policy(policy, grant)
+
+
 class Cloud:
     def __init__(self):
         self.grant = grant

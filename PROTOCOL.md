@@ -39,8 +39,11 @@ All requests retain the stable `request_id`; writes retain
 | `content_read` | `kind`, `id` |
 | `content_put` | `kind`, `id`, `record`, `expected_revision` |
 | `content_remove` | `kind`, `id`, `expected_revision` |
+| `content_set_enabled` | existing `rule` / `skill` `kind`, `id`, boolean `enabled`, non-missing `expected_revision` |
 
-Default personal scope is `read/put`, exposing catalog/read/put only. `put` permits both creation and CAS update. Legacy `write` is a put alias for typed content and does not imply removal. `content_remove` requires a separately approved explicit `remove` scope at both device and Server policy boundaries; personal daily Memory removal remains blocked. Protocol support never grants an operation automatically. The unchanged signed component candidate supports its reviewed read/write profile and rejects removal; no new signing permission is inferred.
+Default personal scope is `read/put`, exposing catalog/read/put and the explicit Rule/Skill activation method. `put` permits both creation and CAS update. Legacy `write` is a put alias for typed content and does not imply removal. `content_remove` requires a separately approved explicit `remove` scope at both device and Server policy boundaries; personal daily Memory removal remains blocked. Protocol support never grants an operation automatically. The signed component candidate supports its reviewed read/write profile and rejects removal; no new signing permission is inferred.
+
+`content_set_enabled` requires an explicit user enable/disable request and changes only enabled under the Server CAS lock. Ordinary read/put devices still create disabled Rules/Skills and preserve enabled on content_put edits. Activation uses the same finite/owner ID and put checks, durable outbox and persistence receipt; a confirmed save triggers transactional local mapping. Reads remain read-only; other devices pull at startup or explicitly. Server save, GitHub backup, local mapping and model loading are separate outcomes. See [Rule / Skill management](docs/reference/rule-skill-management.md).
 
 The current extensible contract recognizes `memory`, `rule`, `skill`; unknown
 kinds require a verified contract/adapter release. Each read or write result

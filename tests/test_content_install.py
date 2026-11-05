@@ -177,7 +177,7 @@ class ContentInstall(unittest.TestCase):
             grant=outer.grant
             def request(c,request):
                 outer.assertEqual(request['method'],'content_catalog');return {'request_id':request['request_id'],'result':{'content_api_version':1,'commit':'a'*40,'artifacts':[]},'persistence':{'state':'read-only'}}
-        before=self.native_files();result=installation_check(Client(),self.content_value);self.assertTrue(result['authentication_checked']);self.assertEqual(set(result['tools']),{'memory_query','content_catalog','content_read','content_put','content_queue_inspect','content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'});self.assertFalse(result['native_changed']);self.assertEqual(self.native_files(),before)
+        before=self.native_files();result=installation_check(Client(),self.content_value);self.assertTrue(result['authentication_checked']);self.assertEqual(set(result['tools']),{'memory_query','content_catalog','content_read','content_put','content_set_enabled','content_queue_inspect','content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'});self.assertFalse(result['native_changed']);self.assertEqual(self.native_files(),before)
 
     def test_installation_protocol_check_accepts_rule_skill_only_read_grant(self):
         class Client:
@@ -226,6 +226,36 @@ class ContentInstall(unittest.TestCase):
         self.assertEqual(self.native_files(), before)
         self.assertEqual(install.tomllib.loads(self.config.read_text())['mcp_servers'][install.NAME]['enabled_tools'],
                          ['content_catalog', 'content_put', 'content_read'])
+
+    def test_previous_full_tool_filter_is_inspected_without_enabling_activation(self):
+        from pending_install_recovery import previous_tool_plans
+        plan = previous_tool_plans(self.plan())[1]
+        with patch.object(install, 'prepare', return_value=plan):
+            self.assertTrue(install.apply(plan, self.digest(plan), lambda p: None)['installed'])
+        before = self.native_files()
+        self.assertTrue(install.inspect(self.home)['installed'])
+        self.assertEqual(self.native_files(), before)
+        registered = install.tomllib.loads(self.config.read_text())['mcp_servers'][install.NAME]
+        self.assertNotIn('content_set_enabled', registered['enabled_tools'])
+        self.assertIn('content_queue_inspect', registered['enabled_tools'])
+
+    def test_contract_two_pending_plan_migrates_with_original_attempt_and_journal(self):
+        import pending_install_recovery as recovery
+        state = self.home / '.config/agent-brain-client/first-install'
+        state.mkdir(parents=True, mode=0o700)
+        path, attempt = state / 'install-plan.json', state / 'pairing-attempt.json'
+        current = self.plan()
+        old = recovery.previous_tool_plans(current)[1]
+        install.save(path, old)
+        original_attempt = {'schema': 1, 'plan_sha256': self.digest(old)}
+        install.save(attempt, original_attempt)
+        self.assertEqual(recovery.refresh_plan(path, lambda: {'status': 'current'}), current)
+        journal = install.private_json(state / 'tools-recovery.json')
+        self.assertEqual(journal['before'], old)
+        self.assertEqual(journal['attempt'], original_attempt)
+        self.assertEqual(journal['phase'], 'complete')
+        self.assertEqual(install.private_json(attempt)['plan_sha256'], self.digest(current))
+        self.assertIn('content_set_enabled', current['mcp']['enabled_tools'])
 
     def test_three_tool_plan_migration_recovers_each_write_and_rejects_scope_drift(self):
         import pending_install_recovery as recovery

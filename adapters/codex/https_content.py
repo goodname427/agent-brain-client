@@ -377,13 +377,17 @@ class HTTPSContentClient:
             elif method=='memory_extract' or method=='memory_query' and (self.device_task is not None or 'context' in params or 'selection' in params):
                 if self.device_task is None:raise ValueError('Explicit finite task required')
                 self.device_task.check(request,self.device_id)
-            elif method not in ('memory_query','memory_event_submit','memory_status','memory_resume','memory_stop','memory_revoke','memory_sync','content_catalog','content_read','content_put','client_updates'):raise ValueError('Device-only methods required')
+            elif method not in ('memory_query','memory_event_submit','memory_status','memory_resume','memory_stop','memory_revoke','memory_sync','content_catalog','content_read','content_put','content_set_enabled','client_updates'):raise ValueError('Device-only methods required')
             if method in ('memory_status','memory_resume','memory_stop','memory_revoke','memory_sync'):
                 from content_contract import validate
                 validate(method,params)
                 if 'memory' not in self.grant['artifact_types']:raise ValueError('Memory grant required')
+            if method=='content_set_enabled':
+                from content_contract import validate, permits_scope
+                validate(method,params)
+                if not permits_scope(self.grant['scopes'],method):raise ValueError('Content put grant required')
             if method=='memory_query' and 'memory' not in self.grant['artifact_types']:raise ValueError('Memory read grant required')
-            if method in ('content_read','content_put','memory_event_submit') and not allowed_id(self.grant['ids'],params['kind'],params['id']):raise ValueError('Unreviewed content ID')
+            if method in ('content_read','content_put','content_set_enabled','memory_event_submit') and not allowed_id(self.grant['ids'],params['kind'],params['id']):raise ValueError('Unreviewed content ID')
             result=self.transport.request(request)
             if method=='memory_query' and (self.device_task is not None or self.recall_policy is not None) and 'error' not in result:
                 from content_contract import core_recall

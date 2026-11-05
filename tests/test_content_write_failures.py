@@ -4,6 +4,7 @@ from contextlib import contextmanager, redirect_stderr
 import copy
 import io
 import json
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -556,6 +557,15 @@ class QueueRecovery(unittest.TestCase):
         result = self.f.restart().invoke(exact['request'], reconciles=exact['reconciles'])
         self.assertTrue(result['local_queue']['server_saved'])
         self.assertEqual(self.f.cloud.puts, 3)
+
+
+def load_tests(loader, tests, pattern):
+    # The established Windows CI entry runs this suite explicitly. Include
+    # shared activation/UI contracts there while Mac discovery loads them once.
+    if sys.platform == 'win32':
+        import test_content_activation
+        tests.addTests(loader.loadTestsFromModule(test_content_activation))
+    return tests
 
 
 if __name__ == "__main__":
