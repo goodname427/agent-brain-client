@@ -79,9 +79,14 @@ def observe(home, payload, core):
             identity, offset = [info.st_dev, info.st_ino], info.st_size
         except FileNotFoundError:
             identity, offset = None, 0
+        historical = False
+        if path is not None and path.name == 'index.json' and path.exists():
+            index = json.loads(read_bound(path), object_pairs_hook=unique)
+            historical = any(r.get('id') == payload.get('generation_id') and r.get('state') not in (None, 'running')
+                             for r in index.get('requests', []) if isinstance(r, dict))
         text = payload['prompt']
         row = {'schema': 1, 'binding': binding, 'identity': identity, 'offset': offset,
-               'excluded': bool(core.old.private_content(text) or restricted(text) or existing and not existing['complete'] and not payload.get('generation_id')), 'complete': False, 'stopped': False}
+               'excluded': bool(historical or core.old.private_content(text) or restricted(text) or existing and not existing['complete'] and not payload.get('generation_id')), 'complete': False, 'stopped': False}
         core.old.write(file, row, cache=True)
 
 

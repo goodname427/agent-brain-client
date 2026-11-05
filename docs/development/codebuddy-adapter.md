@@ -6,13 +6,13 @@
 
 ## 厚度
 
-首次实现的物理源码为 **978 行**，不含测试与文档；行数包含注释、空行，不代表复杂度评分。
+首次实现的物理源码为 **983 行**，不含测试与文档；行数包含注释、空行，不代表复杂度评分。
 
 | 文件 | 行数 | 宿主职责 |
 | --- | ---: | --- |
 | adapters/codebuddy/host.py | 301 | JSONC 字段编辑、配置优先级、自有 MCP/Hooks/说明块，以及调用共用 host-file 事务和回滚 |
 | adapters/codebuddy/runtime.py | 308 | 核对既有运行时、独立队列绑定、原生身份规范化、长文本分批、事件重试和召回输出 |
-| adapters/codebuddy/transcript.py | 183 | 当前轮游标、IDE generation 消息引用、CLI 最终正文字段／JSONL 增量及正文读取边界 |
+| adapters/codebuddy/transcript.py | 188 | 当前轮游标、IDE generation 消息引用、CLI 最终正文字段／JSONL 增量及正文读取边界 |
 | tools/codebuddy.py | 122 | 安装／状态／协议检查／MCP／Hook 命令分发与冻结适配器核验 |
 | 两个平台安装入口 | 64 | 调用原安装器并绑定 CodeBuddy，保留既有设备原生目录并升级旧共享运行时 |
 

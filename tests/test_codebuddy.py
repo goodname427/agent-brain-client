@@ -437,6 +437,15 @@ class Transcript(Hooks):
         self.hook(hook_event_name='SessionStart')
         self.assertEqual(self.sent[-1]['params']['event']['messages'][0]['content'], 'Fully persisted IDE answer')
 
+    def test_already_completed_ide_generation_is_not_a_future_capture_source(self):
+        path = self.native_file('.json')
+        path.write_text(json.dumps({'messages': [{'id': 'old-assistant', 'role': 'assistant'}],
+                                    'requests': [{'id': 'generation-1', 'state': 'complete', 'messages': ['old-assistant']}]}))
+        self.hook()
+        self.stop()
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.sent[0]['params']['event']['messages'][0]['role'], 'user')
+
     def test_unknown_history_outside_path_and_rotation_never_transfers(self):
         path = self.native_file()
         path.write_text('')
