@@ -40,15 +40,19 @@ class ContentErrors(unittest.TestCase):
         self.server.state = "ready"
 
     def test_catalog_limit_rejects_locally_and_full_inventory_is_unbounded(self):
-        for limit in (100, True, 0, 4):
+        for limit in (True, "many", 1.5):
             with self.assertRaises(ContentParameterError) as error:
                 self.server.invoke(
                     "content_catalog", {"kinds": ["memory"], "limit": limit}
                 )
             self.assertEqual(error.exception.code, -32602)
-            self.assertIn("next_cursor", error.exception.message)
+            self.assertIn("integer limit", error.exception.message)
             self.assertNotIn("Writes", error.exception.message)
         self.assertEqual(self.adapter.calls, [])
+        for limit in (100, 0, 4):
+            self.server.invoke("content_catalog", {"kinds": ["memory"], "limit": limit})
+            self.assertIn(self.adapter.calls[-1]["params"]["limit"], (1,3))
+        self.adapter.calls.clear()
         result = self.server.invoke("content_catalog", {"kinds": ["memory"]})
         self.assertEqual(len(result["structuredContent"]["result"]["artifacts"]), 23)
         self.assertEqual(self.adapter.calls[0]["method"], "content_catalog")

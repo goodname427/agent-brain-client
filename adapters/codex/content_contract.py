@@ -33,6 +33,12 @@ def mcp_methods(scopes):return methods(scopes)-HOOK_METHODS
 def encode(value):return json.dumps(value,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()
 
 def validate(method,params):
+    if method=='content_put' and isinstance(params,dict) and 'source_context' in params:
+        context=params['source_context']
+        if params.get('kind')!='memory' or not isinstance(context,dict) or set(context)!={'origin','session_id'}:raise ValueError('Memory source context required')
+        if context['origin'] is not None:recall_origin(context['origin'])
+        if context['session_id'] is not None:event_identifier(context['session_id'])
+        params={k:v for k,v in params.items() if k!='source_context'}
     if method=='content_catalog' and isinstance(params,dict) and 'cursor' in params:
         if not isinstance(params['cursor'],str) or not re.fullmatch(r'[a-f0-9]{64}:[0-9]{1,20}',params['cursor']):raise ValueError('Invalid catalog cursor')
         params={k:v for k,v in params.items() if k!='cursor'}
@@ -329,18 +335,22 @@ def verified_memory_sources(proof, device, project, direct_l1=False):
             or not sources and not manual or not isinstance(sources,list) or not isinstance(manual,list)
             or len(sources)+len(manual)>100
             or set(proof.get('event_ids',[]))!={s.get('event_id') for s in sources}):return False
-    for source in [*sources,*manual]:
+    for source in sources:
         if (not isinstance(source,dict) or source.get('state')!='committed'
                 or source.get('identity',{}).get('device_id')!=device
                 or source.get('identity',{}).get('project_id')!=project):return False
     for source in manual:
         if (proof.get('status')!='verified-l1-source-graph' or source.get('kind') not in ('agent','legacy-import')
+                or source.get('state')!='committed'
+                or source.get('identity',{}).get('project_id')!=project
+                or source.get('identity',{}).get('device_id')!=source.get('device_id')
                 or not re.fullmatch('abm-[a-f0-9]{64}',str(source.get('record_id')))
                 or not re.fullmatch('[a-f0-9]{64}',str(source.get('revision')))
                 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,63}',str(source.get('original_id')))
                 or not isinstance(source.get('actor'),str) or not source['actor']
                 or not isinstance(source.get('device_id'),str) or not source['device_id']):return False
-        try:recall_origin(source.get('origin'))
+        try:
+            if source.get('origin') is not None:recall_origin(source['origin'])
         except (ValueError,TypeError):return False
         if source['kind']=='legacy-import' and (not re.fullmatch('[a-f0-9]{40}',str(source.get('commit')))
                 or not re.fullmatch('[a-f0-9]{64}',str(source.get('plan_sha256')))):return False
@@ -368,9 +378,9 @@ def global_recall_result(value, params, device):
             proof = row['provenance']
             if not verified_memory_sources(proof,source_device,group['project_id'],row in found['L1']):raise ValueError('Committed L1 source provenance required')
             source = row.get('source_context', {})
-            if not isinstance(source, dict) or set(source) != {'origins', 'relation', 'use', 'global_rule'} or source['use'] != 'reference-only' or source['global_rule'] is not False or not isinstance(source['origins'], list) or not 1 <= len(source['origins']) <= 32: raise ValueError('Source applicability required')
+            if not isinstance(source, dict) or set(source) != {'origins', 'relation', 'use', 'global_rule'} or source['use'] != 'reference-only' or source['global_rule'] is not False or not isinstance(source['origins'], list) or len(source['origins']) > 32 or not source['origins'] and not proof.get('manual_sources'): raise ValueError('Source applicability required')
             matches = [recall_origin(origin) == current for origin in source['origins']]
-            relation = 'current-source' if all(matches) else 'other-source' if not any(matches) else 'mixed-source'
+            relation = 'unknown-source' if not matches else 'current-source' if all(matches) else 'other-source' if not any(matches) else 'mixed-source'
             if source['relation'] != relation: raise ValueError('Source relation changed')
             count += 1
     if count > params['limit']: raise ValueError('Recall exceeds requested limit')
