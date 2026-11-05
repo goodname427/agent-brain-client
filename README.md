@@ -8,6 +8,7 @@
 
 - [Windows 安装、升级与卸载](docs/installation/windows.md)；[安装阶段与宿主交接](docs/installation/windows-stages.md)。
 - [Mac arm64 安装、使用、卸载与再次安装](docs/installation/mac.md)。
+- [CodeBuddy IDE / CLI 接入](docs/installation/codebuddy.md)：Mac、Windows 共用现有 Client/Server，无需 Codex 应用。
 - [完整文档索引](docs/README.md)；[维护与命名规则](docs/maintenance.md)。
 
 本仓库是公开 Client 的独立源码权威。源码、测试与构建只依赖本仓库，不导入私人 Server/Core，不克隆 Data 或读取原生会话数据库。运行时通过获准 HTTP/HTTPS 或固定 SSH 协议访问 Server。`main`、安装器 tag、产品编号和本地 `releases/manifest.json` 均不能代替设备原先固定的受信运行渠道；源码合入不自动发布或修改安装指针，Mac 既有渠道不因 Windows 0.5.9 自动提升。

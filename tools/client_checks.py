@@ -38,6 +38,7 @@ COMMANDS = {
         ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'adapters/codex/content_cache.py', 'adapters/codex/remote_http.py', 'adapters/codex/content_contract.py'],
         ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'scripts/brain_content.py', 'scripts/brain_http.py', 'scripts/brain_memory.py'],
         ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'tools/pending_install_recovery.py', 'tools/bootstrap_main.py'],
+        ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', '--ignore', 'E402', 'adapters/codebuddy', 'tools/codebuddy.py', 'tests/test_codebuddy.py'],
         ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', 'tools/client_checks.py', 'tests/test_client_checks.py'],
         ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', '--ignore', 'E402', 'tools/content_manage.py', 'tests/test_content_activation.py'],
         ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'tools/content_manage.py'],
@@ -59,8 +60,8 @@ COMMANDS = {
         ['python', '-B', 'tools/build_client.py', '--scan'],
         ['python', '-B', 'tools/check_source.py'],
         ['python', '-B', '-m', 'unittest', 'test_content_write_failures', 'test_content_activation', 'test_content_incremental_refresh'],
-        ['python', '-B', '-m', 'unittest', 'test_layered_recall', 'test_runtime_reload'],
-        ['pwsh', '-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference = 'Stop'; foreach ($file in @('tools/install-windows.ps1', 'tools/memory-windows.ps1')) { $errors = $null; [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd $file), [ref]$null, [ref]$errors) | Out-Null; if ($errors.Count) { throw ($errors | Out-String) } }"],
+        ['python', '-B', '-m', 'unittest', 'test_layered_recall', 'test_runtime_reload', 'test_codebuddy'],
+        ['pwsh', '-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference = 'Stop'; foreach ($file in @('tools/install-windows.ps1', 'tools/memory-windows.ps1', 'tools/install-codebuddy.ps1')) { $errors = $null; [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd $file), [ref]$null, [ref]$errors) | Out-Null; if ($errors.Count) { throw ($errors | Out-String) } }"],
     ],
 }
 
