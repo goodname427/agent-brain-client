@@ -2,6 +2,7 @@
 import copy
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -74,6 +75,14 @@ class GlobalMemoryFixtures(unittest.TestCase):
         self.assertEqual(result['error_type'], 'PermissionError')
         self.assertTrue(result['preserve_existing_state'])
         self.assertNotIn('SYNTHETIC_SECRET', diagnostic.getvalue())
+
+    def test_cache_json_retains_hardlink_rejection(self):
+        file = self.root / 'staged.json'
+        file.write_text('{"synthetic":true}', encoding='utf-8')
+        file.chmod(0o600)
+        self.assertEqual(gm.old.private_json(file, cache=True), {'synthetic':True})
+        os.link(file, self.root / 'linked.json')
+        with self.assertRaises(ValueError): gm.old.private_json(file, cache=True)
 
     def test_question_drives_recall_without_promoting_other_project_rules(self):
         from global_memory_scope import source_context, restricted

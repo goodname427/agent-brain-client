@@ -188,7 +188,7 @@ def private_mode(path, *, directory=False, owner=False, blocked=ValueError):
     return path
 
 
-def cache_mode(path, *, directory=False, blocked=ValueError):
+def cache_mode(path, *, directory=False, owner=False, blocked=ValueError):
     """Validate cache objects without imposing a Windows principal list.
 
     Windows decides actual read/write access. Inherited enterprise or Harness
@@ -198,7 +198,7 @@ def cache_mode(path, *, directory=False, blocked=ValueError):
     require_platform('cache-storage')
     if os.name == 'nt':
         return windows_private(path, directory=directory, blocked=blocked, check_access=False)
-    return private_mode(path, directory=directory, blocked=blocked)
+    return private_mode(path, directory=directory, owner=owner, blocked=blocked)
 
 
 def cache_directory(path):

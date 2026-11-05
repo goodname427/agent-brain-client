@@ -65,7 +65,7 @@ def canonical(path, *, existing=False):
 
 def private_json(path, sha=None, *, cache=False):
     p = canonical(path, existing=True)
-    if cache: cache_mode(p)
+    if cache: cache_mode(p,owner=True)
     else: private_mode(p,owner=True)
     if p.stat().st_size > 262144:
         raise ValueError("Private owned metadata required")

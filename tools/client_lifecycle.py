@@ -411,7 +411,7 @@ def uninstall(home, confirm):
         else:
             adapter, _, _ = adapter_for(home, meta)
         cache_directory(adapter.cache)
-        cache_mode(adapter.cache, directory=True, blocked=install.InstallBlocked)
+        cache_mode(adapter.cache, directory=True, owner=True, blocked=install.InstallBlocked)
         with lease(adapter.cache / '.content-runtime.lock', cache=True), lease(adapter.cache / 'content.lock', cache=True):
             if continuing:
                 assert previous is not None

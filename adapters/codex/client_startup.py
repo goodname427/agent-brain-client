@@ -59,7 +59,7 @@ def serve_content(command,active,policy,status):
     try:
         if cache.is_symlink():raise ValueError('Linked content cache')
         cache_directory(cache)
-        cache_mode(cache,directory=True)
+        cache_mode(cache,directory=True,owner=True)
         path=cache/'.content-runtime.lock'
         try:
             fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
@@ -68,7 +68,7 @@ def serve_content(command,active,policy,status):
             finally: os.close(fd)
         except FileExistsError:pass
         if path.is_symlink():raise ValueError('Content lease changed')
-        cache_mode(path)
+        cache_mode(path,owner=True)
         modern=version(active['version'])>=version(OUTBOX_MIN_VERSION)
         with cache_locked(path,timeout=0,shared=modern) as lease:
             from content_install import inspect
