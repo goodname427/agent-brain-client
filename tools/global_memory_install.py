@@ -236,7 +236,9 @@ def block(value, *, root=None):
                   'command = ' + json.dumps(command), 'timeout = ' + '120',
                   'statusMessage = ' + json.dumps(MARKER)]
         if os.name=='nt': lines += ['commandWindows = ' + json.dumps(command)]
-        if event == 'Stop': lines += ['async = true']
+        # Short-lived exec hosts can shut down before an async Stop starts.
+        # Wait for the existing durable outbox path; the hook still fails open.
+        if event == 'Stop': lines += ['async = false']
     return '\n'.join(lines) + '\n' + END + '\n'
 
 
