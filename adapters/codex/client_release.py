@@ -40,6 +40,25 @@ LEGACY_030_HTTPS_CONTENT_CLIENT_FILES=tuple(
     HTTPS_CONTENT_CLIENT_FILES[:11]+('adapters/codex/codex_notify_mux.py',)+HTTPS_CONTENT_CLIENT_FILES[11:]
 )
 WINDOWS_HTTPS_CONTENT_CLIENT_FILES=tuple(n for n in HTTPS_CONTENT_CLIENT_FILES if n!='native/CredentialStore.swift')+('scripts/brain_windows.py',)
+# Historical packages and on-disk policies stay valid, including their exact
+# order. Only these three source dependencies are added by the shared-core split.
+SHARED_CLIENT_FILES=('scripts/brain_content.py','scripts/brain_http.py','scripts/brain_memory.py')
+LEGACY_CLIENT_FILE_SETS=(CLIENT_FILES,CONTENT_CLIENT_FILES,SSH_CONTENT_CLIENT_FILES,
+                       HTTPS_CONTENT_CLIENT_FILES,WINDOWS_HTTPS_CONTENT_CLIENT_FILES)
+LEGACY_HTTPS_CONTENT_CLIENT_FILES=HTTPS_CONTENT_CLIENT_FILES
+CLIENT_FILES=CLIENT_FILES+SHARED_CLIENT_FILES[:2]
+CONTENT_CLIENT_FILES=CONTENT_CLIENT_FILES+SHARED_CLIENT_FILES
+SSH_CONTENT_CLIENT_FILES=SSH_CONTENT_CLIENT_FILES+SHARED_CLIENT_FILES
+HTTPS_CONTENT_CLIENT_FILES=HTTPS_CONTENT_CLIENT_FILES+SHARED_CLIENT_FILES
+WINDOWS_HTTPS_CONTENT_CLIENT_FILES=WINDOWS_HTTPS_CONTENT_CLIENT_FILES+SHARED_CLIENT_FILES
+
+
+def legacy_file_sets(policy):
+    index=4 if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES and policy['platform'] in WINDOWS_PLATFORMS else 3 if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES else 2 if policy['capabilities']==SSH_CONTENT_CAPABILITIES else 1 if policy['capabilities']==CONTENT_CAPABILITIES else 0
+    files=(LEGACY_CLIENT_FILE_SETS[index],)
+    if index==3:files+=(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES,)
+    return files
+
 
 def https_files(target):
     return WINDOWS_HTTPS_CONTENT_CLIENT_FILES if target in WINDOWS_PLATFORMS else HTTPS_CONTENT_CLIENT_FILES
@@ -100,7 +119,7 @@ def validate_release_policy(policy):
     https=policy['capabilities']==HTTPS_CONTENT_CAPABILITIES
     files=https_files(policy['platform']) if https else SSH_CONTENT_CLIENT_FILES if ssh else CONTENT_CLIENT_FILES if content else CLIENT_FILES
     allowed_file_policies=[list(files)]
-    if https:allowed_file_policies.append(list(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES))
+    allowed_file_policies.extend(list(items) for items in legacy_file_sets(policy))
     if policy['channel']!='stable' or policy['file_prefixes'] not in allowed_file_policies:
         raise UpdateBlocked('Client release file scope changed')
     origin=policy['origin'];parsed=urlsplit(origin)
@@ -147,6 +166,7 @@ class ClientPackage:
         self.https=bool(policy and policy['capabilities']==HTTPS_CONTENT_CAPABILITIES)
         self.files=https_files(policy['platform']) if self.https else SSH_CONTENT_CLIENT_FILES if self.ssh else CONTENT_CLIENT_FILES if self.content else CLIENT_FILES
         self.legacy_030_https_policy=bool(self.https and policy and policy['file_prefixes']==list(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES))
+        self.legacy_files=legacy_file_sets(policy) if policy else (LEGACY_CLIENT_FILE_SETS[0],)
         self.component_source_sha=policy['runtime']['component_source_sha256'] if self.content and not self.ssh and not self.https else None
 
         if self.https:require_platform('credential-store',policy.get('platform'))
@@ -154,10 +174,9 @@ class ClientPackage:
 
     def preflight(self, package, manifest, *, allow_legacy_030_active=False):
         files=self.files
-        if (allow_legacy_030_active and self.legacy_030_https_policy
-                and manifest.get('version')=='0.3.0'
-                and set(manifest.get('files',{}))==set(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES)):
-            files=LEGACY_030_HTTPS_CONTENT_CLIENT_FILES
+        if allow_legacy_030_active:
+            files=next((old for old in self.legacy_files if set(manifest.get('files',{}))==set(old)
+                        and (old!=LEGACY_030_HTTPS_CONTENT_CLIENT_FILES or self.legacy_030_https_policy and manifest.get('version')=='0.3.0')),files)
         if set(manifest['files'])!=set(files) or manifest['migrations']:
             raise UpdateBlocked('Client file membership/migration change requires review')
         if self.https and manifest['files'].get('scripts/brain_windows.py' if 'scripts/brain_windows.py' in self.files else 'native/CredentialStore.swift')!=self.credential_source_sha:raise UpdateBlocked('Credential helper source changed; helper/profile review required')
@@ -168,6 +187,11 @@ class ClientPackage:
             if name.endswith('.py'):
                 try:compile(path.read_bytes(),name,'exec')
                 except (SyntaxError,UnicodeError):raise UpdateBlocked('Client syntax check failed') from None
+
+    def allows_shared_file(self,path):
+        # Called only by the already-installed release engine. Never grant a
+        # directory prefix, change capabilities or accept arbitrary new files.
+        return path in SHARED_CLIENT_FILES and path in self.files
 
     def snapshot(self):return {}  # Only ReleaseEngine owns the active pointer.
     def refresh(self, package, manifest):pass

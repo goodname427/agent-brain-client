@@ -24,6 +24,8 @@ MARKER = 'Agent Brain global memory'
 FILES = (*old.RUNTIME, 'tools/global_memory.py', 'tools/global_memory_scope.py',
          'tools/global_memory_install.py', 'tools/global_memory_operator.py',
          *(('scripts/brain_windows.py',) if os.name == 'nt' else ()))
+LEGACY_FILES = tuple(name for name in FILES if name not in
+                     ('scripts/brain_content.py','scripts/brain_http.py','scripts/brain_memory.py'))
 
 
 def settings_path(home):
@@ -43,7 +45,7 @@ def validate_settings(value, home):
     recall_options(options)
     validate(value['scope'])
     pins = value['code_sha256']
-    if not isinstance(pins, dict) or set(pins) != set(FILES) or any(not isinstance(p, str) or not re.fullmatch('[a-f0-9]{64}', p) for p in pins.values()):
+    if not isinstance(pins, dict) or set(pins) not in (set(FILES),set(LEGACY_FILES)) or any(not isinstance(p, str) or not re.fullmatch('[a-f0-9]{64}', p) for p in pins.values()):
         raise ValueError('Complete global code pin required')
     return value
 
@@ -54,6 +56,8 @@ def load(home, *, verify_code=True):
     old.private_mode(directory,directory=True,owner=True)
     value = validate_settings(old.private_json(file), home)
     if verify_code:
+        if set(value['code_sha256']) != set(FILES):
+            raise ValueError('Refresh the owned Hook before running the shared runtime')
         for name, pin in value['code_sha256'].items():
             if old.digest((ROOT / name).read_bytes()) != pin: raise ValueError('Global source code changed; refresh owned installation')
     old.registration(home)  # Metadata only; never activates a credential.

@@ -153,7 +153,12 @@ def compatible(before, after, credential='scripts/brain_windows.py'):
         if before[key] != after[key]:
             raise ValueError('Release contract change requires review: ' + key)
     if set(before['files']) != set(after['files']):
-        raise ValueError('Release file scope change requires review')
+        sys.path.insert(0,str(ROOT/'scripts'))
+        sys.path.insert(0,str(ROOT/'adapters/codex'))
+        from client_release import LEGACY_CLIENT_FILE_SETS, CLIENT_FILES, CONTENT_CLIENT_FILES, SSH_CONTENT_CLIENT_FILES, HTTPS_CONTENT_CLIENT_FILES, WINDOWS_HTTPS_CONTENT_CLIENT_FILES
+        approved=zip(LEGACY_CLIENT_FILE_SETS,(CLIENT_FILES,CONTENT_CLIENT_FILES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CLIENT_FILES,WINDOWS_HTTPS_CONTENT_CLIENT_FILES))
+        if not any(set(before['files'])==set(old) and set(after['files'])==set(new) for old,new in approved):
+            raise ValueError('Release file scope change requires review')
     if before['files'][credential] != after['files'][credential]:
         raise ValueError('Credential component change requires policy review')
 

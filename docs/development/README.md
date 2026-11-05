@@ -48,3 +48,5 @@ Swift helper 构建仅适用 Mac 工具链。SSH 历史兼容候选可使用 `--
 并发 MCP 启动协调、采集回执及本轮来源核对的实现与验证边界见 [并发启动与采集证据](startup-capture.md)。
 
 Windows 私有文件元数据误报、同 ID 并发补传与 synthetic 服务选择边界见 [并发重试与服务选择](windows-retry-service-routing.md)。
+
+- [Harness 共用核心](harness-core.md)：协议、HTTP、事件与 CAS outbox 的复用接口及旧包兼容。

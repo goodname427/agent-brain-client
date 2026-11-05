@@ -227,7 +227,7 @@ class HTTPSContent(unittest.TestCase):
         from build_client import release as build_release
         import client_release as releases
         f=fixtures.Releases('test_orphan_allowlist_discovery_install_upgrade_and_current');f.setUp();self.addCleanup(f.doCleanups)
-        frozen_files=list(releases.HTTPS_CONTENT_CLIENT_FILES)
+        frozen_files=list(releases.LEGACY_HTTPS_CONTENT_CLIENT_FILES)
         self.assertEqual(len(frozen_files),21)
         self.assertEqual(set(frozen_files),FROZEN_0214_HTTPS_FILES)
         self.assertNotIn('adapters/codex/codex_notify_mux.py',frozen_files)
@@ -239,10 +239,10 @@ class HTTPSContent(unittest.TestCase):
         channel=releases.ClientReleases(path,digest)
         def publish(version):
             output=self.base/('frozen-policy-'+version);manifest=build_release(ROOT,output,version,'personal-content-https')
-            self.assertEqual(set(manifest['files']),set(frozen_files))
-            for name in [*frozen_files,'releases/manifest.json']:
+            self.assertEqual(set(manifest['files']),set(releases.HTTPS_CONTENT_CLIENT_FILES))
+            for name in [*manifest['files'],'releases/manifest.json']:
                 destination=f.publisher/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(output/name,destination)
-            f.git(f.publisher,'add','--',*frozen_files,'releases/manifest.json');f.git(f.publisher,'commit','-m','synthetic frozen-policy HTTPS '+version);f.git(f.publisher,'push','origin','releases/stable')
+            f.git(f.publisher,'add','--',*manifest['files'],'releases/manifest.json');f.git(f.publisher,'commit','-m','synthetic frozen-policy HTTPS '+version);f.git(f.publisher,'push','origin','releases/stable')
         publish('0.2.14');old=channel.update();self.assertEqual(old['status'],'updated',old);self.assertEqual(old['active']['version'],'0.2.14')
         publish('0.3.1');updated=channel.update();self.assertEqual(updated['status'],'updated',updated);self.assertEqual(updated['active']['version'],'0.3.1')
         self.assertEqual(channel.verified_active()['version'],'0.3.1')
@@ -274,6 +274,13 @@ class HTTPSContent(unittest.TestCase):
         old_out=self.base/'synthetic-installed-030';old_manifest=build_release(ROOT,old_out,'0.3.0','personal-content-https')
         mux=old_out/'adapters/codex/codex_notify_mux.py';mux.parent.mkdir(parents=True,exist_ok=True);mux.write_text('# Synthetic historical manifest member; never executed by this test.\n')
         old_manifest['files']['adapters/codex/codex_notify_mux.py']=hashlib.sha256(mux.read_bytes()).hexdigest()
+        # Model a pre-split package membership, with a standalone synthetic tool
+        # declaration; it must not need the new shared modules to enumerate.
+        declared=content_install.enabled_tools(json.loads(content.read_bytes()),GRANT)
+        entry=old_out/'adapters/codex/content_mcp.py'
+        entry.write_text('def enabled_tools(policy,grant):return '+repr(declared)+'\n')
+        old_manifest['files']['adapters/codex/content_mcp.py']=hashlib.sha256(entry.read_bytes()).hexdigest()
+        old_manifest['files']={name:pin for name,pin in old_manifest['files'].items() if name in legacy_files}
         old_commit='a'*40;old_package=Path(old_policy['cache'])/'packages'/('0.3.0-'+old_commit);old_package.mkdir(parents=True)
         for name in old_manifest['files']:
             destination=old_package/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(old_out/name,destination)
@@ -490,7 +497,7 @@ class HTTPSContent(unittest.TestCase):
 
     def test_https_export_separate_allowlist_no_server_signed_component_or_stable_manifest(self):
         out=self.base/'export';manifest=export(ROOT,out,https_content_candidate=True)
-        self.assertEqual(set(manifest['files']),set(HTTPS_CONTENT_CLIENT_FILES));self.assertEqual(len(manifest['files']),21);self.assertFalse(manifest['keychain_accessed']);self.assertFalse((out/'releases').exists());self.assertFalse((out/'native/DeviceComponent.swift').exists());self.assertFalse(any('brain_server' in path for path in manifest['files']))
+        self.assertEqual(set(manifest['files']),set(HTTPS_CONTENT_CLIENT_FILES));self.assertEqual(len(manifest['files']),24);self.assertFalse(manifest['keychain_accessed']);self.assertFalse((out/'releases').exists());self.assertFalse((out/'native/DeviceComponent.swift').exists());self.assertFalse(any('brain_server' in path for path in manifest['files']))
         with self.assertRaises(ValueError):export(ROOT,self.base/'mixed',ssh_content_candidate=True,https_content_candidate=True)
 
     def install_fixture(self):

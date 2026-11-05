@@ -36,6 +36,7 @@ COMMANDS = {
         ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', '--ignore', 'E402', 'tests/test_content_local_durable.py', 'tests/test_receipt_transport.py', 'tests/test_memory_behavior.py', 'tests/test_memory_query.py', 'tools/memory_review.py'],
         ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'tools/access_install.py', 'tools/access_windows.py', 'tools/mac_first_install.py', 'tools/client_lifecycle.py', 'tools/prepare_install_runtime.py', 'tools/check_source.py', 'tools/memory_review.py'],
         ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'adapters/codex/content_cache.py', 'adapters/codex/remote_http.py', 'adapters/codex/content_contract.py'],
+        ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'scripts/brain_content.py', 'scripts/brain_http.py', 'scripts/brain_memory.py'],
         ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'tools/pending_install_recovery.py', 'tools/bootstrap_main.py'],
         ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', 'tools/client_checks.py', 'tests/test_client_checks.py'],
         ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', '--ignore', 'E402', 'tools/content_manage.py', 'tests/test_content_activation.py'],
@@ -51,6 +52,7 @@ COMMANDS = {
         ['python', '-B', 'tools/build_credential_helper.py', '--access', '--output', '{temp}/access-helper'],
     ],
     'windows': [
+        ['python', '-B', '-m', 'unittest', 'test_harness_core'],
         ['python', '-B', '-m', 'unittest', 'test_startup_concurrency', 'test_global_memory_update', 'test_global_memory_activation'],
         ['python', '-B', '-m', 'unittest', 'test_install_contracts.Contracts', 'test_install_contracts.PlatformMainContracts', 'test_windows_native', 'test_source_paths', 'test_access_install', 'test_bootstrap_main', 'test_pending_install_recovery', 'test_platform_checkpoint'],
         ['python', '-B', '-m', 'unittest', 'test_mcp_wire_encoding', 'test_mcp_queue_deadlines', 'test_content_read_requests.HTTPRequests'],

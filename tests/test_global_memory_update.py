@@ -89,6 +89,21 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.no_client.start()
         self.addCleanup(self.no_client.stop)
 
+    def test_refresh_adds_shared_runtime_pins_without_changing_source_or_queue(self):
+        legacy = dict(self.value, code_sha256={name: 'b' * 64 for name in gm.LEGACY_FILES})
+        old.write(self.file, legacy)
+        hooks.transact(self.native, self.file.parent, hooks.block(legacy))
+        pending = self.file.parent / 'fictional-pending.json'
+        old.write(pending, {'request_id': 'fictional-retained-request'})
+        before = pending.read_bytes()
+        hooks.refresh(self.home)
+        actual = old.private_json(self.file)
+        self.assertEqual(set(actual['code_sha256']), set(gm.FILES))
+        self.assertEqual({k:v for k,v in actual.items() if k!='code_sha256'},
+                         {k:v for k,v in legacy.items() if k!='code_sha256'})
+        self.assertEqual(pending.read_bytes(), before)
+        self.assertEqual(hooks.refresh(self.home)['status'], 'global-hook-current')
+
     def test_refresh_migrates_owned_async_stop_without_removing_pending_data(self):
         previous = hooks.block(self.value).replace('async = false', 'async = true')
         hooks.transact(self.native, self.file.parent, previous)
