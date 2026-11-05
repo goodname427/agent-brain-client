@@ -33,3 +33,9 @@ An already running old launcher cannot import new dependencies from an old packa
 ## Validation
 
 `test_harness_core` exercises shared-only imports, a fictional host with no Codex adapter, explicit HTTP identity, cancellation aliasing, exact event/request IDs, restart/replay and changed-request refusal, and the narrowly defined release dependency transition. Existing event, outbox, HTTP, installation, Windows contract and offline recovery tests continue to exercise the Codex boundary. Synthetic checks do not assert that CodeBuddy has been installed or that a physical Windows device was tested.
+
+## Adapter size after this split
+
+At this change, Python source under `adapters/codex` decreases from 6,510 to 5,339 lines; the three shared modules contain 1,305 lines. These are physical source lines, not a complexity score. Most shared code is moved rather than reimplemented. The outbox still delegates native-source review and mapping to the host, so pending requests keep their original identity.
+
+The Codex layer is not yet uniformly small: `content_cache.py` remains about 1,288 lines and `content_mcp.py` about 809. Native memory inventory, transactional mapping/recovery and source review account for much of the former; MCP schemas and local native-source tools account for much of the latter. A new Harness should reuse the shared modules and add its event/config/context behavior, rather than copy these two files. Further extracting generic MCP presentation is a possible later cleanup, but is not required for the current core split and has not been mixed into this change.
