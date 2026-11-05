@@ -525,7 +525,6 @@ class ContentAdapter:
         while self._drain_pass(event_request_id,event_gate):pass
 
     def _drain_pass(self,event_request_id=None,event_gate=None):
-        blocked:dict[tuple[str,str],set[str]]={}
         resolved=False
         for row in self._queued():
             request=row['request'];params=request['params'];target=(params['kind'],params['id'])
@@ -542,7 +541,6 @@ class ContentAdapter:
                 continue
             if row['state']=='confirmed':
                 resolved=self._finish_reconciliation(row) or resolved
-                blocked.get(target,set()).difference_update(row['reconciles']['request_ids'])
                 continue
             if row['state']!='pending':continue
             try:self._assert_sources_shareable(row['reconciles']['source_keys'])
@@ -576,8 +574,6 @@ class ContentAdapter:
                 self._save('outbox/'+request['request_id']+'.json',row)
             with operation_stage('outbox-reconciliation'):
                 resolved=self._finish_reconciliation(row) or resolved
-                if row['state']=='confirmed':
-                    blocked.get(target,set()).difference_update(row['reconciles']['request_ids'])
         return resolved
 
     def queue_status(self):
@@ -636,7 +632,7 @@ class ContentAdapter:
         result=row['response'] if row['state']!='pending' else {'request_id':row['request']['request_id'],'error':{'code':'content_upload_queued','retryable':True},'persistence':{'durable':False}}
         # Derived diagnostics only: never edit a retained request, its CAS base,
         # reconciliation references or ID to make a queued write go through.
-        blockers=[]
+        blockers:list[dict[str,str]]=[]
         if blockers or row['state']=='conflict':
             next_action=('Inspect blockers and retained local proposals with content_queue_inspect, then read the current target with content_read. '
                          'Resolve conflicts with an explicitly reviewed content_put using a new stable request_id, the current expected_revision and reconciles.request_ids selecting the exact conflicts. '
