@@ -302,6 +302,10 @@ class FreshInstallation(unittest.TestCase):
         def connect(home, native, endpoint):
             self.port.validate_connection({"endpoint": endpoint, "grant": self.grant})
             fresh = read_journal(home)
+            # The real material preparer creates private first-install metadata
+            # before the cache. Windows cache directories retain inherited ACLs
+            # and must not become a substitute private metadata parent.
+            private_directory(self.profile.parent)
             self.port.restore_mapping(self.cache, self.content)
             profile = profile_metadata(
                 endpoint,
