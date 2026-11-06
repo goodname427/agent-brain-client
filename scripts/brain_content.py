@@ -345,8 +345,8 @@ def global_recall_params(params):
 
 
 def private_recall_text(text):
-    return bool(re.search(r'(?im)^\s*(?:\[local[-_ ]?only\]|\[no-memory\]|\[private\]|localonly:|不要记忆[:：]|\[(?:no[-_ ]?share|project[-_ ]?only|do[-_ ]?not[-_ ]?share)\])|禁止(?:跨项目)?共享|不要(?:跨项目)?共享|仅限(?:当前|本)项目|do not share (?:this|across projects)|keep (?:this )?project[- ]only', text)
-                or re.search(r'-----BEGIN [A-Z ]*PRIVATE KEY-----|(?i:bearer)\s+[A-Za-z0-9_-]{24,}|(?i:api[_-]?key|password|secret[_-]?key)\s*[:=]\s*["\']?[^\s"\']{4,}|\bsk-[A-Za-z0-9_-]{20,}', text))
+    """Keep explicit privacy/sharing restrictions; body shape is not a verdict."""
+    return bool(re.search(r'(?im)^\s*(?:\[local[-_ ]?only\]|\[no-memory\]|\[private\]|localonly:|不要记忆[:：]|\[(?:no[-_ ]?share|project[-_ ]?only|do[-_ ]?not[-_ ]?share)\])|禁止(?:跨项目)?共享|不要(?:跨项目)?共享|仅限(?:当前|本)项目|do not share (?:this|across projects)|keep (?:this )?project[- ]only', text))
 
 
 def verified_memory_sources(proof, device, project, direct_l1=False):

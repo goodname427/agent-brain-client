@@ -27,6 +27,25 @@ class GlobalMemoryFixtures(unittest.TestCase):
     def origin(self, root):
         return {'kind': 'project', 'cwd': root + '/src', 'project_root': root, 'repository_root': root}
 
+    def test_body_shape_is_not_a_privacy_verdict_but_explicit_markers_are(self):
+        from brain_content import private_recall_text
+        from global_memory_scope import restricted
+        examples = ('password=example-only', 'api_key=synthetic-example',
+                    'secret_key=synthetic-example', 'Bearer ' + 'synthetic' * 4,
+                    'sk-' + 'synthetic' * 4,
+                    '-----BEGIN ' + 'PRIVATE KEY-----\nsynthetic example')
+        for text in examples:
+            with self.subTest(text=text):
+                self.assertFalse(gm.old.private_content(text))
+                self.assertFalse(private_recall_text(text))
+                self.assertFalse(restricted(text))
+                for marker in ('[LocalOnly]', '[no-memory]', '[private]', 'LocalOnly:', '不要记忆：'):
+                    self.assertTrue(gm.old.private_content(marker + ' ' + text))
+                    self.assertTrue(private_recall_text(marker + ' ' + text))
+                for marker in ('[no-share]', '[project-only]', '禁止跨项目共享', '仅限本项目'):
+                    self.assertTrue(restricted(marker + ' ' + text))
+                    self.assertTrue(private_recall_text(marker + ' ' + text))
+
     def test_personal_sharing_project_isolation_and_worktree_deny(self):
         one, two = self.origin('/synthetic/personal/one'), self.origin('/synthetic/personal/two')
         self.assertEqual(namespace('owner', source_id(self.scope, one, select(self.scope, one)['sharing'])), namespace('owner', source_id(self.scope, two, select(self.scope, two)['sharing'])))

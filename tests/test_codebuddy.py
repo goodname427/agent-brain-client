@@ -24,6 +24,34 @@ from test_event_hook import accepted
 
 
 class Configuration(unittest.TestCase):
+    def test_system_python_bootstrap_loads_installer_and_hands_off(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            (root / 'tools').mkdir()
+            (root / 'installer').mkdir()
+            script = root / 'tools/codebuddy.py'
+            script.write_bytes((ROOT / 'tools/codebuddy.py').read_bytes())
+            (root / 'installer/prepare_install_runtime.py').write_text(
+                'import sys\nfrom pathlib import Path\n'
+                'def runtime(home, prepare):\n'
+                '    assert prepare is False\n'
+                '    return Path(sys.executable)\n')
+            code = '''import json, os, runpy, sys
+entry = sys.argv[1]
+sys.argv = [entry, 'status']
+sys.version_info = (3, 9)
+def handoff(path, argv):
+    print(json.dumps({'path': path, 'argv': argv}))
+    raise SystemExit(0)
+os.execv = handoff
+runpy.run_path(entry, run_name='__main__')
+'''
+            result = subprocess.run([sys.executable, '-I', '-B', '-c', code, str(script)],
+                                    capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            argv = json.loads(result.stdout)['argv']
+            self.assertEqual(argv, [sys.executable, '-X', 'utf8', '-I', '-B', str(script), 'status'])
+
     def test_jsonc_narrow_edit_keeps_comments_urls_and_other_servers(self):
         text = '{\n// user settings\n"permissions":{"allow":["Read"],},\n"mcpServers":{ /* keep */ "other":{"url":"https://example.invalid/a//b"},},\n}\n'
         changed = cbhost.render_json(text, {'command': 'python', 'args': ['a b']}, None)
@@ -260,7 +288,7 @@ class Hooks(unittest.TestCase):
         self.hook()
         self.assertEqual(self.sent[0], json.loads(pending)['request'])
 
-    def test_stop_gate_sensitive_payload_and_capture_failure_keep_recall_independent(self):
+    def test_stop_gate_explicit_private_payload_and_capture_failure_keep_recall_independent(self):
         self.value['enabled'] = False
         stream = Mock()
         stream.read.side_effect = AssertionError('Disabled source cannot consume a prompt')
@@ -504,7 +532,7 @@ class Transcript(Hooks):
         with self.assertRaises(ValueError):
             native_transcript.native_path(self.fixture.home, self.payload)
 
-    def test_sensitive_prompt_excludes_both_sides_of_the_turn(self):
+    def test_explicit_private_prompt_excludes_both_sides_of_the_turn(self):
         path = self.native_file()
         path.write_text('')
         self.payload['prompt'] = 'LocalOnly: synthetic private question'
@@ -512,6 +540,28 @@ class Transcript(Hooks):
         path.write_text('{"type":"assistant","message":{"content":"private answer"}}\n')
         self.stop()
         self.assertEqual(self.sent, [])
+
+    def test_body_shape_keeps_prompt_and_native_assistant_capture(self):
+        path = self.native_file()
+        path.write_text('')
+        prompt = 'Synthetic configuration example password=example-only'
+        self.payload['prompt'] = prompt
+        output, result = self.hook()
+        self.assertTrue(output)
+        self.assertEqual(result['local_queue']['state'], 'confirmed')
+        answer = 'Synthetic documentation: Bearer ' + 'synthetic' * 4
+        path.write_text(json.dumps({'type': 'assistant', 'message': {'content': answer}}) + '\n')
+        _, result = self.stop()
+        self.assertEqual(result['local_queue']['state'], 'confirmed')
+        self.assertEqual([request['params']['event']['messages'] for request in self.sent],
+                         [[{'role': 'user', 'content': prompt}], [{'role': 'assistant', 'content': answer}]])
+
+    def test_explicit_private_assistant_still_stops_before_queueing(self):
+        self.hook()
+        _, result = self.hook(hook_event_name='Stop', stop_hook_active=False,
+                              last_assistant_message='[no-memory] synthetic private answer')
+        self.assertEqual(result['status'], 'excluded-local-only-or-sensitive')
+        self.assertEqual(len(self.sent), 1)
 
 
 if __name__ == '__main__':
