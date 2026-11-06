@@ -19,7 +19,11 @@ class Management(unittest.TestCase):
             (self.root / n).mkdir()
         env = patch.dict(
             os.environ,
-            {"HOME": str(self.root / "home"), "CODEX_HOME": str(self.root / "codex")},
+            {
+                "HOME": str(self.root / "home"),
+                "USERPROFILE": str(self.root / "home"),
+                "CODEX_HOME": str(self.root / "codex"),
+            },
             clear=True,
         )
         env.start()
