@@ -383,6 +383,151 @@ assert not any(n.startswith(('agent_brain_client.adapters','agent_brain_client.r
         self.assertEqual(self.cloud.calls, [])
 
 
+class RuleBlockedRetry(unittest.TestCase):
+    """A terminal refusal is recoverable only by an explicit exact capture call."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.cache = self.root / "cache"
+        self.cloud = Cloud()
+        self.denied = True
+        self.enabled = self.approved = True
+        self.hooks = dict.fromkeys(CAPABILITIES, False)
+        self.calls = []
+        original = self.cloud.request
+
+        def transport(request):
+            self.calls.append(copy.deepcopy(request))
+            if self.denied:
+                return {
+                    "request_id": request["request_id"],
+                    "error": {"code": "permission_denied", "retryable": False},
+                    "persistence": {"durable": False},
+                }
+            return original(request)
+
+        self.cloud.request = transport
+        self.restart()
+        self.assertEqual(self.capture()["local_queue"]["state"], "blocked")
+        self.request = copy.deepcopy(self.calls[0])
+        self.path = self.cache / "outbox" / (self.request["request_id"] + ".json")
+        self.before = self.path.read_bytes()
+
+    def restart(self):
+        self.host = DiskRuleHost(self.home, self.cache, self.cloud)
+        self.core = RuleFallback(
+            self.host,
+            hooks=lambda: dict(self.hooks),
+            enabled=lambda: self.enabled,
+            source_gate=lambda *args: self.approved,
+        )
+
+    def capture(
+        self, text="Synthetic terminal denial recovery", representation="agent-summary"
+    ):
+        return self.core.capture(
+            "assistant_final",
+            "blocked-operation",
+            text,
+            representation=representation,
+            source_context={"origin": None, "session_id": None},
+        )
+
+    def test_explicit_identical_retry_recovers_after_restart_without_draining_others(
+        self,
+    ):
+        self.denied = False
+        self.restart()
+        self.host._drain()
+        self.host._drain(
+            self.request["request_id"],
+            event_gate=lambda: True,
+            exact_request_id=self.request["request_id"],
+        )
+        self.assertEqual(self.calls, [self.request])
+        self.assertEqual(self.path.read_bytes(), self.before)
+        unrelated = copy.deepcopy(self.request)
+        unrelated["request_id"] = "synthetic_unrelated_write"
+        unrelated["params"]["id"] = "unrelated-memory"
+        self.host._enqueue(unrelated)
+        result = self.capture()
+        self.assertEqual(result["local_queue"]["state"], "confirmed")
+        self.assertEqual(self.calls, [self.request, self.request])
+        self.assertEqual(self.cloud.puts, 1)
+        self.assertEqual(json.loads(self.path.read_bytes())["request"], self.request)
+        self.assertEqual(self.host.queue_status()["pending"], 1)
+        self.capture()
+        self.assertEqual(self.calls, [self.request, self.request])
+
+    def test_still_denied_retry_sends_once_per_explicit_call(self):
+        self.assertEqual(self.capture()["local_queue"]["state"], "blocked")
+        self.assertEqual(self.calls, [self.request, self.request])
+        self.host._drain()
+        self.assertEqual(self.calls, [self.request, self.request])
+        self.assertEqual(json.loads(self.path.read_bytes())["request"], self.request)
+
+    def test_blocked_retry_keeps_live_ownership_grant_and_original_payload_checks(self):
+        self.denied = False
+        for field in ("enabled", "approved"):
+            setattr(self, field, False)
+            self.assertEqual(self.capture()["status"], "inactive")
+            setattr(self, field, True)
+        self.hooks["assistant_final"] = True
+        self.assertEqual(self.capture()["status"], "inactive")
+        self.hooks["assistant_final"] = False
+        self.cloud.grant["scopes"] = ["read"]
+        with self.assertRaises(CacheBlocked):
+            self.capture()
+        self.cloud.grant["scopes"] = ["read", "put"]
+        with self.assertRaises(CacheBlocked):
+            self.capture(text="Changed proposal")
+        with self.assertRaises(CacheBlocked):
+            self.capture(representation="observed-assistant-message")
+        self.assertEqual(self.calls, [self.request])
+        self.assertEqual(self.path.read_bytes(), self.before)
+
+    def test_late_scope_or_grant_revocation_prevents_blocked_resend(self):
+        self.denied = False
+        enqueue = self.host._enqueue
+
+        def revoked_source(request):
+            row = enqueue(request)
+            self.approved = False
+            return row
+
+        self.host._enqueue = revoked_source
+        self.assertEqual(self.capture()["local_queue"]["state"], "blocked")
+        self.approved = True
+
+        def revoked_grant(request):
+            row = enqueue(request)
+            self.cloud.grant["scopes"] = ["read"]
+            return row
+
+        self.host._enqueue = revoked_grant
+        with self.assertRaises(CacheBlocked):
+            self.capture()
+        self.assertEqual(self.calls, [self.request])
+        self.assertEqual(self.path.read_bytes(), self.before)
+
+    def test_lost_ack_on_explicit_recovery_preserves_request_and_recovers_once(self):
+        self.denied = False
+        self.cloud.lose_ack = True
+        self.assertEqual(self.capture()["local_queue"]["state"], "blocked")
+        self.assertEqual(self.cloud.puts, 1)
+        self.assertEqual(self.path.read_bytes(), self.before)
+        self.host._drain()
+        self.assertEqual(len(self.calls), 2)
+        self.restart()
+        self.assertEqual(self.capture()["local_queue"]["state"], "confirmed")
+        self.assertEqual(self.cloud.puts, 1)
+        self.assertEqual(self.calls, [self.request, self.request, self.request])
+
+
 class DurableRuleOutbox(unittest.TestCase):
     """Exercise the real shared queue/storage on an isolated synthetic home."""
 

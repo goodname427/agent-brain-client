@@ -58,6 +58,11 @@ class DurableOutbox:
             raise CacheBlocked()
         self._enqueue(request)
         with self._outbox_locked(self.cache / "content.lock"):
+            # Recheck grant, source and exact stored bytes after waiting for the
+            # content lock. A blocked row is retried only by this explicit entry.
+            row = self._enqueue(request)
+            if row["state"] == "blocked":
+                self._retry_blocked(row, event_gate=gate)
             self._drain(
                 request["request_id"],
                 event_gate=gate,
@@ -67,6 +72,40 @@ class DurableOutbox:
             if row is None:
                 raise CacheBlocked()
             return self._queue_result(row)
+
+    def _retry_blocked(self, row, *, event_gate=None):
+        """One explicit retry of an already validated immutable queue row.
+
+        Never called by a drain/refresh. An uncertain or invalid receipt leaves
+        the retained refusal intact; a later explicit call reuses the same ID.
+        """
+        request = row["request"]
+        self._check_write(request)
+        self.sources.assert_shareable(row["reconciles"]["source_keys"])
+        if not self._event_allowed(request, event_gate):
+            return
+        try:
+            response = self.client.request(json.loads(contract.encode(request)))
+        except Exception:
+            response = None
+        if self._server_saved(response, request):
+            row.update(state="confirmed", response=response)
+            self._save("outbox/" + request["request_id"] + ".json", row)
+        elif (
+            isinstance(response, dict)
+            and response.get("request_id") == request["request_id"]
+            and isinstance(response.get("error"), dict)
+            and response["error"].get("code") == "revision_conflict"
+        ):
+            row.update(state="conflict", response=response)
+            if self._event_allowed(request, event_gate):
+                try:
+                    row["remote"] = self._read_target(
+                        request["params"]["kind"], request["params"]["id"]
+                    )
+                except Exception:
+                    pass
+            self._save("outbox/" + request["request_id"] + ".json", row)
 
     def invoke_write(self, request, reconciles=None, *, event_gate=None):
         """One write/replay implementation for native mapping and event hosts."""
@@ -90,33 +129,7 @@ class DurableOutbox:
                     },
                 )
             if row["state"] == "blocked":
-                # Only an explicit identical call retries a blocked request.
-                # Startup/refresh never discard or automatically replay it.
-                try:
-                    response = (
-                        self.client.request(request)
-                        if self._event_allowed(request, event_gate)
-                        else None
-                    )
-                except Exception:
-                    response = None
-                if self._server_saved(response, request):
-                    row.update(state="confirmed", response=response)
-                    self._save("outbox/" + request["request_id"] + ".json", row)
-                elif (
-                    isinstance(response, dict)
-                    and response.get("request_id") == request["request_id"]
-                    and isinstance(response.get("error"), dict)
-                    and response["error"].get("code") == "revision_conflict"
-                ):
-                    row.update(state="conflict", response=response)
-                    try:
-                        row["remote"] = self._read_target(
-                            request["params"]["kind"], request["params"]["id"]
-                        )
-                    except Exception:
-                        pass
-                    self._save("outbox/" + request["request_id"] + ".json", row)
+                self._retry_blocked(row, event_gate=event_gate)
             # Only an explicit same-ID retry upgrades an old local receipt.
             # No automatic loop over the backed-up journal or new scheduler.
             elif (
