@@ -183,6 +183,42 @@ class WindowsNative(unittest.TestCase):
         self.assertEqual(host_security(cache), original_security)
         self.assertEqual(retained.read_bytes(), b'synthetic retained data')
 
+    def test_rule_capture_replays_with_inherited_cache_acl_without_changing_security(self):
+        from agent_brain_client.domain.hook_coverage import CAPABILITIES
+        from agent_brain_client.application.memory.rule_fallback import RuleFallback
+        from test_rule_fallback import DiskRuleHost
+        from test_content_outbox import Cloud
+        cache = self.home / 'rule-cache'; cache.mkdir()
+        original_security = self.host_acl(cache)
+        with self.assertRaises(ValueError): private_mode(cache, directory=True)
+        cloud = Cloud(); cloud.offline = True
+
+        def restart():
+            adapter = DiskRuleHost(self.home, cache, cloud)
+            core = RuleFallback(adapter, hooks=lambda: dict.fromkeys(CAPABILITIES, False),
+                                enabled=lambda: True, source_gate=lambda *args: True)
+            return adapter, core
+
+        adapter, core = restart()
+
+        def capture():
+            return core.capture('user_prompt', 'synthetic-acl-operation', 'Synthetic inherited cache capture',
+                                representation='observed-user-message',
+                                source_context={'origin': None, 'session_id': None})
+
+        self.assertEqual(capture()['local_queue']['state'], 'pending')
+        request = copy.deepcopy(cloud.calls[0])
+        security = {path: host_security(path) for path in cache.rglob('*.lock')}
+        self.assertIn(cache / 'content.lock', security)
+        with self.assertRaises(ValueError): private_mode(cache / 'content.lock', owner=True)
+        adapter, core = restart(); cloud.offline = False
+        self.assertEqual(capture()['local_queue']['state'], 'confirmed')
+        self.assertEqual(cloud.calls, [request, request])
+        self.assertEqual(cloud.puts, 1)
+        self.assertEqual(adapter.queue_status()['confirmed'], 1)
+        self.assertEqual(host_security(cache), original_security)
+        for path, before in security.items(): self.assertEqual(host_security(path), before)
+
     def test_administrator_owned_host_directory_and_file_keep_security(self):
         from agent_brain_client.adapters.storage.host_files import host_atomic
         admin = self.home / 'admin-codex'; admin.mkdir()

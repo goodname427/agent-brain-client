@@ -118,6 +118,7 @@ COMMANDS = {
             "test_ledger_ownership.OwnerGates.test_mapping_gate_preserves_read_only_settlement_semantics",
             "test_harness_core",
             "test_runtime_boundaries",
+            "test_rule_fallback",
         ],
         [
             "python",

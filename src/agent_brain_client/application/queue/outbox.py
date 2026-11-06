@@ -44,6 +44,30 @@ class DurableOutbox:
     _require_storage: Callable[..., Any]
     _queued: Callable[..., Any]
 
+    def submit_rule_capture(self, request: dict, *, gate: Callable[[], bool]) -> dict:
+        """Stage and retry one explicit Rule observation under this queue's lock.
+
+        The queue owns its ledger and cache lock; the memory use case supplies
+        only immutable request bytes and a live coverage/source predicate.
+        """
+        if (
+            request.get("method") != "content_put"
+            or request.get("params", {}).get("kind") != "memory"
+            or not request.get("request_id", "").startswith("agentbrain_rule_")
+        ):
+            raise CacheBlocked()
+        self._enqueue(request)
+        with self._outbox_locked(self.cache / "content.lock"):
+            self._drain(
+                request["request_id"],
+                event_gate=gate,
+                exact_request_id=request["request_id"],
+            )
+            row = self._load("outbox/" + request["request_id"] + ".json")
+            if row is None:
+                raise CacheBlocked()
+            return self._queue_result(row)
+
     def invoke_write(self, request, reconciles=None, *, event_gate=None):
         """One write/replay implementation for native mapping and event hosts."""
         check_request()
@@ -268,32 +292,46 @@ class DurableOutbox:
 
     @staticmethod
     def _event_allowed(request, event_gate):
-        if request["method"] != "memory_event_submit" or event_gate is None:
+        rule = request["request_id"].startswith("agentbrain_rule_")
+        if request["method"] != "memory_event_submit" and not rule:
             return True
+        if event_gate is None:
+            return not rule
         try:
             return event_gate() is True
         except Exception:
             return False
 
-    def _drain(self, event_request_id=None, event_gate=None):
+    def _drain(self, event_request_id=None, event_gate=None, *, exact_request_id=None):
         # A resolver can follow older waiters in creation order. Revisit those
         # only after confirmed reconciliation made progress. An uncertain send
         # ends the whole drain, so this never loops over an unconfirmed request.
-        while self._drain_pass(event_request_id, event_gate):
+        while self._drain_pass(
+            event_request_id, event_gate, exact_request_id=exact_request_id
+        ):
             pass
 
-    def _drain_pass(self, event_request_id=None, event_gate=None):
+    def _drain_pass(
+        self, event_request_id=None, event_gate=None, *, exact_request_id=None
+    ):
         resolved = False
         for row in self._queued():
             request = row["request"]
             params = request["params"]
             target = (params["kind"], params["id"])
-            # Automatic legacy refresh never uploads captured text. An exact
-            # Stop retry must pass the current finite hook policy again.
             if (
-                request["method"] == "memory_event_submit"
-                and request["request_id"] != event_request_id
+                exact_request_id is not None
+                and request["request_id"] != exact_request_id
             ):
+                continue
+            # Captured native/Rule text requires an explicit retry and current
+            # source/route policy; ordinary refresh never replays it.
+            rule = request["request_id"].startswith("agentbrain_rule_")
+            if (request["method"] == "memory_event_submit" or rule) and request[
+                "request_id"
+            ] != event_request_id:
+                continue
+            if rule and not self._event_allowed(request, event_gate):
                 continue
             if row["state"] in ("conflict", "blocked"):
                 if row["state"] == "conflict" and row["remote"] is None:
