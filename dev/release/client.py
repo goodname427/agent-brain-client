@@ -664,7 +664,7 @@ def build_platforms(
         plan["installation"] = {
             "mode": "reinstall",
             "automatic_upgrade": False,
-            "data_policy": "preserve-memory-identity-and-queues; never-repin-existing-profiles",
+            "data_policy": "retain-old-files-and-queues; fresh-device; preserve-memory-access; never-repin",
             "audits": installation_audits,
         }
     return plan, artifacts
@@ -746,9 +746,9 @@ def prepare_platforms(
         + "\n\nBoth platform manifests built and checked at the same component version. "
         + (
             "REINSTALLATION REQUIRED: this version cannot update an old layout in place. "
-            "Use the new installer; preserve existing memories, identity and pending queues. "
+            "Use the new installer with --action reinstall to archive old state and connect a NEW device to the SAME Server/account. "
             "Do not delete state, reset credentials or rewrite profile pins. "
-            "An incompatible existing registration requires a reviewed reinstall plan before installation. "
+            "Old unsent queues remain in the archive and are NOT replayed; verify retained Memory access after connecting. "
             if installation_mode == "reinstall"
             else "Only selected existing channels are advanced; their ancestry, file scope and credential pins are retained. "
         )

@@ -352,11 +352,19 @@ def prepare_materials(
             "helper_sha256": materials["helper_sha256"],
             "source_sha256": materials["source_sha256"],
         }
+    from agent_brain_client.adapters.storage.reinstallation import read_journal
+
+    fresh = read_journal(home)
     profile = profile_metadata(
         connection["endpoint"],
         connection["grant"],
         descriptor,
         str(home / ".config/agent-brain-client/https"),
+        **(
+            {"instance_id": fresh["id"]}
+            if fresh and fresh["phase"] in ("ready", "complete")
+            else {}
+        ),
     )
     profile_sha = same_private(state / "https-profile.json", profile)
     content = {
@@ -366,7 +374,18 @@ def prepare_materials(
         "ids": connection["grant"]["ids"],
         "dependencies": {"commands": [], "python_modules": []},
     }
+    if fresh and fresh["phase"] in ("ready", "complete"):
+        from agent_brain_client.domain.content_policy import validate_policy
+
+        content = fresh["content"]
+        validate_policy(content, connection["grant"])
     content_sha = same_private(state / "content-policy.json", content)
+    if fresh and fresh["phase"] in ("ready", "complete"):
+        from agent_brain_client.runtime.fresh_installation import retained_installation
+
+        retained_installation(home, native).restore_mapping(
+            state / "content-cache", content
+        )
     runtime = {
         "https_profile": str(state / "https-profile.json"),
         "https_profile_sha256": profile_sha,

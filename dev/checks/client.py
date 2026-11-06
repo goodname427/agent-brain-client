@@ -134,6 +134,7 @@ COMMANDS = {
             "-B",
             "-m",
             "unittest",
+            "test_fresh_installation",
             "test_install_contracts.Contracts",
             "test_install_contracts.PlatformMainContracts",
             "test_install_contracts.InstallationArchitectureContracts",

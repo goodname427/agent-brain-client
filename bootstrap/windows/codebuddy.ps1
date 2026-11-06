@@ -1,9 +1,10 @@
 [CmdletBinding()]
 param(
     [string]$Server,
-    [ValidateSet('install','update')][string]$Action = 'install'
+    [ValidateSet('install','reinstall','update')][string]$Action = 'install'
 )
 $ErrorActionPreference = 'Stop'
+$Action = $Action.ToLowerInvariant()
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 . (Join-Path $PSScriptRoot 'python.ps1')
 $python = Resolve-AgentBrainPython

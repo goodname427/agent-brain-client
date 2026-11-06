@@ -465,3 +465,42 @@ def status(home, core, *, backend_check):
         "model_loaded": False,
         "permissions_changed": False,
     }
+
+
+def fresh_installation_payload(home):
+    """Remove only receipt-matching native entries; retain private history."""
+    directory = state_directory(home)
+    file = directory / "registration.json"
+    if not file.exists():
+        for path in (*mcp_paths(home, "both"), Path(home) / ".codebuddy.json"):
+            if NAME in Document(read_host(path)).value.get("mcpServers", {}):
+                raise ValueError(
+                    "CodeBuddy entry has no ownership receipt; preserve it"
+                )
+        return {}
+    record = metadata_io.private_json(directory / "transaction.json")
+    if record.get("phase") != "complete":
+        raise ValueError(
+            "Resolve incomplete CodeBuddy installation before reconnecting"
+        )
+    receipt = registration(file, directory / "transaction.json", None)
+    if receipt.get("removed"):
+        return {}
+    permitted = set(map(str, mcp_paths(home, receipt["surface"])))
+    if set(receipt["mcp_paths"]) != permitted:
+        raise ValueError("CodeBuddy surface changed")
+    payload = {
+        canonical(Path(p)): render_json(
+            read_host(canonical(Path(p))), None, receipt["mcp"], remove=True
+        )
+        for p in receipt["mcp_paths"]
+    }
+    settings = canonical(Path(home) / ".codebuddy/settings.json")
+    payload[settings] = render_json(
+        read_host(settings), None, receipt["hooks"], hooks=True, remove=True
+    )
+    instructions = canonical(Path(home) / ".codebuddy/CODEBUDDY.md")
+    payload[instructions] = guidance(
+        read_host(instructions), previous=True, remove=True
+    )
+    return payload

@@ -73,7 +73,7 @@ def grant_check(grant):
     require_platform("credential-store", grant["platform"])
 
 
-def profile_metadata(endpoint, grant, descriptor, state_directory):
+def profile_metadata(endpoint, grant, descriptor, state_directory, *, instance_id=None):
     grant_metadata_check(grant)
     target = grant["platform"]
     fields = credential_fields(target, descriptor)
@@ -87,6 +87,8 @@ def profile_metadata(endpoint, grant, descriptor, state_directory):
         "state_directory": state_directory,
         **fields,
     }
+    if instance_id is not None:
+        value["instance_id"] = instance_id
     validate_profile_metadata(value)
     return value
 
@@ -112,6 +114,12 @@ def validate_profile_metadata(value):
     target = value["platform"]
     paths = platform_paths(target)
     descriptor = profile_credentials(value)
+    if "instance_id" in value:
+        if not isinstance(value["instance_id"], str) or not re.fullmatch(
+            r"[a-f0-9]{32}", value["instance_id"]
+        ):
+            raise ValueError("Explicit fresh installation instance required")
+        common.add("instance_id")
     if set(value) != common | set(credential_fields(target, descriptor)):
         raise ValueError("Fixed platform profile metadata required")
     endpoint_check(value["endpoint"])

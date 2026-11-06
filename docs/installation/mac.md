@@ -1,5 +1,6 @@
 # Mac（Apple Silicon / Intel）：安装、使用、卸载、再次安装
 
+0.8 旧布局请使用[保留记忆并重新连接的重装入口](reinstall.md)，普通 install 不会自动覆盖旧安装；旧未同步队列不会自动接续。
 > 状态：当前维护。适用：Mac arm64 / x86_64 当前安装入口；运行版本由原渠道固定。文档核对日期：2026-11-06；验收范围见 [0.5 交付状态](../releases/0.5-status.md)。
 
 支持 Apple Silicon / Intel Mac、Codex 和既有 HTTPS 个人 Memory/Rule/Skill 服务。普通客户端无管理 SSH、sudo、发码或 Server/Data 凭据。Windows 使用同一接入协议，见 [Windows 步骤](windows.md)。CodeBuddy 使用[共享安装入口](codebuddy.md)。

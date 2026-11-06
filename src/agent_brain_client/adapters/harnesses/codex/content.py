@@ -57,6 +57,26 @@ class CodexContentSession(FileContentOutbox):
     def _outbox_locked(*args, **kwargs):
         return locked(*args, **kwargs)
 
+    @classmethod
+    def metadata_view(cls, home, native, cache, policy, *, platform):
+        """Read native ownership without a transport, credential access or writes."""
+        from types import SimpleNamespace
+
+        require_platform("cache-storage", platform)
+        view = object.__new__(cls)
+        view.home, view.native_home, view.cache = Path(home), Path(native), Path(cache)
+        view.platform, view.policy = platform, policy
+        view.binding = {"device_home": str(home), "codex_home": str(native)}
+        view.policy_sha = sha(
+            contract.encode({"policy": policy, "binding": view.binding})
+        )
+        view.client = SimpleNamespace(
+            grant={"scopes": ["read", "put"], "artifact_types": policy["kinds"]}
+        )
+        view.sources = CodexSourceImports(view)
+        view.mapping = CodexContentMapping(view)
+        return view
+
     def __init__(self, home, cache, policy, client, health=None, codex_home=None):
         require_platform(
             "cache-storage", (getattr(client, "grant", None) or {}).get("platform")

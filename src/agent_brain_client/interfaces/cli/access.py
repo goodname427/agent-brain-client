@@ -122,10 +122,23 @@ def access_store(home, endpoint, materials, *, helper_builder=None):
     state = Path(home) / ".config/agent-brain-client/access-bootstrap"
     private_directory(state)
     owned(state, directory=True)
+    from agent_brain_client.adapters.storage.reinstallation import read_journal
+
+    fresh = read_journal(home)
     service = (
         "agent-brain.https."
         + hashlib.sha256(
-            canonical({"protocol": "access-v1", "endpoint": endpoint})
+            canonical(
+                {
+                    "protocol": "access-v1",
+                    "endpoint": endpoint,
+                    **(
+                        {"instance_id": fresh["id"]}
+                        if fresh and fresh["phase"] in ("ready", "complete")
+                        else {}
+                    ),
+                }
+            )
         ).hexdigest()
     )
     if os.name == "nt":
@@ -185,8 +198,23 @@ def run_address_install(
         # A new address cannot replace an existing install or unfinished legacy transaction.
         root = Path(home) / ".config/agent-brain-client"
         marker = state / "endpoint.json"
+        from agent_brain_client.adapters.storage.reinstallation import read_journal
+
+        fresh = read_journal(home)
+        if fresh and fresh["phase"] in ("ready", "complete"):
+            if endpoint is not None and endpoint_check(endpoint) != endpoint_check(
+                fresh["endpoint"]
+            ):
+                raise ValueError("Reconnect the SAME Server to retain memories")
+            endpoint = fresh["endpoint"]
         if root.exists() and not marker.exists():
             allowed = {"install-runtime", "installer-checkouts"}
+            if (
+                fresh
+                and fresh["phase"] in ("ready", "complete")
+                and fresh["native"] == str(native)
+            ):
+                allowed.update(fresh["keep"])
             if state.exists():
                 owned(state, directory=True)
                 if set(p.name for p in state.iterdir()) <= {"first-install.lock"}:
@@ -265,6 +293,24 @@ def run_address_install(
             connection = wizard.connection_value(connection)
             if connection["endpoint"] != endpoint:
                 raise ValueError("Selected Server identity changed")
+            from agent_brain_client.runtime.fresh_installation import (
+                retained_installation,
+            )
+
+            try:
+                retained_installation(home, native).validate_connection(connection)
+            except ValueError:
+                # Only this fresh attempt's separate origin-key item is removed;
+                # no old device item, Server credential or authorization changes.
+                with store.lease():
+                    store.clear(record)
+                return {
+                    "status": "fresh-install-account-mismatch",
+                    "installed": False,
+                    "credential_accessed": True,
+                    "old_queue_replayed": False,
+                    "next_action": "Use the original Server/account access key in the hidden local prompt. The retained memory/archive was not changed.",
+                }
             # Persist authenticated metadata before the existing transaction. Its
             # canonical digest is a local drift check, never an external trust claim.
             install_state.same_private(state / "connection.json", connection)

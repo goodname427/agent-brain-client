@@ -8,12 +8,14 @@ for ARGUMENT in "$@"; do
     if [ "$ACTION_NEXT" = true ]; then
         REQUESTED_ACTION=$ARGUMENT
         ACTION_NEXT=false
+    elif [ "${ARGUMENT#--action=}" != "$ARGUMENT" ]; then
+        REQUESTED_ACTION=${ARGUMENT#--action=}
     elif [ "$ARGUMENT" = --action ]; then
         ACTION_NEXT=true
     fi
 done
 case "$REQUESTED_ACTION" in
-    install|update) ;;
+    install|reinstall|update) ;;
     *) echo '{"status":"codebuddy-action-required","next_action":"Use bootstrap/codebuddy.py for status, probe or uninstall."}'; exit 2 ;;
 esac
 # The frozen Server device protocol keeps its enrolled adapter name. A fresh
