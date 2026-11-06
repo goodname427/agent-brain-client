@@ -7,7 +7,7 @@ if __package__ in (None, ""):
     _ENTRY_ROOT = Path(__file__).resolve().parents[5]
     sys.path[:0] = [str(_ENTRY_ROOT / "src"), str(_ENTRY_ROOT)]
 
-import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
+import agent_brain_client.adapters.storage.private_files as private_files
 
 
 from agent_brain_client.adapters.packages.layout import PYTHON_FILES as FILES
@@ -33,7 +33,7 @@ from agent_brain_client.adapters.platforms.filesystem import (
 import tomllib
 import uuid
 
-import agent_brain_client.adapters.harnesses.codex.project as project_sources
+import agent_brain_client.adapters.harnesses.codex.project_configuration as project_sources
 from agent_brain_client.domain.scopes import validate
 
 # Status also runs from an isolated CLI without the test runner's PYTHONPATH.
@@ -397,8 +397,8 @@ def recover_pending(home, native):
     from agent_brain_client.adapters.platforms.filesystem import locked
     from agent_brain_client.adapters.storage.collection import settings_path
 
-    home = adapters_storage_private_files.safe(home)
-    native = adapters_storage_private_files.safe(native)
+    home = private_files.safe(home)
+    native = private_files.safe(native)
     receipt = settings_path(home).parent / "hook-install.json"
     if not receipt.exists():
         return False
@@ -410,7 +410,7 @@ def recover_pending(home, native):
         if set(record.get("host", {})) != {str(file)}:
             raise ValueError("Hook native binding changed")
         before = base64.b64decode(record["host"][str(file)]["before"], validate=True)
-        meta = adapters_storage_private_files.private_json(
+        meta = private_files.private_json(
             home / ".config/agent-brain-client/codex-mcp.json"
         )
         _, _, _, registered_native = ci.registered_context(

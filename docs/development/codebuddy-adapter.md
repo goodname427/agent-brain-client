@@ -2,29 +2,28 @@
 
 > Client 0.7 开发说明；核对日期 2026-11-06。安装与实际能力见 [CodeBuddy 接入](../installation/codebuddy.md)。
 
-适配复用 [共用核心](architecture.md)，不增加记忆数据库、抽取器、Server 事务或凭据后端。查询／写入直接启动原验证后的 MCP 后端；采集通过原 GlobalClient 认证和来源门禁，直接使用共用 `brain_cache.EventQueue`，不加载 Codex 内容映射。CodeBuddy 采集单独绑定 `host_adapter` 和缓存路径，不替换 Codex 队列。
+适配复用 [共用核心](architecture.md)，不增加记忆数据库、抽取器、Server 事务或凭据后端。查询／写入直接启动原验证后的 MCP 后端；采集通过共享 CollectionClient 认证和来源门禁，直接使用共用 `adapters/storage/content.py` 的 FileEventQueue，不加载 Codex 内容映射。CodeBuddy 采集单独绑定 `host_adapter` 和缓存路径，不替换 Codex 队列。
 
-当前目录职责及进一步拆分见 [运行代码结构](architecture.md)。以下行数保留首次实现时的审计记录。
+当前目录职责及进一步拆分见 [运行代码结构](architecture.md)。职责以调用和依赖方向核验。
 
 正文内容是否适合记忆由 Agent 判断；Client 不再根据密码赋值、token、Bearer 或私钥头等文本形态推断敏感性。这同时适用于 CodeBuddy 的用户提示、助手正文和召回内容。明确的 LocalOnly／no-memory／private／不要记忆标记及禁止共享限制继续生效，来源批准、权限、停止门、事务和回执校验保持原样。明确私密的用户提示仍排除该轮两侧采集；未经标记的正文不会仅因文本形态连带排除助手回复。该调整不增加秘密扫描器，也不替代 Agent 对实际内容的判断。
 
 采集与召回共用明确共享限制判断：`[no-share]`、`[project-only]` 等行首标记，以及有清晰指令边界的行首禁止共享／仅限项目指令。正文中的引用、解释和“为什么规则禁止跨项目共享？”等普通提问不改变共享范围；“请不要跨项目共享这条信息，可以吗？”仍是明确限制。没有显式标记或明确前缀的自由表达交由 Agent 判断，Client 不做全文关键词或问号猜测。来源和权限核验独立于正文判断。
 
-## 厚度
+## 职责
 
-首次实现时的物理源码为 **983 行**，不含测试与文档；行数包含注释、空行，不代表复杂度评分。
+| 位置 | 职责 |
+| --- | --- |
+| `adapters/harnesses/codebuddy/configuration.py` | JSONC、配置优先级、自有 MCP/Hooks/说明块，调用共用文件事务 |
+| `adapters/harnesses/codebuddy/events.py` | 原生身份、长文本分批、当前轮事件与重试 |
+| `adapters/harnesses/codebuddy/transcript.py` | 当前轮游标、IDE generation、CLI JSONL 增量与读取边界 |
+| `interfaces/cli/codebuddy.py` | 安装、状态、协议检查、MCP、Hook 的输入分发 |
+| `runtime/host_binding.py` | 校验既有共享运行库与原登记，绑定共用传输和来源服务 |
+| `bootstrap/{macos,windows}/codebuddy.*` | 解释器和官方安装入口的顺序协调 |
 
-| 文件 | 行数 | 宿主职责 |
-| --- | ---: | --- |
-| src/agent_brain_client/adapters/harnesses/codebuddy/configuration.py | 301 | JSONC 字段编辑、配置优先级、自有 MCP/Hooks/说明块，以及调用共用 host-file 事务和回滚 |
-| src/agent_brain_client/adapters/harnesses/codebuddy/events.py | 308 | 核对既有运行时、独立队列绑定、原生身份规范化、长文本分批、事件重试和召回输出 |
-| src/agent_brain_client/adapters/harnesses/codebuddy/transcript.py | 188 | 当前轮游标、IDE generation 消息引用、CLI 最终正文字段／JSONL 增量及正文读取边界 |
-| src/agent_brain_client/interfaces/cli/codebuddy.py | 122 | 安装／状态／协议检查／MCP／Hook 命令分发与冻结适配器核验 |
-| 两个平台安装入口 | 64 | 调用原安装器并绑定 CodeBuddy，保留既有设备原生目录并升级旧共享运行时 |
+冻结包包含当前完整 Python 运行库，逐项记录并验证摘要，可脱离源码 checkout 启动。共享运行库和正在执行的 Harness 包必须匹配；代码改变后重新运行官方 CodeBuddy 安装入口刷新绑定，不加载不匹配版本，也不改设备身份、队列或来源范围。
 
-复用部分包括 `brain_content` 的协议／回执验证、`brain_http` 的传输实现、`brain_memory.ContentOutbox`、现有系统凭据、发布校验、MCP 工具、全局来源核对与分层召回。`submit_turn` 保留给 Codex 的有界 prompt/final 配对；CodeBuddy 使用同一事件协议直接提交分批事件，以便在两种正文格式与长回复下保留真实文本，而不伪造配对内容。
-
-没有复制记忆核心。存在少量本地路径、JSON 和代码 pin 核验，与原安装器相似；它们用于 CodeBuddy 冻结入口在载入共用运行时之前的检查。JSONC 编辑和宿主文件事务可供将来其他 JSON 配置 Harness 复用，但当前没有为了减少行数再引入注册表或通用宿主框架。
+协议、CAS/outbox、回执、传输、来源门禁与召回算法只有一份源码。Codex 使用共用 `submit_turn` 配对 prompt/final；CodeBuddy 在同一事件和队列合同上提交有界正文批次，以保留真实长文本。物理行数不作为适配边界的质量证明。
 
 下一种 Harness 主要需要替换配置入口、事件身份／正文规范化、上下文注入与原生加载说明。无需重新实现 HTTP、CAS、持久回执或 outbox。CodeBuddy 的 transcript 路径和格式属于宿主实现证据，不应直接套给 DeepSeek。
 

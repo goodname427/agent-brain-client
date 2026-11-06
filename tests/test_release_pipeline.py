@@ -94,9 +94,11 @@ class ReleasePipeline(unittest.TestCase):
         real_run = subprocess.run
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / 'source'
-            installer = root / 'installer'
+            installer = root / 'src/agent_brain_client/interfaces/cli'
             installer.mkdir(parents=True)
-            for name in ('access_install', 'bootstrap_main'):
+            (root / 'bootstrap').mkdir()
+            (root / 'bootstrap/source_checkout.py').write_text('FROM_BOOTSTRAP = True\n')
+            for name in ('access',):
                 (installer / (name + '.py')).write_text('FROM_INSTALLER = True\n')
             output = Path(tmp) / 'checks'
             output.mkdir()
@@ -105,8 +107,8 @@ class ReleasePipeline(unittest.TestCase):
                 if command[1:] == ['-B', '-m', 'unittest', 'discover', '-s', 'tests']:
                     code = ('import os, sys; '
                             'sys.path[:0] = os.environ["PYTHONPATH"].split(os.pathsep); '
-                            'import agent_brain_client.interfaces.cli.access as access_install, bootstrap_main; '
-                            'assert access_install.FROM_INSTALLER and bootstrap_main.FROM_INSTALLER')
+                            'import agent_brain_client.interfaces.cli.access as access_install; import bootstrap.source_checkout as bootstrap_main; '
+                            'assert access_install.FROM_INSTALLER and bootstrap_main.FROM_BOOTSTRAP')
                     return real_run([command[0], '-I', '-B', '-c', code], **kwargs)
                 return subprocess.CompletedProcess(command, 0)
 

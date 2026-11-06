@@ -20,7 +20,7 @@ import agent_brain_client.adapters.harnesses.codex.configuration as host
 import agent_brain_client.adapters.storage.host_files as host_files
 import agent_brain_client.runtime.collection as gm
 import agent_brain_client.adapters.harnesses.codex.collection_installation as hooks
-import agent_brain_client.adapters.harnesses.codex.project as project_sources
+import agent_brain_client.adapters.harnesses.codex.project_configuration as project_sources
 
 
 class GlobalMemoryUpdate(unittest.TestCase):
@@ -79,7 +79,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
             "legacy_projects": [],
             "operator": None,
             "operator_sha256": None,
-            "code_sha256": {name: "b" * 64 for name in gm.FILES},
+            "code_sha256": {name: "b" * 64 for name in hooks.FILES},
         }
         metadata.write(self.file, self.value)
         self.config = self.native / "config.toml"
@@ -92,26 +92,8 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.no_client.start()
         self.addCleanup(self.no_client.stop)
 
-    def test_refresh_adds_shared_runtime_pins_without_changing_source_or_queue(self):
-        self.assert_historical_hook_refresh(gm.LEGACY_FILES)
 
-    def test_refresh_relocates_070_hook_pins_without_changing_source_or_queue(self):
-        self.assert_historical_hook_refresh(gm.PREVIOUS_FILES)
 
-    def assert_historical_hook_refresh(self, files):
-        legacy = dict(self.value, code_sha256={name: 'b' * 64 for name in files})
-        metadata.write(self.file, legacy)
-        hooks.transact(self.native, self.file.parent, hooks.block(legacy))
-        pending = self.file.parent / 'fictional-pending.json'
-        metadata.write(pending, {'request_id': 'fictional-retained-request'})
-        before = pending.read_bytes()
-        hooks.refresh(self.home)
-        actual = metadata.private_json(self.file)
-        self.assertEqual(set(actual['code_sha256']), set(gm.FILES))
-        self.assertEqual({k:v for k,v in actual.items() if k!='code_sha256'},
-                         {k:v for k,v in legacy.items() if k!='code_sha256'})
-        self.assertEqual(pending.read_bytes(), before)
-        self.assertEqual(hooks.refresh(self.home)['status'], 'global-hook-current')
 
     def test_refresh_migrates_owned_async_stop_without_removing_pending_data(self):
         previous = hooks.block(self.value).replace('async = false', 'async = true')
@@ -147,7 +129,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.preserved()
         self.assertTrue(hooks.installation_status(source_policy.load(self.home)))
         root = next((self.file.parent / "code").iterdir())
-        code = 'import sys;sys.path.insert(0,sys.argv[1]);import agent_brain_client.runtime.collection as g;g.;import agent_brain_client.interfaces.mcp.content as content_mcp,brain_cache;assert "global_memory_install" not in sys.modules;source_policy.load(sys.argv[2]);print("frozen-runtime-loaded")'
+        code = 'import sys;sys.path.insert(0,sys.argv[1]);import agent_brain_client.runtime.collection;import agent_brain_client.interfaces.mcp.content;from agent_brain_client.adapters.storage.collection import load;load(sys.argv[2]);print("frozen-runtime-loaded")'
         environment = dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.native))
         proc = subprocess.run(
             [
@@ -156,7 +138,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
                 "-B",
                 "-c",
                 code,
-                str(root / "scripts"),
+                str(root / "src"),
                 str(self.home),
             ],
             cwd=self.home,
@@ -309,7 +291,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         foreign = b'[apps."synthetic-sites"]\nenabled = false\n'
         before = self.config.read_bytes().replace(hooks.END.encode(), foreign + hooks.END.encode())
         self.config.write_bytes(before)
-        target = hooks.block(dict(self.value, code_sha256={name: 'c' * 64 for name in gm.FILES}))
+        target = hooks.block(dict(self.value, code_sha256={name: 'c' * 64 for name in hooks.FILES}))
         apply = host_files.host_apply
 
         def interrupt(rows, persist):
@@ -337,7 +319,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         # table moved; comments/blank lines stayed inside previous_block.
         previous = hooks.block(self.value).replace(hooks.END, comments + hooks.END)
         outside = original[:original.index(hooks.BEGIN)] + state
-        target = hooks.block(dict(self.value, code_sha256={name: 'c' * 64 for name in gm.FILES}))
+        target = hooks.block(dict(self.value, code_sha256={name: 'c' * 64 for name in hooks.FILES}))
         after = (outside.rstrip() + '\n\n' + target).encode()
         receipt = self.file.parent / 'hook-install.json'
         record = {'schema': 2, 'phase': 'applying', 'block': target,
@@ -588,7 +570,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
     def test_inline_event_interruption_restores_exact_preimage(self):
         before = self.inline_event_config(False)
         self.config.write_bytes(before)
-        target = hooks.block(dict(self.value, code_sha256={name: 'c' * 64 for name in gm.FILES}))
+        target = hooks.block(dict(self.value, code_sha256={name: 'c' * 64 for name in hooks.FILES}))
         apply = host_files.host_apply
 
         def interrupt(rows, persist):

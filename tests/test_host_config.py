@@ -20,7 +20,7 @@ class HostConfig(unittest.TestCase):
         self.path = self.root / "codex/config.toml"
         self.path.parent.mkdir()
         self.path.write_bytes(b'model="synthetic"\n')
-        self.platform = patch("agent_brain_client.adapters.harnesses.codex.configuration.require_platform")
+        self.platform = patch("agent_brain_client.adapters.storage.host_files.require_platform")
         self.platform.start()
         self.addCleanup(self.platform.stop)
 

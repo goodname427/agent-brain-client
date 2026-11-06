@@ -27,16 +27,14 @@ import agent_brain_client.domain.contract as contract
 from agent_brain_client.adapters.storage.host_files import atomic
 from agent_brain_client.adapters.platforms.filesystem import (
     require_platform,
-    private_mode,
-    private_directory,
     sync_directory,
 )
 import agent_brain_client.adapters.platforms.filesystem as brain_lock
 from agent_brain_client.application.queue.outbox import DurableOutbox
 
-cache_mode = getattr(brain_lock, "cache_mode", private_mode)
-cache_directory = getattr(brain_lock, "cache_directory", private_directory)
-locked = getattr(brain_lock, "cache_locked", brain_lock.locked)
+cache_mode = brain_lock.cache_mode
+cache_directory = brain_lock.cache_directory
+locked = brain_lock.cache_locked
 
 
 def sha(raw):
@@ -123,6 +121,12 @@ class FileContentOutbox(DurableOutbox):
         cache_directory(self.cache)
         cache_mode(self.cache, directory=True, blocked=CacheBlocked)
         sync_directory(self.cache.parent)
+
+    def prepare_capture_stage(self, *, limit):
+        directory = self.cache / "hook-turns"
+        self._safe(directory, self.cache)
+        if directory.exists() and len(list(directory.iterdir())) >= limit:
+            raise ValueError("Hook staging capacity reached")
 
     def _cache_bytes(self, name):
         return 1048576

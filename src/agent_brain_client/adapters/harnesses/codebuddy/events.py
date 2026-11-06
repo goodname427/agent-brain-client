@@ -5,9 +5,7 @@ relabelled, credential copied, history read or second memory engine created.
 """
 
 from agent_brain_client.adapters.storage.bounded_json import digest, unique
-import agent_brain_client.adapters.harnesses.hook_output as adapters_harnesses_hook_output
-import agent_brain_client.adapters.server.collection as collection_transport
-import agent_brain_client.adapters.storage.collection as source_policy
+import agent_brain_client.adapters.harnesses.hook_output as hook_output
 import agent_brain_client.adapters.storage.metadata as metadata_io
 import agent_brain_client.domain.privacy as privacy
 import agent_brain_client.adapters.storage.registration as registration_store
@@ -24,9 +22,9 @@ def session_id(value):
 def admission(core, value, local, client, session):
     from agent_brain_client.domain.scopes import digest as scope_digest, select
 
-    current = source_policy.load(value["device_home"])
+    current = core.load(value["device_home"])
     return (
-        source_policy.approved(current)
+        core.approved(current)
         and scope_digest(current["scope"]) == scope_digest(value["scope"])
         and select(current["scope"], local) is not None
         and client.status(session).get("source_admitted") is True
@@ -40,7 +38,7 @@ def open_queue(core, value, local):
     from agent_brain_client.domain.scopes import digest as scope_digest
     from agent_brain_client.adapters.storage.content import FileEventQueue
 
-    client = collection_transport.CollectionClient(value, local)
+    client = core.CollectionClient(value, local)
     client.queue_identity = dict(client.queue_identity, host_adapter="codebuddy")
     _, registered = registration_store.registration(value["device_home"])
     runtime = registered["runtime"]
@@ -240,9 +238,9 @@ def hook(home, stream, *, core=None):
     core = core or (_ for _ in ()).throw(
         ValueError("Verified runtime binding required")
     )
-    value = source_policy.load(home)
+    value = core.load(home)
     # Check local admission before accepting any prompt body from the host.
-    if not source_policy.approved(value):
+    if not core.approved(value):
         return {}, {"status": "source-approval-required", "data_transferred": False}
     raw = stream.read(1048577)
     if len(raw) > 1048576:
@@ -327,7 +325,7 @@ def hook(home, stream, *, core=None):
     query = prompt[:1024].strip() or "personal preferences and task progress"
     try:
         items = core.recall(value, local, session, query)
-        return adapters_harnesses_hook_output.hook_context(kind, items), diagnostic
+        return hook_output.hook_context(kind, items), diagnostic
     except Exception as error:
         return {}, dict(
             diagnostic,

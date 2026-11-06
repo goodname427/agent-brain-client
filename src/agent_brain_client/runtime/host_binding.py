@@ -17,8 +17,8 @@ from agent_brain_client.adapters.packages.layout import PYTHON_FILES
 def load_core(home):
     """Use the existing immutable global runtime, including its own code pins.
 
-    This indirection also follows a normal Client upgrade without copying or
-    rewriting the device's release policy, credentials or approved source scope.
+    The gateway and shared runtime must contain the same reviewed code. Refresh
+    the Harness binding after a Client change; retain policy, credentials and scope.
     """
     directory = canonical(Path(home) / ".config/agent-brain-client/global-memory")
     value = read_json(directory / "settings.json")
@@ -52,6 +52,11 @@ def load_core(home):
             or digest(file.read_bytes()) != pin
         ):
             raise ValueError("Frozen Client code changed")
+        executing = canonical(Path(__file__).resolve().parents[3] / name)
+        if not executing.is_file() or digest(executing.read_bytes()) != pin:
+            raise ValueError(
+                "Refresh the Harness binding to the current Client runtime"
+            )
     import agent_brain_client.runtime.collection as core
 
     platform_files.private_mode(directory, directory=True, owner=True)

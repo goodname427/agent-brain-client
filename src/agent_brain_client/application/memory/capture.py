@@ -31,10 +31,7 @@ def submit_turn(
                 ):
                     raise ValueError("Native turn changed; preserve evidence")
                 return {"status": "staged", "data_transferred": False}
-            directory = adapter.cache / "hook-turns"
-            adapter._safe(directory, adapter.cache)
-            if directory.exists() and len(list(directory.iterdir())) >= 1024:
-                raise ValueError("Hook staging capacity reached")
+            adapter.prepare_capture_stage(limit=1024)
             now = clock() if clock else datetime.now(timezone.utc)
             stamp = now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
             row = {

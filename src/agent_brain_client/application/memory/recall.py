@@ -37,7 +37,9 @@ def recall(
         cache = services.settings_path(value["device_home"]).parent / (
             "recall-" + digest(local) + ".json"
         )
-        if response["error"].get("code") == "transport_unconfirmed" and cache.exists():
+        if response["error"].get(
+            "code"
+        ) == "transport_unconfirmed" and services.cache_exists(cache):
             saved = services.read_cache(cache)
             if (
                 saved.get("scope_sha256") == digest(value["scope"])

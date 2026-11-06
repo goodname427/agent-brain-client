@@ -14,8 +14,6 @@ import os
 import uuid
 
 BASE = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(BASE / "src"))
-sys.path.insert(0, str(BASE / "src"))
 from agent_brain_client.adapters.platforms.filesystem import native_platform
 from agent_brain_client.adapters.server.http import RemoteClient
 
@@ -377,7 +375,6 @@ if __name__ == "__main__":
         # Package health uses imports and the MCP handshake only: no network,
         # token, model, native state or Core execution.
         from agent_brain_client.adapters.harnesses.codex.configuration import TOOLS
-        from agent_brain_client.adapters.packages.client import CLIENT_FILES
         from agent_brain_client.interfaces.mcp.topics import Server
 
         server = Server(None)

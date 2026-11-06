@@ -29,7 +29,7 @@ class FreshMainCheckout(unittest.TestCase):
         private_directory(self.base)
         self.old = self.root / 'old-checkout'
         self.old.mkdir()
-        (self.old / 'tools').mkdir()
+        (self.old / 'bootstrap/macos').mkdir(parents=True)
         self.old_script = self.old / 'bootstrap/macos/install.sh'
         self.old_script.write_text('# user-modified old installer\n')
 
@@ -38,7 +38,7 @@ class FreshMainCheckout(unittest.TestCase):
         if args[:1] == ['git'] and 'clone' in args:
             checkout = Path(args[-1])
             (checkout / '.git').mkdir()
-            (checkout / 'tools').mkdir()
+            (checkout / 'bootstrap/macos').mkdir(parents=True)
             (checkout / 'bootstrap/macos/install.sh').write_text('# official main installer\n')
             return subprocess.CompletedProcess(args, 0, '', '')
         if 'rev-parse' in args:
@@ -54,7 +54,7 @@ class FreshMainCheckout(unittest.TestCase):
         if 'ls-tree' in args:
             checkout = Path(args[args.index('-C') + 1])
             records = []
-            for item in (checkout / 'tools').iterdir():
+            for item in (checkout / 'bootstrap/macos').iterdir():
                 raw = item.read_bytes()
                 oid = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
                 records.append('100644 blob ' + oid + '\t' + item.relative_to(checkout).as_posix() + '\0')

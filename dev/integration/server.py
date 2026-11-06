@@ -54,7 +54,6 @@ def run(server_root):
     from test_content_service import ContentService
 
     sys.path.insert(0, str(CLIENT_ROOT / "src"))
-    sys.path.insert(0, str(CLIENT_ROOT / "src"))
     sys.modules.pop("brain_lock", None)
     from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
 

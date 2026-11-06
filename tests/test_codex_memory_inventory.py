@@ -1,3 +1,4 @@
+import stat
 import agent_brain_client.adapters.harnesses.codex.memory_inventory as adapters_harnesses_codex_memory_inventory
 """Synthetic persistent-memory inventory; never reads native session files."""
 import json
@@ -45,7 +46,7 @@ class CodexMemoryInventory(unittest.TestCase):
             self.assertEqual(len(inventory_codex_memories(home)['sources']),1)
 
     def test_reparse_attribute_is_excluded_even_for_regular_file_or_directory(self):
-        for mode in (content_cache.stat.S_IFREG,content_cache.stat.S_IFDIR):
+        for mode in (stat.S_IFREG,stat.S_IFDIR):
             with self.subTest(mode=mode),tempfile.TemporaryDirectory() as tmp:
                 memories=Path(tmp)/'memories';memories.mkdir();(memories/'placeholder').touch()
                 fake=SimpleNamespace(st_mode=mode,st_file_attributes=0x400)

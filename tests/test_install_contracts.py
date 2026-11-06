@@ -98,7 +98,7 @@ class Contracts(unittest.TestCase):
             profile, "a" * 64, store, transport, lambda: calls.append(True) or "i" * 40
         )
         with patch(
-            "agent_brain_client.adapters.server.https.NativeKeychain",
+            "agent_brain_client.adapters.platforms.macos.keychain.NativeKeychain",
             side_effect=AssertionError("No Mac backend in shared contract"),
         ):
             self.assertEqual(enrollment.run()["status"], "pairing-resume-required")
@@ -368,6 +368,8 @@ class PlatformMainContracts(unittest.TestCase):
         profile, policy, plan = self.config()
         adapter = CodexContentSession.__new__(CodexContentSession)
         adapter.platform = "win32-amd64"
+        from agent_brain_client.application.synchronization.pull import ContentSynchronization
+        adapter.synchronization = ContentSynchronization(adapter)
         with (
             patch("os.open", side_effect=AssertionError("No POSIX open")),
             patch("os.getuid", side_effect=AssertionError("No UID"), create=True),
@@ -377,7 +379,7 @@ class PlatformMainContracts(unittest.TestCase):
         ):
             for call in (
                 lambda: native_store(profile, "a" * 64),
-                lambda: adapter.mapping._restore({}),
+                lambda: __import__("agent_brain_client.adapters.harnesses.codex.mapping", fromlist=["CodexContentMapping"]).CodexContentMapping(adapter)._restore({}),
                 lambda: adapter.refresh(),
             ):
                 with self.assertRaises(PlatformUnsupported):

@@ -4,8 +4,8 @@ The user-selected TLS origin is the bootstrap authority. Hashes saved afterwards
 pin local state; they are not independent proof of a downloaded package.
 """
 
-import agent_brain_client.adapters.storage.install_state as adapters_storage_install_state
-import agent_brain_client.runtime.dependencies as runtime_dependencies
+import agent_brain_client.adapters.storage.install_state as install_state
+import agent_brain_client.runtime.dependencies as dependencies
 
 import hashlib
 import json
@@ -24,7 +24,6 @@ from agent_brain_client.adapters.server.https import (
 )
 from agent_brain_client.adapters.platforms.credentials import (
     CredentialStore,
-    NativeKeychain,
     canonical,
     owned,
     unique,
@@ -140,19 +139,21 @@ def access_store(home, endpoint, materials, *, helper_builder=None):
         pin = state / "helper.json"
         if helper.exists() or pin.exists():
             metadata = wizard.private_json(owned(pin))
-            if metadata.get("source_sha256") != adapters_storage_install_state.sha(
+            if metadata.get("source_sha256") != install_state.sha(
                 (
                     wizard.SOURCE
                     / "src/agent_brain_client/adapters/platforms/macos/native/AccessCredentialStore.swift"
                 ).read_bytes()
-            ) or metadata.get("helper_sha256") != adapters_storage_install_state.sha(
+            ) or metadata.get("helper_sha256") != install_state.sha(
                 owned(helper).read_bytes()
             ):
                 raise ValueError("Access helper changed; preserve original credentials")
         else:
             built = (helper_builder or build)(helper, access=True)
             metadata = {k: built[k] for k in ("source_sha256", "helper_sha256")}
-            adapters_storage_install_state.same_private(pin, metadata)
+            install_state.same_private(pin, metadata)
+        from agent_brain_client.adapters.platforms.macos.keychain import NativeKeychain
+
         backend = NativeKeychain(helper, metadata["helper_sha256"], service)
     store = CredentialStore(backend, state / "credentials")
     store.endpoint = endpoint
@@ -174,7 +175,7 @@ def run_address_install(
     *,
     transport=None,
     store_factory=access_store,
-    dependency_preparer=runtime_dependencies.prepare_dependencies,
+    dependency_preparer=dependencies.prepare_dependencies,
     install=wizard.run,
     address_input=None,
     key_input=hidden_input,
@@ -216,10 +217,8 @@ def run_address_install(
             endpoint = endpoint_check(endpoint)
         # Serialize bootstrap and local install together. The existing install also
         # leases first-install separately; no key-store lock is held during apply.
-        with adapters_storage_install_state.private_lease(state):
-            adapters_storage_install_state.same_private(
-                marker, {"schema": 1, "endpoint": endpoint}
-            )
+        with install_state.private_lease(state):
+            install_state.same_private(marker, {"schema": 1, "endpoint": endpoint})
             print("Agent Brain Server: " + endpoint, file=sys.stderr)
             materials = dependency_preparer(Path(home))
             store = store_factory(home, endpoint, materials)
@@ -268,14 +267,12 @@ def run_address_install(
                 raise ValueError("Selected Server identity changed")
             # Persist authenticated metadata before the existing transaction. Its
             # canonical digest is a local drift check, never an external trust claim.
-            adapters_storage_install_state.same_private(
-                state / "connection.json", connection
-            )
+            install_state.same_private(state / "connection.json", connection)
             return install(
                 home,
                 native,
                 connection,
-                adapters_storage_install_state.sha(canonical(connection)),
+                install_state.sha(canonical(connection)),
                 dependency_preparer=lambda *a, **k: materials,
                 transport=peer,
                 secure_input=lambda: secrets.token_urlsafe(32),
@@ -354,15 +351,14 @@ def resume_applying_registration(home, native, endpoint=None):
             or binding["schema"] != 1
             or binding["device_home"] != str(home)
             or binding["codex_home"] != str(native)
-            or binding["connection_sha256"]
-            != adapters_storage_install_state.sha(canonical(connection))
+            or binding["connection_sha256"] != install_state.sha(canonical(connection))
             or wizard.private_json(owned(first / "installation-id.json"))
             != {"schema": 1, "id": binding["installation_id"]}
         ):
             raise ValueError("Original installation binding changed")
         stage = "plan-validation"
         plan = wizard.private_json(owned(first / "install-plan.json"))
-        plan_sha = adapters_storage_install_state.sha(wizard.plan_bytes(plan))
+        plan_sha = install_state.sha(wizard.plan_bytes(plan))
         plan_home, plan_native, _ = plan_scope(plan)
         if (
             plan_home != Path(home)
@@ -389,7 +385,7 @@ def resume_applying_registration(home, native, endpoint=None):
         wizard.existing_connection(home, native, connection, metadata)
         stage = "native-images-validation"
         validate_recovery(journal, plan)
-        with adapters_storage_install_state.private_lease(access):
+        with install_state.private_lease(access):
             # Revalidate after taking the same lease as the address/key entry.
             if wizard.private_json(owned(receipt_path)) != journal:
                 raise ValueError("Recovery journal changed")

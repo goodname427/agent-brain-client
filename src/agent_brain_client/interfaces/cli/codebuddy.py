@@ -9,7 +9,7 @@ if __package__ in (None, ""):
 
 
 import agent_brain_client.runtime.host_binding as host_binding
-import agent_brain_client.adapters.storage.bounded_json as adapters_storage_bounded_json
+import agent_brain_client.adapters.storage.bounded_json as bounded_json
 
 
 import argparse
@@ -46,15 +46,12 @@ def verify_adapter():
     pin = ROOT / "code.json"
     if not pin.exists():
         return  # Source checkout is only an installer/developer entry.
-    if pin.is_symlink() or pin.stat().st_size > 16384:
+    if pin.is_symlink() or pin.stat().st_size > 65536:
         raise ValueError("Frozen CodeBuddy code metadata changed")
     value = json.loads(pin.read_bytes())
-    names = {
-        "src/agent_brain_client/interfaces/cli/codebuddy.py",
-        "src/agent_brain_client/adapters/harnesses/codebuddy/configuration.py",
-        "src/agent_brain_client/adapters/harnesses/codebuddy/events.py",
-        "src/agent_brain_client/adapters/harnesses/codebuddy/transcript.py",
-    }
+    from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+
+    names = set(PYTHON_FILES)
     if value.get("schema") != 1 or set(value.get("files", {})) != names:
         raise ValueError("Frozen CodeBuddy code scope changed")
     for name, sha in value["files"].items():
@@ -106,7 +103,7 @@ def main():
         verify_adapter()
         import agent_brain_client.adapters.harnesses.codebuddy.events as runtime
 
-        home = adapters_storage_bounded_json.canonical(args.device_home)
+        home = bounded_json.canonical(args.device_home)
         core = host_binding.load_core(home)
         from agent_brain_client.adapters.platforms.filesystem import require_platform
 

@@ -3,7 +3,6 @@
 import sys
 from pathlib import Path
 import os
-import platform as platform  # Kept as the historical installer inspection seam.
 import subprocess
 from agent_brain_client.adapters.platforms.filesystem import (
     require_platform,

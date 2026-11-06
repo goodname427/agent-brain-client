@@ -16,7 +16,6 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(ROOT / name) for name in ("src", "src", "src", "src")]
 MAC = frozenset(
     {
         "src/agent_brain_client/adapters/platforms/macos/native/AccessCredentialStore.swift",

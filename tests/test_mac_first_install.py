@@ -42,12 +42,12 @@ class FirstInstall(unittest.TestCase):
     input = fixtures.HTTPSContent.input
 
     def test_registered_runtime_handoff_preserves_interactive_update_only(self):
-        policy = {'runtime':{k:'synthetic' for k in wizard.DEPENDENCY_RUNTIME}}
+        policy = {'runtime':{k:'synthetic' for k in runtime_updates.DEPENDENCY_RUNTIME}}
         mcp = {'command':str(self.home / 'synthetic-pinned-python')}
         for action, interactive, expected in (('update',True,None),('update',False,subprocess.DEVNULL),
                                                ('check-update',True,subprocess.DEVNULL)):
             with (self.subTest(action=action,interactive=interactive),
-                  patch.object(wizard,'dependency_environment',return_value={}),
+                  patch.object(runtime_updates,'dependency_environment',return_value={}),
                   patch.object(sys.stdin,'isatty',return_value=interactive)):
                 runner = Mock(return_value=type('Reply',(),{'returncode':0})())
                 self.assertEqual(runtime_updates.pinned_update_runtime(self.home,action,policy,mcp,self.home,runner),0)
@@ -205,7 +205,7 @@ class FirstInstall(unittest.TestCase):
             return self.runner(argv, **kwargs)
 
         with patch.object(
-            wizard.shutil, "which", return_value=self.materials["dependencies"]["git"]
+            runtime_dependencies.shutil, "which", return_value=self.materials["dependencies"]["git"]
         ):
             prepared = runtime_dependencies.prepare_dependencies(
                 self.home, runner=runner, helper_builder=helper_builder
@@ -570,7 +570,7 @@ class PreparingReset(unittest.TestCase):
 class LifecycleExitCodes(unittest.TestCase):
     def command(self,action,response):
         output=io.StringIO()
-        with patch.object(sys,'argv',['agent_brain_client.runtime.installation.py','--action',action]),patch.object(sys,'platform','darwin'),patch.object(wizard.platform,'machine',return_value='arm64'),patch.object(wizard.Path,'home',return_value=Path('/synthetic/home')),patch('agent_brain_client.adapters.harnesses.codex.lifecycle.'+action,return_value=response),patch.object(sys,'stdout',output):
+        with patch.object(sys,'argv',['agent_brain_client.runtime.installation.py','--action',action]),patch.object(sys,'platform','darwin'),patch('platform.machine',return_value='arm64'),patch.object(wizard.Path,'home',return_value=Path('/synthetic/home')),patch('agent_brain_client.adapters.harnesses.codex.lifecycle.'+action,return_value=response),patch.object(sys,'stdout',output):
             code=interfaces_cli_install.main()
         self.assertEqual(json.loads(output.getvalue()),response)
         return code
@@ -593,7 +593,7 @@ class LifecycleExitCodes(unittest.TestCase):
 
 
 class NewDeviceConnectionCLI(unittest.TestCase):
-    @unittest.skipUnless(sys.platform == 'darwin' and wizard.platform.machine().lower() == 'arm64', 'Actual Mac arm64 CLI only')
+    @unittest.skipUnless(sys.platform == 'darwin' and __import__('platform').machine().lower() == 'arm64', 'Actual Mac arm64 CLI only')
     def test_actual_process_requests_local_address_before_preparing_or_pairing(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:

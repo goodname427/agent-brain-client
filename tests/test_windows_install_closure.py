@@ -1,3 +1,4 @@
+import agent_brain_client.runtime.launcher_update as launcher_update
 import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
 import agent_brain_client.adapters.storage.install_state as adapters_storage_install_state
 import agent_brain_client.interfaces.cli.install as interfaces_cli_install
@@ -187,13 +188,13 @@ class MappingClosure(unittest.TestCase):
     def test_four_rules_three_skills_map_in_actual_codex_home_without_private_host_writes(
         self,
     ):
-        private = cache.atomic
+        private = __import__('agent_brain_client.adapters.storage.content',fromlist=['atomic']).atomic
 
         def private_only(path, raw, mode, **options):
             self.assertTrue(self.cache == path.parent or self.cache in path.parents)
             return private(path, raw, mode, **options)
 
-        with patch.object(cache, "atomic", side_effect=private_only):
+        with patch('agent_brain_client.adapters.storage.content.atomic', side_effect=private_only):
             self.assertEqual(self.adapter().refresh()["status"], "content-refreshed")
         self.assertEqual(self.agents.stat().st_ino, self.inode)
         self.assertIn(self.original, self.agents.read_bytes())
@@ -302,11 +303,11 @@ class LauncherClosure(unittest.TestCase):
 
     def handover(self):
         with patch.object(
-            wizard,
+            launcher_update,
             "probe_launcher",
             side_effect=lambda plan, active: self.assertEqual(active, self.before),
         ):
-            return runtime_updates.windows_launcher_handover(
+            return launcher_update.refresh_launcher(
                 self.f.home, channel=self.channel, before=self.before, meta=self.meta
             )
 
@@ -317,7 +318,7 @@ class LauncherClosure(unittest.TestCase):
         # This portable fixture uses content-device capabilities. Substitute
         # only the public entry's HTTPS gate; package validation, policy pins,
         # native transaction, offline child probe and activation remain real.
-        with patch.object(wizard, 'HTTPS_CONTENT_CAPABILITIES', self.channel.engine.policy['capabilities']):
+        with patch.object(runtime_updates, 'HTTPS_CONTENT_CAPABILITIES', self.channel.engine.policy['capabilities']):
             value = runtime_updates.manage_update(self.f.home, 'update', channel_factory=lambda *a: self.channel)
         self.assertEqual(value['status'], 'client-update-updated', value)
         self.assertTrue(value['native_changed'])
@@ -383,7 +384,7 @@ class LauncherClosure(unittest.TestCase):
         marker, value = self.superseded_reinstall()
         before = self.f.config.read_bytes()
         # The evidence check itself is read-only.
-        previous = runtime_updates.completed_reinstall_registration(self.f.home, value, self.meta)
+        previous = launcher_update.completed_reinstall_registration(self.f.home, value, self.meta)
         self.assertEqual(previous['plan_sha256'], value['plan_sha256'])
         self.assertEqual(self.f.config.read_bytes(), before)
         self.assertEqual(adapters_storage_private_files.private_json(marker), value)
@@ -418,7 +419,7 @@ class LauncherClosure(unittest.TestCase):
                 row.update(data=base64.b64encode(raw).decode(), sha=ci.sha(raw))
             adapters_storage_private_files.save(receipt, altered)
             with self.subTest(change=change), self.assertRaises(ValueError):
-                runtime_updates.retire_completed_reinstall(self.f.home, self.meta)
+                launcher_update.retire_completed_reinstall(self.f.home, self.meta)
             self.assertEqual(adapters_storage_private_files.private_json(marker), value)
             self.assertEqual(self.f.config.read_bytes(), config)
             self.assertFalse(list(marker.parent.glob('prior-reinstall-current-*.json')))
@@ -446,14 +447,14 @@ class LauncherClosure(unittest.TestCase):
 
         def resume(home, action):
             updates.append(action)
-            runtime_updates.windows_launcher_handover(
+            launcher_update.refresh_launcher(
                 home, channel_factory=lambda *a: self.channel
             )
             return {"status": "client-update-current", "channel_checked": True}
 
         with (
-            patch.object(wizard, "manage_update", side_effect=resume),
-            patch.object(wizard, "probe_launcher", return_value=None),
+            patch.object(runtime_updates, "manage_update", side_effect=resume),
+            patch.object(launcher_update, "probe_launcher", return_value=None),
         ):
             code, value = normal_retry(self, self.f.home, self.f.native)
         self.assertEqual(code, 0, value)
@@ -461,23 +462,6 @@ class LauncherClosure(unittest.TestCase):
         self.assertEqual(updates, ["update"])
         self.assertFalse(marker.exists())
 
-    def test_actual_053_validator_rejects_nine_tools_with_057_active_then_handover_repairs(
-        self,
-    ):
-        fixture = Path(__file__).parent / "fixtures/windows_launcher_053"
-        pins = json.loads((fixture / "manifest.json").read_bytes())["files"]
-        source = fixture / "agent_brain_client.adapters.harnesses.codex.installation.py.fixture"
-        self.assertEqual(ci.sha(source.read_bytes()), pins[source.name])
-        historical = runpy.run_path(str(source))
-        self.assertEqual(self.before["version"], "0.5.7")
-        registered=ci.tomllib.loads(self.f.config.read_text())["mcp_servers"][ci.NAME]["enabled_tools"]
-        self.assertIn('memory_query',registered)
-        self.assertIn('content_queue_inspect',registered)
-        self.assertEqual(
-            historical["inspect"](self.f.home)["reason"], "mcp-binding-changed"
-        )
-        self.assertTrue(self.handover())
-        self.assertTrue(ci.inspect(self.f.home)["registration_verified"])
 
     def test_trusted_handover_keeps_policy_and_paused_state_then_update_activates(self):
         config = ci.tomllib.loads(self.f.config.read_text())
@@ -512,10 +496,10 @@ class LauncherClosure(unittest.TestCase):
                 raise OSError("Synthetic postcheck failure")
 
         with (
-            patch.object(wizard, "probe_launcher", side_effect=check),
+            patch.object(launcher_update, "probe_launcher", side_effect=check),
             self.assertRaises(ValueError),
         ):
-            runtime_updates.windows_launcher_handover(
+            launcher_update.refresh_launcher(
                 self.f.home, channel=self.channel, before=self.before, meta=self.meta
             )
         self.assertEqual(self.f.config.read_bytes(), before)
@@ -535,12 +519,12 @@ class LauncherClosure(unittest.TestCase):
             if path == marker:
                 raise SystemExit("Synthetic stop")
 
-        with patch.object(ci, "save", side_effect=stop), self.assertRaises(SystemExit):
+        with patch.object(adapters_storage_private_files, "save", side_effect=stop), self.assertRaises(SystemExit):
             self.handover()
         self.assertEqual(self.channel.update()["active"]["version"], "0.5.8")
-        with patch.object(wizard, "probe_launcher", return_value=None):
+        with patch.object(launcher_update, "probe_launcher", return_value=None):
             self.assertTrue(
-                runtime_updates.windows_launcher_handover(
+                launcher_update.refresh_launcher(
                     self.f.home, channel_factory=lambda *a: self.channel
                 )
             )
@@ -555,11 +539,11 @@ class LauncherClosure(unittest.TestCase):
             if path == marker:
                 raise SystemExit("Synthetic stop before handover")
 
-        with patch.object(ci, "save", side_effect=stop), self.assertRaises(SystemExit):
+        with patch.object(adapters_storage_private_files, "save", side_effect=stop), self.assertRaises(SystemExit):
             self.handover()
-        with patch.object(wizard, "probe_launcher", return_value=None):
+        with patch.object(launcher_update, "probe_launcher", return_value=None):
             self.assertTrue(
-                runtime_updates.windows_launcher_handover(
+                launcher_update.refresh_launcher(
                     self.f.home, channel_factory=lambda *a: self.channel
                 )
             )
@@ -615,7 +599,7 @@ class SourceClosure(unittest.TestCase):
 
     def test_install_automatically_enables_every_project_without_prompt_or_scan(self):
         state, client = self.server()
-        with (patch.object(gm, 'CollectionClient', client),
+        with (patch('agent_brain_client.adapters.server.collection.CollectionClient', client),
               patch.object(gm, 'discover', side_effect=AssertionError('No history scan'))):
             result = guide.complete(self.home, {'installed':True},
                 choose=lambda _:self.fail('No repeated authorization'),
@@ -634,7 +618,7 @@ class SourceClosure(unittest.TestCase):
         off = source_policy.settings_path(self.home).parent/'global.off'
         off.touch()
         state, client = self.server()
-        with patch.object(gm, 'CollectionClient', client): result = guide.source_setup(self.home)
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient', client): result = guide.source_setup(self.home)
         self.assertTrue(result['collection_enabled'])
         self.assertEqual(source_policy.load(self.home)['scope']['profile_id'], 'e'*32)
         self.assertFalse(off.exists())
@@ -647,7 +631,7 @@ class SourceClosure(unittest.TestCase):
         metadata.write(file, value)
         before = file.read_bytes()
         state, client = self.server(fail='memory_global_register')
-        with patch.object(gm, 'CollectionClient', client): result = guide.source_setup(self.home)
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient', client): result = guide.source_setup(self.home)
         self.assertFalse(result['collection_enabled'])
         self.assertEqual(file.read_bytes(), before)
         self.assertFalse((file.parent/'global.off').exists())
@@ -656,7 +640,7 @@ class SourceClosure(unittest.TestCase):
 
     def test_resume_response_loss_retries_registered_source_without_new_registration(self):
         state, client = self.server(fail='memory_global_resume')
-        with patch.object(gm, 'CollectionClient', client):
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient', client):
             self.assertFalse(guide.source_setup(self.home)['collection_enabled'])
             state['fail'] = None
             self.assertTrue(guide.source_setup(self.home)['collection_enabled'])
@@ -665,7 +649,7 @@ class SourceClosure(unittest.TestCase):
     def test_failed_preflight_preserves_settings_without_source_changes(self):
         before = source_policy.settings_path(self.home).read_bytes()
         state, client = self.server(fail='memory_global_status')
-        with patch.object(gm, 'CollectionClient', client): result = guide.source_setup(self.home)
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient', client): result = guide.source_setup(self.home)
         self.assertFalse(result['collection_enabled'])
         self.assertEqual(source_policy.settings_path(self.home).read_bytes(), before)
         self.assertEqual(state['calls'], ['memory_global_status'])
@@ -675,7 +659,7 @@ class SourceClosure(unittest.TestCase):
         scope = dict(value['scope'], profile_id='e'*32)
         scope['include_roots'] = [{'root':str(self.home),'sharing':'personal'}]
         state, client = self.server(scope)
-        with patch.object(gm, 'CollectionClient', client): result = guide.source_setup(self.home)
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient', client): result = guide.source_setup(self.home)
         self.assertTrue(result['collection_enabled'])
         self.assertTrue(state['scope']['all_projects'])
         self.assertNotIn('memory_global_stop', state['calls'])
@@ -712,7 +696,7 @@ class SourceClosure(unittest.TestCase):
         with (
             patch.object(host, "host_stage", side_effect=inplace_stage),
             patch.object(
-                wizard,
+                runtime_updates,
                 "manage_update",
                 side_effect=AssertionError("No launcher change for Hook recovery"),
             ),

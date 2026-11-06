@@ -11,7 +11,6 @@ if __package__ in (None, ""):
 import argparse
 import json
 import os
-import platform as platform  # Kept as the historical installer inspection seam.
 from agent_brain_client.adapters.platforms.filesystem import require_platform
 from agent_brain_client.adapters.server.https import (
     endpoint_check,

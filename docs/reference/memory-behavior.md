@@ -24,7 +24,7 @@
 
 memory_query(kind=memory,query='',since=null,until=null,limit=3)只读当前有效Memory，复用Core中英文词汇算法与服务器更新时间；时间必须带offset，最多3条preview/title/description/revision/updated_at，time_basis明确memory_updated_at，不冒称事件发生时间。先按actor/ID/ContentPolicy过滤再读/评分，旧record四字段不变，不默认查询历史旧偏好。其他类型blocked不阻止这个独立只读路径；离线不伪报新鲜查询。
 
-已有安装的旧MCP whitelist可能仍是catalog/read/put；0.5.6新计划按同源工具契约启用既有grant允许的工具，不静默改写旧注册。因此content_catalog的Memory-only查询别名（kinds=[memory]，附query/since/until/limit）转到同一memory_query，不改注册、凭据、scope或安装信任；新工具名也有统一MCP声明，允许该名字的调用方可直接用。普通catalog形状/调用不变；旧后端明确不可用而非假空结果。Mac/Windows共享Core/MCP结构，不把纯协议测试宣称为Windows系统凭据/裸机支持。
+检索只使用 `memory_query`；`content_catalog` 只负责目录与分页，不能携带 query/since/until/limit。旧 `memory_recall` 和目录检索别名已移除，全部当前调用方使用同一查询合同。安装只接受当前执行布局，不为旧工具白名单保留例外；协议测试不代表 Windows 原生凭据或宿主验收。
 
 ## Codex 原生持久记忆导入（Mac / Windows）
 

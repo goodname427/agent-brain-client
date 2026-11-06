@@ -85,7 +85,7 @@ class IncrementalRefresh(unittest.TestCase):
 
     def test_snapshot_only_change_does_not_claim_native_writes(self):
         self.f.cloud.puts+=1
-        with patch('agent_brain_client.adapters.harnesses.codex.mapping.host_apply',wraps=__import__('agent_brain_client.adapters.harnesses.codex.content').host_apply) as apply:
+        with patch('agent_brain_client.adapters.harnesses.codex.mapping.host_apply',wraps=__import__('agent_brain_client.adapters.harnesses.codex.mapping',fromlist=['host_apply']).host_apply) as apply:
             result=self.restart().refresh()
         self.assertEqual(result['status'],'content-refreshed')
         self.assertFalse(result['native_changed'])

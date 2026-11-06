@@ -1,5 +1,6 @@
 """Single content-tool catalog, filtered by the enrolled grant and policy."""
 
+from typing import Any
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.content_policy import validate_policy
 
@@ -306,3 +307,238 @@ def enabled_tools(policy, grant):
     if not set(policy["kinds"]) & {"rule", "skill"}:
         methods.discard("content_set_enabled")
     return tool_names(methods, memory_sources_authorized(policy, grant))
+
+
+def tool_definitions(methods, kinds, memory_sources, client_version, update_guidance):
+    """Build every content MCP declaration from the same authorized catalog."""
+    tools = []
+    declared = tool_names(methods, memory_sources)
+    for name, fields in contract.FIELDS.items():
+        if name not in declared or name == "memory_query":
+            continue
+        properties: dict[str, Any] = {field: {"type": "string"} for field in fields}
+        if name == "content_catalog":
+            properties["cursor"] = {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}:[0-9]{1,20}$",
+                "description": "Use next_cursor from the preceding page; omit to restart.",
+            }
+        if "kinds" in fields:
+            properties["kinds"] = {
+                "type": "array",
+                "items": {"type": "string", "enum": kinds},
+                "minItems": 1,
+                "uniqueItems": True,
+            }
+        if "kind" in fields:
+            properties["kind"]["enum"] = kinds
+        if name == "content_set_enabled":
+            properties["kind"]["enum"] = [
+                kind for kind in kinds if kind in ("rule", "skill")
+            ]
+            properties["enabled"] = {"type": "boolean"}
+        if "record" in fields:
+            properties["record"] = {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "maxLength": 1024},
+                            "description": {
+                                "type": "string",
+                                "maxLength": 1024,
+                            },
+                            "body": {"type": "string"},
+                            "type": {
+                                "type": "string",
+                                "enum": ["user", "feedback", "reference"],
+                            },
+                        },
+                        "required": ["title", "description", "body", "type"],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "maxLength": 1024},
+                            "body": {"type": "string"},
+                            "enabled": {"type": "boolean"},
+                            "trigger": {
+                                "type": "object",
+                                "properties": {
+                                    "mode": {
+                                        "type": "string",
+                                        "enum": [
+                                            "always",
+                                            "on-demand",
+                                            "conditional",
+                                        ],
+                                    },
+                                    "patterns": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "string",
+                                            "maxLength": 256,
+                                        },
+                                        "maxItems": 32,
+                                    },
+                                },
+                                "required": ["mode", "patterns"],
+                                "additionalProperties": False,
+                                "allOf": [
+                                    {
+                                        "if": {
+                                            "properties": {
+                                                "mode": {"const": "conditional"}
+                                            },
+                                            "required": ["mode"],
+                                        },
+                                        "then": {
+                                            "properties": {"patterns": {"minItems": 1}}
+                                        },
+                                        "else": {
+                                            "properties": {"patterns": {"maxItems": 0}}
+                                        },
+                                    }
+                                ],
+                            },
+                        },
+                        "required": ["title", "body", "enabled", "trigger"],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "description": {
+                                "type": "string",
+                                "maxLength": 1024,
+                            },
+                            "enabled": {"type": "boolean"},
+                            "files": {
+                                "type": "object",
+                                "properties": {"SKILL.md": {"type": "string"}},
+                                "required": ["SKILL.md"],
+                                "additionalProperties": {"type": "string"},
+                                "minProperties": 1,
+                                "maxProperties": 32,
+                            },
+                            "dependencies": {
+                                "type": "object",
+                                "properties": {
+                                    "commands": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "string",
+                                            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,63}(?![\\s\\S])",
+                                        },
+                                        "uniqueItems": True,
+                                        "maxItems": 32,
+                                    },
+                                    "python_modules": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "string",
+                                            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,63}(?![\\s\\S])",
+                                        },
+                                        "uniqueItems": True,
+                                        "maxItems": 32,
+                                    },
+                                },
+                                "required": ["commands", "python_modules"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "required": [
+                            "description",
+                            "enabled",
+                            "files",
+                            "dependencies",
+                        ],
+                        "additionalProperties": False,
+                    },
+                ],
+                "description": "Typed v1 Memory, Rule, or Skill record. Server validates the selected record against kind.",
+            }
+        required = [] if name == "memory_query" else list(sorted(fields))
+        if name in contract.WRITES:
+            properties["request_id"] = {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{16,128}$",
+            }
+            required.append("request_id")
+        if name in ("content_put", "content_set_enabled"):
+            properties["reconciles"] = {
+                "type": "object",
+                "description": "Local-only references to staged source plans or write conflicts; never sent to Server. Inspect retained proposals with content_queue_inspect and read the current target before merging. request_ids select only retained conflicts; recover pending outcomes by identical retry first. A still-inventoried source plan can be reconciled only by the exact staged record; a conflicted source plan requires an explicit merge of source and remote versions. Server persistence confirmation resolves selected conflicts.",
+                "properties": {
+                    "request_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "uniqueItems": True,
+                        "maxItems": 256,
+                    },
+                    "source_keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "uniqueItems": True,
+                        "maxItems": 256,
+                    },
+                },
+                "required": ["request_ids", "source_keys"],
+                "additionalProperties": False,
+            }
+        if name == "content_set_enabled":
+            properties["reconciles"]["properties"]["source_keys"]["maxItems"] = 0
+            properties["reconciles"]["description"] = (
+                "Optional explicit reconciliation of retained activation conflicts on this same target. Read the current target first; use a new request_id and current CAS revision. Source imports and ordinary edit conflicts cannot be resolved by activation."
+            )
+        if name == "content_put":
+            properties["source_context"] = {
+                "type": "object",
+                "description": "Optional current Memory writing origin and actual host session_id. Directory metadata defaults locally; unavailable session is null, never guessed from the Server. Preserved unchanged on retries.",
+                "properties": {
+                    "origin": {"type": ["object", "null"]},
+                    "session_id": {"type": ["string", "null"]},
+                },
+                "required": ["origin", "session_id"],
+                "additionalProperties": False,
+            }
+        description = "Approved cloud content only. Server is the sole write boundary; retain CAS revision and request_id on write retries. Transport failures may return a verified stale snapshot with local_cache.stale=true; cache misses never prove remote absence. Local cache refresh does not reload existing model context. "
+        if name == "content_set_enabled":
+            description += "Only on an explicit user enable/disable request for this exact Rule/Skill. Changes enabled alone on an existing record; ordinary content_put edits must preserve enabled. Check local_refresh separately from persistence; a saved change may still require a local mapping retry. "
+        if name == "content_put":
+            description += "Preserve existing Rule/Skill enabled state; create disabled. Use content_set_enabled only for explicit user activation requests. "
+        if name == "content_catalog":
+            description += "AgentBrain destination records only; this does not discover Harness-native sources. Omit cursor for the first authorized inventory page, then follow next_cursor until absent. Use memory_query for retrieval. "
+        if name in ("memory_query", "content_read", "content_catalog"):
+            description += RECALL_EVIDENCE_GUIDANCE
+        description += (
+            "Running worker version: " + client_version + ". " + update_guidance
+        )
+        tools.append(
+            {
+                "name": name,
+                "description": description,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                    "additionalProperties": False,
+                },
+                "annotations": {
+                    "readOnlyHint": name not in contract.WRITES,
+                    "destructiveHint": name == "content_remove",
+                    "idempotentHint": True,
+                },
+            }
+        )
+    tools.extend(
+        tool
+        for tool in local_tools(
+            kinds,
+            memory_sources,
+            "memory_query" in declared,
+        )
+        if tool["name"] in declared
+    )
+    return tools

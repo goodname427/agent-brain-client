@@ -1,3 +1,4 @@
+import hashlib
 import agent_brain_client.adapters.storage.install_state as adapters_storage_install_state
 import agent_brain_client.interfaces.cli.install as interfaces_cli_install
 """Synthetic address/key flow and TLS transport; no real credential UI or data."""
@@ -366,7 +367,7 @@ class BootstrapCacheEntry(unittest.TestCase):
                 return subprocess.CompletedProcess(args, 0, "", "")
             if 'ls-tree' in args:
                 data = b'Synthetic checkout\n'
-                digest = wizard.hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+                digest = hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
                 return subprocess.CompletedProcess(args, 0, '100644 blob ' + digest + '\tfixture.txt\0', '')
             if "rev-parse" in args:
                 return subprocess.CompletedProcess(args, 0, "a" * 40 + "\n", "")

@@ -19,7 +19,7 @@ import agent_brain_client.runtime.launcher as client_startup
 import agent_brain_client.adapters.harnesses.codex.installation as install
 from agent_brain_client.interfaces.mcp.content import installation_check
 import agent_brain_client.interfaces.mcp.content as content_mcp
-import connect as remote_connect
+import dev.integration.checkpoint as remote_connect
 
 class ContentInstall(unittest.TestCase):
     def setUp(self):
@@ -210,7 +210,7 @@ class ContentInstall(unittest.TestCase):
             def request(client, request):
                 return {'request_id': request['request_id'], 'result': {
                     'content_api_version': 1, 'commit': 'c' * 40, 'artifacts': []}}
-        with patch.object(content_mcp, 'local_tools', side_effect=declared):
+        with patch.object(interfaces_mcp_tools_catalog, 'local_tools', side_effect=declared):
             plan = self.plan()
             result = installation_check(Client(), self.content_value)
             self.assertEqual(plan['mcp']['enabled_tools'], result['tools'])
@@ -223,7 +223,7 @@ class ContentInstall(unittest.TestCase):
 
 
     def test_content_release_discovery_update_failure_offline_and_startup_wiring(self):
-        report=self.channel.discover('codex','darwin-arm64','0.1.0');self.assertEqual(report['status'],'compatible-update');self.assertEqual(len(report['releases'][0]['manifest']['files']),23)
+        report=self.channel.discover('codex','darwin-arm64','0.1.0');self.assertEqual(report['status'],'compatible-update');self.assertEqual(set(report['releases'][0]['manifest']['files']),set(releases.CONTENT_CLIENT_FILES))
         old=self.channel.engine.active();self.publish('0.2.1');self.assertEqual(self.channel.update()['status'],'updated');self.assertEqual(install.apply(self.plan(),self.digest(self.plan()),lambda p:None)['installed'],True);self.assertEqual(install.inspect(self.home)['installed_version'],'0.2.1')
         def bad(manifest,out):
             p=out/'src/agent_brain_client/interfaces/mcp/content.py';p.write_text('BAD PYTHON (');manifest['files']['src/agent_brain_client/interfaces/mcp/content.py']=install.sha(p.read_bytes())

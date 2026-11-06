@@ -15,9 +15,6 @@ import argparse
 import json
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(ROOT / name) for name in ("src", "src", "src", "src")]
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "src"))
 from agent_brain_client.adapters.packages.client import (
     CLIENT_FILES,
     CONTENT_CLIENT_FILES,

@@ -30,7 +30,7 @@ class Classification(unittest.TestCase):
                  (['src/agent_brain_client/runtime/installation_completion.py'], True, True),
                  (['src/agent_brain_client/adapters/platforms/filesystem.py'], True, True),
                  (['src/agent_brain_client/domain/content.py'], True, True),
-                 (['tests/fixtures/windows_platform_050/brain_lock.py.fixture'], True, True),
+                 (['tests/fixtures/synthetic-platform.py.fixture'], True, True),
                  (['bootstrap/macos/install.sh', 'bootstrap/windows/install.ps1'], True, True),
                  (['docs/README.md', 'connect.py'], True, True)]
         for paths, mac, windows in cases:

@@ -1,4 +1,4 @@
-"""Exact current runtime membership; old executables are not supported."""
+"""Exact installed Python module inventory; no historical executable layouts."""
 
 PYTHON_FILES = (
     "src/agent_brain_client/__init__.py",
@@ -18,7 +18,7 @@ PYTHON_FILES = (
     "src/agent_brain_client/adapters/harnesses/codex/lifecycle.py",
     "src/agent_brain_client/adapters/harnesses/codex/mapping.py",
     "src/agent_brain_client/adapters/harnesses/codex/memory_inventory.py",
-    "src/agent_brain_client/adapters/harnesses/codex/project.py",
+    "src/agent_brain_client/adapters/harnesses/codex/project_configuration.py",
     "src/agent_brain_client/adapters/harnesses/codex/sources.py",
     "src/agent_brain_client/adapters/harnesses/hook_output.py",
     "src/agent_brain_client/adapters/packages/__init__.py",
@@ -33,8 +33,11 @@ PYTHON_FILES = (
     "src/agent_brain_client/adapters/platforms/macos/__init__.py",
     "src/agent_brain_client/adapters/platforms/macos/component.py",
     "src/agent_brain_client/adapters/platforms/macos/helper_build.py",
+    "src/agent_brain_client/adapters/platforms/macos/keychain.py",
+    "src/agent_brain_client/adapters/platforms/processes.py",
     "src/agent_brain_client/adapters/platforms/windows/__init__.py",
     "src/agent_brain_client/adapters/platforms/windows/access.py",
+    "src/agent_brain_client/adapters/platforms/windows/filesystem.py",
     "src/agent_brain_client/adapters/platforms/windows/native.py",
     "src/agent_brain_client/adapters/server/__init__.py",
     "src/agent_brain_client/adapters/server/collection.py",
@@ -94,6 +97,7 @@ PYTHON_FILES = (
     "src/agent_brain_client/interfaces/cli/device.py",
     "src/agent_brain_client/interfaces/cli/install.py",
     "src/agent_brain_client/interfaces/cli/install_plan.py",
+    "src/agent_brain_client/interfaces/cli/project.py",
     "src/agent_brain_client/interfaces/cli/sources.py",
     "src/agent_brain_client/interfaces/management/__init__.py",
     "src/agent_brain_client/interfaces/management/server.py",
@@ -110,6 +114,8 @@ PYTHON_FILES = (
     "src/agent_brain_client/runtime/installation.py",
     "src/agent_brain_client/runtime/installation_completion.py",
     "src/agent_brain_client/runtime/launcher.py",
+    "src/agent_brain_client/runtime/launcher_update.py",
+    "src/agent_brain_client/runtime/project_memory.py",
     "src/agent_brain_client/runtime/source_enrollment.py",
     "src/agent_brain_client/runtime/updates.py",
 )

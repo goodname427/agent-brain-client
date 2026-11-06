@@ -218,7 +218,7 @@ class LocalChecks(unittest.TestCase):
         self.assertIn('test_codebuddy', {item for command in cc.COMMANDS['windows'] for item in command})
         for name in ('bootstrap/windows/install.ps1', 'bin/memory.ps1', 'bootstrap/windows/codebuddy.ps1'):
             self.assertIn(name, cc.COMMANDS['windows'][-1][-1])
-        self.assertTrue(any('adapters/codebuddy' in command for command in cc.COMMANDS['source']))
+        self.assertTrue(any('src' in command and 'ruff' in command for command in cc.COMMANDS['source']))
 
     def test_focused_ci_cannot_be_recorded_as_complete_local_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:

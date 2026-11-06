@@ -25,7 +25,12 @@ class RuntimeBoundaries(unittest.TestCase):
     def test_shared_imports_work_without_any_adapter_or_installer_on_path(self):
         code = """import sys
 sys.path.insert(0,sys.argv[1])
-import agent_brain_client.adapters.storage.content as brain_cache,brain_host_files,client_release,https_content,ssh_content,remote_mcp
+import agent_brain_client.adapters.storage.content
+import agent_brain_client.adapters.storage.host_files
+import agent_brain_client.adapters.packages.client
+import agent_brain_client.adapters.server.https
+import agent_brain_client.adapters.server.ssh
+import agent_brain_client.interfaces.mcp.topics
 assert not {'content_cache','content_mcp','codex_connect','project_memory','first_install'} & set(sys.modules)
 """
         result = subprocess.run(
@@ -38,9 +43,9 @@ assert not {'content_cache','content_mcp','codex_connect','project_memory','firs
     def test_dependency_fence_rejects_direct_qualified_and_dynamic_host_imports(self):
         for source in (
             "import agent_brain_client.adapters.harnesses.codex.content as cache",
-            "from adapters.codex import content_cache",
-            "from installer.first_install import run",
-            "from tools import build_client",
+            "from agent_brain_client.adapters.harnesses.codex import content",
+            "from agent_brain_client.runtime.installation import run",
+            "from dev.build import package",
             "__import__('agent_brain_client.adapters.harnesses.codex.configuration')",
             "importlib.import_module('agent_brain_client.adapters.harnesses.codex.project')",
         ):
@@ -49,7 +54,7 @@ assert not {'content_cache','content_mcp','codex_connect','project_memory','firs
                 self.assertRaisesRegex(ValueError, "dependency boundary"),
             ):
                 check_layer_boundary("src/agent_brain_client/domain/example.py", source)
-        for module in ("content_cache", "codex_connect", "project_memory"):
+        for module in ("agent_brain_client.adapters.harnesses.codex.content", "agent_brain_client.adapters.harnesses.codex.configuration", "agent_brain_client.adapters.harnesses.codex.project"):
             with self.assertRaises(ValueError):
                 check_layer_boundary(
                     "src/agent_brain_client/adapters/harnesses/codebuddy/events.py", "import " + module
@@ -59,7 +64,7 @@ assert not {'content_cache','content_mcp','codex_connect','project_memory','firs
         )
 
     def test_old_source_aliases_are_absent_and_current_frozen_files_exist(self):
-        import agent_brain_client.runtime.collection as global_memory
+        import agent_brain_client.adapters.harnesses.codex.collection_installation as global_memory
 
         for name in (
             "adapters/codex/content_contract.py",

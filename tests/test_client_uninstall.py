@@ -68,7 +68,7 @@ class ClientUninstall(unittest.TestCase):
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
                 patch.object(sys, 'stdout', output), \
                 patch.object(wizard, 'run', side_effect=run if execute else AssertionError('Invalid recovery must stop before installation')):
-            code = wizard.main()
+            code = __import__("agent_brain_client.interfaces.cli.install", fromlist=["main"]).main()
         return code, json.loads(output.getvalue())
 
     def test_cli_reinstalls_legacy_identity_without_external_or_saved_connection(self):
@@ -304,7 +304,7 @@ class ClientUninstall(unittest.TestCase):
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
                 patch.object(sys, 'stdout', output), \
                 patch.object(fixture.wizard, 'confirm_target', return_value='Continue'):
-            code = fixture.wizard.main()
+            code = __import__("agent_brain_client.interfaces.cli.install", fromlist=["main"]).main()
         return code, json.loads(output.getvalue())
 
     def test_public_cli_supports_two_uninstall_reinstall_cycles(self):
@@ -330,7 +330,7 @@ class ClientUninstall(unittest.TestCase):
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
                 patch.object(sys, 'stdout', output), \
                 patch.object(fixture.wizard, 'confirm_target', side_effect=AssertionError('Status/in-use must not open a UI')):
-            code = fixture.wizard.main()
+            code = __import__("agent_brain_client.interfaces.cli.install", fromlist=["main"]).main()
         return code, json.loads(output.getvalue())
 
     def test_completed_removal_status_verifies_postimages_repeatedly_without_side_effects(self):

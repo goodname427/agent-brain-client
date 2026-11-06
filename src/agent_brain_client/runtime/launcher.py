@@ -32,15 +32,12 @@ from agent_brain_client.adapters.platforms.filesystem import (
     file_mode,
     require_platform,
     PlatformUnsupported,
-    private_directory,
-    private_mode,
-    locked,
 )
 import agent_brain_client.adapters.platforms.filesystem as brain_lock
 
-cache_directory = getattr(brain_lock, "cache_directory", private_directory)
-cache_mode = getattr(brain_lock, "cache_mode", private_mode)
-cache_locked = getattr(brain_lock, "cache_locked", locked)
+cache_directory = brain_lock.cache_directory
+cache_mode = brain_lock.cache_mode
+cache_locked = brain_lock.cache_locked
 
 OUTBOX_MIN_VERSION = "0.2.1"
 
@@ -180,31 +177,10 @@ def startup(
             "network_used": False,
             "device_credentials_accessed": False,
         }
-    # During the exact 0.3.0-to-0.3.1 bridge, the new command becomes visible
-    # before its transaction's second postcheck. A concurrently launched worker
-    # must not run normal update and advance the package pointer in that window;
-    # the updater removes this marker only after both offline checks succeed.
-    legacy_030_policy = getattr(
-        getattr(getattr(releases, "engine", None), "adapter", None),
-        "legacy_030_https_policy",
-        False,
-    )
     runtime = (
         releases.policy.get("runtime") if isinstance(releases.policy, dict) else None
     )
     device_home = runtime.get("device_home") if isinstance(runtime, dict) else None
-    if legacy_030_policy and isinstance(device_home, str) and device_home:
-        handover = (
-            Path(device_home)
-            / ".config/agent-brain-client/bootstrap-handover-plan.json"
-        )
-        if handover.exists() or handover.is_symlink():
-            return {
-                "status": "client-bootstrap-handover-in-progress",
-                "served": False,
-                "native_changed": False,
-                "next_action": "A verified bootstrap handover is in progress. Retry after the official update command completes; do not replace or remove its recovery plan.",
-            }
     if isinstance(device_home, str):
         handover = (
             Path(device_home) / ".config/agent-brain-client/launcher-handover.json"
@@ -348,11 +324,7 @@ def startup(
             "served": False,
             "native_changed": False,
         }
-    bridge = (
-        "src/agent_brain_client/interfaces/mcp/topics.py"
-        if "src/agent_brain_client/interfaces/mcp/topics.py" in manifest["files"]
-        else "adapters/codex/remote_mcp.py"
-    )
+    bridge = "src/agent_brain_client/interfaces/mcp/topics.py"
     command = [
         sys.executable,
         "-I",

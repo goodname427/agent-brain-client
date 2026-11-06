@@ -24,17 +24,13 @@ BASE = Path(__file__).resolve().parent
 ROOT = Path(__file__).resolve().parents[5]
 import agent_brain_client.domain.contract as contract
 from agent_brain_client.adapters.platforms.filesystem import (
-    locked,
     require_platform,
-    private_mode,
-    private_directory,
 )
 import agent_brain_client.adapters.platforms.filesystem as brain_lock
 
-# Pre-native legacy recovery imports before its platform detector is replaced.
-cache_mode = getattr(brain_lock, "cache_mode", private_mode)
-cache_directory = getattr(brain_lock, "cache_directory", private_directory)
-locked = getattr(brain_lock, "cache_locked", locked)
+cache_mode = brain_lock.cache_mode
+cache_directory = brain_lock.cache_directory
+locked = brain_lock.cache_locked
 from agent_brain_client.application.control import check_request, RequestStopped
 
 # independent of the number of records or pages, with 64 KiB per record.

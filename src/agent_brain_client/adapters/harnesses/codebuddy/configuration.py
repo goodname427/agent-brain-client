@@ -264,12 +264,9 @@ def freeze(source, home, core):
     from agent_brain_client.adapters.platforms.filesystem import private_directory
     from agent_brain_client.adapters.storage.host_files import atomic
 
-    files = (
-        "src/agent_brain_client/interfaces/cli/codebuddy.py",
-        "src/agent_brain_client/adapters/harnesses/codebuddy/configuration.py",
-        "src/agent_brain_client/adapters/harnesses/codebuddy/events.py",
-        "src/agent_brain_client/adapters/harnesses/codebuddy/transcript.py",
-    )
+    from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+
+    files = PYTHON_FILES
     payload = {name: (source / name).read_bytes() for name in files}
     pins = {name: digest(raw) for name, raw in payload.items()}
     root = (

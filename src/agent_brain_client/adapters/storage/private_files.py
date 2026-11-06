@@ -1,14 +1,15 @@
+"""Bounded pinned state I/O with compact protocol serialization."""
+
 import os
 from agent_brain_client.adapters.platforms.filesystem import require_platform
 
-"""Bounded pinned state I/O with compact protocol serialization."""
 import json
 from pathlib import Path
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.errors import InstallBlocked
 from agent_brain_client.adapters.storage.metadata import unique as pairs
 from agent_brain_client.adapters.storage.host_files import atomic
-from agent_brain_client.adapters.platforms.filesystem import cache_mode, private_mode
+from agent_brain_client.adapters.platforms.filesystem import private_mode
 import hashlib
 
 

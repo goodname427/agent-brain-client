@@ -17,7 +17,7 @@ import json,sys
 from contextlib import contextmanager
 from pathlib import Path
 root,base,role=map(Path,sys.argv[1:4])
-sys.path[:0]=[str(root/'tests'),str(root/'src'),str(root/'src'),str(root/'src')]
+sys.path[:0]=[str(root),str(root/'tests'),str(root/'src')]
 from test_content_outbox import Cloud,POLICY
 from test_event_hook import accepted
 import agent_brain_client.adapters.harnesses.codex.content as content_cache

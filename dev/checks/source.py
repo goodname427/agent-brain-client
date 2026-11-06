@@ -77,9 +77,13 @@ def check_layer_boundary(name, source):
                 )
             if relative.startswith("adapters/harnesses/codebuddy/"):
                 forbidden |= target.startswith(PACKAGE + ".adapters.harnesses.codex")
+            if relative.startswith("adapters/platforms/macos/"):
+                forbidden |= target.startswith(PACKAGE + ".adapters.platforms.windows")
+            if relative.startswith("adapters/platforms/windows/"):
+                forbidden |= target.startswith(PACKAGE + ".adapters.platforms.macos")
             if relative.startswith("adapters/storage/"):
                 forbidden |= target.startswith(PACKAGE + ".adapters.harnesses")
-        if layer == "domain":
+        if layer in {"domain", "application"}:
             forbidden |= parts[0] in {
                 "os",
                 "socket",
@@ -94,6 +98,33 @@ def check_layer_boundary(name, source):
             raise ValueError(
                 f"Client dependency boundary crossed: {name}:{node.lineno}: {target}"
             )
+    if layer in {"domain", "application"}:
+        for node in ast.walk(ast.parse(source, filename=name)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr
+                in {
+                    "read_bytes",
+                    "write_bytes",
+                    "read_text",
+                    "write_text",
+                    "exists",
+                    "iterdir",
+                    "mkdir",
+                    "unlink",
+                    "touch",
+                    "stat",
+                    "lstat",
+                    "glob",
+                    "rglob",
+                    "is_file",
+                    "is_dir",
+                }
+            ):
+                raise ValueError(
+                    f"Client dependency boundary requires a storage port: {name}:{node.lineno}"
+                )
 
 
 def check_platform_boundary(name, source):

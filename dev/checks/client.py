@@ -21,7 +21,6 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(ROOT / name) for name in ("src", "src", "src", "src")]
 ORIGIN = "https://github.com/goodname427/agent-brain-client"
 COMMANDS = {
     "documentation": [
@@ -129,6 +128,7 @@ COMMANDS = {
             "test_install_contracts.Contracts",
             "test_install_contracts.PlatformMainContracts",
             "test_windows_native",
+            "test_windows_private_metadata",
             "test_source_paths",
             "test_access_install",
             "test_bootstrap_main",
@@ -168,7 +168,7 @@ COMMANDS = {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "$ErrorActionPreference = 'Stop'; foreach ($file in @('bootstrap/windows/install.ps1', 'bin/memory.ps1', 'bootstrap/windows/codebuddy.ps1')) { $errors = $null; [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd $file), [ref]$null, [ref]$errors) | Out-Null; if ($errors.Count) { throw ($errors | Out-String) } }",
+            "$ErrorActionPreference = 'Stop'; foreach ($file in @('bootstrap/windows/install.ps1', 'bin/memory.ps1', 'bootstrap/windows/codebuddy.ps1', 'bootstrap/windows/python.ps1')) { $errors = $null; [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd $file), [ref]$null, [ref]$errors) | Out-Null; if ($errors.Count) { throw ($errors | Out-String) } }",
         ],
     ],
 }
@@ -245,10 +245,7 @@ def run_checks(scope, output, record=False, *, ci=False):
                 str(ROOT / name)
                 for name in (
                     ".",
-                    "scripts",
-                    "adapters/codex",
-                    "installer",
-                    "tools",
+                    "src",
                     "tests",
                 )
             ),

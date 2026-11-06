@@ -86,7 +86,7 @@ class CatalogPages(unittest.TestCase):
 
     def test_offline_automation_finds_later_page_matches_and_stops_when_full(self):
         from unittest.mock import patch
-        import agent_brain_client.adapters.harnesses.codex.project as project_memory
+        import agent_brain_client.runtime.project_memory as project_memory
         self.assertEqual(self.f.adapter.refresh()['status'],'content-refreshed')
         self.f.cloud.offline=True
         settings={'profile':'fictional-profile','profile_sha256':'a'*64,'content_policy':'fictional-content',

@@ -89,7 +89,7 @@ import agent_brain_client.adapters.harnesses.codex.installation as ci
 from test_content_outbox import POLICY
 
 
-class HistoricalPackageTools(unittest.TestCase):
+class VerifiedPackageTools(unittest.TestCase):
     def setUp(self):
         temporary=tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -110,9 +110,21 @@ class HistoricalPackageTools(unittest.TestCase):
         self.assertIn('memory_query',tools)
         self.assertEqual(set(tools),before|{'synthetic_future_read'})
 
+    def test_same_catalog_with_different_target_contract_uses_target_definitions(self):
+        package = self.root / 'changed-contract'
+        release(ROOT, package, '0.9.0', 'personal-content-https', native_platform())
+        file = package / 'src/agent_brain_client/domain/authorization.py'
+        source = file.read_text()
+        updated = source.replace('return methods(scopes) - HOOK_METHODS', "return methods(scopes) - HOOK_METHODS - {'content_put'}")
+        self.assertNotEqual(source, updated)
+        file.write_text(updated)
+        self.assertNotIn('content_put', ci.package_tools(package, POLICY, self.grant))
+
     def test_probe_failure_is_bounded_and_does_not_accept_updater_fallback(self):
         package=self.root/'old-package'
-        manifest=release(ROOT,package,'0.6.2','personal-content-https',native_platform())
+        release(ROOT,package,'0.9.0','personal-content-https',native_platform())
+        catalog=package/'src/agent_brain_client/application/tools/catalog.py'
+        catalog.write_text(catalog.read_text()+'\n# Different verified package source\n')
         with patch.object(ci.subprocess,'run',return_value=type('Result',(),{'returncode':1,'stdout':b''})()):
             with self.assertRaises(ci.InstallBlocked):
                 ci.package_tools(package,POLICY,self.grant)

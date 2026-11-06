@@ -1,6 +1,7 @@
-import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
-
 """Owned Mac/Codex removal; keep identity, immutable runtimes and recovery data."""
+
+import agent_brain_client.adapters.storage.private_files as private_files
+
 
 import base64
 import copy
@@ -30,9 +31,7 @@ from agent_brain_client.adapters.packages.client import (
 
 
 def state_path(home):
-    return adapters_storage_private_files.safe(
-        Path(home) / ".config/agent-brain-client"
-    )
+    return private_files.safe(Path(home) / ".config/agent-brain-client")
 
 
 def journal_path(home):
@@ -42,18 +41,18 @@ def journal_path(home):
 def read_removal(home):
     path = journal_path(home)
     private_mode(
-        adapters_storage_private_files.safe(path),
+        private_files.safe(path),
         owner=True,
         blocked=install.InstallBlocked,
     )
     return json.loads(
-        adapters_storage_private_files.raw(path, 3 * 1048576),
+        private_files.raw(path, 3 * 1048576),
         object_pairs_hook=install.pairs,
     )
 
 
 def lease(path, *, cache=False):
-    path = adapters_storage_private_files.safe(path)
+    path = private_files.safe(path)
     parent = path.parent.stat()
     if os.name == "nt":
         if cache:
@@ -102,10 +101,13 @@ def adapter_for(home, meta, config_image=None):
     runtime = policy["runtime"]
     content = pinned(runtime["content_policy"], runtime["content_policy_sha256"])
     # Read-only filesystem view: no credential access, transport or constructor writes.
+    from agent_brain_client.adapters.harnesses.codex.mapping import CodexContentMapping
+
     adapter = object.__new__(CodexContentSession)
+    adapter.mapping = CodexContentMapping(adapter)
     adapter.home = Path(home)
     adapter.native_home = native
-    adapter.cache = adapters_storage_private_files.safe(runtime["content_cache"])
+    adapter.cache = private_files.safe(runtime["content_cache"])
     adapter.platform = policy["platform"]
     adapter.policy = content
     adapter.binding = {"device_home": str(home), "codex_home": str(native)}
@@ -219,12 +221,12 @@ def remove_table(raw):
 
 def prepare_removal(home):
     require_platform("native-install")
-    home = adapters_storage_private_files.safe(home)
+    home = private_files.safe(home)
     inspected = install.inspect(home)
     if not inspected.get("registration_verified", inspected.get("installed")):
         raise install.InstallBlocked("Installed ownership requires repair")
     registration = state_path(home) / "codex-mcp.json"
-    meta = adapters_storage_private_files.private_json(registration)
+    meta = private_files.private_json(registration)
     adapter, _, native = adapter_for(home, meta)
     counts = queue_counts(adapter)
     if any(counts[s] for s in ("pending", "conflict", "blocked")):
@@ -240,7 +242,7 @@ def prepare_removal(home):
         raise install.InstallBlocked("Mapping transaction needs repair")
     owned = adapter.mapping._owned()
     adapter.mapping._skill_dirs(owned["files"], owned["files"])
-    config_before = adapters_storage_private_files.raw(native / "config.toml")
+    config_before = private_files.raw(native / "config.toml")
     config_after = remove_table(config_before)
     hook_block = None
     if adapter.platform.startswith("win32-"):
@@ -251,7 +253,7 @@ def prepare_removal(home):
 
         _, hook_block = split_owned(config_before)
         if hook_block is not None:
-            record = adapters_storage_private_files.private_json(
+            record = private_files.private_json(
                 settings_path(home).parent / "hook-install.json"
             )
             from agent_brain_client.adapters.harnesses.codex.collection_installation import (
@@ -285,10 +287,10 @@ def prepare_removal(home):
     payload[adapter.cache / "active.json"] = None
     before = {}
     for path in payload:
-        value = adapters_storage_private_files.raw(path, 1048576)
+        value = private_files.raw(path, 1048576)
         before[str(path)] = {
             "data": base64.b64encode(value).decode() if value is not None else None,
-            "sha": adapters_storage_private_files.digest_or_none(value),
+            "sha": private_files.digest_or_none(value),
             "mode": path.stat().st_mode & 0o777 if value is not None else 0o600,
         }
     return {
@@ -343,7 +345,7 @@ def validate_journal(home, journal):
     if set(journal["before"]) != set(journal["after"]):
         raise install.InstallBlocked("Removal receipt scope changed")
     for name in journal["before"]:
-        path = adapters_storage_private_files.safe(name)
+        path = private_files.safe(name)
         if path not in scope:
             relative = (
                 ".codex/AGENTS.md"
@@ -359,10 +361,7 @@ def validate_journal(home, journal):
             or old["mode"] & ~0o777
         ):
             raise install.InstallBlocked("Removal image changed")
-        if (
-            adapters_storage_private_files.digest_or_none(decode(old["data"]))
-            != old["sha"]
-        ):
+        if private_files.digest_or_none(decode(old["data"])) != old["sha"]:
             raise install.InstallBlocked("Removal checksum changed")
     if not scope <= {Path(p) for p in journal["before"]}:
         raise install.InstallBlocked("Removal receipt incomplete")
@@ -490,15 +489,15 @@ def validate_uninstalled_state(
             install.validate_recovery(resume_receipt, resume_plan)
     changed = []
     for name, after in journal["after"].items():
-        path = adapters_storage_private_files.safe(name)
-        current = adapters_storage_private_files.raw(path, 1048576)
-        if adapters_storage_private_files.digest_or_none(
-            current
-        ) == adapters_storage_private_files.digest_or_none(decode(after)):
+        path = private_files.safe(name)
+        current = private_files.raw(path, 1048576)
+        if private_files.digest_or_none(current) == private_files.digest_or_none(
+            decode(after)
+        ):
             continue
         if path in resume_paths:
             changed.append(name)
-            if resume_receipt is None and adapters_storage_private_files.digest_or_none(
+            if resume_receipt is None and private_files.digest_or_none(
                 current
             ) != resume_plan["before"].get(str(path)):
                 raise install.InstallBlocked("Reinstall preimage changed")
@@ -510,7 +509,7 @@ def validate_uninstalled_state(
             continue
         if resume_plan is not None:
             before_sha = resume_plan["before"].get(str(config))
-            if adapters_storage_private_files.digest_or_none(current) not in (
+            if private_files.digest_or_none(current) not in (
                 before_sha,
                 resume_plan["config_after_sha256"],
             ):
@@ -547,17 +546,13 @@ def finish_removal(home, journal):
     if "host" in journal:
         host_restore(
             journal["host"],
-            lambda: adapters_storage_private_files.save(journal_path(home), journal),
+            lambda: private_files.save(journal_path(home), journal),
         )
     # All preimages checked before any write; interrupted runs accept only own images.
     for name, old in journal["before"].items():
-        if adapters_storage_private_files.digest_or_none(
-            adapters_storage_private_files.raw(name, 1048576)
-        ) not in (
+        if private_files.digest_or_none(private_files.raw(name, 1048576)) not in (
             old["sha"],
-            adapters_storage_private_files.digest_or_none(
-                decode(journal["after"][name])
-            ),
+            private_files.digest_or_none(decode(journal["after"][name])),
         ):
             raise install.InstallBlocked("Outside edit retained")
     host_paths = set()
@@ -572,23 +567,21 @@ def finish_removal(home, journal):
             {Path(name): decode(journal["after"][name]) for name in host_paths}
         )
     journal["phase"] = "applying"
-    adapters_storage_private_files.save(journal_path(home), journal)
+    private_files.save(journal_path(home), journal)
     if host_paths:
         host_apply(
             journal["host"],
-            lambda: adapters_storage_private_files.save(journal_path(home), journal),
+            lambda: private_files.save(journal_path(home), journal),
         )
     for name, value in journal["after"].items():
         if name in host_paths:
             continue
-        path = adapters_storage_private_files.safe(name)
+        path = private_files.safe(name)
         desired = decode(value)
         old = journal["before"][name]
-        if adapters_storage_private_files.digest_or_none(
-            adapters_storage_private_files.raw(path, 1048576)
-        ) not in (
+        if private_files.digest_or_none(private_files.raw(path, 1048576)) not in (
             old["sha"],
-            adapters_storage_private_files.digest_or_none(desired),
+            private_files.digest_or_none(desired),
         ):
             raise install.InstallBlocked("Outside edit retained")
         if desired is None:
@@ -598,7 +591,7 @@ def finish_removal(home, journal):
         else:
             install.atomic(path, desired, journal["before"][name]["mode"])
     journal["phase"] = "complete"
-    adapters_storage_private_files.save(journal_path(home), journal)
+    private_files.save(journal_path(home), journal)
     adapter.mapping._prune_skill_directories({})
     return {
         "status": "client-uninstalled",
@@ -618,7 +611,7 @@ def finish_removal(home, journal):
 
 def uninstall(home, confirm):
     require_platform("native-install")
-    home = adapters_storage_private_files.safe(home)
+    home = private_files.safe(home)
     state = state_path(home)
     registration = state / "codex-mcp.json"
     if not registration.exists() and not journal_path(home).exists():
@@ -633,9 +626,9 @@ def uninstall(home, confirm):
         if previous and previous["phase"] == "complete" and not registration.exists():
             validate_journal(home, previous)
             for name, value in previous["after"].items():
-                if adapters_storage_private_files.digest_or_none(
-                    adapters_storage_private_files.raw(name, 1048576)
-                ) != adapters_storage_private_files.digest_or_none(decode(value)):
+                if private_files.digest_or_none(
+                    private_files.raw(name, 1048576)
+                ) != private_files.digest_or_none(decode(value)):
                     raise install.InstallBlocked("Uninstalled files changed")
             return {
                 "status": "client-uninstalled",
@@ -646,7 +639,7 @@ def uninstall(home, confirm):
             assert previous is not None
             meta = previous["registration"]
         else:
-            meta = adapters_storage_private_files.private_json(registration)
+            meta = private_files.private_json(registration)
         if continuing:
             assert previous is not None
             adapter = validate_journal(home, previous)
@@ -744,9 +737,7 @@ def status(home):
     result = install.inspect(home)
     if result.get("registration_verified", result.get("installed")):
         try:
-            adapter, _, _ = adapter_for(
-                home, adapters_storage_private_files.private_json(registration)
-            )
+            adapter, _, _ = adapter_for(home, private_files.private_json(registration))
             result["queue"] = queue_counts(adapter)
             result["owned_mapping_files"] = len(adapter.mapping._owned()["files"])
         except Exception:

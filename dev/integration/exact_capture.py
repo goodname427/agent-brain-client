@@ -75,7 +75,7 @@ def main():
             or hashlib.sha256(target.read_bytes()).hexdigest() != digest
         ):
             raise ValueError("Installed Client bytes changed")
-    sys.path[:0] = [str(root / "src"), str(root / "src")]
+    sys.path[:0] = [str(root / "src")]
     from agent_brain_client.adapters.server.https import (
         HTTPSContentClient,
         PinnedDeviceTask,

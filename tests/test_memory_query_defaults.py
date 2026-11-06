@@ -33,7 +33,7 @@ class QueryDefaults(unittest.TestCase):
             )
             self.assertFalse((package / "tools").exists())
             script = """import sys,json
-sys.path[:0]=[sys.argv[1]+'/adapters/codex',sys.argv[1]+'/scripts']
+sys.path[:0]=[sys.argv[1]+'/src']
 from agent_brain_client.interfaces.mcp.content import ContentServer
 class Adapter:
  def methods(self):return ['memory_query']
@@ -78,11 +78,11 @@ assert 'global_memory' not in sys.modules
             work = root / "worktree"
             work.mkdir()
             (work / ".git").write_text("gitdir: " + str(repo / ".git/worktrees/topic"))
-            with patch("agent_brain_client.interfaces.mcp.content.Path.cwd", return_value=work):
+            with patch("agent_brain_client.adapters.storage.origins.os.getcwd", return_value=work):
                 self.assertEqual(current_origin()["repository_root"], str(repo))
             plain = root / "plain"
             plain.mkdir()
-            with patch("agent_brain_client.interfaces.mcp.content.Path.cwd", return_value=plain):
+            with patch("agent_brain_client.adapters.storage.origins.os.getcwd", return_value=plain):
                 self.assertEqual(current_origin()["kind"], "non-project")
 
 
@@ -109,7 +109,7 @@ class WriteProvenance(unittest.TestCase):
         }
         self.f.cloud.offline = True
         with (
-            patch("agent_brain_client.interfaces.mcp.content.current_origin", return_value=origin),
+            patch("agent_brain_client.interfaces.mcp.content.discover_origin", return_value=origin),
             patch.dict(os.environ, {"CODEX_THREAD_ID": "fictional-windows-session"}),
         ):
             result = self.invoke()
@@ -125,7 +125,7 @@ class WriteProvenance(unittest.TestCase):
         self.f.adapter = self.f.restart()
         self.server = ContentServer(self.f.adapter)
         with patch(
-            "agent_brain_client.interfaces.mcp.content.current_origin", side_effect=OSError("Fictional missing cwd")
+            "agent_brain_client.interfaces.mcp.content.discover_origin", side_effect=OSError("Fictional missing cwd")
         ):
             self.assertFalse(self.invoke()["isError"])
         self.assertEqual(

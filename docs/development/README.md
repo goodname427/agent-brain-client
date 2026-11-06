@@ -14,7 +14,7 @@ CodeBuddy 的专属代码量、共用接口及验证边界见 [CodeBuddy 适配�
 
 采集来源诊断和普通 MCP 分层读取修复见 [Windows 验收修复](windows-acceptance-repairs.md)。
 
-跨版本工具白名单与固定启动器升级兼容见 [工具绑定迁移](tool-binding-migration.md)。
+目标包工具合同与固定启动器事务见 [工具声明与更新](tool-binding-migration.md)。
 
 受管字段合并、第三方配置保留与并发写入见 [Codex 配置所有权](config-ownership.md)。
 
@@ -33,7 +33,7 @@ sh -n bootstrap/macos/install.sh
 git diff --check
 ```
 
-Windows CI 同时隔离 USERPROFILE；原生 API／凭据／DACL 测试必须在 Windows 执行。普通提交按 [CI 变更范围表](ci-scopes.md) 选择检查：纯 Markdown 不触发 Mac／Windows 全盘测试，公共／未知改动和手动运行全量。本地和 [Client checks](../../.github/workflows/client-checks.yml) 共用 [client_checks.py](../../dev/checks/client.py) 的检查清单；平台跳过须分别报告，不作为通过的实测项。
+Windows CI 同时隔离 USERPROFILE；原生 API／凭据／DACL 测试必须在 Windows 执行。普通提交按 [CI 变更范围表](ci-scopes.md) 选择检查：纯 Markdown 不触发 Mac／Windows 全盘测试，公共／未知改动和手动运行全量。本地和 [Client checks](../../.github/workflows/client-checks.yml) 共用 [检查入口](../../dev/checks/client.py) 的检查清单；平台跳过须分别报告，不作为通过的实测项。
 
 ## 本地候选构建
 
@@ -53,4 +53,4 @@ Swift helper 构建仅适用 Mac 工具链。SSH 历史兼容候选可使用 `--
 
 Windows 私有文件元数据误报、同 ID 并发补传与 synthetic 服务选择边界见 [并发重试与服务选择](windows-retry-service-routing.md)。
 
-- [Harness 共用核心](architecture.md)：协议、HTTP、事件与 CAS outbox 的复用接口及职责边界。
+- [Client 分层架构](architecture.md)：协议、HTTP、事件与 CAS outbox 的复用接口及职责边界。

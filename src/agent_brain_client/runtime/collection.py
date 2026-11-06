@@ -37,7 +37,8 @@ import os
 import time
 
 ROOT = Path(__file__).resolve().parents[3]
-import agent_brain_client.adapters.harnesses.codex.project as project_sources
+import agent_brain_client.adapters.harnesses.codex.project_configuration as project_sources
+import agent_brain_client.runtime.project_memory as project_memory
 from agent_brain_client.adapters.platforms.filesystem import cache_directory
 from agent_brain_client.domain.scopes import (
     select,
@@ -65,7 +66,7 @@ def resume(value):
         off.touch(mode=0o600)
         for row in legacy_sources:
             source = project_sources.load(row["settings"], row["settings_sha256"])
-            project_sources.daily_command(source, "resume")
+            project_memory.daily_command(source, "resume")
         off.unlink()
         return {
             "status": "global-memory-legacy-resumed",
@@ -402,10 +403,6 @@ def main():
     p.add_argument("--isolate-root", action="append", default=[])
     p.add_argument("--exclude-root", action="append", default=[])
     p.add_argument("--non-project-root", action="append", default=[])
-    p.add_argument(
-        "--approve-scope",
-        help="Compatibility argument; configuration no longer requires a repeated digest approval",
-    )
     p.add_argument("--all-projects", action="store_true")
     p.add_argument("--profile-id")
     p.add_argument("--packet-output")
@@ -548,7 +545,7 @@ def main():
                         )
                         marker = Path(source["off_file"])
                         marker.touch(mode=0o600)
-                        result = project_sources.daily_command(source, "stop")
+                        result = project_memory.daily_command(source, "stop")
                 result = {
                     "status": "global-memory-stopped",
                     "remote_confirmed": bool(
@@ -633,6 +630,7 @@ recall = partial(
     services=SimpleNamespace(
         client=lambda value, local: CollectionClient(value, local),
         settings_path=lambda home: settings_path(home),
+        cache_exists=lambda path: path.exists(),
         read_cache=lambda *args, **kwargs: metadata_io.private_json(*args, **kwargs),
         write_cache=lambda *args, **kwargs: metadata_io.write(*args, **kwargs),
         approved=lambda value: approved(value),

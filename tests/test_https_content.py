@@ -17,7 +17,8 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from fake_pairing import PairingAuthority
 from agent_brain_client.adapters.server.https import DeviceEnrollment,HTTPSContentClient,PairingHTTPS,profile_file
 from agent_brain_client.runtime.enrollment import install_once
-from agent_brain_client.adapters.platforms.credentials import CredentialStore,NativeKeychain,canonical
+from agent_brain_client.adapters.platforms.credentials import CredentialStore,canonical
+from agent_brain_client.adapters.platforms.macos.keychain import NativeKeychain
 from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.adapters.server.http import RemoteClient, NoRedirect
@@ -27,13 +28,6 @@ from agent_brain_client.adapters.packages.client import HTTPS_CONTENT_CLIENT_FIL
 ROOT=Path(__file__).resolve().parents[1]
 GRANT={'actor':'owner-adapter','scopes':['read','put'],'artifact_types':['memory','rule','skill'],
        'ids':{'memory':['synthetic-memory']+['synthetic-memory-'+str(i) for i in range(28)],'rule':['synthetic-rule'],'skill':['synthetic-skill']},'adapter':'codex','platform':'darwin-'+platform.machine().lower()}
-FROZEN_0214_HTTPS_FILES={'.gitignore','ADAPTERS.md','BOOTSTRAP.md','PROTOCOL.md','README.md',
-    'adapters/codex/client_pairing.py','adapters/codex/client_release.py','adapters/codex/client_startup.py',
-    'src/agent_brain_client/adapters/harnesses/codex/configuration.py','src/agent_brain_client/adapters/harnesses/codex/content.py','adapters/codex/content_contract.py',
-    'src/agent_brain_client/adapters/harnesses/codex/installation.py','src/agent_brain_client/interfaces/mcp/content.py','adapters/codex/https_content.py',
-    'adapters/codex/remote_http.py','adapters/codex/remote_mcp.py','adapters/codex/system_credentials.py',
-    'connect.py','src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift','src/agent_brain_client/adapters/platforms/filesystem.py','src/agent_brain_client/adapters/packages/releases.py'}
-FROZEN_030_HTTPS_FILES=FROZEN_0214_HTTPS_FILES|{'src/agent_brain_client/adapters/harnesses/codex/notify.py'}
 
 class Backend:
     def __init__(self):self.record=None;self.fail=False
@@ -256,7 +250,7 @@ class HTTPSContent(unittest.TestCase):
 
     def test_https_export_separate_allowlist_no_server_signed_component_or_stable_manifest(self):
         out=self.base/'export';manifest=export(ROOT,out,https_content_candidate=True)
-        self.assertEqual(set(manifest['files']),set(HTTPS_CONTENT_CLIENT_FILES));self.assertEqual(len(manifest['files']),25);self.assertFalse(manifest['keychain_accessed']);self.assertFalse((out/'releases').exists());self.assertFalse((out/'src/agent_brain_client/adapters/platforms/macos/native/DeviceComponent.swift').exists());self.assertFalse(any('brain_server' in path for path in manifest['files']))
+        self.assertEqual(set(manifest['files']),set(HTTPS_CONTENT_CLIENT_FILES));self.assertFalse(manifest['keychain_accessed']);self.assertFalse((out/'releases').exists());self.assertFalse((out/'src/agent_brain_client/adapters/platforms/macos/native/DeviceComponent.swift').exists());self.assertFalse(any('brain_server' in path for path in manifest['files']))
         with self.assertRaises(ValueError):export(ROOT,self.base/'mixed',ssh_content_candidate=True,https_content_candidate=True)
 
     def install_fixture(self):

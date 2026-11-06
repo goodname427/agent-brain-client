@@ -24,24 +24,6 @@ sys.path[:0] = [str(ROOT / n) for n in ('src', 'src', 'src', 'tests')]
 from agent_brain_client.adapters.platforms.filesystem import private_directory, private_mode, locked, LockTimeout, command_line, native_platform, cache_mode
 
 
-def historical_launcher(package, manifest):
-    """Keep frozen validator semantics, adapting only source layout in this fixture."""
-    fixture=ROOT/'tests/fixtures/windows_launcher_053'
-    pins=json.loads((fixture/'manifest.json').read_bytes())['files']
-    for name,pin in pins.items():
-        raw=(fixture/name).read_bytes()
-        if hashlib.sha256(raw).hexdigest()!=pin:raise ValueError('Frozen launcher fixture changed')
-        startup=name.startswith('agent_brain_client.runtime.launcher.')
-        destination='src/agent_brain_client/runtime/launcher.py' if startup else 'src/agent_brain_client/adapters/harnesses/codex/installation.py'
-        depth=1 if startup else 2
-        imports=("import sys\nsys.path[:0]=[str(Path(__file__).resolve().parents["+str(depth)+"]/'src'),"
-                 "str(Path(__file__).resolve().parents["+str(depth)+"]/'adapters/codex')]\n").encode()
-        raw=raw.replace(b'import sys\n',imports,1)
-        raw=raw.replace(b'adapters/codex/client_startup.py',b'src/agent_brain_client/runtime/launcher.py')
-        (Path(package)/destination).write_bytes(raw)
-        manifest['files'][destination]=hashlib.sha256(raw).hexdigest()
-    (Path(package)/'export-manifest.json').write_text(json.dumps(manifest),encoding='utf-8')
-    return manifest
 
 
 def host_security(path, information=7):
@@ -170,7 +152,7 @@ class WindowsNative(unittest.TestCase):
             return {'request_id':request['request_id'], 'error':{'code':'transport_unconfirmed','retryable':True},
                     'persistence':{'durable':False}}
         cloud.request = offline
-        with patch.object(gm.old, 'registration', return_value=({}, {'runtime':r})), patch.object(gm, 'CollectionClient', return_value=cloud):
+        with patch('agent_brain_client.adapters.storage.registration.registration', return_value=({}, {'runtime':r})), patch.object(gm, 'CollectionClient', return_value=cloud):
             self.assertEqual(gm.submit_hook(value, local, payload)['status'], 'staged')
             sandbox = 'S-1-5-21-111111111-222222222-333333333-1002'
             for item in (cache / 'hook-turns', cache / 'event-hook.lock', next((cache / 'hook-turns').glob('*.json'))):

@@ -26,11 +26,7 @@ def atomic(path, raw, mode, *, cache=False):
     )
     import agent_brain_client.adapters.platforms.filesystem as brain_lock
 
-    directory = (
-        getattr(brain_lock, "cache_directory", private_directory)
-        if cache
-        else private_directory
-    )
+    directory = brain_lock.cache_directory if cache else private_directory
     directory(path.parent)
     fd, name = tempfile.mkstemp(prefix=".client-native-", dir=path.parent)
     try:

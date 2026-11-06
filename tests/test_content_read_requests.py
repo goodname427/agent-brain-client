@@ -21,7 +21,8 @@ import test_content_outbox as fixtures
 import agent_brain_client.domain.contract as contract
 from agent_brain_client.interfaces.mcp.content import ContentServer
 from agent_brain_client.interfaces.mcp.server import serve
-from agent_brain_client.adapters.server.http import RemoteClient, controlled_run, NoRedirect, ReadHTTPHandler, ReadHTTPSHandler
+from agent_brain_client.adapters.server.http import RemoteClient, NoRedirect, ReadHTTPHandler, ReadHTTPSHandler
+from agent_brain_client.adapters.platforms.processes import controlled_run
 from agent_brain_client.application.control import RequestControl, RequestStopped
 
 MEMORY = fixtures.MEMORY

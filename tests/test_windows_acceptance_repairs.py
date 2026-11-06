@@ -145,7 +145,7 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
         private_directory(file.parent)
         metadata.write(file, value)
         args = SimpleNamespace(device_home=str(home), profile_id='b'*32, operator=None, operator_sha256=None)
-        with patch.object(gm.old, 'registration', return_value=(None, {'runtime':{'codex_home':str(home)}})), patch.object(install, 'transact', return_value={}):
+        with patch('agent_brain_client.adapters.storage.registration.registration', return_value=(None, {'runtime':{'codex_home':str(home)}})), patch.object(install, 'transact', return_value={}):
             result = install.install(args)
             self.assertFalse(result['expanded_sources_enabled'])
             stored = json.loads(file.read_bytes()); self.assertEqual(stored['scope']['profile_id'], 'b'*32)
@@ -160,7 +160,7 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
         value = {'device_home':str(self.fixture.home),'enabled':False,
                  'scope':{'schema':1,'profile_id':'a'*32,'include_roots':[],'exclude_roots':[],'non_project_roots':[],'recall_personal':True},
                  'approved_scope_sha256':None,'server_scope_sha256':None}
-        with patch.object(gm, 'CollectionClient', side_effect=AssertionError('No credentials')):
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient', side_effect=AssertionError('No credentials')):
             result = source_policy.admission_state(value)
         self.assertEqual(result['reasons'], ['capture-disabled','source-scope-empty','local-source-approval-required','server-source-approval-unconfirmed'])
         self.assertFalse(result['permissions_changed']); self.assertFalse(result['historical_import'])
@@ -182,7 +182,7 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
         client = SimpleNamespace(device_id=self.device, wire=Mock(side_effect=[
             {'result':{'metadata_only':True,'source_registered':False,'source_device_id':self.device,'global_profile_id':scope['profile_id']}},
             {'error':{'code':'transport_unconfirmed','retryable':True}}]))
-        with patch.object(gm, 'load', return_value=value), patch.object(gm.old, 'registration', return_value=(None, {'runtime':runtime})), patch.object(gm, 'CollectionClient', return_value=client), patch.object(operator, 'operator', side_effect=AssertionError('No SSH operation')):
+        with patch('agent_brain_client.adapters.storage.collection.load', return_value=value), patch('agent_brain_client.adapters.storage.registration.registration', return_value=(None, {'runtime':runtime})), patch('agent_brain_client.adapters.server.collection.CollectionClient', return_value=client), patch.object(operator, 'operator', side_effect=AssertionError('No SSH operation')):
             result = operator.configure(args)
         self.assertEqual(result['status'], 'global-memory-registration-pending')
         packet = metadata.private_json(result['packet'])
@@ -199,7 +199,7 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
                  'exclude_roots':[],'non_project_roots':[],'recall_personal':True}
         error = {'code':'global_source_device_denied','retryable':False}
         client = SimpleNamespace(device_id=self.device, wire=lambda *args: {'error':error})
-        with patch.object(gm, 'CollectionClient', return_value=client): result = operator.activate(value, scope)
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient', return_value=client): result = operator.activate(value, scope)
         self.assertFalse(result['activated']); self.assertEqual(result['server_error'], error)
         self.assertFalse(value['enabled']); self.assertFalse(source_policy.settings_path(self.fixture.home).exists())
 

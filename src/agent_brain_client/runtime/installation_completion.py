@@ -1,11 +1,12 @@
-import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
-
 """Install stages and explicit local future-source setup on Mac and Windows.
 
 No directory scan, native history read, credential creation or Server authority.
 The existing device joins its existing service automatically for future project
 sessions. Mapping, collection and host loading report separate results.
 """
+
+import agent_brain_client.adapters.storage.private_files as private_files
+
 
 import json
 import os
@@ -26,12 +27,12 @@ def resume_setup(home, native):
     stage = "hook-recovery"
     try:
         recover_pending(home, native)
-        marker = adapters_storage_private_files.safe(
+        marker = private_files.safe(
             Path(home) / ".config/agent-brain-client/launcher-handover.json"
         )
         if marker.exists():
             stage = "launcher-recovery"
-            saved = adapters_storage_private_files.private_json(marker)
+            saved = private_files.private_json(marker)
             _, bound_native, _ = ci.validate_install_scope(saved["plan"])
             if str(bound_native) != str(native):
                 raise ValueError("Original native binding required")
@@ -64,9 +65,8 @@ def mapping_refresh(home, policy, mcp, *, runner=subprocess.run):
         LEGACY_PRESERVATION,
         DEPENDENCY_RUNTIME,
     )
-    import agent_brain_client.adapters.harnesses.codex.installation as ci
 
-    metadata = adapters_storage_private_files.private_json(
+    metadata = private_files.private_json(
         Path(home) / ".config/agent-brain-client/codex-mcp.json"
     )
     active = ClientReleases(
@@ -133,7 +133,6 @@ def source_setup(home, *, choose=input):
             non_project_root=[],
             all_projects=True,
             activate_packet=None,
-            approve_scope=None,
             packet_output=None,
         )
     )
@@ -157,7 +156,7 @@ def complete(home, result, *, choose=input, refresh=mapping_refresh):
     value["installation_complete"] = False
     stage = "registration"
     try:
-        meta = adapters_storage_private_files.private_json(
+        meta = private_files.private_json(
             Path(home) / ".config/agent-brain-client/codex-mcp.json"
         )
         policy, mcp, _, _ = ci.registered_context(home, meta)

@@ -1,4 +1,4 @@
-"""One query entry and legacy aliases share the approved native read path."""
+"""One retrieval entry, inventory-only catalog and no retired query aliases."""
 
 import unittest
 from unittest.mock import patch
@@ -12,7 +12,7 @@ class MemoryQueryClient(unittest.TestCase):
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
 
-    def test_query_alias_and_defaults_do_not_refresh_or_replay(self):
+    def test_query_and_defaults_do_not_refresh_or_replay(self):
         adapter = self.f.adapter
         server = ContentServer(adapter)
         with (
@@ -20,22 +20,14 @@ class MemoryQueryClient(unittest.TestCase):
             patch.object(adapter, "_drain", side_effect=AssertionError("No replay")),
         ):
             current = server.invoke("memory_query", self.f.params)
-            legacy = server.invoke("memory_recall", self.f.params)
             self.assertFalse(current["isError"])
-            self.assertFalse(legacy["isError"])
-            self.assertEqual(
-                current["structuredContent"]["result"],
-                legacy["structuredContent"]["result"],
-            )
+            with self.assertRaises(ProtocolError):
+                server.invoke("memory_recall", self.f.params)
             with patch("agent_brain_client.adapters.storage.origins.discover", return_value=self.f.local):
                 default = server.invoke("memory_query", {"query": "Synthetic progress"})
             self.assertFalse(default["isError"])
-            with patch("agent_brain_client.adapters.storage.origins.discover", return_value=self.f.local):
-                alias = server.invoke(
-                    "content_catalog",
-                    {"kinds": ["memory"], "query": "Synthetic progress"},
-                )
-            self.assertFalse(alias["isError"])
+            with self.assertRaises(ProtocolError):
+                server.invoke("content_catalog", {"kinds":["memory"], "query":"Synthetic progress"})
         self.assertFalse((self.f.fixture.cache / "outbox").exists())
         with self.assertRaises(ProtocolError):
             server.invoke(

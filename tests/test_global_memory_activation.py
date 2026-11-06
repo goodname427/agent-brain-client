@@ -55,7 +55,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         client = SimpleNamespace(device_id='c'*32, wire=Mock(side_effect=[
             {'error':{'code':'transport_unconfirmed','retryable':True}}, response]))
         before = copy.deepcopy(value)
-        with (patch.object(gm,'CollectionClient',return_value=client),
+        with (patch('agent_brain_client.adapters.server.collection.CollectionClient',return_value=client),
               patch.object(operator,'activate',return_value={'activated':True}) as activate):
             first = operator.register(value,packet)
             self.assertFalse(first['activated']); activate.assert_not_called()
@@ -69,7 +69,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         value = dict(self.value, enabled=False, server_scope_sha256=None)
         packet = {'schema':2,'scope':self.scope,'approved_scope_sha256':'0'*64,
                   'client':{'source_device_id':'c'*32}}
-        with patch.object(gm,'CollectionClient',side_effect=AssertionError('No credential access')):
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient',side_effect=AssertionError('No credential access')):
             with self.assertRaises(ValueError): operator.register(value,packet)
 
     def test_each_missing_approval_keeps_source_fenced_without_server_request(self):
@@ -130,8 +130,8 @@ class GlobalMemoryActivation(unittest.TestCase):
                      legacy_projects=[{'settings':'synthetic-settings', 'settings_sha256':'b' * 64}])
         source = {'off_file':str(self.home / 'synthetic-project.off')}
         with (patch.object(gm, 'CollectionClient', side_effect=AssertionError('No global credentials')),
-              patch.object(gm.old, 'load', return_value=source),
-              patch.object(gm.old, 'daily_command', return_value={}) as command):
+              patch('agent_brain_client.adapters.harnesses.codex.project_configuration.load', return_value=source),
+              patch('agent_brain_client.runtime.project_memory.daily_command', return_value={}) as command):
             result = gm.resume(value)
         command.assert_called_once_with(source, 'resume')
         self.assertEqual(result['status'], 'global-memory-legacy-resumed')
@@ -152,7 +152,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         value = dict(self.value, enabled=False, server_scope_sha256=None,
                      legacy_projects=[{'capture_delegated':False}])
         with (patch.object(gm, 'CollectionClient', side_effect=AssertionError('No credentials')),
-              patch.object(gm.old, 'daily_command', side_effect=AssertionError('No legacy reactivation'))):
+              patch('agent_brain_client.runtime.project_memory.daily_command', side_effect=AssertionError('No legacy reactivation'))):
             result = gm.resume(value)
         self.assertEqual(result['status'], 'global-memory-activation-required')
 
@@ -171,7 +171,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         status = {'result':{'source_registered':True, 'scope_sha256':digest(self.scope),
                             'global_profile_id':self.scope['profile_id'], 'source_device_id':'c' * 32}}
         client = SimpleNamespace(device_id='c' * 32, wire=Mock(side_effect=[status, {'result':{}}]))
-        with patch.object(gm, 'CollectionClient', return_value=client):
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient', return_value=client):
             result = operator.activate(value, self.scope)
         self.assertFalse(result['activated'])
         self.assertFalse(result['collection_enabled'])
@@ -183,7 +183,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         args = SimpleNamespace(device_home=str(self.home), include_root=[], isolate_root=[],
             exclude_root=[], non_project_root=[], all_projects=True, activate_packet=None)
         client = SimpleNamespace(device_id='c'*32, wire=Mock(return_value={'error':{'code':'transport_unconfirmed'}}))
-        with patch.object(gm, 'load', return_value=self.value), patch.object(gm, 'CollectionClient', return_value=client):
+        with patch('agent_brain_client.adapters.storage.collection.load', return_value=self.value), patch('agent_brain_client.adapters.server.collection.CollectionClient', return_value=client):
             result = operator.configure(args)
         self.assertEqual(result['status'], 'global-memory-connection-pending')
         self.assertEqual(self.value, before)
@@ -223,9 +223,9 @@ class AutomaticCapture(unittest.TestCase):
             self.fail('No model or history request: ' + method)
         client = SimpleNamespace(device_id='c'*32, wire=wire)
         def load(*args, **kwargs): return metadata.private_json(self.file)
-        with (patch.object(gm, 'load', side_effect=load),
-              patch.object(gm, 'CollectionClient', return_value=client),
-              patch.object(gm.old, 'registration', return_value=(None, {'runtime':runtime})),
+        with (patch('agent_brain_client.adapters.storage.collection.load', side_effect=load),
+              patch('agent_brain_client.adapters.server.collection.CollectionClient', return_value=client),
+              patch('agent_brain_client.adapters.storage.registration.registration', return_value=(None, {'runtime':runtime})),
               patch.object(gm, 'discover', side_effect=AssertionError('No history scan'))):
             before = self.file.read_bytes()
             self.assertFalse(source_setup(self.home, choose=lambda _:self.fail('No approval prompt'))['collection_enabled'])
@@ -246,7 +246,7 @@ class AutomaticCapture(unittest.TestCase):
         import agent_brain_client.runtime.installation as wizard
         import agent_brain_client.runtime.installation_completion as guide
         result = {'status':'client-update-current','channel_checked':True}
-        with (patch.object(wizard, '_manage_update', return_value=result),
+        with (patch.object(runtime_updates, '_manage_update', return_value=result),
               patch.object(guide, 'source_setup', return_value={'collection_enabled':True}) as setup):
             metadata.write(self.file, self.value)
             self.assertTrue(runtime_updates.manage_update(self.home, 'update')['source_setup']['collection_enabled'])

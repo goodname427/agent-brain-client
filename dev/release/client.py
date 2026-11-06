@@ -30,7 +30,6 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 from agent_brain_client.adapters.packages.publication import require_publishable
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(ROOT / name) for name in ("src", "src", "src", "src")]
 TOOL_ROOT = ROOT
 REPOSITORY = "goodname427/agent-brain-client"
 ORIGIN = "https://github.com/" + REPOSITORY + ".git"
@@ -374,10 +373,7 @@ def validate(output):
             HOME=str(home),
             USERPROFILE=str(home),
             CODEX_HOME=str(codex),
-            PYTHONPATH=os.pathsep.join(
-                str(ROOT / p)
-                for p in ("scripts", "adapters/codex", "installer", "tools", "tests")
-            ),
+            PYTHONPATH=os.pathsep.join(str(ROOT / p) for p in ("src", ".", "tests")),
         )
         commands = (
             [sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests"],

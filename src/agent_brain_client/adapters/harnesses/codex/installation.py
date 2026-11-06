@@ -196,11 +196,7 @@ def context(home, package, policy_path, policy_sha, *, inspection=False):
     files = metadata.get("manifest", metadata)["files"]
     if sha(contract.encode(files)) != package_sha:
         raise InstallBlocked("Package membership changed during inspection")
-    launcher = (
-        "src/agent_brain_client/runtime/launcher.py"
-        if "src/agent_brain_client/runtime/launcher.py" in files
-        else "adapters/codex/client_startup.py"
-    )
+    launcher = "src/agent_brain_client/runtime/launcher.py"
     mcp = {
         "command": str(Path(sys.executable).resolve()),
         "args": [
@@ -228,8 +224,20 @@ def package_tools(package, content, grant):
     package = safe(package)
     from agent_brain_client.application.tools import catalog as tool_catalog
 
-    descriptor = package / "src/agent_brain_client/application/tools/catalog.py"
-    if raw(descriptor, 1048576) == Path(tool_catalog.__file__).read_bytes():
+    from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+
+    root = Path(__file__).resolve().parents[5]
+    contract_files = [
+        name
+        for name in PYTHON_FILES
+        if name.startswith(
+            ("src/agent_brain_client/domain/", "src/agent_brain_client/application/")
+        )
+    ]
+    if all(
+        raw(package / name, 1048576) == (root / name).read_bytes()
+        for name in contract_files
+    ):
         return tool_catalog.enabled_tools(content, grant)
     command = [
         sys.executable,
@@ -318,17 +326,6 @@ def registered_context(home, metadata, config_image=None):
     mcp["command"] = command
     if recorded.get("enabled") is False:
         mcp["enabled"] = False
-    # Existing installed tables retain their authenticated legacy whitelist.
-    # Inspection never enables local tools or rewrites native configuration.
-    historical_tools = (
-        sorted(
-            set(mcp["enabled_tools"])
-            & {"content_catalog", "content_read", "content_put", "content_remove"}
-        ),
-        sorted(set(mcp["enabled_tools"]) - {"content_set_enabled"}),
-    )
-    if recorded.get("enabled_tools") in historical_tools:
-        mcp["enabled_tools"] = recorded["enabled_tools"]
     if recorded != mcp:
         raise InstallBlocked("Installed MCP binding drift")
     return policy, mcp, package_sha, native
@@ -435,7 +432,6 @@ def prepare(home, package, policy_path, policy_sha, replace_existing=False):
                 mcp["command"] = original["command"]
             if old.get("enabled") is False:
                 mcp["enabled"] = False
-            # Inspection authenticates legacy filters without changing them.
             # An explicitly requested replacement uses the verified target's
             # contract, bounded by the same policy/grant as a fresh install.
         else:

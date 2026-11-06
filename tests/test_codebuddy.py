@@ -35,10 +35,9 @@ class Configuration(unittest.TestCase):
     def test_system_python_bootstrap_loads_installer_and_hands_off(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
-            (root / 'tools').mkdir()
-            (root / 'installer').mkdir()
-            script = root / 'src/agent_brain_client/interfaces/cli/codebuddy.py'
-            script.write_bytes((ROOT / 'src/agent_brain_client/interfaces/cli/codebuddy.py').read_bytes())
+            (root / 'bootstrap').mkdir()
+            script = root / 'bootstrap/codebuddy.py'
+            script.write_bytes((ROOT / 'bootstrap/codebuddy.py').read_bytes())
             (root / 'bootstrap/python_runtime.py').write_text(
                 'import sys\nfrom pathlib import Path\n'
                 'def runtime(home, prepare):\n'
@@ -58,7 +57,8 @@ runpy.run_path(entry, run_name='__main__')
                                     capture_output=True, timeout=15)
             self.assertEqual(result.returncode, 0, result.stderr.decode())
             argv = json.loads(result.stdout)['argv']
-            self.assertEqual(argv, [sys.executable, '-X', 'utf8', '-I', '-B', str(script), 'status'])
+            self.assertTrue(os.path.samefile(argv[0], sys.executable))
+            self.assertEqual(argv[1:], ['-X', 'utf8', '-I', '-B', str(root / 'src/agent_brain_client/interfaces/cli/codebuddy.py'), 'status'])
 
     def test_jsonc_narrow_edit_keeps_comments_urls_and_other_servers(self):
         text = '{\n// user settings\n"permissions":{"allow":["Read"],},\n"mcpServers":{ /* keep */ "other":{"url":"https://example.invalid/a//b"},},\n}\n'
@@ -147,6 +147,10 @@ class Installation(unittest.TestCase):
         entry_path = Path(command['args'][command['args'].index('-B') + 1])
         self.assertNotIn(str(ROOT), str(entry_path))
         self.assertEqual(entry_path.read_bytes(), (ROOT / 'src/agent_brain_client/interfaces/cli/codebuddy.py').read_bytes())
+        isolated = subprocess.run([sys.executable, '-I', '-B', str(entry_path), 'status', '--device-home', str(self.home)], cwd=self.home, capture_output=True, timeout=15)
+        self.assertEqual(isolated.returncode, 2)
+        self.assertEqual(json.loads(isolated.stdout)['status'], 'codebuddy-review-or-resume-required')
+        self.assertNotIn(b'ModuleNotFoundError', isolated.stderr)
         self.assertTrue(self.install(remove=True)['backend_preserved'])
         settings = cbhost.Document(self.settings.read_text()).value
         self.assertEqual(settings['permissions'], {'deny': ['Bash']})
@@ -154,6 +158,29 @@ class Installation(unittest.TestCase):
         self.assertNotIn('agent_brain_server', (self.native / '.mcp.json').read_text())
         self.assertFalse((self.home / '.codex').exists())
         self.install()
+
+    def test_shared_runtime_drift_requires_binding_refresh_before_loading_core(self):
+        from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+        from agent_brain_client.adapters.platforms.filesystem import private_directory
+        from agent_brain_client.adapters.harnesses.codex.collection_installation import freeze_code
+        directory = private_directory(source_policy.settings_path(self.home).parent)
+        pins = {name: metadata.digest((ROOT / name).read_bytes()) for name in PYTHON_FILES}
+        freeze_code(directory, pins)
+        metadata.write(directory / 'settings.json', {'device_home':str(self.home), 'code_sha256':pins})
+        self.assertIs(host_binding.load_core(self.home), gm)
+        changed = dict(pins)
+        name = 'src/agent_brain_client/runtime/collection.py'
+        raw = (ROOT / name).read_bytes() + b'\n# Synthetic different reviewed runtime\n'
+        changed[name] = metadata.digest(raw)
+        root = private_directory(directory / 'code' / metadata.digest(json.dumps(changed, sort_keys=True).encode()))
+        for file in PYTHON_FILES:
+            target = root / file
+            private_directory(target.parent)
+            target.write_bytes(raw if file == name else (ROOT / file).read_bytes())
+            target.chmod(0o600)
+        metadata.write(directory / 'settings.json', {'device_home':str(self.home), 'code_sha256':changed})
+        with self.assertRaisesRegex(ValueError, 'Refresh the Harness binding'):
+            host_binding.load_core(self.home)
 
     def test_existing_binding_or_edited_owned_hook_is_not_overwritten(self):
         config = self.native / 'mcp.json'
@@ -352,15 +379,15 @@ class Protocol(unittest.TestCase):
     def test_existing_backend_is_upgraded_before_codebuddy_binding(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
-            tools = root / 'tools'
-            tools.mkdir()
+            tools = root / 'bootstrap/macos'
+            tools.mkdir(parents=True)
             home = root / 'home'
             home.mkdir()
             log = root / 'operations'
-            script = tools / 'install-codebuddy.sh'
+            script = tools / 'codebuddy.sh'
             script.write_bytes((ROOT / 'bootstrap/macos/codebuddy.sh').read_bytes())
-            (tools / 'agent_brain_client.interfaces.cli.codebuddy.py').write_text('import os,sys\nfrom pathlib import Path\nif sys.argv[1]=="backend-home": print(str(Path.home()/"shared-native"))\nelse: Path(os.environ["SYNTHETIC_LOG"]).open("a").write("bind\\n")\n')
-            (tools / 'install-mac.sh').write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$SYNTHETIC_LOG"\n')
+            (root / 'bootstrap/codebuddy.py').write_text('import os,sys\nfrom pathlib import Path\nif sys.argv[1]=="backend-home": print(str(Path.home()/"shared-native"))\nelse: Path(os.environ["SYNTHETIC_LOG"]).open("a").write("bind\\n")\n')
+            (tools / 'install.sh').write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$SYNTHETIC_LOG"\n')
             env = dict(os.environ, HOME=str(home), SYNTHETIC_LOG=str(log))
             fresh = subprocess.run(['sh', str(script), '--server', 'https://synthetic.invalid'], env=env, capture_output=True)
             self.assertEqual(fresh.returncode, 0, fresh.stderr)

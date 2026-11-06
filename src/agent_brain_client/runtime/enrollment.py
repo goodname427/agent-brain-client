@@ -29,9 +29,9 @@ def install_once(
         context,
         prepare,
         apply,
-        private_json,
-        InstallBlocked,
     )
+    from agent_brain_client.adapters.storage.private_files import private_json
+    from agent_brain_client.domain.errors import InstallBlocked
     from agent_brain_client.domain.contract import encode as plan_bytes
 
     try:
