@@ -23,7 +23,7 @@ from client_pairing import ComponentClient
 from brain_host_files import atomic,host_stage,host_atomic,host_image
 from codex_connect import NAME,BEGIN,END,BLOCK,toml_replace,migration_config_matches,toml_equal
 from brain_lock import locked,require_platform,platform_paths,private_mode,PlatformUnsupported,native_platform
-from brain_release import ReleaseEngine
+from brain_release import ReleaseEngine,UpdateBlocked
 
 class InstallBlocked(ValueError):pass
 
@@ -58,10 +58,9 @@ def package_check(package,policy,*,allow_legacy_030_active=False):
         receipt=json.loads(raw(package/'verified.json'));manifest=receipt['manifest']
         ReleaseEngine(policy['cache'],policy,None,ClientPackage(policy),{}).validate(manifest,None)
     else:manifest=json.loads(raw(package/'export-manifest.json'))
-    files=https_files(policy['platform']) if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES else SSH_CONTENT_CLIENT_FILES if policy['capabilities']==SSH_CONTENT_CAPABILITIES else CONTENT_CLIENT_FILES
-    if allow_legacy_030_active:
-        files=next((old for old in legacy_file_sets(policy) if set(manifest['files'])==set(old)),files)
-    if set(manifest['files'])!=set(files):raise InstallBlocked('Candidate package membership changed')
+    adapter=ClientPackage(policy)
+    try:adapter.package_files(manifest,allow_legacy_030_active=allow_legacy_030_active)
+    except UpdateBlocked:raise InstallBlocked('Candidate package membership changed') from None
     for name,digest in manifest['files'].items():
         if sha(raw(package/name))!=digest:raise InstallBlocked('Candidate package changed')
     ClientPackage(policy).preflight(package,{'version':manifest.get('version'),'files':manifest['files'],'migrations':[]},allow_legacy_030_active=allow_legacy_030_active)

@@ -162,18 +162,29 @@ class ClientPackage:
         self.files=https_files(policy['platform']) if self.https else SSH_CONTENT_CLIENT_FILES if self.ssh else CONTENT_CLIENT_FILES if self.content else CLIENT_FILES
         self.legacy_030_https_policy=bool(self.https and policy and policy['file_prefixes']==list(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES))
         self.legacy_files=legacy_file_sets(policy) if policy else (LEGACY_CLIENT_FILE_SETS[0],)
+        index=4 if self.https and policy['platform'] in WINDOWS_PLATFORMS else 3 if self.https else 2 if self.ssh else 1 if self.content else 0
+        self.released_files=PRE_LAYOUT_FILE_SETS[index]
         self.component_source_sha=policy['runtime']['component_source_sha256'] if self.content and not self.ssh and not self.https else None
 
         if self.https:require_platform('credential-store',policy.get('platform'))
         self.credential_source_sha=policy['runtime']['credential_source_sha256'] if self.https else None
 
-    def preflight(self, package, manifest, *, allow_legacy_030_active=False):
-        files=self.files
+    def package_files(self, manifest, *, allow_legacy_030_active=False):
+        # A clean official checkout may precede publication of the new layout.
+        # Continue using the exact released 0.7 package without source wrappers.
+        choices=(self.files,self.released_files)
         if allow_legacy_030_active:
-            files=next((old for old in self.legacy_files if set(manifest.get('files',{}))==set(old)
-                        and (old!=LEGACY_030_HTTPS_CONTENT_CLIENT_FILES or self.legacy_030_https_policy and manifest.get('version')=='0.3.0')),files)
-        if set(manifest['files'])!=set(files) or manifest['migrations']:
-            raise UpdateBlocked('Client file membership/migration change requires review')
+            choices+=tuple(old for old in self.legacy_files
+                           if old!=LEGACY_030_HTTPS_CONTENT_CLIENT_FILES
+                           or self.legacy_030_https_policy and manifest.get('version')=='0.3.0')
+        files=next((names for names in choices if set(manifest.get('files',{}))==set(names)),None)
+        if files is None:raise UpdateBlocked('Client file membership change requires review')
+        return files
+
+    def preflight(self, package, manifest, *, allow_legacy_030_active=False):
+        files=self.package_files(manifest,allow_legacy_030_active=allow_legacy_030_active)
+        if manifest['migrations']:
+            raise UpdateBlocked('Client migration change requires review')
         if self.https and manifest['files'].get('scripts/brain_windows.py' if 'scripts/brain_windows.py' in self.files else 'native/CredentialStore.swift')!=self.credential_source_sha:raise UpdateBlocked('Credential helper source changed; helper/profile review required')
         if self.content and not self.ssh and not self.https and manifest['files'].get('native/DeviceComponent.swift')!=self.component_source_sha:raise UpdateBlocked('Native component source changed; signed component/plan review required')
         for name in files:
@@ -186,7 +197,7 @@ class ClientPackage:
     def allows_shared_file(self,path):
         # Called only by the already-installed release engine. Never grant a
         # directory prefix, change capabilities or accept arbitrary new files.
-        return path in self.files and any(self.policy_files == list(old) for old in self.legacy_files)
+        return path in (*self.files,*self.released_files) and any(self.policy_files == list(names) for names in (self.files,*self.legacy_files))
 
     def snapshot(self):return {}  # Only ReleaseEngine owns the active pointer.
     def refresh(self, package, manifest):pass
@@ -229,8 +240,8 @@ class ClientReleases:
             with locked(self.engine.local/'update.lock'),locked(self.engine.local.parent/'python-write.lock'):
                 commit,manifest,read=self.engine.source.latest()
                 self.engine.validate(manifest,{'version':installed_version})
-                if set(manifest['files'])!=set(self.engine.adapter.files) or manifest['migrations']:
-                    raise UpdateBlocked('Client release scope changed')
+                self.engine.adapter.package_files(manifest)
+                if manifest['migrations']:raise UpdateBlocked('Client release scope changed')
                 package=self.engine.prepare(commit,manifest,read)
                 self.engine.adapter.preflight(package,manifest)
             return {'status':'current' if manifest['version']==installed_version else 'compatible-update',
