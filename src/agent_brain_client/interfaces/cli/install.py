@@ -105,7 +105,11 @@ def main():
                 old_identity_reused=False,
                 old_queue_replayed=False,
             )
-        if value.get("installed") is True:
+        if (
+            value.get("installed") is True
+            or fresh is not None
+            and value.get("registration_verified") is True
+        ):
             from agent_brain_client.runtime.fresh_installation import verify_memory
 
             try:

@@ -102,21 +102,40 @@ def retained_registration(home):
     root = Path(home) / ".config/agent-brain-client"
     file = root / "codex-mcp.json"
     if file.exists():
+        metadata = io.private_json(file)
+        policy = io.private_json(
+            Path(metadata["release_policy"]), metadata["release_policy_sha256"]
+        )
+        native = Path(policy["runtime"]["codex_home"])
+        mcp = (
+            config.tomllib.loads((native / "config.toml").read_text())
+            .get("mcp_servers", {})
+            .get(config.NAME)
+        )
+        if (
+            not isinstance(mcp, dict)
+            or registered_mcp_digest(mcp) != metadata["mcp_sha256"]
+            or type(mcp.get("enabled")) is not bool
+        ):
+            raise ValueError("Original MCP pause state changed")
         return {
-            "metadata": io.private_json(file),
+            "metadata": metadata,
             "installed": True,
+            "service_enabled": mcp["enabled"],
             "memory_ids": [],
             "source": {str(file): io.digest(file.read_bytes())},
         }
     from agent_brain_client.adapters.harnesses.codex.lifecycle import (
         read_removal,
         retained_memory_ids,
+        retained_mcp_enabled,
     )
 
     journal = read_removal(home)
     return {
         "metadata": journal["registration"],
         "installed": False,
+        "service_enabled": retained_mcp_enabled(journal, home),
         "memory_ids": retained_memory_ids(journal, home),
         "source": {
             str(root / "uninstall-receipt.json"): io.digest(

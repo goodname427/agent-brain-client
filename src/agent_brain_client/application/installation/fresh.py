@@ -1,6 +1,45 @@
 """One-time fresh connection after retaining an old installation's data."""
 
 from typing import Callable, Protocol
+import re
+
+
+class FreshMemoryVerificationRequired(ValueError):
+    """Retained projections cannot be used until this fresh profile is verified."""
+
+    def __init__(self):
+        super().__init__("fresh-install-memory-verification-required")
+
+    def result(self):
+        return {
+            "status": str(self),
+            "served": False,
+            "native_changed": False,
+            "next_action": "Rerun reinstall with the SAME Server/account to verify retained memories. Preserve the archive, registration and recovery journal; restarting the host does not complete verification.",
+        }
+
+
+def require_verified_memory(record: dict | None, profile_sha: str | None = None):
+    """One persistent admission rule for CLI, workers and Hooks."""
+    if record is None:
+        return
+    proof = record.get("memory_accessibility", {})
+    new_profile = record.get("new_profile_sha256")
+    if (
+        record["phase"] != "complete"
+        or not isinstance(proof, dict)
+        or proof.get("status")
+        not in ("known-memory-readable", "memory-catalog-readable")
+        or type(proof.get("verified_records")) is not int
+        or proof["verified_records"]
+        < (1 if proof["status"] == "known-memory-readable" else 0)
+        or not isinstance(new_profile, str)
+        or not re.fullmatch("[a-f0-9]{64}", new_profile)
+        or record["new_profile_sha256"] == record["old_profile_sha256"]
+        or profile_sha is not None
+        and record["new_profile_sha256"] != profile_sha
+    ):
+        raise FreshMemoryVerificationRequired()
 
 
 class FreshInstallationPort(Protocol):
@@ -29,7 +68,7 @@ def prepare_fresh_installation(
         if (
             confirm(
                 "Close Codex and CodeBuddy first. Retain old files and unsent queues in the reported archive; "
-                "connect a NEW device to the SAME Server/account. Future collection uses the normal all-projects default and retains global exclusions/isolation. Old queues will NOT resume. Type FRESH to continue."
+                "connect a NEW device to the SAME Server/account. Existing pause states, source scope and exclusions/isolation are retained. Old queues will NOT resume. Type FRESH to continue."
             )
             != "FRESH"
         ):

@@ -747,6 +747,25 @@ def repair(home):
     return status(home)
 
 
+def retained_mcp_enabled(journal, home):
+    """Return the removed host's pause state from this owner's preimage."""
+    if journal.get("phase") != "complete" or journal.get("device_home") != str(home):
+        raise install.InstallBlocked("Completed removal scope required")
+    metadata = journal["registration"]
+    policy = install.pinned(
+        metadata["release_policy"], metadata["release_policy_sha256"]
+    )
+    config_file = Path(policy["runtime"]["codex_home"]) / "config.toml"
+    original = decode(journal["before"][str(config_file)]["data"])
+    mcp = install.tomllib.loads(original.decode())["mcp_servers"][install.NAME]
+    if (
+        type(mcp.get("enabled")) is not bool
+        or install.registered_mcp_digest(mcp) != metadata["mcp_sha256"]
+    ):
+        raise install.InstallBlocked("Removed MCP pause state changed")
+    return mcp["enabled"]
+
+
 def retained_memory_ids(journal, home):
     """Known Memory identities from this owner's completed removal preimages."""
     if journal is None:

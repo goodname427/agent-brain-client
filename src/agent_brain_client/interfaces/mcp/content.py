@@ -35,6 +35,10 @@ from agent_brain_client.adapters.harnesses.codex.hooks import (
 )
 from agent_brain_client.interfaces.mcp.server import serve
 from agent_brain_client.domain.errors import CacheBlocked
+from agent_brain_client.adapters.storage.reinstallation import require_memory_verified
+from agent_brain_client.application.installation.fresh import (
+    FreshMemoryVerificationRequired,
+)
 
 from agent_brain_client.adapters.storage.origins import discover as discover_origin
 
@@ -1026,6 +1030,9 @@ def main():
         raise ValueError("Distinct mapping mode required")
     _STARTUP_STAGE = "content-policy-validation"
     policy = pinned(args.content_policy, args.content_policy_sha256)
+    if not args.installation_check:
+        _STARTUP_STAGE = "retained-memory-verification"
+        require_memory_verified(args.device_home, args.https_profile_sha256)
     hook_policy = None
     hook_payload = None
     if args.event_hook:
@@ -1187,6 +1194,12 @@ def cli():
                 main()
         else:
             main()
+    except FreshMemoryVerificationRequired as error:
+        print(json.dumps(error.result()), file=sys.stderr)
+        if "--event-hook" in sys.argv:
+            print("{}")
+            return 0
+        return 2
     except PlatformUnsupported as error:
         if "--event-hook" in sys.argv:
             print("{}")

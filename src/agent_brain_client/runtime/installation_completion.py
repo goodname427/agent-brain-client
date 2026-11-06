@@ -121,8 +121,25 @@ def mapping_refresh(home, policy, mcp, *, runner=subprocess.run):
 
 
 def source_setup(home, *, choose=input):
-    """Installation and updates enable future collection for every project."""
+    """Set up future collection, preserving an explicitly retained scope/pause."""
     from agent_brain_client.runtime.source_enrollment import configure
+    from agent_brain_client.adapters.storage.reinstallation import read_journal
+    from agent_brain_client.adapters.storage.reinstallation import (
+        require_memory_verified,
+    )
+    from agent_brain_client.adapters.storage.collection import load, settings_path
+
+    require_memory_verified(home)
+    fresh = read_journal(home)
+    retain_scope = fresh is not None and fresh.get("routing") is not None
+    if retain_scope:
+        value = load(home, verify_code=False)
+        if not value["enabled"] or (settings_path(home).parent / "global.off").exists():
+            return {
+                "status": "retained-source-paused",
+                "collection_enabled": False,
+                "next_action": "The original source remains paused. Use explicit global configuration/resume when you choose to enable it.",
+            }
 
     result = configure(
         SimpleNamespace(
@@ -131,7 +148,8 @@ def source_setup(home, *, choose=input):
             isolate_root=[],
             exclude_root=[],
             non_project_root=[],
-            all_projects=True,
+            all_projects=not retain_scope,
+            preserve_scope=retain_scope,
             activate_packet=None,
             packet_output=None,
         )
@@ -156,6 +174,11 @@ def complete(home, result, *, choose=input, refresh=mapping_refresh):
     value["installation_complete"] = False
     stage = "registration"
     try:
+        from agent_brain_client.adapters.storage.reinstallation import (
+            require_memory_verified,
+        )
+
+        require_memory_verified(home)
         meta = private_files.private_json(
             Path(home) / ".config/agent-brain-client/codex-mcp.json"
         )

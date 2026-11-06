@@ -63,6 +63,15 @@ def read_journal(home):
     return value
 
 
+def require_memory_verified(home, profile_sha=None):
+    """Read the owner's durable proof; never repair, activate or infer success."""
+    from agent_brain_client.application.installation.fresh import (
+        require_verified_memory,
+    )
+
+    require_verified_memory(read_journal(home), profile_sha)
+
+
 class RetainedInstallation:
     def __init__(
         self,
@@ -167,6 +176,7 @@ class RetainedInstallation:
             "content": content,
             "mapping": snapshot,
             "memory_ids": registration["memory_ids"],
+            "service_enabled": registration["service_enabled"],
             "routing": routing["preferences"] if routing is not None else None,
             "preconditions": {
                 **(routing["source"] if routing is not None else {}),
@@ -183,6 +193,15 @@ class RetainedInstallation:
 
     def detach(self, record):
         with self.old_runtime_lease(record):
+            from agent_brain_client.adapters.storage.collection import retained_routing
+
+            routing = retained_routing(self.home)
+            if (routing["preferences"] if routing is not None else None) != record[
+                "routing"
+            ]:
+                raise ValueError(
+                    "Original source pause or scope changed before retention"
+                )
             for name, digest in record["preconditions"].items():
                 if (
                     io.digest(io.canonical(Path(name), existing=True).read_bytes())

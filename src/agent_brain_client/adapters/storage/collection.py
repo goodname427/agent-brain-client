@@ -135,15 +135,34 @@ def retained_routing(home):
     """Read routing choices independently of old code pins or device approvals."""
     file = settings_path(home)
     if not file.exists():
+        off = file.parent / "global.off"
+        if off.exists() or off.is_symlink():
+            raise ValueError(
+                "Preserve the stop fence; original source settings are missing"
+            )
         return None
     value = metadata.private_json(file)
     if value.get("schema") != 1 or value.get("device_home") != str(Path(home)):
         raise ValueError("Original source-routing home required")
+    if type(value.get("enabled")) is not bool:
+        raise ValueError("Original source pause state required")
     scope = validate(value["scope"])
     keys = ("include_roots", "exclude_roots", "non_project_roots", "recall_personal")
+    off = metadata.canonical(file.parent / "global.off")
+    source = {str(file): metadata.digest(file.read_bytes())}
+    if off.exists():
+        private_mode(off, owner=True)
+        if not off.is_file() or off.stat().st_size > 1024:
+            raise ValueError("Original bounded stop fence required")
+        source[str(off)] = metadata.digest(off.read_bytes())
     return {
-        "preferences": {key: scope[key] for key in keys},
-        "source": {str(file): metadata.digest(file.read_bytes())},
+        "preferences": {
+            **{key: scope[key] for key in keys},
+            "all_projects": scope.get("all_projects", False),
+            "enabled": value["enabled"],
+            "global_off": off.exists(),
+        },
+        "source": source,
     }
 
 
@@ -157,9 +176,27 @@ def seed_retained_routing(home, preferences):
         "exclude_roots",
         "non_project_roots",
         "recall_personal",
+        "all_projects",
+        "enabled",
+        "global_off",
     }:
         raise ValueError("Exact retained source preferences required")
-    scope = dict(value["scope"], **preferences, all_projects=True)
+    if any(
+        type(preferences[k]) is not bool
+        for k in ("enabled", "global_off", "all_projects")
+    ):
+        raise ValueError("Exact retained pause state required")
+    scope = dict(
+        value["scope"],
+        **{k: v for k, v in preferences.items() if k not in ("enabled", "global_off")},
+    )
     validate(scope)
     value["scope"] = scope
+    value["enabled"] = preferences["enabled"]
+    if preferences["global_off"]:
+        from agent_brain_client.adapters.storage.host_files import atomic
+
+        off = metadata.canonical(settings_path(home).parent / "global.off")
+        if not off.exists():
+            atomic(off, b"retained stop fence\n", 0o600)
     metadata.write(settings_path(home), value)

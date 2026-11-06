@@ -703,13 +703,19 @@ class FreshInstallation(unittest.TestCase):
         self,
     ):
         from agent_brain_client.adapters.harnesses.codex.lifecycle import remove_table
+        import base64
 
         journal = {
             "schema": 1,
             "phase": "complete",
             "device_home": str(self.home),
             "registration": self.metadata,
-            "before": {str(self.memory_path): {"data": "retained-by-prior-uninstall"}},
+            "before": {
+                str(self.memory_path): {"data": "retained-by-prior-uninstall"},
+                str(self.config): {
+                    "data": base64.b64encode(self.config.read_bytes()).decode()
+                },
+            },
         }
         io.write(self.root / "uninstall-receipt.json", journal)
         (self.root / "codex-mcp.json").unlink()
@@ -892,6 +898,7 @@ class FreshInstallation(unittest.TestCase):
                 "device_home": str(self.home),
                 "scope": old_scope,
                 "old_code_pin": "preserved-but-not-executed",
+                "enabled": True,
             },
         )
         result = self.prepare()
