@@ -5,7 +5,6 @@ boundaries is automatic when this candidate is wired; no new daemon is created.
 """
 import base64
 from contextlib import ExitStack,contextmanager
-from contextvars import ContextVar
 import hashlib
 import itertools
 import json
@@ -20,8 +19,8 @@ import stat
 BASE=Path(__file__).resolve().parent
 ROOT=BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
-import content_contract as contract
-from codex_connect import atomic,host_atomic,host_plan,host_apply,host_restore
+import brain_content as contract
+from brain_host_files import atomic,host_atomic,host_plan,host_apply,host_restore
 from brain_lock import locked,require_platform,private_mode,sync_directory,private_directory
 import brain_lock
 # Pre-native legacy recovery imports before its platform detector is replaced.
@@ -49,8 +48,8 @@ REVIEW_DECISIONS={'shareable':{'safe-cross-project-personal-summary'},
                   'deferred':{'project-scope-unavailable','uncertain-content'},
                   'skipped':{'no-durable-user-fact'}}
 
-from brain_memory import CacheBlocked, ContentOutbox
-class CollectionCapacityExceeded(CacheBlocked):pass
+from brain_memory import CacheBlocked
+from brain_cache import StoredContentOutbox, CollectionCapacityExceeded, validate_policy, operation_diagnostics, operation_lock, operation_stage
 def sha(raw):return hashlib.sha256(raw).hexdigest()
 
 
@@ -58,36 +57,6 @@ def cache_bytes(name):
     if name=='transaction.json':return TRANSACTION_BYTES
     if name=='owned.json' or re.fullmatch(r'snapshots/[a-f0-9]{40}\.json',name):return SNAPSHOT_BYTES
     return 1048576
-
-
-_operation_diagnostic:ContextVar[dict[str,str]|None]=ContextVar('content_operation_diagnostic',default=None)
-
-
-@contextmanager
-def operation_diagnostics():
-    """One call's path-free progress; never retain requests or exception text."""
-    diagnostic={'stage':'adapter-invoke'}
-    token=_operation_diagnostic.set(diagnostic)
-    try:yield diagnostic
-    finally:_operation_diagnostic.reset(token)
-
-
-@contextmanager
-def operation_stage(stage):
-    diagnostic=_operation_diagnostic.get()
-    previous=diagnostic['stage'] if diagnostic is not None else 'adapter-invoke'
-    if diagnostic is not None:diagnostic['stage']=stage
-    try:yield
-    except Exception:raise  # Retain the innermost failing stage until call exit.
-    else:
-        if diagnostic is not None:diagnostic['stage']=previous
-
-
-@contextmanager
-def operation_lock(path,stage):
-    with ExitStack() as stack:
-        with operation_stage(stage):handle=stack.enter_context(locked(path))
-        yield handle
 
 
 def _memory_link(info):
@@ -322,21 +291,9 @@ def inventory_codex_memories(codex_home, *, max_files=1024, max_file_bytes=13107
             'reason':'metadata inventory only; no import coverage claimed','sources':rows,
             'counts':counts,'cursor':snapshot}
 
-def validate_policy(policy,grant=None):
-    if not isinstance(policy,dict) or set(policy)!={'schema','adapter','kinds','ids','dependencies'} or policy['schema']!=1 or policy['adapter']!='codex':raise CacheBlocked()
-    contract.validate('content_catalog',{'kinds':policy['kinds']})
-    if not isinstance(policy['ids'],dict) or set(policy['ids'])!=set(policy['kinds']):raise CacheBlocked()
-    try:contract.grant_ids(policy['kinds'],policy['ids'])
-    except ValueError:raise CacheBlocked()
-    if not isinstance(policy['dependencies'],dict) or set(policy['dependencies'])!={'commands','python_modules'}:raise CacheBlocked()
-    contract.strings(policy['dependencies']['commands']);contract.strings(policy['dependencies']['python_modules'])
-    if grant and ('read' not in grant['scopes'] or set(policy['kinds'])-set(grant['artifact_types'])):raise CacheBlocked()
-    if grant:
-        try:contract.grant_ids(grant['artifact_types'],grant.get('ids'))
-        except ValueError:raise CacheBlocked()
-        if not contract.scope_subset(policy['ids'],grant['ids']):raise CacheBlocked()
 
-class ContentAdapter(ContentOutbox):
+class ContentAdapter(StoredContentOutbox):
+    _cache_bytes = staticmethod(cache_bytes)
     _outbox_lock=staticmethod(operation_lock)
     _outbox_stage=staticmethod(operation_stage)
 
@@ -344,34 +301,15 @@ class ContentAdapter(ContentOutbox):
     def _outbox_locked(*args,**kwargs):return locked(*args,**kwargs)
 
     def __init__(self,home,cache,policy,client,health=None,codex_home=None):
-        self.platform=require_platform('cache-storage',(getattr(client,'grant',None) or {}).get('platform'))
-        if Path(home).is_symlink() or Path(cache).is_symlink():raise CacheBlocked()
-        self.home,self.cache=Path(home).resolve(),Path(cache).resolve();self.client=client
-        native=Path(codex_home or os.environ.get('CODEX_HOME',str(self.home/'.codex'))).expanduser()
+        require_platform('cache-storage',(getattr(client,'grant',None) or {}).get('platform'))
+        native=Path(codex_home or os.environ.get('CODEX_HOME',str(Path(home)/'.codex'))).expanduser()
         if not native.is_absolute() or native.is_symlink():raise CacheBlocked()
-        self.native_home=native.resolve();self.binding={'device_home':str(self.home),'codex_home':str(self.native_home)}
-        # Keep the configured Windows spelling for memory reads: resolving it
-        # here would hide a CODEX_HOME junction from the pinned reader. Existing
-        # canonical cache bindings and Rule/Skill mapping remain unchanged.
+        self.native_home=native.resolve()
         self.native_memory_home=native if os.name=='nt' else self.native_home
-        self.policy=policy;self.policy_sha=sha(contract.encode({'policy':policy,'binding':self.binding}));self.health=health or (lambda:None);self.offline_denied=False
-        # Bind pending writes to a service/principal, independently of source/data Git.
-        self.queue_sha=sha(contract.encode({'policy_sha':self.policy_sha,'service':getattr(client,'queue_identity',getattr(client,'grant',None))}))
-        validate_policy(policy,getattr(client,'grant',None))
-        if self.home==self.cache or self.cache in self.home.parents:raise CacheBlocked()
-        if any(self.cache==self.home/name or self.home/name in self.cache.parents for name in ('.codex','.agents','.config/agent-brain-client/content')):raise CacheBlocked()
-        self._safe(self.home,self.home);self._safe(self.cache,self.cache)
-        cache_directory(self.cache)
-        cache_mode(self.cache,directory=True,blocked=CacheBlocked)
-        sync_directory(self.cache.parent)
-
-    def _safe(self,path,base):
-        require_platform('cache-storage',self.platform)
-        if path!=base and base not in path.parents:raise CacheBlocked()
-        for item in [path,*path.parents]:
-            if item.is_symlink():raise CacheBlocked()
-            if os.name=='nt' and item.exists() and getattr(item.lstat(),'st_file_attributes',0)&0x400:raise CacheBlocked()
-            if item==base:break
+        super().__init__(home, cache, policy, client,
+                         binding={'device_home':str(Path(home).resolve()),'codex_home':str(self.native_home)},
+                         protected=[Path(home).resolve()/name for name in ('.codex','.agents','.config/agent-brain-client/content')])
+        self.health=health or (lambda:None);self.offline_denied=False
 
     def _path(self,name):
         if name=='.codex/AGENTS.md':
@@ -388,14 +326,7 @@ class ContentAdapter(ContentOutbox):
             else:raise CacheBlocked()
         path=self.home/name;self._safe(path,self.home);return path
 
-    def _allows(self,kind,identity):
-        return contract.allows(self.policy['ids'],kind,identity)
 
-    def methods(self):
-        grant=getattr(self.client,'grant',{'scopes':['read','write'],'artifact_types':self.policy['kinds']})
-        methods=contract.methods(grant['scopes']) if set(self.policy['kinds'])<=set(grant['artifact_types']) else set()
-        if not set(self.policy['kinds']) & {'rule','skill'}:methods.discard('content_set_enabled')
-        return methods if 'memory' in self.policy['kinds'] else methods-{'memory_query','memory_event_submit'}
 
     def mapping_status(self,kind,identity,revision):
         """Inspect verified local files against a live revision without refreshing."""
@@ -420,23 +351,7 @@ class ContentAdapter(ContentOutbox):
         except RequestStopped:raise
         except Exception:return {'status':'review-required','model_loaded':'unknown'}
 
-    def _load(self,name,default=None):
-        require_platform('cache-storage',self.platform)
-        path=self.cache/name;self._safe(path,self.cache)
-        if not path.exists():return default
-        limit=cache_bytes(name)
-        if not path.is_file() or path.stat().st_size>limit:raise CacheBlocked()
-        cache_mode(path,blocked=CacheBlocked)
-        return json.loads(path.read_text(encoding='utf-8'))
 
-    def _save(self,name,value):
-        require_platform('cache-storage',self.platform)
-        raw=contract.encode(value)
-        if len(raw)>cache_bytes(name):raise CollectionCapacityExceeded()
-        path=self.cache/name;self._safe(path,self.cache);atomic(path,raw,0o600,cache=True)
-        for directory in [path.parent,*path.parent.parents]:
-            sync_directory(directory)
-            if directory==self.cache:break
 
     def _assert_sources_shareable(self,source_keys):
         if not source_keys:return
@@ -1229,35 +1144,8 @@ class ContentAdapter(ContentOutbox):
         kinds=params['kinds'] if method=='content_catalog' else [params['kind']]
         if any(kind not in self.policy['kinds'] for kind in kinds) or method!='content_catalog' and not self._allows(params['kind'],params['id']):raise CacheBlocked()
         if method in contract.WRITES:
-            with operation_stage('content-write'),operation_lock(self.cache/'content.lock','content-lock'):
-                row=self._enqueue(request,reconciles)  # Precedes every transport/mapping operation.
-                if not self._event_allowed(request,event_gate):
-                    return dict(self._queue_result(row),local_refresh={'status':'event-disabled','native_changed':False,'model_loaded':'unknown'})
-                if row['state']=='blocked':
-                    # Only an explicit identical call retries a blocked request.
-                    # Startup/refresh never discard or automatically replay it.
-                    try:response=self.client.request(request) if self._event_allowed(request,event_gate) else None
-                    except Exception:response=None
-                    if self._server_saved(response,request):
-                        row.update(state='confirmed',response=response)
-                        self._save('outbox/'+request['request_id']+'.json',row)
-                    elif isinstance(response,dict) and response.get('request_id')==request['request_id'] and isinstance(response.get('error'),dict) and response['error'].get('code')=='revision_conflict':
-                        row.update(state='conflict',response=response)
-                        try:row['remote']=self._read_target(request['params']['kind'],request['params']['id'])
-                        except Exception:pass
-                        self._save('outbox/'+request['request_id']+'.json',row)
-                # Only an explicit same-ID retry upgrades an old local receipt.
-                # No automatic loop over the backed-up journal or new scheduler.
-                elif row['state']=='confirmed' and (row['response'] or {}).get('persistence',{}).get('state')=='local-confirmed':
-                    try:
-                        response=self.client.request(request)
-                        if self._server_saved(response,request):
-                            row['response']=response;self._save('outbox/'+request['request_id']+'.json',row)
-                    except Exception:pass
-                with operation_stage('outbox-drain'):
-                    self._drain(request['request_id'] if method=='memory_event_submit' else None,event_gate=event_gate)
-                with operation_stage('outbox-result'):
-                    result=self._queue_result(self._load('outbox/'+request['request_id']+'.json'))
+            result=self.invoke_write(request,reconciles,event_gate=event_gate)
+            if result.get('local_refresh',{}).get('status')=='event-disabled':return result
         else:
             # A live read already goes through the authenticated Server. Mapping
             # every artifact twice here turned a batch into quadratic transport.

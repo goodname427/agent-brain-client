@@ -7,9 +7,9 @@ import sys
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from brain_lock import native_platform
-from remote_http import RemoteClient
+from brain_http import RemoteClient
 
 VERSIONS = ('2025-11-25', '2025-06-18', '2025-03-26')
 MAX_MESSAGE = 131072

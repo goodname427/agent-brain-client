@@ -9,6 +9,7 @@ import ssl
 from urllib.error import HTTPError
 from pathlib import Path
 import sys
+sys.path[:0]=[str(Path(__file__).resolve().parents[2]/'scripts'),str(Path(__file__).resolve().parent)]
 import threading
 import uuid
 from typing import Any
@@ -20,7 +21,7 @@ from brain_lock import LockTimeout,PlatformUnsupported,require_platform,private_
 import brain_lock
 cache_locked=getattr(brain_lock,'cache_locked',locked)
 cache_directory=getattr(brain_lock,'cache_directory',private_directory)
-from remote_http import RequestControl,RequestStopped
+from brain_http import RequestControl,RequestStopped
 from client_release import UPDATE_GUIDANCE
 
 
@@ -689,7 +690,7 @@ def main():
         target=Path(sys.argv[2])
         if not target.is_absolute() or target.is_symlink() or target.parent.resolve()!=target.parent or not target.parent.is_dir():raise ValueError('Existing private off directory required')
         private_mode(target.parent,directory=True,owner=True)
-        from codex_connect import atomic
+        from brain_host_files import atomic
         atomic(target,b'capture disabled\n',0o600)
         print('{}');return
     if sys.argv[1:2]==['--codex-notify']:
