@@ -29,7 +29,7 @@ jobs:
         with:
           python-version: '3.12'
       - id: scope
-        run: python -B tools/ci_scope.py
+        run: python -B dev/checks/scope.py
   documentation:
     runs-on: ubuntu-latest
     steps:
@@ -41,7 +41,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Shared documentation checks
-        run: python -B tools/client_checks.py documentation --ci --output "${{ runner.temp }}/documentation"
+        run: python -B dev/checks/client.py documentation --ci --output "${{ runner.temp }}/documentation"
   source-checks:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -57,7 +57,7 @@ jobs:
       - name: Pinned lint and type tools
         run: python -m pip install ruff==0.14.0 mypy==1.18.2
       - name: Shared source checks including every host adapter
-        run: python -B tools/client_checks.py source --ci --output "${{ runner.temp }}/source"
+        run: python -B dev/checks/client.py source --ci --output "${{ runner.temp }}/source"
   isolated-client:
     needs: changes
     if: needs.changes.outputs.mac == 'true'
@@ -73,7 +73,7 @@ jobs:
       - name: Shared isolated tests and full-run Swift checks
         env:
           CI_TESTS: ${{ needs.changes.outputs.tests }}
-        run: python -B tools/client_checks.py macos --ci --output "${{ runner.temp }}/macos"
+        run: python -B dev/checks/client.py macos --ci --output "${{ runner.temp }}/macos"
   windows-contracts:
     needs: changes
     if: needs.changes.outputs.windows == 'true'
@@ -91,7 +91,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Shared native Windows contracts and every host adapter
-        run: python -B tools/client_checks.py windows --ci --output "${{ runner.temp }}/windows"
+        run: python -B dev/checks/client.py windows --ci --output "${{ runner.temp }}/windows"
   required:
     name: Client checks required
     if: always()
@@ -108,7 +108,7 @@ jobs:
       - name: Verify every selected job actually succeeded
         env:
           CI_NEEDS: ${{ toJSON(needs) }}
-        run: python -B tools/ci_scope.py verify
+        run: python -B dev/checks/scope.py verify
   full-validation:
     name: Client full validation
     needs: [changes, required]

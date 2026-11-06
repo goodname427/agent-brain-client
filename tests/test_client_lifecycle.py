@@ -17,17 +17,17 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
-sys.path.insert(0,str(ROOT/'scripts'));sys.path.insert(0,str(ROOT/'tools'));sys.path.insert(0,str(ROOT/'adapters/codex'))
-import build_client as builder
-import client_release as release
-import client_startup
-import codex_connect as native
-import connect as remote_connect
+sys.path.insert(0,str(ROOT/'src'));sys.path.insert(0,str(ROOT/'src'));sys.path.insert(0,str(ROOT/'src'))
+import dev.build.package as builder
+import agent_brain_client.adapters.packages.client as release
+import agent_brain_client.runtime.launcher as client_startup
+import agent_brain_client.adapters.harnesses.codex.configuration as native
+import dev.integration.checkpoint as remote_connect
 
 
 class Releases(unittest.TestCase):
     def test_check_only_offline_requires_a_verified_active_package(self):
-        args=['client_startup.py','--policy-file','unused-policy','--policy-sha256','a'*64,'--check-only']
+        args=['agent_brain_client.runtime.launcher.py','--policy-file','unused-policy','--policy-sha256','a'*64,'--check-only']
         for active,expected in ((None,2),({'commit':'a'*40,'version':'0.1.1'},0)):
             result={'status':'offline','active':active}
             with patch.object(sys,'argv',args),patch.object(client_startup,'startup',return_value=result),patch.object(sys,'stdout',io.StringIO()):
@@ -109,7 +109,7 @@ class Releases(unittest.TestCase):
 
     def test_health_failure_restores_pointer_and_next_check_recovers(self):
         self.publish();old=self.channel.update()['active']
-        self.publish('0.1.2',code=('connect.py',b'print("synthetic broken health")\n'))
+        self.publish('0.1.2',code=('src/agent_brain_client/interfaces/mcp/topics.py',b'print("synthetic broken health")\n'))
         result=self.channel.update();self.assertEqual(result['status'],'release-review-required');self.assertEqual(result['active'],old)
         journal=json.loads(self.channel.engine.journal.read_text());self.assertEqual(journal['phase'],'rolled-back')
         self.publish('0.1.3');self.assertEqual(self.channel.update()['active']['version'],'0.1.3')
@@ -126,7 +126,7 @@ class Releases(unittest.TestCase):
         with patch.object(self.channel.engine.adapter,'health',side_effect=KeyboardInterrupt('synthetic crash')):
             with self.assertRaises(KeyboardInterrupt):self.channel.update()
         pending=json.loads(self.channel.engine.pointer.read_text())
-        (Path(pending['package'])/'connect.py').write_text('damaged interrupted target')
+        (Path(pending['package'])/'src/agent_brain_client/interfaces/mcp/topics.py').write_text('damaged interrupted target')
         self.remote.rename(self.base/'offline-origin.git')
         result=self.channel.update()
         self.assertEqual(result['status'],'offline');self.assertEqual(result['active'],old)
@@ -137,7 +137,7 @@ class Releases(unittest.TestCase):
         checked=client_startup.startup(self.policy_path,self.policy_sha,True);self.assertEqual(checked['status'],'offline');self.assertEqual(checked['active'],old)
         run=subprocess.run;commands=[]
         def serve_only(command,**kwargs):
-            if any(str(arg).endswith('remote_mcp.py') for arg in command):
+            if any(str(arg).endswith('/interfaces/mcp/topics.py') for arg in command):
                 commands.append(command);return subprocess.CompletedProcess(command,0)
             return run(command,**kwargs)
         background=[];thread_type=client_startup.threading.Thread
@@ -153,8 +153,8 @@ class Releases(unittest.TestCase):
                 for worker in background:
                     worker.join(30)
                     self.assertFalse(worker.is_alive(),'Synthetic startup check did not finish')
-        self.assertTrue(result['served']);command=commands[0];self.assertIn(str(Path(old['package'])/'scripts/remote_mcp.py'),command);self.assertEqual(command[-1],'darwin-arm64')
-        target=Path(old['package'])/'connect.py';target.write_text('external package change')
+        self.assertTrue(result['served']);command=commands[0];self.assertIn(str(Path(old['package'])/'src/agent_brain_client/interfaces/mcp/topics.py'),command);self.assertEqual(command[-1],'darwin-arm64')
+        target=Path(old['package'])/'src/agent_brain_client/interfaces/mcp/topics.py';target.write_text('external package change')
         with patch.object(client_startup.subprocess,'run') as runner:
             result=client_startup.startup(self.policy_path,self.policy_sha)
         self.assertFalse(result.get('served',False));runner.assert_not_called()
@@ -238,7 +238,7 @@ class NativeConnection(unittest.TestCase):
     def test_known_profile_is_discovered_and_unknown_harness_reports_a_step(self):
         path=self.home/'.config/agent-brain-client/service-profile.json';path.parent.mkdir(parents=True);shutil.copyfile(self.profile,path);path.chmod(0o600)
         self.assertEqual(remote_connect.connect(self.home)['status'],'ready-to-register')
-        run=subprocess.run([sys.executable,'-I','-B',str(ROOT/'connect.py'),'--agent','unknown-fixture'],capture_output=True,text=True)
+        run=subprocess.run([sys.executable,'-I','-B',str(ROOT/'dev/integration/checkpoint.py'),'--agent','unknown-fixture'],capture_output=True,text=True)
         self.assertEqual(run.returncode,2);self.assertEqual(json.loads(run.stdout)['status'],'adapter-review-required')
 
 

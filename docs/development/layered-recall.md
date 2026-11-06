@@ -14,7 +14,7 @@ count only for wire compatibility when it lacks the native `recall` object.
 Both Mac and Windows can persist Hook settings without changing source approval:
 
 ```sh
-python3 scripts/global_memory.py global-recall-configure --recall-options '{"maxResults":8,"scoreThreshold":0.3,"maxCharsPerMemory":0,"maxTotalRecallChars":0}'
+python3 src/agent_brain_client/runtime/collection.py global-recall-configure --recall-options '{"maxResults":8,"scoreThreshold":0.3,"maxCharsPerMemory":0,"maxTotalRecallChars":0}'
 ```
 
 This example demonstrates configuration, not a universally recommended count.
@@ -105,7 +105,7 @@ snapshot. It is not operationally write-free even when its persistence envelope
 says `read-only`. Investigation under a no-production-write restriction uses
 code, existing content-free receipts and isolated synthetic fixtures.
 
-The only daily query tool is `memory_query`; the hidden `memory_recall` alias forwards to it. Automatic Hooks also send `memory_query`. Direct Agent facts and extracted facts share native L1 after the Server's reviewed migration cutover. New native save receipts carry `storage=tencent-l1` and a checkpoint digest; local persistence does not prove remote backup.
+The only daily query tool is `memory_query`; `memory_recall` and catalog retrieval aliases have been removed. Automatic Hooks also send `memory_query`. Direct Agent facts and extracted facts share native L1 after the Server's reviewed migration cutover. New native save receipts carry `storage=tencent-l1` and a checkpoint digest; local persistence does not prove remote backup.
 
 Content inventory uses optional opaque cursor pagination, without adding another
 daily memory-query tool. Client refresh follows every page and verifies the

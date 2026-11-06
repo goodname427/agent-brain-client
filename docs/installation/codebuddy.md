@@ -9,18 +9,18 @@ CodeBuddy IDE 和 CodeBuddy Code（CLI）共用现有 Agent Brain Client 与 Ser
 从独立、干净的官方 `main` checkout 执行并记录源码 SHA。Mac 沿用现有安装器的 arm64 首次引导；Windows 沿用既有 AMD64/ARM64 Python/Git 与系统凭据流程。
 
 ```sh
-sh tools/install-codebuddy.sh --server 'https://your-server.example'
+sh bootstrap/macos/codebuddy.sh --server 'https://your-server.example'
 ```
 
 ```powershell
-& ./tools/install-codebuddy.ps1 -Server 'https://your-server.example'
+& ./bootstrap/windows/codebuddy.ps1 -Server 'https://your-server.example'
 ```
 
 省略地址时沿用原安装器的本机输入／恢复。密钥不放进命令、聊天或环境变量。新设备把共享后端的原生登记放在私有 `shared-native` 目录，不创建用户 `.codex` 配置；原有安装保留原绑定。Server 冻结设备协议仍使用原 `codex` adapter 名称，这是兼容传输身份，不冒充 CodeBuddy 专属 Server grant，也不改变设备权限或信任锚。
 
 已有 Client 时，入口先沿原受信渠道执行 check-update／update，刷新 0.7 共用运行时；重复原 install 本身不能代替升级。安装再验证共享 Client 的 MCP initialize、工具目录与只读认证，然后事务安装 CodeBuddy 配置。`installed:true` 表示配置与协议核验通过；`source_enabled` 单独反映现有全局采集授权，`model_loaded:false` 表示未运行模型验收。来源状态异常应沿原安装器恢复；不能替换凭据或绕过 Server 拒绝。旧渠道尚未提供共用模块时保留原安装，等待统一 0.7 发行，不冒称自动采集已就绪。
 
-默认配置 IDE 与 CLI。需要单独绑定其中一种时，在共享 Client 安装完成后执行 `python3 -I -B tools/codebuddy.py install --surface ide` 或 `--surface cli`。已安装后切换范围应先卸载原 CodeBuddy 绑定，保留共享后端。
+默认配置 IDE 与 CLI。需要单独绑定其中一种时，在共享 Client 安装完成后执行 `python3 -I -B src/agent_brain_client/interfaces/cli/codebuddy.py install --surface ide` 或 `--surface cli`。已安装后切换范围应先卸载原 CodeBuddy 绑定，保留共享后端。
 
 ## 实际配置与能力
 
@@ -50,14 +50,14 @@ CodeBuddy 按正常宿主流程审核 MCP/Hooks。CLI 文档要求在 `/hooks` �
 用安装器准备好的 Python 3.11+ 运行（Windows 也可使用现有 Python resolver）：
 
 ```sh
-python3 -I -B tools/codebuddy.py status
-python3 -I -B tools/codebuddy.py probe
-python3 -I -B tools/codebuddy.py uninstall
+python3 -I -B src/agent_brain_client/interfaces/cli/codebuddy.py status
+python3 -I -B src/agent_brain_client/interfaces/cli/codebuddy.py probe
+python3 -I -B src/agent_brain_client/interfaces/cli/codebuddy.py uninstall
 ```
 
 `uninstall` 只移除自有 CodeBuddy 绑定、Hook 与说明块，保留其他配置、共享后端、系统凭据和所有待传事件。配置漂移时不覆盖；中断事务按原 host-file 前后像恢复。已启动的 MCP 需按宿主正常流程结束；不终止用户进程。
 
-更新先沿现有共享 Client 的 `check-update`／`update` 流程，再从同一新版官方 checkout 运行 CodeBuddy `install` 刷新适配器快照。也可运行 Mac `sh tools/install-codebuddy.sh --action update` 或 Windows `& ./tools/install-codebuddy.ps1 -Action update`。保持原渠道和来源设置；更新适配器不是重新配对。只在 worker 与活动版本实际不同时正常重载对应 MCP。
+更新先沿现有共享 Client 的 `check-update`／`update` 流程，再从同一新版官方 checkout 运行 CodeBuddy `install` 刷新适配器快照。也可运行 Mac `sh bootstrap/macos/codebuddy.sh --action update` 或 Windows `& ./bootstrap/windows/codebuddy.ps1 -Action update`。保持原渠道和来源设置；更新适配器不是重新配对。只在 worker 与活动版本实际不同时正常重载对应 MCP。
 
 ## 官方依据
 

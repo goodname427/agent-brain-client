@@ -7,13 +7,13 @@
 在官方 Client checkout 中，沿原更新入口取得协调发布后的 Client 运行包，并确认 Server 也包含启停 API。使用已有 HTTPS 设备身份打开临时本机管理页：
 
 ```sh
-sh tools/memory.sh content-manage
+sh bin/memory.sh content-manage
 ```
 
 Windows 使用同一个管理页和业务实现：
 
 ```powershell
-& ./tools/memory-windows.ps1 content-manage
+& ./bin/memory.ps1 content-manage
 ```
 
 命令复用已安装的 Python、原注册、policy、系统凭据和缓存；不重新配对、不下载依赖。浏览器未自动打开时使用终端显示的本机地址；`--no-browser` 仅打印地址。Ctrl-C 关闭管理程序。页面不加载外部资源，只监听随机端口的 `127.0.0.1`，API 同时校验 Host、Origin 和短期页面会话 token；长期设备凭据不进入页面。

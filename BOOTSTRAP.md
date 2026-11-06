@@ -1,6 +1,6 @@
 # Client 安装／更新统一入口
 
-CodeBuddy IDE／CLI 接入使用 [CodeBuddy 安装入口](docs/installation/codebuddy.md)。Mac 执行 `sh tools/install-codebuddy.sh`，Windows 执行 `& ./tools/install-codebuddy.ps1`；它们复用下面的共享 Client 安装流程，新设备不依赖 Codex 应用。CodeBuddy 自动采集仅使用未来实际观察到的 Hook 与该轮原生正文，不扫描或补传历史。以下保留既有 Codex 入口约定。
+CodeBuddy IDE／CLI 接入使用 [CodeBuddy 安装入口](docs/installation/codebuddy.md)。Mac 执行 `sh bootstrap/macos/codebuddy.sh`，Windows 执行 `& ./bootstrap/windows/codebuddy.ps1`；它们复用下面的共享 Client 安装流程，新设备不依赖 Codex 应用。CodeBuddy 自动采集仅使用未来实际观察到的 Hook 与该轮原生正文，不扫描或补传历史。以下保留既有 Codex 入口约定。
 
 用户把本仓库链接发给本地 Codex，即以此作为 Agent Brain 接入入口；无需额外附上安装提示。执行 Agent 按下列流程识别平台、检测并安装或升级。用户明确只想阅读、开发或执行其他工作时，以用户的目的为准。
 
@@ -11,12 +11,12 @@ CodeBuddy IDE／CLI 接入使用 [CodeBuddy 安装入口](docs/installation/code
 3. 已有经过核验的安装时，执行 `check-update`，成功检查后执行 `update`；不把重复 `install` 当作升级。复用现有策略、凭据、信任锚和队列，保留原有启用／关闭状态，不重新配对。Windows 命令如下；Mac 使用文档中的同名 action。
 
    ```powershell
-   & ./tools/install-windows.ps1 -Action status
-   & ./tools/install-windows.ps1 -Action check-update
-   & ./tools/install-windows.ps1 -Action update
+   & ./bootstrap/windows/install.ps1 -Action status
+   & ./bootstrap/windows/install.ps1 -Action check-update
+   & ./bootstrap/windows/install.ps1 -Action update
    ```
 
-4. `status` 明确为 `client-not-installed` 时，运行平台安装入口。首次只提供用户明确选择的 **HTTPS Server 地址**，并让用户在本机隐藏输入中填写 Server 生成的长期接入密钥。Mac：`sh tools/install-mac.sh --server 'https://your-server.example'`；Windows：`& ./tools/install-windows.ps1 -Server 'https://your-server.example'`。省略地址时脚本会在本机询问地址。地址仅定位服务；密钥不得进入聊天、参数、环境变量或文件。Server 认证后自动返回适配平台的授权配置和发行信任锚，再完成发行校验、安全保存设备身份及本地安装事务。正常流程不要求 connection 文件、摘要、ready 回执或邀请码。服务尚未启用新协议时保留状态并报告，不拼接离线包绕过。中断重跑同一入口恢复；`client-uninstalled` 复用原身份重装，不申请新密钥。
+4. `status` 明确为 `client-not-installed` 时，运行平台安装入口。首次只提供用户明确选择的 **HTTPS Server 地址**，并让用户在本机隐藏输入中填写 Server 生成的长期接入密钥。Mac：`sh bootstrap/macos/install.sh --server 'https://your-server.example'`；Windows：`& ./bootstrap/windows/install.ps1 -Server 'https://your-server.example'`。省略地址时脚本会在本机询问地址。地址仅定位服务；密钥不得进入聊天、参数、环境变量或文件。Server 认证后自动返回适配平台的授权配置和发行信任锚，再完成发行校验、安全保存设备身份及本地安装事务。正常流程不要求 connection 文件、摘要、ready 回执或邀请码。服务尚未启用新协议时保留状态并报告，不拼接离线包绕过。中断重跑同一入口恢复；`client-uninstalled` 复用原身份重装，不申请新密钥。
 5. 状态为 `review-required`、归属不明或有未完成事务时，保留原文件和回执，按对应文档的 status／repair 流程处理；不能将异常当作未安装而清理、重装或重置身份。
 6. 安装／更新后先调用现有 MCP 工具，比较 `client_runtime` 的 worker 与活动包版本及 commit；一致无需重载，不一致才正常重载 `agent_brain_server`。无法观察则报告 unknown，不因更新动作本身要求重启。核实后继续既有 Onboard 流程。分别报告已验证活动包、成功检查的渠道版本和可观察的 worker 版本；未观察模型加载时报告 unknown。安装与更新默认开启本设备所有项目的今后会话采集，复用已有服务与设备身份，不补传历史；Hook trust 由宿主按正常流程处理。关闭、限制或不启用用户要求的功能前先确认。
 

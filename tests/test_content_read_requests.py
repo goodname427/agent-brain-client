@@ -18,17 +18,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import build_opener, ProxyHandler
 
 import test_content_outbox as fixtures
-import brain_content as contract
-from content_mcp import ContentServer, serve
-from brain_http import (
-    RemoteClient,
-    RequestControl,
-    RequestStopped,
-    controlled_run,
-    NoRedirect,
-    ReadHTTPHandler,
-    ReadHTTPSHandler,
-)
+import agent_brain_client.domain.contract as contract
+from agent_brain_client.interfaces.mcp.content import ContentServer
+from agent_brain_client.interfaces.mcp.server import serve
+from agent_brain_client.adapters.server.http import RemoteClient, NoRedirect, ReadHTTPHandler, ReadHTTPSHandler
+from agent_brain_client.adapters.platforms.processes import controlled_run
+from agent_brain_client.application.control import RequestControl, RequestStopped
 
 MEMORY = fixtures.MEMORY
 
@@ -293,7 +288,7 @@ class ReadRequests(unittest.TestCase):
         self.assertEqual(self.f.cloud.puts, 0)
 
     def test_offline_read_cancel_releases_waiting_lock_without_touching_snapshot(self):
-        from brain_lock import cache_locked as locked
+        from agent_brain_client.adapters.platforms.filesystem import cache_locked as locked
 
         self.f.adapter.refresh()
         self.f.cloud.offline = True
@@ -486,7 +481,7 @@ class HTTPRequests(unittest.TestCase):
     def test_cancel_does_not_require_shutdown_to_wake_native_receive(self):
         # Model the Windows CI failure: cross-thread socket abort does not wake
         # the native receive. The executor itself must observe cancellation.
-        with patch('brain_http._watch_socket'):
+        with patch('agent_brain_client.adapters.server.http._watch_socket'):
             source, output = self.start(request_timeout=2)
             source.send(call(1))
             self.assertTrue(self.started.wait(1))
@@ -581,7 +576,7 @@ class HTTPRequests(unittest.TestCase):
                         finished.set()
                 return original(*args, **kwargs)
 
-            with patch("brain_http.socket.getaddrinfo", side_effect=lookup):
+            with patch("agent_brain_client.adapters.server.http.socket.getaddrinfo", side_effect=lookup):
                 source, output = self.start(request_timeout=0.15 if not cancel else 2)
                 source.send(call(1))
                 self.assertTrue(resolving.wait(1))

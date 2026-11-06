@@ -2,7 +2,7 @@
 import copy,hashlib,json,time,unittest
 from unittest.mock import patch
 import test_https_content as fixtures
-from https_content import HTTPSContentClient,PinnedDeviceTask
+from agent_brain_client.adapters.server.https import HTTPSContentClient,PinnedDeviceTask
 
 class DeviceTask(unittest.TestCase):
     def setUp(self):

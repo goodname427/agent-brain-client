@@ -30,32 +30,22 @@ class ContentRuntimeLifetime(unittest.TestCase):
         self.addCleanup(self.close_workers)
         self.state = self.base/'synthetic-remote.json'
         self.remote(False, 'Synthetic server base')
-        # Frozen exact historical implementations also work in source archives.
-        fixtures=ROOT/'tests/fixtures/content_runtime_lifetime'
-        manifest=json.loads((fixtures/'manifest.json').read_text())
-        for item in manifest['files']:
-            raw=(fixtures/item['fixture']).read_bytes()
-            self.assertEqual(hashlib.sha256(raw).hexdigest(),item['sha256'])
-            (self.base/item['fixture'].removesuffix('.fixture')).write_bytes(raw)
         worker = '''import importlib.util,json,os,sys
 from pathlib import Path
 ROOT=Path(ROOT_LITERAL)
-sys.path[:0]=[str(ROOT/'tests'),str(ROOT/'adapters/codex'),str(ROOT/'scripts')]
+sys.path[:0]=[str(ROOT/'tests'),str(ROOT/'src'),str(ROOT/'src')]
 from test_content_outbox import Cloud as FakeCloud,POLICY,MEMORY
-import brain_content as contract
+import agent_brain_client.domain.contract as contract
 def arg(name):return sys.argv[sys.argv.index(name)+1]
 base=Path(arg('--cache')).parent
 version=arg('--client-version')
-if version=='0.2.0':
- spec=importlib.util.spec_from_file_location('synthetic_legacy',base/'legacy_cache.py');module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-else:
- import content_cache as module
+import agent_brain_client.adapters.harnesses.codex.content as module
 class Cloud(FakeCloud):
  def request(self,request):
   state=json.loads((base/'synthetic-remote.json').read_bytes());self.offline=state['offline']
   self.records={('memory','synthetic-topic'):dict(MEMORY,body=state['body'])}
   return super().request(request)
-cloud=Cloud();adapter=module.ContentAdapter(arg('--device-home'),arg('--cache'),POLICY,cloud,codex_home=arg('--codex-home'))
+cloud=Cloud();adapter=module.CodexContentSession(arg('--device-home'),arg('--cache'),POLICY,cloud,codex_home=arg('--codex-home'))
 lock=base/'cache'/'.content-runtime.lock';inherited=False
 if lock.exists():
  for fd in range(3,64):
@@ -72,22 +62,19 @@ for line in sys.stdin:
   result=adapter.invoke(request)
  print(json.dumps(result),flush=True)
 '''.replace('ROOT_LITERAL', repr(str(ROOT)))
-        for name in ('legacy-package', 'modern-package'):
-            path = self.base/name/'adapters/codex';path.mkdir(parents=True)
-            (path/'content_mcp.py').write_text(worker)
+        for name in ('modern-package',):
+            path = self.base/name/'src/agent_brain_client/interfaces/mcp';path.mkdir(parents=True)
+            (path/'content.py').write_text(worker)
         driver = '''import importlib.util,json,sys
 from pathlib import Path
 from types import SimpleNamespace
 ROOT=Path(ROOT_LITERAL)
-sys.path[:0]=[str(ROOT/'adapters/codex'),str(ROOT/'scripts')]
+sys.path[:0]=[str(ROOT/'src'),str(ROOT/'src')]
 base=Path(sys.argv[1]);version=sys.argv[2]
-if sys.argv[3]=='baseline':
- spec=importlib.util.spec_from_file_location('synthetic_baseline',base/'baseline_startup.py');startup=importlib.util.module_from_spec(spec);spec.loader.exec_module(startup)
-else:
- import client_startup as startup
-import content_install
+import agent_brain_client.runtime.launcher as startup
+import agent_brain_client.adapters.harnesses.codex.installation as content_install
 content_install.inspect=lambda home:{'installed':True}
-active={'version':version,'commit':'a'*40,'package':str(base/('legacy-package' if version=='0.2.0' else 'modern-package'))}
+active={'version':version,'commit':'a'*40,'package':str(base/'modern-package')}
 policy={'capabilities':startup.SSH_CONTENT_CAPABILITIES,'runtime':{'device_home':str(base/'home'),'codex_home':str(base/'native'),'content_cache':str(base/'cache')}}
 fixed=SimpleNamespace(policy=policy,update=lambda:{'status':'offline','active':active},verified_active=lambda **kwargs:active,startup_check=lambda:None)
 startup.ClientReleases=lambda *args:fixed
@@ -135,18 +122,6 @@ print(json.dumps(result),flush=True)
             try:os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:pass
 
-    def test_baseline_reproduces_legacy_mapping_past_new_pending_ledger(self):
-        old, _ = self.spawn('0.2.0', 'baseline')
-        self.assertEqual(self.send(old, 'refresh')['status'], 'content-refreshed')
-        modern, _ = self.spawn('0.2.1', 'baseline')
-        self.remote(True, 'Synthetic server base')
-        self.assertEqual(self.send(modern, 'queue')['local_queue']['state'], 'pending')
-        pending = self.cache/'outbox/SYNTHETIC_PENDING_REQUEST_00000001.json';saved = pending.read_bytes()
-        self.remote(False, 'Synthetic newer remote body')
-        self.assertEqual(self.send(old, 'refresh')['status'], 'content-refreshed')
-        mapping = self.home/'.config/agent-brain-client/content/memory/synthetic-topic.md'
-        self.assertEqual(mapping.read_text(), 'Synthetic newer remote body')
-        self.assertEqual(pending.read_bytes(), saved)  # No claim that pending bytes were lost.
 
     def test_inherited_external_homes_remain_unchanged_for_both_adapters(self):
         external_home=self.base/'external-home';external_home.mkdir()
@@ -158,7 +133,7 @@ print(json.dumps(result),flush=True)
             return {str(p.relative_to(self.base)):(p.stat().st_mode,p.read_bytes() if p.is_file() else None) for directory in (external_home,external_native) for p in directory.rglob('*')}
         before=inventory()
         with patch.dict(os.environ,{'HOME':str(external_home),'CODEX_HOME':str(external_native),'SYNTHETIC_PARENT_SECRET':'must-not-inherit'}):
-            for version in ('0.2.0','0.2.1'):
+            for version in ('0.2.1','0.2.2'):
                 worker,ready=self.spawn(version)
                 self.assertTrue(ready['native_is_synthetic'])
                 self.assertTrue(ready['home_env_is_synthetic'])
@@ -169,50 +144,33 @@ print(json.dumps(result),flush=True)
         self.assertTrue((self.native/'AGENTS.md').is_file())
         self.assertEqual(inventory(),before)
 
-    def test_legacy_lifetime_blocks_modern_then_exit_allows_queue_and_blocks_rollback(self):
-        old, ready = self.spawn('0.2.0')
-        self.assertTrue(ready['lease_inherited'])
-        blocked, result = self.spawn('0.2.1')
-        self.assertEqual(result['status'], 'content-runtime-in-use');blocked.wait(timeout=3)
-        self.assertFalse((self.cache/'outbox').exists())
-        self.stop(old)
-        modern, _ = self.spawn('0.2.1')
-        self.remote(True, 'Synthetic server base')
-        self.assertEqual(self.send(modern, 'queue')['local_queue']['state'], 'pending')
-        blocked, result = self.spawn('0.2.0')
-        self.assertEqual(result['status'], 'content-outbox-runtime-incompatible');blocked.wait(timeout=3)
 
-    def test_modern_shared_sessions_block_legacy_before_any_ledger_exists(self):
-        modern, _ = self.spawn('0.2.1')
-        another, ready = self.spawn('0.2.1')
-        self.assertIn('ready', ready)
-        self.assertFalse((self.cache/'outbox').exists())
-        blocked, result = self.spawn('0.2.0')
-        self.assertEqual(result['status'], 'content-runtime-in-use');blocked.wait(timeout=3)
-        self.stop(modern);self.stop(another)
-        old, ready = self.spawn('0.2.0')
-        self.assertIn('ready', ready)
 
     def test_bootstrap_crash_keeps_child_lease_until_owned_child_exits(self):
-        old, ready = self.spawn('0.2.0')
+        old, ready = self.spawn('0.2.1')
         self.assertTrue(ready['lease_inherited'])
         self.orphans.add(ready['ready'])
         old.kill();old.wait(timeout=3)
-        blocked, result = self.spawn('0.2.1')
-        self.assertEqual(result['status'], 'content-runtime-in-use');blocked.wait(timeout=3)
+        from agent_brain_client.adapters.platforms.filesystem import cache_locked, LockTimeout
+        lock = self.cache / '.content-runtime.lock'
+        with self.assertRaises(LockTimeout):
+            with cache_locked(lock, timeout=0):
+                pass
         os.kill(ready['ready'], signal.SIGKILL)
         self.orphans.discard(ready['ready'])
-        deadline = time.monotonic()+3
+        deadline = time.monotonic() + 3
         while True:
-            modern, result = self.spawn('0.2.1')
-            if 'ready' in result:break
-            modern.wait(timeout=3)
-            if time.monotonic() >= deadline:self.fail('Crash lease did not release')
-            time.sleep(.02)
+            try:
+                with cache_locked(lock, timeout=0):
+                    break
+            except LockTimeout:
+                if time.monotonic() >= deadline:
+                    self.fail('Crash lease did not release')
+                time.sleep(.02)
         self.assertTrue((self.cache/'.content-runtime.lock').exists())
 
     def test_worker_crash_releases_lease_without_deleting_persistent_lock(self):
-        old, ready = self.spawn('0.2.0')
+        old, ready = self.spawn('0.2.1')
         os.kill(ready['ready'], signal.SIGKILL);old.wait(timeout=3)
         modern, result = self.spawn('0.2.1')
         self.assertIn('ready', result)

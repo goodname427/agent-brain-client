@@ -1,3 +1,4 @@
+import agent_brain_client.interfaces.mcp.server as interfaces_mcp_server
 """Synthetic stdio only: host decoding must not depend on worker code page."""
 
 import json
@@ -7,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import content_mcp
-import remote_mcp
+import agent_brain_client.interfaces.mcp.content as content_mcp
+import agent_brain_client.interfaces.mcp.topics as remote_mcp
 
 
 def synthetic_worker(mode, encoding):
@@ -30,7 +31,7 @@ def synthetic_worker(mode, encoding):
             return self.invoke(request)
 
     if mode == 'content':
-        content_mcp.serve(content_mcp.ContentServer(Adapter()),
+        interfaces_mcp_server.serve(content_mcp.ContentServer(Adapter()),
                           sys.stdin.buffer, sys.stdout)
     else:
         with patch.object(remote_mcp, 'RemoteClient', return_value=Adapter()), \

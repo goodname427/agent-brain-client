@@ -1,3 +1,4 @@
+import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
 """Regression checks for interrupted installs and finite contextual recall."""
 from contextlib import contextmanager
 import copy
@@ -6,11 +7,11 @@ import json
 import unittest
 from unittest.mock import patch
 
-import agentbrain_040 as entry
-import content_install as install
+import agent_brain_client.interfaces.cli.install_plan as entry
+import agent_brain_client.adapters.harnesses.codex.installation as install
 import test_content_install as install_fixtures
 import test_device_task as task_fixtures
-from https_content import HTTPSContentClient
+from agent_brain_client.adapters.server.https import HTTPSContentClient
 
 
 class InstallRecovery(unittest.TestCase):
@@ -21,7 +22,7 @@ class InstallRecovery(unittest.TestCase):
         self.plan = self.f.plan()
         self.digest = self.f.digest(self.plan)
         self.path = self.f.base / 'private-install-plan.json'
-        install.save(self.path, self.plan)
+        adapters_storage_private_files.save(self.path, self.plan)
         real_apply = install.apply
         # Only replace the protocol probe; exercise the actual durable transaction.
         probe = patch.object(install, 'apply', side_effect=lambda p, d: real_apply(p, d, lambda _: None))

@@ -5,12 +5,12 @@ from pathlib import Path
 import sys
 
 package = Path(sys.argv[1])
-sys.path[:0] = [str(package / name) for name in ('scripts', 'adapters/codex')]
-from brain_lock import require_platform
-from remote_mcp import Server
-from content_mcp import installation_check
-from content_mcp import ContentServer
-from content_cache import ContentAdapter
+sys.path[:0] = [str(package / 'src')]
+from agent_brain_client.adapters.platforms.filesystem import require_platform
+from agent_brain_client.interfaces.mcp.topics import Server
+from agent_brain_client.interfaces.mcp.content import installation_check
+from agent_brain_client.interfaces.mcp.content import ContentServer
+from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
 import tempfile
 
 target = require_platform('checkpoint-regression')
@@ -24,8 +24,8 @@ policy = {'schema': 1, 'adapter': 'codex', 'kinds': ['memory'], 'ids': {'memory'
 # Installation probes use the actual pinned synthetic profile/policy. A
 # Memory-only stand-in cannot prove Rule/Skill-specific tool declarations.
 if '--content-policy' in sys.argv:
-    from content_mcp import pinned
-    from content_cache import validate_policy
+    from agent_brain_client.interfaces.mcp.content import pinned
+    from agent_brain_client.domain.content_policy import validate_policy
     def argument(name):
         return sys.argv[sys.argv.index(name) + 1]
     policy = pinned(argument('--content-policy'), argument('--content-policy-sha256'))
@@ -52,7 +52,7 @@ assert result['status'] == 'content-native-protocol-checked' and len(cloud.reque
 assert result['native_changed'] is False
 with tempfile.TemporaryDirectory(dir=Path(os.environ['HOME'])) as temporary:
     home = Path(temporary)
-    adapter = ContentAdapter(home, home / 'cache', policy, cloud, codex_home=home / 'codex')
+    adapter = CodexContentSession(home, home / 'cache', policy, cloud, codex_home=home / 'codex')
     server = ContentServer(adapter, '0.5.6')
     server.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
         'protocolVersion': '2025-11-25', 'capabilities': {},

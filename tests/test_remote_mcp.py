@@ -11,7 +11,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('remote_mcp', ROOT / 'scripts/remote_mcp.py')
+spec = importlib.util.spec_from_file_location('remote_mcp', ROOT / 'src/agent_brain_client/interfaces/mcp/topics.py')
 bridge = importlib.util.module_from_spec(spec);spec.loader.exec_module(bridge)
 
 
@@ -173,7 +173,7 @@ class RemoteMCP(unittest.TestCase):
                 messages = [initialize, {'jsonrpc': '2.0', 'method': 'notifications/initialized'},
                             self.message('tools/list', identifier=2),
                             self.message('tools/call', {'name': 'topic', 'arguments': {'id': 'synthetic-http'}}, identifier=3)]
-                result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'scripts/remote_mcp.py'),
+                result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'src/agent_brain_client/interfaces/mcp/topics.py'),
                           '--endpoint', 'http://127.0.0.1:' + str(server.server_port), '--token-file', str(token)],
                           input=''.join(json.dumps(v)+'\n' for v in messages), text=True, capture_output=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -188,7 +188,7 @@ class RemoteMCP(unittest.TestCase):
                 server.shutdown();server.server_close();thread.join(timeout=2)
 
     def test_stdio_duplicate_fields_and_oversize_fail_without_secret_echo(self):
-        command = [sys.executable, '-I', '-B', str(ROOT / 'scripts/remote_mcp.py'), '--endpoint', 'http://127.0.0.1:8765',
+        command = [sys.executable, '-I', '-B', str(ROOT / 'src/agent_brain_client/interfaces/mcp/topics.py'), '--endpoint', 'http://127.0.0.1:8765',
                    '--token-file', '/synthetic/nonexistent.token']
         for raw in ['{"jsonrpc":"2.0","jsonrpc":"PRIVATE_INPUT_FIXTURE"}\n', 'PRIVATE_INPUT_FIXTURE' * 9000+'\n']:
             result = subprocess.run(command, input=raw, text=True, capture_output=True, timeout=5)

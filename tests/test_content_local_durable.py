@@ -5,8 +5,8 @@ import json
 import unittest
 
 import test_content_outbox as fixture
-from content_cache import ContentAdapter
-from content_mcp import ContentServer
+from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.interfaces.mcp.content import ContentServer
 
 
 class LocalDurable(unittest.TestCase):
@@ -83,7 +83,7 @@ class LocalDurable(unittest.TestCase):
         one = self.f.adapter.invoke(request)
         before = self.f.cloud.puts
         calls = len(self.f.cloud.calls)
-        restarted = ContentAdapter(
+        restarted = CodexContentSession(
             self.f.home,
             self.f.cache,
             fixture.POLICY,

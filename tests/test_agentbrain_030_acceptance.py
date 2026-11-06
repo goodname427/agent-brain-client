@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'tests'))
-sys.path.insert(0,str(ROOT/'adapters/codex'))
+sys.path.insert(0,str(ROOT/'src'))
 import test_content_outbox as base
 
 FIXTURE=json.loads((ROOT/'tests/fixtures/agentbrain_030_acceptance.json').read_text())
@@ -42,7 +42,7 @@ class AgentBrain030Acceptance(unittest.TestCase):
     def setUp(self):
         self.helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
         self.helper.setUp();self.addCleanup(self.helper.doCleanups)
-        self.cloud=RecallCloud();self.adapter=base.ContentAdapter(
+        self.cloud=RecallCloud();self.adapter=base.CodexContentSession(
             self.helper.home,self.helper.cache,base.POLICY,self.cloud,codex_home=self.helper.home/'.codex')
         self.plan={'schema':1,'binding':self.adapter.binding,'sources':[],
                    'coverage':[{'source_id':'synthetic-history','status':'read','reason':'Test fixture only'}]}
@@ -54,22 +54,22 @@ class AgentBrain030Acceptance(unittest.TestCase):
 
     def test_twenty_experiences_import_restart_and_idempotent_rerun(self):
         self.assertEqual(len(self.plan['sources']),20)
-        staged=self.adapter.stage_import(self.plan)
+        staged=self.adapter.sources.stage_import(self.plan)
         self.assertEqual(staged['sources'],20)
-        self.assertEqual(self.adapter.import_status()['counts'],{'inventoried':20})
+        self.assertEqual(self.adapter.sources.import_status()['counts'],{'inventoried':20})
         self.assertEqual(self.adapter.refresh()['status'],'content-refreshed')
-        self.assertEqual(self.adapter.import_status()['counts'],{'imported':20})
+        self.assertEqual(self.adapter.sources.import_status()['counts'],{'imported':20})
         self.assertEqual(self.cloud.puts,20)
-        restarted=base.ContentAdapter(self.helper.home,self.helper.cache,base.POLICY,self.cloud,codex_home=self.helper.home/'.codex')
-        restarted.stage_import(self.plan)
+        restarted=base.CodexContentSession(self.helper.home,self.helper.cache,base.POLICY,self.cloud,codex_home=self.helper.home/'.codex')
+        restarted.sources.stage_import(self.plan)
         restarted.refresh()
-        self.assertEqual(restarted.import_status()['counts'],{'imported':20})
+        self.assertEqual(restarted.sources.import_status()['counts'],{'imported':20})
         self.assertEqual(self.cloud.puts,20)
         for row in FIXTURE['records']:
             self.assertEqual(self.cloud.records[('memory',row['id'])]['body'],row['body'])
 
     def test_ten_queries_return_the_expected_record_with_supporting_evidence(self):
-        self.adapter.stage_import(self.plan);self.adapter.refresh()
+        self.adapter.sources.stage_import(self.plan);self.adapter.refresh()
         # The frozen 0.3.0 dataset checks the pre-cutover Content transport.
         # Daily MCP retrieval is covered by the native memory_query fixtures.
         correct=0

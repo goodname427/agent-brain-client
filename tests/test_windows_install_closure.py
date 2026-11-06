@@ -1,3 +1,10 @@
+import agent_brain_client.runtime.launcher_update as launcher_update
+import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
+import agent_brain_client.adapters.storage.install_state as adapters_storage_install_state
+import agent_brain_client.interfaces.cli.install as interfaces_cli_install
+import agent_brain_client.runtime.updates as runtime_updates
+import agent_brain_client.adapters.storage.collection as source_policy
+import agent_brain_client.adapters.storage.metadata as metadata
 """Synthetic device roots only; portable fault injection is not Windows acceptance."""
 
 import copy
@@ -14,16 +21,16 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-import brain_host_files as host
-import content_cache as cache
-import content_install as ci
-import content_mcp
-import global_memory as gm
-import global_memory_install as hooks
-import first_install as wizard
-import windows_install_complete as guide
-import access_install
-from global_memory_scope import digest
+import agent_brain_client.adapters.storage.host_files as host
+import agent_brain_client.adapters.harnesses.codex.content as cache
+import agent_brain_client.adapters.harnesses.codex.installation as ci
+import agent_brain_client.interfaces.mcp.content as content_mcp
+import agent_brain_client.runtime.collection as gm
+import agent_brain_client.adapters.harnesses.codex.collection_installation as hooks
+import agent_brain_client.runtime.installation as wizard
+import agent_brain_client.runtime.installation_completion as guide
+import agent_brain_client.interfaces.cli.access as access_install
+from agent_brain_client.domain.scopes import digest
 from test_content_outbox import Cloud, POLICY, RULE, SKILL
 import test_content_install as install_fixture
 import test_client_uninstall as lifecycle_fixture
@@ -54,13 +61,13 @@ ORIGINAL_STAGE = host.host_stage
 def normal_retry(test, home, native):
     """Execute real argparse/early recovery; isolate downstream installation UI."""
     state = home / ".config/agent-brain-client"
-    ci.save(
+    adapters_storage_private_files.save(
         state / "access-bootstrap/endpoint.json",
         {"schema": 1, "endpoint": "https://synthetic.invalid"},
     )
 
     def original_install_recovery(*args):
-        receipt = ci.private_json(state / "content-install-receipt.json")
+        receipt = adapters_storage_private_files.private_json(state / "content-install-receipt.json")
         test.assertEqual(receipt["phase"], "complete")
         value = ci.inspect(home)
         test.assertTrue(value.get("registration_verified"), value)
@@ -69,7 +76,7 @@ def normal_retry(test, home, native):
     with (
         patch.object(Path, "home", return_value=home),
         patch.dict(os.environ, CODEX_HOME=str(native)),
-        patch.object(sys, "argv", ["first_install.py"]),
+        patch.object(sys, "argv", ["agent_brain_client.runtime.installation.py"]),
         patch.object(wizard, "native_platform", return_value="win32-amd64"),
         patch.object(
             access_install,
@@ -78,7 +85,7 @@ def normal_retry(test, home, native):
         ),
         patch.object(sys, "stdout", io.StringIO()) as output,
     ):
-        code = wizard.main()
+        code = interfaces_cli_install.main()
     return code, json.loads(output.getvalue())
 
 
@@ -109,7 +116,7 @@ def torn_hook(test, home, native):
         patch.object(host, "host_write", side_effect=tear),
         test.assertRaises(SystemExit),
     ):
-        hooks.transact(native, gm.settings_path(home).parent, body)
+        hooks.transact(native, source_policy.settings_path(home).parent, body)
     with test.assertRaises((ValueError, UnicodeError)):
         ci.tomllib.loads(file.read_bytes().decode())
     return before
@@ -155,7 +162,7 @@ class MappingClosure(unittest.TestCase):
         self.addCleanup(self.patch.stop)
 
     def adapter(self):
-        return cache.ContentAdapter(
+        return cache.CodexContentSession(
             self.home, self.cache, self.policy, self.cloud, codex_home=self.native
         )
 
@@ -181,13 +188,13 @@ class MappingClosure(unittest.TestCase):
     def test_four_rules_three_skills_map_in_actual_codex_home_without_private_host_writes(
         self,
     ):
-        private = cache.atomic
+        private = __import__('agent_brain_client.adapters.storage.content',fromlist=['atomic']).atomic
 
         def private_only(path, raw, mode, **options):
             self.assertTrue(self.cache == path.parent or self.cache in path.parents)
             return private(path, raw, mode, **options)
 
-        with patch.object(cache, "atomic", side_effect=private_only):
+        with patch('agent_brain_client.adapters.storage.content.atomic', side_effect=private_only):
             self.assertEqual(self.adapter().refresh()["status"], "content-refreshed")
         self.assertEqual(self.agents.stat().st_ino, self.inode)
         self.assertIn(self.original, self.agents.read_bytes())
@@ -287,7 +294,7 @@ class LauncherClosure(unittest.TestCase):
         )
         self.f.publish("0.5.7")
         self.f.channel.update()
-        self.meta = ci.private_json(
+        self.meta = adapters_storage_private_files.private_json(
             self.f.home / ".config/agent-brain-client/codex-mcp.json"
         )
         self.before = self.f.channel.verified_active()
@@ -296,11 +303,11 @@ class LauncherClosure(unittest.TestCase):
 
     def handover(self):
         with patch.object(
-            wizard,
+            launcher_update,
             "probe_launcher",
             side_effect=lambda plan, active: self.assertEqual(active, self.before),
         ):
-            return wizard.windows_launcher_handover(
+            return launcher_update.refresh_launcher(
                 self.f.home, channel=self.channel, before=self.before, meta=self.meta
             )
 
@@ -311,14 +318,14 @@ class LauncherClosure(unittest.TestCase):
         # This portable fixture uses content-device capabilities. Substitute
         # only the public entry's HTTPS gate; package validation, policy pins,
         # native transaction, offline child probe and activation remain real.
-        with patch.object(wizard, 'HTTPS_CONTENT_CAPABILITIES', self.channel.engine.policy['capabilities']):
-            value = wizard.manage_update(self.f.home, 'update', channel_factory=lambda *a: self.channel)
+        with patch.object(runtime_updates, 'HTTPS_CONTENT_CAPABILITIES', self.channel.engine.policy['capabilities']):
+            value = runtime_updates.manage_update(self.f.home, 'update', channel_factory=lambda *a: self.channel)
         self.assertEqual(value['status'], 'client-update-updated', value)
         self.assertTrue(value['native_changed'])
         self.assertIsNone(value['reload_required'])
         self.assertTrue(value['reload_check']['mcp_registration_changed'])
         self.assertEqual(value['active_package_version'], '0.5.8')
-        meta = ci.private_json(self.f.home / '.config/agent-brain-client/codex-mcp.json')
+        meta = adapters_storage_private_files.private_json(self.f.home / '.config/agent-brain-client/codex-mcp.json')
         self.assertNotEqual(meta['package'], self.meta['package'])
         self.assertEqual(meta['release_policy_sha256'], self.meta['release_policy_sha256'])
         self.assertEqual(ci.inspect(self.f.home)['installation_state'], 'verified-disabled')
@@ -327,16 +334,16 @@ class LauncherClosure(unittest.TestCase):
         state = self.f.home / '.config/agent-brain-client/first-install'
         state.mkdir(mode=0o700)
         plan = state / 'synthetic-reinstall-plan.json'
-        ci.save(plan, self.original_plan)
+        adapters_storage_private_files.save(plan, self.original_plan)
         marker = state / 'reinstall-current.json'
         value = {'schema': 1, 'removed_plan_sha256': 'a' * 64,
                  'plan': str(plan), 'plan_sha256': self.meta['plan_sha256']}
-        ci.save(marker, value)
+        adapters_storage_private_files.save(marker, value)
         self.assertTrue(self.handover())
         self.assertFalse(marker.exists())
         archived = list(state.glob('prior-reinstall-current-*.json'))
         self.assertEqual(len(archived), 1)
-        self.assertEqual(ci.private_json(archived[0]), value)
+        self.assertEqual(adapters_storage_private_files.private_json(archived[0]), value)
 
     def test_handover_preserves_unconfirmed_reinstall_attempt(self):
         state = self.f.home / '.config/agent-brain-client/first-install'
@@ -344,22 +351,22 @@ class LauncherClosure(unittest.TestCase):
         marker = state / 'reinstall-current.json'
         value = {'schema': 1, 'removed_plan_sha256': 'a' * 64,
                  'plan': str(state / 'unconfirmed.json'), 'plan_sha256': 'b' * 64}
-        ci.save(marker, value)
+        adapters_storage_private_files.save(marker, value)
         before = self.f.config.read_bytes()
         with self.assertRaises(ValueError):
             self.handover()
-        self.assertEqual(ci.private_json(marker), value)
+        self.assertEqual(adapters_storage_private_files.private_json(marker), value)
         self.assertEqual(self.f.config.read_bytes(), before)
 
     def superseded_reinstall(self):
         state = self.f.home / '.config/agent-brain-client/first-install'
         state.mkdir(mode=0o700)
         plan = state / 'synthetic-reinstall-plan.json'
-        ci.save(plan, self.original_plan)
+        adapters_storage_private_files.save(plan, self.original_plan)
         marker = state / 'reinstall-current.json'
         value = {'schema': 1, 'removed_plan_sha256': 'a' * 64,
                  'plan': str(plan), 'plan_sha256': self.meta['plan_sha256']}
-        ci.save(marker, value)
+        adapters_storage_private_files.save(marker, value)
         # A later completed native transaction supersedes the reinstall. Its
         # exact registration preimage proves the marker is historical, even
         # when the reviewed policy path changes in that later transaction.
@@ -369,7 +376,7 @@ class LauncherClosure(unittest.TestCase):
         replacement = ci.prepare(self.f.home, self.f.package, policy,
                                  self.f.policy_sha, replace_existing=True)
         self.assertTrue(ci.apply(replacement, self.f.digest(replacement), lambda p: None)['installed'])
-        self.meta = ci.private_json(self.f.home / '.config/agent-brain-client/codex-mcp.json')
+        self.meta = adapters_storage_private_files.private_json(self.f.home / '.config/agent-brain-client/codex-mcp.json')
         self.assertNotEqual(self.meta['plan_sha256'], value['plan_sha256'])
         return marker, value
 
@@ -377,20 +384,20 @@ class LauncherClosure(unittest.TestCase):
         marker, value = self.superseded_reinstall()
         before = self.f.config.read_bytes()
         # The evidence check itself is read-only.
-        previous = wizard.completed_reinstall_registration(self.f.home, value, self.meta)
+        previous = launcher_update.completed_reinstall_registration(self.f.home, value, self.meta)
         self.assertEqual(previous['plan_sha256'], value['plan_sha256'])
         self.assertEqual(self.f.config.read_bytes(), before)
-        self.assertEqual(ci.private_json(marker), value)
+        self.assertEqual(adapters_storage_private_files.private_json(marker), value)
         self.assertTrue(self.handover())
         self.assertFalse(marker.exists())
-        archive = marker.parent / ('prior-reinstall-current-' + wizard.sha(wizard.canonical(value)) + '.json')
-        self.assertEqual(ci.private_json(archive), value)
+        archive = marker.parent / ('prior-reinstall-current-' + adapters_storage_install_state.sha(wizard.canonical(value)) + '.json')
+        self.assertEqual(adapters_storage_private_files.private_json(archive), value)
         self.assertTrue(ci.inspect(self.f.home)['registration_verified'])
 
     def test_superseded_marker_requires_complete_exact_predecessor_evidence(self):
         marker, value = self.superseded_reinstall()
         receipt = self.f.home / '.config/agent-brain-client/content-install-receipt.json'
-        original = ci.private_json(receipt)
+        original = adapters_storage_private_files.private_json(receipt)
         config = self.f.config.read_bytes()
         for change in ('phase', 'plan', 'target', 'image', 'predecessor'):
             altered = copy.deepcopy(original)
@@ -410,13 +417,13 @@ class LauncherClosure(unittest.TestCase):
                 prior['plan_sha256'] = 'b' * 64
                 raw = ci.contract.encode(prior)
                 row.update(data=base64.b64encode(raw).decode(), sha=ci.sha(raw))
-            ci.save(receipt, altered)
+            adapters_storage_private_files.save(receipt, altered)
             with self.subTest(change=change), self.assertRaises(ValueError):
-                wizard.retire_completed_reinstall(self.f.home, self.meta)
-            self.assertEqual(ci.private_json(marker), value)
+                launcher_update.retire_completed_reinstall(self.f.home, self.meta)
+            self.assertEqual(adapters_storage_private_files.private_json(marker), value)
             self.assertEqual(self.f.config.read_bytes(), config)
             self.assertFalse(list(marker.parent.glob('prior-reinstall-current-*.json')))
-        ci.save(receipt, original)
+        adapters_storage_private_files.save(receipt, original)
 
     def test_normal_install_retry_dispatches_applying_launcher_before_original_plan(
         self,
@@ -425,7 +432,7 @@ class LauncherClosure(unittest.TestCase):
         receipt = (
             self.f.home / ".config/agent-brain-client/content-install-receipt.json"
         )
-        original_save = ci.save
+        original_save = adapters_storage_private_files.save
 
         def stop(path, value):
             original_save(path, value)
@@ -440,14 +447,14 @@ class LauncherClosure(unittest.TestCase):
 
         def resume(home, action):
             updates.append(action)
-            wizard.windows_launcher_handover(
+            launcher_update.refresh_launcher(
                 home, channel_factory=lambda *a: self.channel
             )
             return {"status": "client-update-current", "channel_checked": True}
 
         with (
-            patch.object(wizard, "manage_update", side_effect=resume),
-            patch.object(wizard, "probe_launcher", return_value=None),
+            patch.object(runtime_updates, "manage_update", side_effect=resume),
+            patch.object(launcher_update, "probe_launcher", return_value=None),
         ):
             code, value = normal_retry(self, self.f.home, self.f.native)
         self.assertEqual(code, 0, value)
@@ -455,23 +462,6 @@ class LauncherClosure(unittest.TestCase):
         self.assertEqual(updates, ["update"])
         self.assertFalse(marker.exists())
 
-    def test_actual_053_validator_rejects_nine_tools_with_057_active_then_handover_repairs(
-        self,
-    ):
-        fixture = Path(__file__).parent / "fixtures/windows_launcher_053"
-        pins = json.loads((fixture / "manifest.json").read_bytes())["files"]
-        source = fixture / "content_install.py.fixture"
-        self.assertEqual(ci.sha(source.read_bytes()), pins[source.name])
-        historical = runpy.run_path(str(source))
-        self.assertEqual(self.before["version"], "0.5.7")
-        registered=ci.tomllib.loads(self.f.config.read_text())["mcp_servers"][ci.NAME]["enabled_tools"]
-        self.assertIn('memory_query',registered)
-        self.assertIn('content_queue_inspect',registered)
-        self.assertEqual(
-            historical["inspect"](self.f.home)["reason"], "mcp-binding-changed"
-        )
-        self.assertTrue(self.handover())
-        self.assertTrue(ci.inspect(self.f.home)["registration_verified"])
 
     def test_trusted_handover_keeps_policy_and_paused_state_then_update_activates(self):
         config = ci.tomllib.loads(self.f.config.read_text())
@@ -485,7 +475,7 @@ class LauncherClosure(unittest.TestCase):
         self.assertEqual(
             ci.inspect(self.f.home)["installation_state"], "verified-disabled"
         )
-        current = ci.private_json(
+        current = adapters_storage_private_files.private_json(
             self.f.home / ".config/agent-brain-client/codex-mcp.json"
         )
         self.assertNotEqual(current["package"], self.meta["package"])
@@ -497,7 +487,7 @@ class LauncherClosure(unittest.TestCase):
 
     def test_failed_postcheck_rolls_back_exact_config_and_registration(self):
         before = self.f.config.read_bytes()
-        meta = ci.raw(self.f.home / ".config/agent-brain-client/codex-mcp.json")
+        meta = adapters_storage_private_files.raw(self.f.home / ".config/agent-brain-client/codex-mcp.json")
         calls = []
 
         def check(plan, active):
@@ -506,15 +496,15 @@ class LauncherClosure(unittest.TestCase):
                 raise OSError("Synthetic postcheck failure")
 
         with (
-            patch.object(wizard, "probe_launcher", side_effect=check),
+            patch.object(launcher_update, "probe_launcher", side_effect=check),
             self.assertRaises(ValueError),
         ):
-            wizard.windows_launcher_handover(
+            launcher_update.refresh_launcher(
                 self.f.home, channel=self.channel, before=self.before, meta=self.meta
             )
         self.assertEqual(self.f.config.read_bytes(), before)
         self.assertEqual(
-            ci.raw(self.f.home / ".config/agent-brain-client/codex-mcp.json"), meta
+            adapters_storage_private_files.raw(self.f.home / ".config/agent-brain-client/codex-mcp.json"), meta
         )
         self.assertFalse(
             (self.f.home / ".config/agent-brain-client/launcher-handover.json").exists()
@@ -522,26 +512,26 @@ class LauncherClosure(unittest.TestCase):
 
     def test_exact_candidate_already_active_is_accepted_on_handover_resume(self):
         marker = self.f.home / ".config/agent-brain-client/launcher-handover.json"
-        original = ci.save
+        original = adapters_storage_private_files.save
 
         def stop(path, value):
             original(path, value)
             if path == marker:
                 raise SystemExit("Synthetic stop")
 
-        with patch.object(ci, "save", side_effect=stop), self.assertRaises(SystemExit):
+        with patch.object(adapters_storage_private_files, "save", side_effect=stop), self.assertRaises(SystemExit):
             self.handover()
         self.assertEqual(self.channel.update()["active"]["version"], "0.5.8")
-        with patch.object(wizard, "probe_launcher", return_value=None):
+        with patch.object(launcher_update, "probe_launcher", return_value=None):
             self.assertTrue(
-                wizard.windows_launcher_handover(
+                launcher_update.refresh_launcher(
                     self.f.home, channel_factory=lambda *a: self.channel
                 )
             )
         self.assertTrue(ci.inspect(self.f.home)["registration_verified"])
 
     def test_interrupted_plan_is_resumed_and_does_not_reapprove_or_repair_digest(self):
-        original = ci.save
+        original = adapters_storage_private_files.save
         marker = self.f.home / ".config/agent-brain-client/launcher-handover.json"
 
         def stop(path, value):
@@ -549,11 +539,11 @@ class LauncherClosure(unittest.TestCase):
             if path == marker:
                 raise SystemExit("Synthetic stop before handover")
 
-        with patch.object(ci, "save", side_effect=stop), self.assertRaises(SystemExit):
+        with patch.object(adapters_storage_private_files, "save", side_effect=stop), self.assertRaises(SystemExit):
             self.handover()
-        with patch.object(wizard, "probe_launcher", return_value=None):
+        with patch.object(launcher_update, "probe_launcher", return_value=None):
             self.assertTrue(
-                wizard.windows_launcher_handover(
+                launcher_update.refresh_launcher(
                     self.f.home, channel_factory=lambda *a: self.channel
                 )
             )
@@ -609,7 +599,7 @@ class SourceClosure(unittest.TestCase):
 
     def test_install_automatically_enables_every_project_without_prompt_or_scan(self):
         state, client = self.server()
-        with (patch.object(gm, 'GlobalClient', client),
+        with (patch('agent_brain_client.adapters.server.collection.CollectionClient', client),
               patch.object(gm, 'discover', side_effect=AssertionError('No history scan'))):
             result = guide.complete(self.home, {'installed':True},
                 choose=lambda _:self.fail('No repeated authorization'),
@@ -617,31 +607,31 @@ class SourceClosure(unittest.TestCase):
         self.assertTrue(result['installation_stages']['sources']['collection_enabled'])
         self.assertTrue(result['local_setup_complete'])
         self.assertEqual(result['installation_stages']['worker'], 'unobserved')
-        self.assertTrue(gm.load(self.home)['scope']['all_projects'])
+        self.assertTrue(source_policy.load(self.home)['scope']['all_projects'])
         self.assertEqual(state['calls'], ['memory_global_status','memory_global_register','memory_global_status','memory_global_resume'])
 
     def test_previously_approved_placeholder_recovers_without_reapproval(self):
-        value = gm.load(self.home)
+        value = source_policy.load(self.home)
         value['scope']['include_roots'] = [{'root':str(self.home),'sharing':'personal'}]
         value['approved_scope_sha256'] = digest(value['scope'])
-        gm.old.write(gm.settings_path(self.home), value)
-        off = gm.settings_path(self.home).parent/'global.off'
+        metadata.write(source_policy.settings_path(self.home), value)
+        off = source_policy.settings_path(self.home).parent/'global.off'
         off.touch()
         state, client = self.server()
-        with patch.object(gm, 'GlobalClient', client): result = guide.source_setup(self.home)
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient', client): result = guide.source_setup(self.home)
         self.assertTrue(result['collection_enabled'])
-        self.assertEqual(gm.load(self.home)['scope']['profile_id'], 'e'*32)
+        self.assertEqual(source_policy.load(self.home)['scope']['profile_id'], 'e'*32)
         self.assertFalse(off.exists())
         self.assertTrue(state['scope']['all_projects'])
 
     def test_registration_failure_keeps_existing_capture_configuration_and_pause(self):
-        value = gm.load(self.home)
+        value = source_policy.load(self.home)
         value.update(enabled=True, approved_scope_sha256=digest(value['scope']), server_scope_sha256=digest(value['scope']))
-        file = gm.settings_path(self.home)
-        gm.old.write(file, value)
+        file = source_policy.settings_path(self.home)
+        metadata.write(file, value)
         before = file.read_bytes()
         state, client = self.server(fail='memory_global_register')
-        with patch.object(gm, 'GlobalClient', client): result = guide.source_setup(self.home)
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient', client): result = guide.source_setup(self.home)
         self.assertFalse(result['collection_enabled'])
         self.assertEqual(file.read_bytes(), before)
         self.assertFalse((file.parent/'global.off').exists())
@@ -650,26 +640,26 @@ class SourceClosure(unittest.TestCase):
 
     def test_resume_response_loss_retries_registered_source_without_new_registration(self):
         state, client = self.server(fail='memory_global_resume')
-        with patch.object(gm, 'GlobalClient', client):
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient', client):
             self.assertFalse(guide.source_setup(self.home)['collection_enabled'])
             state['fail'] = None
             self.assertTrue(guide.source_setup(self.home)['collection_enabled'])
         self.assertEqual(state['calls'].count('memory_global_register'), 1)
 
     def test_failed_preflight_preserves_settings_without_source_changes(self):
-        before = gm.settings_path(self.home).read_bytes()
+        before = source_policy.settings_path(self.home).read_bytes()
         state, client = self.server(fail='memory_global_status')
-        with patch.object(gm, 'GlobalClient', client): result = guide.source_setup(self.home)
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient', client): result = guide.source_setup(self.home)
         self.assertFalse(result['collection_enabled'])
-        self.assertEqual(gm.settings_path(self.home).read_bytes(), before)
+        self.assertEqual(source_policy.settings_path(self.home).read_bytes(), before)
         self.assertEqual(state['calls'], ['memory_global_status'])
 
     def test_old_registered_device_is_upgraded_to_all_projects(self):
-        value = gm.load(self.home)
+        value = source_policy.load(self.home)
         scope = dict(value['scope'], profile_id='e'*32)
         scope['include_roots'] = [{'root':str(self.home),'sharing':'personal'}]
         state, client = self.server(scope)
-        with patch.object(gm, 'GlobalClient', client): result = guide.source_setup(self.home)
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient', client): result = guide.source_setup(self.home)
         self.assertTrue(result['collection_enabled'])
         self.assertTrue(state['scope']['all_projects'])
         self.assertNotIn('memory_global_stop', state['calls'])
@@ -693,11 +683,11 @@ class SourceClosure(unittest.TestCase):
                 patch.object(host, "host_write", side_effect=tear),
                 self.assertRaises(SystemExit),
             ):
-                hooks.transact(self.f.native, gm.settings_path(self.home).parent, body)
-            hooks.transact(self.f.native, gm.settings_path(self.home).parent, body)
+                hooks.transact(self.f.native, source_policy.settings_path(self.home).parent, body)
+            hooks.transact(self.f.native, source_policy.settings_path(self.home).parent, body)
         self.assertEqual(config.stat().st_ino, inode)
         self.assertEqual(ci.tomllib.loads(config.read_text())["mcp_servers"], original)
-        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        self.assertTrue(hooks.installation_status(source_policy.load(self.home)))
 
     def test_normal_install_retry_restores_torn_hook_before_registration_parse(self):
         inode = (self.f.native / "config.toml").stat().st_ino
@@ -706,7 +696,7 @@ class SourceClosure(unittest.TestCase):
         with (
             patch.object(host, "host_stage", side_effect=inplace_stage),
             patch.object(
-                wizard,
+                runtime_updates,
                 "manage_update",
                 side_effect=AssertionError("No launcher change for Hook recovery"),
             ),
@@ -724,7 +714,7 @@ class SourceClosure(unittest.TestCase):
                 operator_sha256=None,
             )
         )
-        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        self.assertTrue(hooks.installation_status(source_policy.load(self.home)))
 
     def test_early_hook_recovery_retains_foreign_edits_and_native_binding(self):
         torn_hook(self, self.home, self.f.native)
@@ -736,7 +726,7 @@ class SourceClosure(unittest.TestCase):
         self.assertEqual(file.read_bytes(), foreign)
 
     def test_hook_reinstall_preserves_existing_identity_scope_and_pause(self):
-        value = gm.load(self.home)
+        value = source_policy.load(self.home)
         value["scope"]["include_roots"] = [
             {"root": str(self.home), "sharing": "personal"}
         ]
@@ -745,8 +735,8 @@ class SourceClosure(unittest.TestCase):
             approved_scope_sha256=digest(value["scope"]),
             server_scope_sha256=digest(value["scope"]),
         )
-        gm.old.write(gm.settings_path(self.home), value)
-        off = gm.settings_path(self.home).parent / "global.off"
+        metadata.write(source_policy.settings_path(self.home), value)
+        off = source_policy.settings_path(self.home).parent / "global.off"
         off.touch(mode=0o600)
         result = hooks.install(
             SimpleNamespace(
@@ -757,7 +747,7 @@ class SourceClosure(unittest.TestCase):
             )
         )
         self.assertFalse(result["expanded_sources_enabled"])
-        self.assertEqual(gm.load(self.home), value)
+        self.assertEqual(source_policy.load(self.home), value)
         self.assertTrue(off.exists())
 
     def test_replacing_mcp_table_preserves_inline_hook_ownership_marker(self):

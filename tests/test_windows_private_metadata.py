@@ -6,8 +6,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-import brain_windows as windows
-import brain_lock as storage
+import agent_brain_client.adapters.platforms.windows.native as windows
+import agent_brain_client.adapters.platforms.filesystem as storage
+import agent_brain_client.adapters.platforms.windows.filesystem as native_files
 
 
 class PrivateMetadata(unittest.TestCase):
@@ -52,7 +53,7 @@ class PrivateMetadata(unittest.TestCase):
         with patch.object(
             Path, "stat", return_value=SimpleNamespace(st_mode=0o100600, st_nlink=0)
         ):
-            self.assertEqual(storage.windows_private(self.path, owner=True), self.path)
+            self.assertEqual(native_files.private_path(self.path, owner=True), self.path)
         self.kernel.CreateFileW.assert_called_once_with(
             str(self.path), 0x20080, 7, None, 3, 0x02200000, None
         )
@@ -71,33 +72,33 @@ class PrivateMetadata(unittest.TestCase):
                 self.info = dict(attributes=0, links=1)
                 self.info.update(info)
                 with self.assertRaisesRegex(ValueError, "Owned private"):
-                    storage.windows_private(self.path)
+                    native_files.private_path(self.path)
         self.assertEqual(self.kernel.CloseHandle.call_count, 4)
         self.api.GetSecurityInfo.assert_not_called()
 
     def test_owner_dacl_and_native_failures_fail_closed_and_close_handle(self):
         with patch.object(windows, "sid_text", return_value="other-owner"):
             with self.assertRaisesRegex(ValueError, "Owned private"):
-                storage.windows_private(self.path, owner=True)
+                native_files.private_path(self.path, owner=True)
         self.api.GetSecurityInfo.side_effect = None
         self.api.GetSecurityInfo.return_value = 5
         with self.assertRaisesRegex(ValueError, "DACL"):
-            storage.windows_private(self.path)
+            native_files.private_path(self.path)
         self.kernel.GetFileInformationByHandle.side_effect = None
         self.kernel.GetFileInformationByHandle.return_value = False
         with self.assertRaisesRegex(ValueError, "metadata"):
-            storage.windows_private(self.path)
+            native_files.private_path(self.path)
         self.assertEqual(self.kernel.CloseHandle.call_count, 3)
 
     def test_unopenable_item_and_non_disk_handle_are_rejected(self):
         self.kernel.CreateFileW.return_value = C.c_void_p(-1).value
         with self.assertRaisesRegex(ValueError, "metadata"):
-            storage.windows_private(self.path)
+            native_files.private_path(self.path)
         self.kernel.CloseHandle.assert_not_called()
         self.kernel.CreateFileW.return_value = 123
         self.kernel.GetFileType.return_value = 3
         with self.assertRaisesRegex(ValueError, "metadata"):
-            storage.windows_private(self.path)
+            native_files.private_path(self.path)
         self.kernel.CloseHandle.assert_called_once_with(123)
 
     def test_cache_metadata_does_not_require_security_descriptor_access(self):
@@ -162,9 +163,9 @@ class PrivateMetadata(unittest.TestCase):
         native = SimpleNamespace(open_osfhandle=Mock(return_value=5))
         with (
             patch.dict("sys.modules", {"msvcrt": native}),
-            patch.object(storage, "os", SimpleNamespace(O_RDWR=2, O_BINARY=0x8000)),
+            patch.object(native_files, "os", SimpleNamespace(O_RDWR=2, O_BINARY=0x8000)),
         ):
-            self.assertEqual(storage._windows_open_lock(self.path), 5)
+            self.assertEqual(native_files.open_lock(self.path), 5)
         args = self.kernel.CreateFileW.call_args.args
         self.assertEqual(args[:3], (str(self.path), 0xC0000000, 3))
         self.assertEqual(args[4:], (4, 0x00200080, None))
@@ -179,10 +180,10 @@ class PrivateMetadata(unittest.TestCase):
         with (
             patch.object(storage, "require_platform"),
             patch.object(storage, "private_directory"),
-            patch.object(storage, "_windows_open_lock", return_value=5),
+            patch.object(native_files, "open_lock", return_value=5),
             patch.object(
-                storage,
-                "_windows_private_handle",
+                native_files,
+                "private_handle",
                 side_effect=ValueError("unsafe owner"),
             ),
             patch.object(
@@ -203,10 +204,10 @@ class PrivateMetadata(unittest.TestCase):
         native = SimpleNamespace(open_osfhandle=Mock(return_value=5))
         with (
             patch.dict('sys.modules', {'msvcrt':native}),
-            patch.object(storage, 'os', SimpleNamespace(O_RDWR=2, O_BINARY=0x8000)),
+            patch.object(native_files, 'os', SimpleNamespace(O_RDWR=2, O_BINARY=0x8000)),
             patch.object(windows, 'user_sid', side_effect=AssertionError('No cache SID list')),
         ):
-            self.assertEqual(storage._windows_open_lock(self.path, cache=True), 5)
+            self.assertEqual(native_files.open_lock(self.path, cache=True), 5)
         self.assertIsNone(self.kernel.CreateFileW.call_args.args[3])
         self.kernel.LocalFree.assert_not_called()
 

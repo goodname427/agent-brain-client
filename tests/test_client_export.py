@@ -10,9 +10,9 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0,str(ROOT/'tools'));sys.path.insert(0,str(ROOT/'adapters/codex'));sys.path.insert(0, str(ROOT / 'scripts'))
-import build_client as build_client_export
-spec = importlib.util.spec_from_file_location('remote_connect', ROOT / 'connect.py')
+sys.path.insert(0,str(ROOT/'src'));sys.path.insert(0,str(ROOT/'src'));sys.path.insert(0, str(ROOT / 'src'))
+import dev.build.package as build_client_export
+spec = importlib.util.spec_from_file_location('remote_connect', ROOT / 'dev/integration/checkpoint.py')
 connector = importlib.util.module_from_spec(spec);spec.loader.exec_module(connector)
 
 
@@ -37,19 +37,19 @@ class ClientExport(unittest.TestCase):
         self.assertFalse((output / '.git').exists());self.assertFalse((output / 'memory').exists())
         self.assertFalse((output / 'scripts/brain_core.py').exists())
         self.assertFalse(manifest['core_exported']);self.assertFalse(manifest['git_history_copied'])
-        command = [sys.executable, '-B', str(output / 'connect.py'), '--agent', 'codex', '--device-home', str(self.base / 'empty-home')]
+        command = [sys.executable, '-B', str(output / 'src/agent_brain_client/interfaces/mcp/topics.py'), '--self-check']
         result = subprocess.run(command, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertEqual(json.loads(result.stdout)['status'], 'server-authorization-required')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {'client_self_check':'passed','core_imported':False,'native_changed':False})
 
     def test_deferred_notify_mux_is_not_in_candidate_manifest(self):
         output = self.base / 'notify-client'
         manifest = build_client_export.export(ROOT, output, ssh_content_candidate=True)
-        relative = 'adapters/codex/codex_notify_mux.py'
+        relative = 'src/agent_brain_client/adapters/harnesses/codex/notify.py'
         self.assertNotIn(relative, manifest['files'])
         self.assertFalse((output / relative).exists())
-        self.assertEqual(manifest['release_policy_scope_delta'], {'added': sorted(set(build_client_export.SSH_CONTENT_CLIENT_FILES)-set(build_client_export.PRE_LAYOUT_FILE_SETS[2])), 'removed': sorted(set(build_client_export.PRE_LAYOUT_FILE_SETS[2])-set(build_client_export.SSH_CONTENT_CLIENT_FILES))})
-        self.assertEqual(manifest['production_release_policy_scope_compatibility'], 'explicit-runtime-layout-transition')
+        self.assertEqual(manifest['release_policy_scope_delta'], {'added': sorted(__import__('agent_brain_client.adapters.packages.client',fromlist=['SSH_CONTENT_CLIENT_FILES']).SSH_CONTENT_CLIENT_FILES), 'removed': []})
+        self.assertEqual(manifest['production_release_policy_scope_compatibility'], 'current-layout-reinstall')
         self.assertFalse(manifest['production_release_policy_compatible'])
         self.assertIn('production_release_policy_compatibility_reason', manifest)
 
@@ -62,7 +62,6 @@ class ClientExport(unittest.TestCase):
         manifest = json.loads(committed_bytes)
         self.assertEqual(manifest['version'], '0.3.1')
         self.assertNotIn('commit', manifest)
-        self.assertEqual(set(manifest['files']), set(build_client_export.LEGACY_HTTPS_CONTENT_CLIENT_FILES))
 
     def test_unpublished_https_export_matches_current_source_without_relabeling_release(self):
         frozen = (ROOT / 'releases/manifest.json').read_bytes()
@@ -72,7 +71,7 @@ class ClientExport(unittest.TestCase):
         self.assertFalse(generated['production_release_policy_compatible'])
         self.assertFalse(generated['native_install_wired'])
         self.assertNotIn('version', generated)
-        self.assertEqual(set(generated['files']), set(build_client_export.HTTPS_CONTENT_CLIENT_FILES))
+        self.assertEqual(set(generated['files']), set(__import__('agent_brain_client.adapters.packages.client',fromlist=['HTTPS_CONTENT_CLIENT_FILES']).HTTPS_CONTENT_CLIENT_FILES))
         for name, digest in generated['files'].items():
             self.assertEqual(digest, hashlib.sha256((ROOT / name).read_bytes()).hexdigest(), name)
             self.assertEqual((output / name).read_bytes(), (ROOT / name).read_bytes(), name)

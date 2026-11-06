@@ -3,9 +3,11 @@ import copy
 import tempfile
 from pathlib import Path
 import unittest
-import brain_content as contract
-from content_cache import ContentAdapter,CacheBlocked,validate_policy
-from https_content import grant_check
+import agent_brain_client.domain.contract as contract
+from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.domain.errors import CacheBlocked
+from agent_brain_client.domain.content_policy import validate_policy
+from agent_brain_client.adapters.server.https import grant_check
 from test_https_content import GRANT
 
 class OwnerScope(unittest.TestCase):
@@ -26,10 +28,10 @@ class OwnerScope(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             home=Path(directory).resolve()/'home';home.mkdir(mode=0o700)
             client=type('Client',(),{'grant':self.grant})()
-            adapter=ContentAdapter(home,Path(directory)/'cache',self.policy,client,codex_home=home/'codex')
-            self.assertEqual(adapter._path('.agents/skills/future-skill/SKILL.md'),home/'.agents/skills/future-skill/SKILL.md')
+            adapter=CodexContentSession(home,Path(directory)/'cache',self.policy,client,codex_home=home/'codex')
+            self.assertEqual(adapter.mapping._path('.agents/skills/future-skill/SKILL.md'),home/'.agents/skills/future-skill/SKILL.md')
             for name in ('.agents/skills/future-skill/../outside','other/file','.config/agent-brain-client/content/rule/../outside.md'):
-                with self.assertRaises((CacheBlocked,ValueError)):adapter._path(name)
+                with self.assertRaises((CacheBlocked,ValueError)):adapter.mapping._path(name)
             foreign=home/'.agents/skills/future-skill';foreign.mkdir(parents=True);(foreign/'SKILL.md').write_text('Foreign file')
             snapshot={'records':[contract.envelope('skill','future-skill',{'description':'Future','enabled':True,'files':{'SKILL.md':'---\nname: future-skill\ndescription: Future\n---\nApproved.'},'dependencies':{'commands':[],'python_modules':[]}})]}
             adapter._fetch=lambda:snapshot

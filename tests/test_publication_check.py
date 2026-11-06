@@ -3,8 +3,8 @@ from pathlib import Path
 import sys
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
-from publication_check import findings, require_publishable
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
+from agent_brain_client.adapters.packages.publication import findings, require_publishable
 
 
 class PublicationCheck(unittest.TestCase):

@@ -8,9 +8,11 @@ import unittest
 from unittest.mock import MagicMock
 from urllib.error import HTTPError, URLError
 
-import brain_content as contract
-from content_mcp import ContentServer, ContentParameterError, serve
-from brain_http import RemoteClient
+import agent_brain_client.domain.contract as contract
+from agent_brain_client.interfaces.mcp.content import ContentServer
+from agent_brain_client.interfaces.mcp.framing import ContentParameterError
+from agent_brain_client.interfaces.mcp.server import serve
+from agent_brain_client.adapters.server.http import RemoteClient
 
 
 class Adapter:
@@ -39,21 +41,21 @@ class ContentErrors(unittest.TestCase):
         self.server = ContentServer(self.adapter, "0.2.11")
         self.server.state = "ready"
 
-    def test_catalog_limit_rejects_locally_and_full_inventory_is_unbounded(self):
+    def test_query_limit_rejects_locally_and_full_inventory_has_no_retrieval_alias(self):
         for limit in (True, "many", 1.5):
             with self.assertRaises(ContentParameterError) as error:
                 self.server.invoke(
-                    "content_catalog", {"kinds": ["memory"], "limit": limit}
+                    "memory_query", {"query":"Synthetic query", "limit": limit}
                 )
             self.assertEqual(error.exception.code, -32602)
             self.assertIn("integer limit", error.exception.message)
             self.assertNotIn("Writes", error.exception.message)
         self.assertEqual(self.adapter.calls, [])
         for limit in (100, 4):
-            self.server.invoke("content_catalog", {"kinds": ["memory"], "limit": limit})
+            self.server.invoke("memory_query", {"query":"Synthetic query", "limit": limit})
             self.assertEqual(self.adapter.calls[-1]["params"]["limit"], limit)
         with self.assertRaises(ContentParameterError):
-            self.server.invoke("content_catalog", {"kinds":["memory"],"limit":0})
+            self.server.invoke("memory_query", {"query":"Synthetic query", "limit":0})
         self.adapter.calls.clear()
         result = self.server.invoke("content_catalog", {"kinds": ["memory"]})
         self.assertEqual(len(result["structuredContent"]["result"]["artifacts"]), 23)
@@ -62,8 +64,9 @@ class ContentErrors(unittest.TestCase):
             result["structuredContent"]["client_runtime"]["running_worker_version"],
             "0.2.11",
         )
-        self.server.invoke("content_catalog", {"kinds": ["memory"], "limit": 3})
-        self.assertEqual(self.adapter.calls[-1]["method"], "memory_query")
+        with self.assertRaises(ContentParameterError):
+            self.server.invoke("content_catalog", {"kinds":["memory"], "limit":3})
+        self.assertEqual(len(self.adapter.calls), 1)
 
     def test_skill_dependency_schema_matches_shared_validator_limit(self):
         tools=self.server.handle({'jsonrpc':'2.0','id':1,'method':'tools/list'})['tools']

@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import release_client as rc
+import dev.release.client as rc
 
 
 def fixture():
@@ -94,9 +94,11 @@ class ReleasePipeline(unittest.TestCase):
         real_run = subprocess.run
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / 'source'
-            installer = root / 'installer'
+            installer = root / 'src/agent_brain_client/interfaces/cli'
             installer.mkdir(parents=True)
-            for name in ('access_install', 'bootstrap_main'):
+            (root / 'bootstrap').mkdir()
+            (root / 'bootstrap/source_checkout.py').write_text('FROM_BOOTSTRAP = True\n')
+            for name in ('access',):
                 (installer / (name + '.py')).write_text('FROM_INSTALLER = True\n')
             output = Path(tmp) / 'checks'
             output.mkdir()
@@ -105,8 +107,8 @@ class ReleasePipeline(unittest.TestCase):
                 if command[1:] == ['-B', '-m', 'unittest', 'discover', '-s', 'tests']:
                     code = ('import os, sys; '
                             'sys.path[:0] = os.environ["PYTHONPATH"].split(os.pathsep); '
-                            'import access_install, bootstrap_main; '
-                            'assert access_install.FROM_INSTALLER and bootstrap_main.FROM_INSTALLER')
+                            'import agent_brain_client.interfaces.cli.access as access_install; import bootstrap.source_checkout as bootstrap_main; '
+                            'assert access_install.FROM_INSTALLER and bootstrap_main.FROM_BOOTSTRAP')
                     return real_run([command[0], '-I', '-B', '-c', code], **kwargs)
                 return subprocess.CompletedProcess(command, 0)
 
@@ -125,12 +127,12 @@ class ReleasePipeline(unittest.TestCase):
     def test_scope_credential_and_contract_changes_are_blocked(self):
         before = {'schema': 1, 'channel': 'stable', 'core_api': 1, 'state_schema': 1,
                   'python_min': '3.11', 'capabilities': ['fixture'], 'migrations': [],
-                  'files': {'scripts/brain_windows.py': 'a' * 64, 'fixture.py': 'b' * 64}}
+                  'files': {'src/agent_brain_client/adapters/platforms/windows/native.py': 'a' * 64, 'fixture.py': 'b' * 64}}
         changed = copy.deepcopy(before)
         changed['files']['fixture.py'] = 'c' * 64
         rc.compatible(before, changed)
         for mutate in (lambda m: m['files'].update({'new.py': 'd' * 64}),
-                       lambda m: m['files'].update({'scripts/brain_windows.py': 'e' * 64}),
+                       lambda m: m['files'].update({'src/agent_brain_client/adapters/platforms/windows/native.py': 'e' * 64}),
                        lambda m: m['capabilities'].append('expanded'),
                        lambda m: m['migrations'].append({'id': 'unreviewed'})):
             changed = copy.deepcopy(before)
@@ -501,13 +503,13 @@ class PlatformRelease(unittest.TestCase):
     def test_mac_credential_source_pin_is_checked_independently(self):
         before = {'schema': 1, 'channel': 'stable', 'core_api': 1, 'state_schema': 1,
                   'python_min': '3.11', 'capabilities': ['fixture'], 'migrations': [],
-                  'files': {'native/CredentialStore.swift': 'a' * 64, 'fixture.py': 'b' * 64}}
+                  'files': {'src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift': 'a' * 64, 'fixture.py': 'b' * 64}}
         after = copy.deepcopy(before)
         after['files']['fixture.py'] = 'c' * 64
-        rc.compatible(before, after, 'native/CredentialStore.swift')
-        after['files']['native/CredentialStore.swift'] = 'd' * 64
+        rc.compatible(before, after, 'src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift')
+        after['files']['src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift'] = 'd' * 64
         with self.assertRaises(ValueError):
-            rc.compatible(before, after, 'native/CredentialStore.swift')
+            rc.compatible(before, after, 'src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift')
 
     def test_real_runtime_commit_preserves_both_existing_mac_histories(self):
         with tempfile.TemporaryDirectory() as tmp:

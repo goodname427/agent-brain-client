@@ -1,3 +1,5 @@
+import agent_brain_client.adapters.storage.collection as source_policy
+import agent_brain_client.adapters.storage.metadata as metadata
 """Synthetic acceptance regressions; no real credentials, sources or network."""
 import copy
 import json
@@ -7,11 +9,11 @@ import unicodedata
 from unittest.mock import Mock, patch
 
 import test_content_outbox as fixture
-from content_mcp import ContentServer, ProtocolError
-from https_content import HTTPSContentClient
-import global_memory as gm
-import global_memory_install as install
-from global_memory_scope import digest, namespace, source_context
+from agent_brain_client.interfaces.mcp.content import ContentServer, ProtocolError
+from agent_brain_client.adapters.server.https import HTTPSContentClient
+import agent_brain_client.runtime.collection as gm
+import agent_brain_client.adapters.harnesses.codex.collection_installation as install
+from agent_brain_client.domain.scopes import digest, namespace, source_context
 
 
 class WindowsAcceptanceRepairs(unittest.TestCase):
@@ -92,7 +94,7 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
         self.assertEqual(result['error']['code'], 'global_source_device_denied')
         self.assertEqual(result['source_admission']['status'], 'device-source-approval-required')
         self.assertEqual([r['method'] for r in calls], ['memory_query'])
-        self.assertFalse(gm.settings_path(self.fixture.home).exists())
+        self.assertFalse(source_policy.settings_path(self.fixture.home).exists())
 
     def test_forged_proof_raw_events_wrong_scope_and_excess_results_fail_closed(self):
         changes = [lambda r:r['L3']['provenance']['sources'][0]['identity'].update(device_id=self.device),
@@ -134,23 +136,23 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
 
     def test_empty_never_approved_install_can_explicitly_select_existing_pool(self):
         home = self.fixture.home
-        file = gm.settings_path(home)
+        file = source_policy.settings_path(home)
         value = {'schema':1,'enabled':False,'device_home':str(home),
                  'scope':{'schema':1,'profile_id':'a'*32,'include_roots':[],'exclude_roots':[],'non_project_roots':[],'recall_personal':True},
                  'approved_scope_sha256':None,'server_scope_sha256':None,'legacy_projects':[],
                  'operator':None,'operator_sha256':None,'code_sha256':{}}
-        from brain_lock import private_directory
+        from agent_brain_client.adapters.platforms.filesystem import private_directory
         private_directory(file.parent)
-        gm.old.write(file, value)
+        metadata.write(file, value)
         args = SimpleNamespace(device_home=str(home), profile_id='b'*32, operator=None, operator_sha256=None)
-        with patch.object(gm.old, 'registration', return_value=(None, {'runtime':{'codex_home':str(home)}})), patch.object(install, 'transact', return_value={}):
+        with patch('agent_brain_client.adapters.storage.registration.registration', return_value=(None, {'runtime':{'codex_home':str(home)}})), patch.object(install, 'transact', return_value={}):
             result = install.install(args)
             self.assertFalse(result['expanded_sources_enabled'])
             stored = json.loads(file.read_bytes()); self.assertEqual(stored['scope']['profile_id'], 'b'*32)
             self.assertIsNone(stored['approved_scope_sha256'])
-            stored['approved_scope_sha256'] = digest(stored['scope']); gm.old.write(file, stored)
+            stored['approved_scope_sha256'] = digest(stored['scope']); metadata.write(file, stored)
             install.install(SimpleNamespace(**dict(vars(args), profile_id='c'*32)))
-            stored = gm.old.private_json(file)
+            stored = metadata.private_json(file)
             self.assertEqual(stored['scope']['profile_id'], 'c'*32)
             self.assertEqual(stored['approved_scope_sha256'], digest(stored['scope']))
 
@@ -158,48 +160,48 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
         value = {'device_home':str(self.fixture.home),'enabled':False,
                  'scope':{'schema':1,'profile_id':'a'*32,'include_roots':[],'exclude_roots':[],'non_project_roots':[],'recall_personal':True},
                  'approved_scope_sha256':None,'server_scope_sha256':None}
-        with patch.object(gm, 'GlobalClient', side_effect=AssertionError('No credentials')):
-            result = gm.admission_state(value)
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient', side_effect=AssertionError('No credentials')):
+            result = source_policy.admission_state(value)
         self.assertEqual(result['reasons'], ['capture-disabled','source-scope-empty','local-source-approval-required','server-source-approval-unconfirmed'])
         self.assertFalse(result['permissions_changed']); self.assertFalse(result['historical_import'])
 
     def test_approved_configuration_uses_https_and_keeps_fence_when_unconfirmed(self):
-        import global_memory_operator as operator
-        from brain_lock import private_directory
-        directory = gm.settings_path(self.fixture.home).parent
+        import agent_brain_client.runtime.source_enrollment as operator
+        from agent_brain_client.adapters.platforms.filesystem import private_directory
+        directory = source_policy.settings_path(self.fixture.home).parent
         private_directory(directory)
         scope = {'schema':1,'profile_id':'c'*32,'include_roots':[{'root':str(self.fixture.home),'sharing':'personal'}],
                  'exclude_roots':[],'non_project_roots':[],'recall_personal':True}
         value = {'device_home':str(self.fixture.home),'scope':scope,'enabled':False,'legacy_projects':[],
                  'approved_scope_sha256':None,'server_scope_sha256':None,'operator':None}
         profile = directory / 'synthetic-profile.json'
-        gm.old.write(profile, {'endpoint':'https://synthetic.invalid','grant':{'actor':'synthetic-owner','scopes':['read','put']}})
-        runtime = {'https_profile':str(profile),'https_profile_sha256':gm.old.digest(profile.read_bytes()),'content_policy_sha256':digest('policy')}
+        metadata.write(profile, {'endpoint':'https://synthetic.invalid','grant':{'actor':'synthetic-owner','scopes':['read','put']}})
+        runtime = {'https_profile':str(profile),'https_profile_sha256':metadata.digest(profile.read_bytes()),'content_policy_sha256':digest('policy')}
         args = SimpleNamespace(device_home=str(self.fixture.home), include_root=[], isolate_root=[], exclude_root=[],
                                non_project_root=[], approve_scope=digest(scope), packet_output=None, activate_packet=None)
         client = SimpleNamespace(device_id=self.device, wire=Mock(side_effect=[
             {'result':{'metadata_only':True,'source_registered':False,'source_device_id':self.device,'global_profile_id':scope['profile_id']}},
             {'error':{'code':'transport_unconfirmed','retryable':True}}]))
-        with patch.object(gm, 'load', return_value=value), patch.object(gm.old, 'registration', return_value=(None, {'runtime':runtime})), patch.object(gm, 'GlobalClient', return_value=client), patch.object(operator, 'operator', side_effect=AssertionError('No SSH operation')):
+        with patch('agent_brain_client.adapters.storage.collection.load', return_value=value), patch('agent_brain_client.adapters.storage.registration.registration', return_value=(None, {'runtime':runtime})), patch('agent_brain_client.adapters.server.collection.CollectionClient', return_value=client), patch.object(operator, 'operator', side_effect=AssertionError('No SSH operation')):
             result = operator.configure(args)
         self.assertEqual(result['status'], 'global-memory-registration-pending')
-        packet = gm.old.private_json(result['packet'])
+        packet = metadata.private_json(result['packet'])
         self.assertEqual(packet['schema'], 2); self.assertEqual(packet['scope'], dict(scope, all_projects=True))
         self.assertEqual(packet['client']['source_device_id'], self.device)
         self.assertEqual(client.wire.call_args.args, ('memory_global_register',packet,'source_'+digest(packet)))
         self.assertFalse((directory / 'global.off').exists())
-        self.assertFalse(gm.settings_path(self.fixture.home).exists())
+        self.assertFalse(source_policy.settings_path(self.fixture.home).exists())
 
     def test_failed_activation_reports_exact_denial_without_enabling(self):
-        import global_memory_operator as operator
+        import agent_brain_client.runtime.source_enrollment as operator
         value = {'device_home':str(self.fixture.home),'enabled':False}
         scope = {'schema':1,'profile_id':'c'*32,'include_roots':[{'root':str(self.fixture.home),'sharing':'personal'}],
                  'exclude_roots':[],'non_project_roots':[],'recall_personal':True}
         error = {'code':'global_source_device_denied','retryable':False}
         client = SimpleNamespace(device_id=self.device, wire=lambda *args: {'error':error})
-        with patch.object(gm, 'GlobalClient', return_value=client): result = operator.activate(value, scope)
+        with patch('agent_brain_client.adapters.server.collection.CollectionClient', return_value=client): result = operator.activate(value, scope)
         self.assertFalse(result['activated']); self.assertEqual(result['server_error'], error)
-        self.assertFalse(value['enabled']); self.assertFalse(gm.settings_path(self.fixture.home).exists())
+        self.assertFalse(value['enabled']); self.assertFalse(source_policy.settings_path(self.fixture.home).exists())
 
 
 if __name__ == '__main__': unittest.main()

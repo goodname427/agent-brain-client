@@ -7,8 +7,8 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-import bootstrap_main
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+import bootstrap.source_checkout as bootstrap_main
 
 
 class FreshMainCheckout(unittest.TestCase):
@@ -19,18 +19,18 @@ class FreshMainCheckout(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         if os.name == 'nt':
-            from brain_windows import protect_new
+            from agent_brain_client.adapters.platforms.windows.native import protect_new
             protect_new(self.root, directory=True)
         self.home = self.root / 'home'
         self.home.mkdir()
         self.base = self.root / 'private-checkouts'
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-        from brain_lock import private_directory
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+        from agent_brain_client.adapters.platforms.filesystem import private_directory
         private_directory(self.base)
         self.old = self.root / 'old-checkout'
         self.old.mkdir()
-        (self.old / 'tools').mkdir()
-        self.old_script = self.old / 'tools/install-mac.sh'
+        (self.old / 'bootstrap/macos').mkdir(parents=True)
+        self.old_script = self.old / 'bootstrap/macos/install.sh'
         self.old_script.write_text('# user-modified old installer\n')
 
     def fake_git(self, args, **kwargs):
@@ -38,8 +38,8 @@ class FreshMainCheckout(unittest.TestCase):
         if args[:1] == ['git'] and 'clone' in args:
             checkout = Path(args[-1])
             (checkout / '.git').mkdir()
-            (checkout / 'tools').mkdir()
-            (checkout / 'tools/install-mac.sh').write_text('# official main installer\n')
+            (checkout / 'bootstrap/macos').mkdir(parents=True)
+            (checkout / 'bootstrap/macos/install.sh').write_text('# official main installer\n')
             return subprocess.CompletedProcess(args, 0, '', '')
         if 'rev-parse' in args:
             return subprocess.CompletedProcess(args, 0, self.commit + '\n', '')
@@ -54,7 +54,7 @@ class FreshMainCheckout(unittest.TestCase):
         if 'ls-tree' in args:
             checkout = Path(args[args.index('-C') + 1])
             records = []
-            for item in (checkout / 'tools').iterdir():
+            for item in (checkout / 'bootstrap/macos').iterdir():
                 raw = item.read_bytes()
                 oid = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
                 records.append('100644 blob ' + oid + '\t' + item.relative_to(checkout).as_posix() + '\0')
@@ -71,17 +71,17 @@ class FreshMainCheckout(unittest.TestCase):
         def git(*args):
             return subprocess.run(['git', '-C', str(source), *args], env=env, check=True, capture_output=True)
         git('init')
-        (source / 'runtime.py').write_bytes(b'print("synthetic")\n')
+        (source / 'agent_brain_client.adapters.harnesses.codebuddy.events.py').write_bytes(b'print("synthetic")\n')
         (source / '.gitattributes').write_bytes(b'* text=auto eol=lf\n')
-        git('add', '.gitattributes', 'runtime.py')
+        git('add', '.gitattributes', 'agent_brain_client.adapters.harnesses.codebuddy.events.py')
         git('commit', '-m', 'Synthetic exact-byte fixture')
         clone = self.root / 'autocrlf-checkout'
         subprocess.run(['git', '-c', 'core.autocrlf=true', 'clone', str(source), str(clone)], env=env, check=True, capture_output=True)
-        self.assertEqual((clone / 'runtime.py').read_bytes(), b'print("synthetic")\n')
+        self.assertEqual((clone / 'agent_brain_client.adapters.harnesses.codebuddy.events.py').read_bytes(), b'print("synthetic")\n')
         self.assertTrue(bootstrap_main.checkout_bytes(clone, runner=subprocess.run, git='git', env=env))
-        (clone / 'runtime.py').write_bytes(b'print("synthetic")\r\n')
+        (clone / 'agent_brain_client.adapters.harnesses.codebuddy.events.py').write_bytes(b'print("synthetic")\r\n')
         self.assertFalse(bootstrap_main.checkout_bytes(clone, runner=subprocess.run, git='git', env=env))
-        (clone / 'runtime.py').write_bytes(b'print("altered")\n')
+        (clone / 'agent_brain_client.adapters.harnesses.codebuddy.events.py').write_bytes(b'print("altered")\n')
         self.assertFalse(bootstrap_main.checkout_bytes(clone, runner=subprocess.run, git='git', env=env))
 
     def test_only_install_entries_bootstrap_fresh_main(self):
@@ -124,7 +124,7 @@ class FreshMainCheckout(unittest.TestCase):
         )
         self.assertNotEqual(checkout, self.old.resolve())
         self.assertEqual(self.old_script.read_text(), '# user-modified old installer\n')
-        self.assertEqual((checkout / 'tools/install-mac.sh').read_text(), '# official main installer\n')
+        self.assertEqual((checkout / 'bootstrap/macos/install.sh').read_text(), '# official main installer\n')
         self.assertEqual((checkout / '.git/agent-brain-source-sha').read_text().strip(), self.commit)
         self.assertEqual((checkout / '.git/agent-brain-bootstrap-once').read_text().strip(), self.commit)
 
@@ -151,7 +151,7 @@ class FreshMainCheckout(unittest.TestCase):
             first, home=self.home, base=self.base, runner=self.fake_git
         )
         self.assertNotEqual(second, first.resolve())
-        self.assertTrue((first / 'tools/install-mac.sh').exists())
+        self.assertTrue((first / 'bootstrap/macos/install.sh').exists())
 
 
 if __name__ == '__main__':

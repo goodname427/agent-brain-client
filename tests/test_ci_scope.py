@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import ci_scope as ci
+import dev.checks.scope as ci
 
 
 class Classification(unittest.TestCase):
@@ -22,16 +22,16 @@ class Classification(unittest.TestCase):
 
     def test_docs_platform_shared_and_mixed(self):
         cases = [(['README.md', 'docs/installation/windows.md'], False, False),
-                 (['native/CredentialStore.swift'], True, False),
-                 (['tools/install-mac.sh', 'docs/README.md'], True, False),
-                 (['tools/install-windows.ps1'], False, True),
-                 (['installer/access_windows.py', 'tests/test_windows_native.py'], False, True),
-                 (['installer/first_install.py'], True, True),
-                 (['installer/windows_install_complete.py'], True, True),
-                 (['scripts/brain_lock.py'], True, True),
-                 (['scripts/brain_content.py'], True, True),
-                 (['tests/fixtures/windows_platform_050/brain_lock.py.fixture'], True, True),
-                 (['tools/install-mac.sh', 'tools/install-windows.ps1'], True, True),
+                 (['src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift'], True, False),
+                 (['bootstrap/macos/install.sh', 'docs/README.md'], True, False),
+                 (['bootstrap/windows/install.ps1'], False, True),
+                 (['src/agent_brain_client/adapters/platforms/windows/access.py', 'tests/test_windows_native.py'], False, True),
+                 (['src/agent_brain_client/interfaces/cli/install.py'], True, True),
+                 (['src/agent_brain_client/runtime/installation_completion.py'], True, True),
+                 (['src/agent_brain_client/adapters/platforms/filesystem.py'], True, True),
+                 (['src/agent_brain_client/domain/content.py'], True, True),
+                 (['tests/fixtures/synthetic-platform.py.fixture'], True, True),
+                 (['bootstrap/macos/install.sh', 'bootstrap/windows/install.ps1'], True, True),
                  (['docs/README.md', 'connect.py'], True, True)]
         for paths, mac, windows in cases:
             with self.subTest(paths=paths):
@@ -39,8 +39,8 @@ class Classification(unittest.TestCase):
 
     def test_unknown_dependencies_workflows_and_fixed_data_are_full(self):
         for path in ('.github/workflows/client-checks.yml', '.github/workflows/client-release.yml',
-                     'tools/build_client.py',
-                     'tools/release_client.py', 'requirements.txt', 'pyproject.toml',
+                     'dev/build/package.py',
+                     'dev/release/client.py', 'requirements.txt', 'pyproject.toml',
                      'releases/manifest.json', 'FREEZE-0.5.json', '.gitattributes',
                      'docs/connection.example.json', 'docs/new.py', 'new/file',
                      'tests/README.md', '../README.md', '/README.md'):
@@ -62,7 +62,7 @@ class Classification(unittest.TestCase):
 
 class FocusedTests(unittest.TestCase):
     def test_parallel_worker_isolates_homes_and_preserves_failure(self):
-        import run_ci_tests
+        import dev.checks.tests as run_ci_tests
         result = subprocess.CompletedProcess([], 7, 'synthetic failure')
         with patch.object(run_ci_tests.subprocess, 'run', return_value=result) as run:
             code, log, _ = run_ci_tests.run_group(['test_synthetic'])
@@ -93,7 +93,7 @@ class FocusedTests(unittest.TestCase):
         self.assertIn('test_mac_first_install', plan['tests'])
         self.assertTrue(ci.classify(['tests/fixtures/checkpoint_probe.py'])['full'])
         self.assertTrue(ci.classify(['tests/test_missing.py'])['full'])
-        self.assertTrue(ci.classify(['tests/test_mac_first_install.py', 'scripts/brain_lock.py'])['full'])
+        self.assertTrue(ci.classify(['tests/test_mac_first_install.py', 'src/agent_brain_client/adapters/platforms/filesystem.py'])['full'])
 
     def test_windows_contract_test_edits_keep_both_native_versions(self):
         plan = ci.classify(['tests/test_windows_native.py'])
@@ -101,13 +101,13 @@ class FocusedTests(unittest.TestCase):
         self.assertFalse(plan['full'])
 
     def test_ci_only_does_not_start_native_jobs(self):
-        plan = ci.classify(['tools/ci_scope.py', 'tests/test_ci_scope.py', 'README.md'])
+        plan = ci.classify(['dev/checks/scope.py', 'tests/test_ci_scope.py', 'README.md'])
         self.assertTrue(plan['code'])
         self.assertFalse(plan['mac'] or plan['windows'] or plan['full'])
 
     def test_test_runner_rejects_shell_fragments_and_failed_tests(self):
         env = dict(os.environ, CI_TESTS='["test_dummy; echo injected"]')
-        result = subprocess.run([sys.executable, '-B', str(ci.ROOT / 'tools/run_ci_tests.py')],
+        result = subprocess.run([sys.executable, '-B', str(ci.ROOT / 'dev/checks/tests.py')],
                                 env=env, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
 
@@ -122,8 +122,8 @@ class GitHistory(unittest.TestCase):
         self.git('config', 'user.email', 'ci@example.invalid')
         self.write('README.md', 'Synthetic documentation.\n')
         self.write('docs/page.md', 'Synthetic documentation page.\n')
-        self.write('tools/install-windows.ps1', '# Synthetic Windows\n')
-        self.write('native/CredentialStore.swift', '// Synthetic Mac\n')
+        self.write('bootstrap/windows/install.ps1', '# Synthetic Windows\n')
+        self.write('src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift', '// Synthetic Mac\n')
         self.base = self.commit()
 
     def git(self, *args):
@@ -149,15 +149,15 @@ class GitHistory(unittest.TestCase):
         self.write('docs/space and\nnewline.md', 'Synthetic link fixture\n')
         self.commit()
         self.assertFalse(self.push()['code'])
-        (self.root / 'tools/install-windows.ps1').unlink()
+        (self.root / 'bootstrap/windows/install.ps1').unlink()
         self.commit()
         self.assertEqual((self.push()['mac'], self.push()['windows']), (False, True))
 
     def test_renames_include_both_names_even_code_to_markdown(self):
         for old, new, expected in (
             ('docs/page.md', 'docs/renamed.md', (False, False)),
-            ('tools/install-windows.ps1', 'docs/windows.md', (False, True)),
-            ('native/CredentialStore.swift', 'tools/install-windows.ps1', (True, True)),
+            ('bootstrap/windows/install.ps1', 'docs/windows.md', (False, True)),
+            ('src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift', 'bootstrap/windows/install.ps1', (True, True)),
         ):
             with self.subTest(old=old, new=new):
                 self.git('reset', '--hard', self.base)
@@ -189,12 +189,12 @@ class GitHistory(unittest.TestCase):
 
     def test_pr_uses_merge_base_not_only_last_commit_or_updated_base(self):
         self.git('checkout', '-qb', 'synthetic-pr')
-        self.write('tools/install-windows.ps1', '# Changed Windows\n')
+        self.write('bootstrap/windows/install.ps1', '# Changed Windows\n')
         self.commit()
         self.write('README.md', 'Changed punctuation!\n')
         head = self.commit()
         self.git('checkout', '--detach', self.base)
-        self.write('native/CredentialStore.swift', '// Updated base\n')
+        self.write('src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift', '// Updated base\n')
         base = self.commit()
         plan = ci.plan_event('pull_request', {'pull_request': {'base': {'sha': base},
                                                               'head': {'sha': head}}}, self.root)
@@ -210,7 +210,7 @@ class GitHistory(unittest.TestCase):
         self.assertTrue(self.push()['full'])
         self.git('reset', '--hard', self.base)
         (self.root / 'README.md').unlink()
-        (self.root / 'README.md').symlink_to('tools/install-windows.ps1')
+        (self.root / 'README.md').symlink_to('bootstrap/windows/install.ps1')
         self.commit()
         self.assertTrue(self.push()['full'])
 
@@ -256,7 +256,7 @@ class Results(unittest.TestCase):
                        GITHUB_EVENT_PATH=str(event), GITHUB_OUTPUT=str(output),
                        GITHUB_STEP_SUMMARY=str(summary), CI_NEEDS=json.dumps(self.needs()))
             for args in ([], ['verify']):
-                subprocess.run([sys.executable, '-B', str(ci.ROOT / 'tools/ci_scope.py'), *args],
+                subprocess.run([sys.executable, '-B', str(ci.ROOT / 'dev/checks/scope.py'), *args],
                                env=env, capture_output=True, check=True)
             self.assertIn('full=true', output.read_text())
             self.assertIn('false means not validated', summary.read_text())
@@ -278,7 +278,7 @@ class WorkflowContract(unittest.TestCase):
         required = jobs['required']
         self.assertIn('    if: always()\n', required)
         self.assertIn('needs: [changes, documentation, source-checks, isolated-client, windows-contracts]', required)
-        self.assertIn('run: python -B tools/ci_scope.py verify', required)
+        self.assertIn('run: python -B dev/checks/scope.py verify', required)
         self.assertIn('    needs: [changes, required]\n', jobs['full-validation'])
         self.assertIn("    if: needs.changes.outputs.full == 'true'\n", jobs['full-validation'])
         self.assertNotIn('\n    if:', jobs['documentation'])
@@ -294,7 +294,7 @@ class WorkflowContract(unittest.TestCase):
                 names.update(name + ' (' + version + ')' for version in ast.literal_eval(versions[1]))
             else:
                 names.add(name)
-        release = ast.parse((ci.ROOT / 'tools/release_client.py').read_text())
+        release = ast.parse((ci.ROOT / 'dev/release/client.py').read_text())
         contract = next(node.value for node in release.body if isinstance(node, ast.Assign)
                         and any(isinstance(target, ast.Name) and target.id == 'FULL_CI_JOBS'
                                 for target in node.targets))

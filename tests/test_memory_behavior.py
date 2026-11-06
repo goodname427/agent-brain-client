@@ -1,3 +1,5 @@
+from agent_brain_client.application.memory import guidance
+from agent_brain_client.application.memory.guidance import HOST_GUIDANCE
 """Behavior policy cases use annotated synthetic evidence, no model/session reads."""
 
 import copy
@@ -9,9 +11,11 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "adapters/codex"))
-from brain_content import MEMORY_GUIDANCE, ONBOARD_COVERAGE_GUIDANCE, installation_follow_up, review_memory_sources
-import content_mcp
+sys.path.insert(0, str(ROOT / "src"))
+from agent_brain_client.application.memory.guidance import MEMORY_GUIDANCE
+from agent_brain_client.application.installation.follow_up import ONBOARD_COVERAGE_GUIDANCE, installation_follow_up
+from agent_brain_client.domain.sources import review_memory_sources
+import agent_brain_client.interfaces.mcp.content as content_mcp
 
 
 class MemoryBehavior(unittest.TestCase):
@@ -44,7 +48,7 @@ class MemoryBehavior(unittest.TestCase):
 
 
     def review_cli(self, sources, rows):
-        result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'tools/memory_review.py')],
+        result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'src/agent_brain_client/interfaces/cli/sources.py')],
                                 input=json.dumps({'mode': 'onboard', 'sources': sources, 'candidates': rows}),
                                 capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -295,7 +299,7 @@ class MemoryBehavior(unittest.TestCase):
 
     def test_actual_startup_and_owned_mapping_include_behavior_policy(self):
         import test_content_outbox as fixtures
-        from content_mcp import ContentServer
+        from agent_brain_client.interfaces.mcp.content import ContentServer
 
         fixture = fixtures.Outbox(
             "test_write_saved_and_fsynced_before_network_and_restart_reconnect"
@@ -316,12 +320,12 @@ class MemoryBehavior(unittest.TestCase):
             }
         )
         self.assertIn(MEMORY_GUIDANCE, reply["instructions"])
-        self.assertIn(content_mcp.contract.HOST_GUIDANCE, (fixture.home / ".codex/AGENTS.md").read_text())
+        self.assertIn(guidance.HOST_GUIDANCE, (fixture.home / ".codex/AGENTS.md").read_text())
 
     def test_tool_only_reports_metadata_and_guidance_has_no_three_item_import_cap(self):
         sources, rows = self.material()
         result = subprocess.run(
-            [sys.executable, "-I", "-B", str(ROOT / "tools/memory_review.py")],
+            [sys.executable, "-I", "-B", str(ROOT / "src/agent_brain_client/interfaces/cli/sources.py")],
             input=json.dumps(
                 {"mode": "onboard", "sources": sources, "candidates": rows}
             ),

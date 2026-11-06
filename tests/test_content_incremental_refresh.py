@@ -5,8 +5,8 @@ import unittest
 from unittest.mock import patch
 
 import test_content_outbox as fixture
-from content_cache import ContentAdapter
-import brain_content as contract
+from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+import agent_brain_client.domain.contract as contract
 
 
 class IncrementalRefresh(unittest.TestCase):
@@ -19,7 +19,7 @@ class IncrementalRefresh(unittest.TestCase):
         self.f.cloud.calls.clear()
 
     def restart(self):
-        return ContentAdapter(self.f.home,self.f.cache,fixture.POLICY,self.f.cloud,codex_home=self.f.home/'.codex')
+        return CodexContentSession(self.f.home,self.f.cache,fixture.POLICY,self.f.cloud,codex_home=self.f.home/'.codex')
 
     def reads(self):
         return [r['params']['id'] for r in self.f.cloud.calls if r['method']=='content_read']
@@ -70,7 +70,7 @@ class IncrementalRefresh(unittest.TestCase):
         self.assertEqual((self.f.cache/'active.json').read_bytes(),active)
 
     def test_unchanged_busy_host_file_does_not_block_unrelated_write(self):
-        import brain_host_files
+        import agent_brain_client.adapters.storage.host_files as brain_host_files
         original=brain_host_files.host_stage;written=[]
         def busy(path,raw,mode,expected):
             # Models the Windows sharing violation for an unchanged AGENTS
@@ -85,7 +85,7 @@ class IncrementalRefresh(unittest.TestCase):
 
     def test_snapshot_only_change_does_not_claim_native_writes(self):
         self.f.cloud.puts+=1
-        with patch('content_cache.host_apply',wraps=__import__('content_cache').host_apply) as apply:
+        with patch('agent_brain_client.adapters.harnesses.codex.mapping.host_apply',wraps=__import__('agent_brain_client.adapters.harnesses.codex.mapping',fromlist=['host_apply']).host_apply) as apply:
             result=self.restart().refresh()
         self.assertEqual(result['status'],'content-refreshed')
         self.assertFalse(result['native_changed'])

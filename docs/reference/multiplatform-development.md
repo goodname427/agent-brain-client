@@ -6,7 +6,7 @@
 
 共用业务核心：HTTPS 请求与回执、CAS/outbox、断网缓存、Rule/Skill 映射、安装事务及前后像、release manifest/健康回滚、来源语法和排除规则。共用 Codex 适配：Hook 输入、事件身份、来源发现、召回上下文、用户级 owned Hook 块与 MCP 协议。薄 OS 层：实际平台识别、路径语法、凭据 API、DACL/POSIX 权限、原子替换/刷盘、命令转义、共享锁与 worker 生命周期。
 
-`installer/first_install.py` 是两平台共用的安装流程，原 `tools/mac_first_install.py` 入口已删除；`install-mac.sh` 与 `install-windows.ps1` 只是依赖/入口包装。Windows 原生边界集中在 `scripts/brain_windows.py`，公共调用在 `brain_lock.py`。不为假想 OS 建框架，也不复制整套 OS×Harness 产品。
+`src/agent_brain_client/interfaces/cli/install.py` 是两平台共用的安装流程，原 `tools/mac_first_install.py` 入口已删除；`install-mac.sh` 与 `install-windows.ps1` 只是依赖/入口包装。Windows 原生边界集中在 `src/agent_brain_client/adapters/platforms/windows/native.py`，公共文件调用在 `adapters/platforms/filesystem.py`，Win32 细节在 `adapters/platforms/windows/filesystem.py`。不为假想 OS 建框架，也不复制整套 OS×Harness 产品。
 
 服务端个人池采用明确登记的设备路由与读取合并。每台设备独立 source/cursor/session/receipt/Core 目录，沿用同一 owner、profile_id 和累计预算。这样不会违反 Core 的单写入者 lease，也不需要搬迁现有 Mac 数据。跨设备 recall 仍使用真实请求者身份；provenance 按原来源设备的 scope、暂停和 enrollment 检查。主设备 schema-1 原目录保持兼容。新设备暂停不暂停 Mac；撤销设备后不继续从该设备召回。
 
@@ -29,7 +29,7 @@
 
 这些差异留在已有平台边界和可重复回归里。新功能默认检查两平台，不另造业务流程或为了潜在 OS 提前抽象。
 
-0.5.4 补充验收要求：不能只测平台 helper、包自检或 bootstrap。必须在实际发布包和最小启动环境里进入默认 `remote_mcp.Server` checkpoint、`ContentServer` 初始化及只读 installation check；历史版本的真实失败路径作为回归基线。架构发现只在 `brain_lock.py` 实现，源码检查拒绝其他生产模块直接调用 platform.machine/system/uname/architecture 或 os.uname（含别名导入）。Mac-only 入口仍明确限制 Mac，显式协议 checkpoint 的既有白名单保留。已验证活动运行包在重试间前向更新，不等于重写固定 bootstrap 或重置设备身份。
+0.5.4 补充验收要求：不能只测平台 helper、包自检或 bootstrap。必须在实际发布包和最小启动环境里进入默认 `remote_mcp.Server` checkpoint、`ContentServer` 初始化及只读 installation check；历史版本的真实失败路径作为回归基线。平台选择只在 `adapters/platforms/filesystem.py` 实现，Windows 架构查询属于 Windows 适配器，源码检查拒绝其他生产模块直接调用 platform.machine/system/uname/architecture 或 os.uname（含别名导入）。Mac-only 入口仍明确限制 Mac，显式协议 checkpoint 的既有白名单保留。已验证活动运行包在重试间前向更新，不等于重写固定 bootstrap 或重置设备身份。
 
 0.5.5 将该审计覆盖到根目录及所有生产 Python 文件，不以目录白名单遗漏旧入口；根目录 HTTP 入口也复用统一检测，其原 Windows 拒绝边界继续保留。
 

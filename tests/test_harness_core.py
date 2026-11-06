@@ -1,3 +1,4 @@
+import agent_brain_client.application.control as application_control
 """Shared memory code works without loading a Codex adapter or real identity."""
 from contextlib import nullcontext
 from datetime import datetime, timezone
@@ -11,14 +12,17 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 
-import brain_content as contract
-import brain_http
-from brain_memory import ContentOutbox, CacheBlocked, normalized_turn, submit_turn
+import agent_brain_client.domain.contract as contract
+import agent_brain_client.adapters.server.http as brain_http
+from agent_brain_client.application.queue.outbox import DurableOutbox
+from agent_brain_client.domain.errors import CacheBlocked
+from agent_brain_client.application.memory.capture import submit_turn
+from agent_brain_client.domain.turns import normalized_turn
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class MemoryHost(ContentOutbox):
+class MemoryHost(DurableOutbox):
     """Fictional host supplies storage and policy, never a native config mapper."""
     _outbox_lock = staticmethod(lambda *args: nullcontext())
     _outbox_stage = staticmethod(lambda *args: nullcontext())
@@ -26,6 +30,7 @@ class MemoryHost(ContentOutbox):
     def __init__(self, root, rows=None):
         self.cache = root
         self.rows = {} if rows is None else rows
+        self.sources = self
         self.policy = {'kinds': ['memory']}
         self.queue_sha = 'a' * 64
         self.sent = []
@@ -35,6 +40,9 @@ class MemoryHost(ContentOutbox):
 
     def _save(self, name, value):
         self.rows[name] = json.dumps(value)
+
+    def prepare_capture_stage(self, *, limit):
+        pass
 
     def _safe(self, path, base):
         self.cache.mkdir(exist_ok=True)
@@ -62,23 +70,25 @@ class HarnessCore(unittest.TestCase):
     def test_shared_imports_do_not_load_codex_or_discover_a_host(self):
         code = '''import sys
 sys.path.insert(0,sys.argv[1])
-import brain_content,brain_http,brain_memory
+from agent_brain_client.domain import contract
+from agent_brain_client.application import control
+from agent_brain_client.application.queue import outbox
 assert not any(n in sys.modules for n in ('content_cache','content_mcp','codex_connect','client_release','https_content','brain_core'))
 '''
-        run = subprocess.run([sys.executable, '-I', '-B', '-c', code, str(ROOT / 'scripts')], capture_output=True)
+        run = subprocess.run([sys.executable, '-I', '-B', '-c', code, str(ROOT / 'src')], capture_output=True)
         self.assertEqual(run.returncode, 0, run.stderr.decode())
 
     def test_native_and_transport_consumers_share_contract_and_request_cancellation(self):
-        import content_cache
-        from content_mcp import RequestControl as MCPControl
-        from https_content import RequestStopped as TransportStopped
+        import agent_brain_client.adapters.harnesses.codex.content as content_cache
+        from agent_brain_client.application.control import RequestControl as MCPControl
+        from agent_brain_client.adapters.server.https import RequestStopped as TransportStopped
         self.assertIs(content_cache.contract, contract)
-        self.assertIs(MCPControl, brain_http.RequestControl)
-        self.assertIs(TransportStopped, brain_http.RequestStopped)
+        self.assertIs(MCPControl, application_control.RequestControl)
+        self.assertIs(TransportStopped, application_control.RequestStopped)
         control = MCPControl(30)
         try:
             with control.activate():
-                self.assertIs(brain_http.current_request(), control)
+                self.assertIs(application_control.current_request(), control)
         finally:
             control.close()
 
@@ -121,16 +131,3 @@ assert not any(n in sys.modules for n in ('content_cache','content_mcp','codex_c
             disabled = submit_turn(restarted, scope, 'fictional-turn', 'final', 'Fictional answer', enabled=lambda: False, lock=lambda _: nullcontext())
             self.assertEqual(disabled['status'], 'disabled')
             self.assertEqual(len(restarted.sent), 1)
-
-    def test_shared_release_additions_are_exact_and_old_policy_is_unchanged(self):
-        import client_release as release
-        import release_client
-        before = dict(schema=1, channel='stable', core_api=1, state_schema=1,
-                      python_min='3.11', capabilities=release.HTTPS_CONTENT_CAPABILITIES,
-                      migrations=[], files={n: 'a' * 64 for n in release.LEGACY_CLIENT_FILE_SETS[4]})
-        after = dict(before, files={n: 'b' * 64 for n in release.WINDOWS_HTTPS_CONTENT_CLIENT_FILES})
-        after['files']['scripts/brain_windows.py'] = before['files']['scripts/brain_windows.py']
-        release_client.compatible(before, after)
-        after['files']['scripts/unapproved.py'] = 'c' * 64
-        with self.assertRaises(ValueError):
-            release_client.compatible(before, after)

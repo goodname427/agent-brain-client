@@ -10,10 +10,13 @@ from unittest.mock import patch
 import uuid
 
 import test_content_outbox as fixture
-from content_cache import ContentAdapter, CacheBlocked
-from content_mcp import ContentServer, enabled_tools
-from content_manage import Management, ManagementHTTP, LiveReadRequired, PAGE
-import brain_content as contract
+from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.domain.errors import CacheBlocked
+from agent_brain_client.interfaces.mcp.content import ContentServer
+from agent_brain_client.application.tools.catalog import enabled_tools
+from agent_brain_client.interfaces.management.server import ManagementHTTP, PAGE
+from agent_brain_client.application.content.management import Management, LiveReadRequired
+import agent_brain_client.domain.contract as contract
 
 
 class Cloud(fixture.Cloud):
@@ -60,7 +63,7 @@ class Activation(unittest.TestCase):
         self.assertEqual(self.adapter.refresh()['status'], 'content-refreshed')
 
     def restart(self, home=None, cache=None):
-        return ContentAdapter(home or self.home, cache or self.cache, fixture.POLICY,
+        return CodexContentSession(home or self.home, cache or self.cache, fixture.POLICY,
                               self.cloud, codex_home=(home or self.home) / '.codex')
 
     def action(self, kind, enabled, revision=None, rid=None, reconciles=None):
@@ -80,7 +83,7 @@ class Activation(unittest.TestCase):
             self.assertTrue(self.manager.change(request)['local_queue']['server_saved'])
             self.assertEqual(self.cloud.puts, before)
             self.assertTrue(skill.is_file() if kind == 'skill' else fixture.RULE['body'] in agents.read_text())
-            self.assertEqual(self.adapter.mapping_status(kind, request['id'], saved['result']['revision'])['status'], 'current')
+            self.assertEqual(self.adapter.mapping.mapping_status(kind, request['id'], saved['result']['revision'])['status'], 'current')
             disabled = self.manager.change(self.action(kind, False))
             self.assertTrue(disabled['local_queue']['server_saved'])
             self.assertFalse(skill.exists() if kind == 'skill' else fixture.RULE['body'] in agents.read_text())
@@ -147,7 +150,7 @@ class Activation(unittest.TestCase):
 
     def test_failed_apply_rolls_back_new_directories(self):
         self.cloud.records['skill','synthetic-skill']['files']['scripts/helper.py']='# synthetic'
-        with patch('content_cache.host_apply',side_effect=PermissionError('Synthetic busy file')):
+        with patch('agent_brain_client.adapters.harnesses.codex.mapping.host_apply',side_effect=PermissionError('Synthetic busy file')):
             reply=self.manager.change(self.action('skill',True))
         self.assertEqual(reply['local_refresh']['status'],'content-refresh-blocked')
         self.assertFalse((self.home/'.agents/skills/synthetic-skill').exists())
@@ -236,7 +239,7 @@ class Activation(unittest.TestCase):
 
     def test_failed_local_write_keeps_receipt_then_pull_recovers_without_second_save(self):
         before = (self.home / '.codex/AGENTS.md').read_bytes()
-        with patch('content_cache.host_apply', side_effect=PermissionError('Fictional Windows sharing violation')):
+        with patch('agent_brain_client.adapters.harnesses.codex.mapping.host_apply', side_effect=PermissionError('Fictional Windows sharing violation')):
             reply = self.manager.change(self.action('rule', True))
         self.assertTrue(reply['local_queue']['server_saved'])
         self.assertEqual(reply['local_refresh']['status'], 'content-refresh-blocked')
@@ -278,7 +281,7 @@ class Activation(unittest.TestCase):
         saved = self.manager.change(request)
         self.assertTrue(saved['local_queue']['server_saved'])
         self.assertEqual(saved['local_refresh']['status'], 'content-refresh-blocked')
-        self.assertEqual(self.adapter.mapping_status('rule', request['id'], saved['result']['revision'])['status'], 'review-required')
+        self.assertEqual(self.adapter.mapping.mapping_status('rule', request['id'], saved['result']['revision'])['status'], 'review-required')
         self.assertEqual((self.home / '.codex/AGENTS.md').read_text(), 'User changed instructions')
         # Separate home for dependency failure, without relaxing the pinned policy.
         home = self.root / 'dependency-home'
