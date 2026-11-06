@@ -2,7 +2,7 @@
 
 import unittest
 from unittest.mock import patch
-from content_mcp import ContentServer, ProtocolError
+from agent_brain_client.interfaces.mcp.content import ContentServer, ProtocolError
 from test_windows_acceptance_repairs import WindowsAcceptanceRepairs
 
 
@@ -27,10 +27,10 @@ class MemoryQueryClient(unittest.TestCase):
                 current["structuredContent"]["result"],
                 legacy["structuredContent"]["result"],
             )
-            with patch("global_memory.discover", return_value=self.f.local):
+            with patch("agent_brain_client.adapters.storage.origins.discover", return_value=self.f.local):
                 default = server.invoke("memory_query", {"query": "Synthetic progress"})
             self.assertFalse(default["isError"])
-            with patch("global_memory.discover", return_value=self.f.local):
+            with patch("agent_brain_client.adapters.storage.origins.discover", return_value=self.f.local):
                 alias = server.invoke(
                     "content_catalog",
                     {"kinds": ["memory"], "query": "Synthetic progress"},

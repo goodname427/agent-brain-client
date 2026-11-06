@@ -1,3 +1,5 @@
+import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
+import agent_brain_client.application.tools.catalog as interfaces_mcp_tools_catalog
 """Candidate install/update against fake homes, synthetic Git and fake protocol checks."""
 import copy
 from contextlib import contextmanager
@@ -11,12 +13,12 @@ import unittest
 from unittest.mock import patch
 import test_client_lifecycle as fixtures
 ROOT=fixtures.ROOT
-from build_client import release as build
-import client_release as releases
-import client_startup
-import content_install as install
-from content_mcp import installation_check
-import content_mcp
+from dev.build.package import release as build
+import agent_brain_client.adapters.packages.client as releases
+import agent_brain_client.runtime.launcher as client_startup
+import agent_brain_client.adapters.harnesses.codex.installation as install
+from agent_brain_client.interfaces.mcp.content import installation_check
+import agent_brain_client.interfaces.mcp.content as content_mcp
 import connect as remote_connect
 
 class ContentInstall(unittest.TestCase):
@@ -31,7 +33,7 @@ class ContentInstall(unittest.TestCase):
         self.signing=self.base/'signing.json';self.signing.write_text(json.dumps({'identifier':'com.example.agentbrain','team_id':'TESTTEAM12'}));self.signing.chmod(0o600)
         self.content=self.base/'content.json';self.content_value={'schema':1,'adapter':'codex','kinds':['memory','rule','skill'],'ids':self.grant['ids'],'dependencies':{'commands':[],'python_modules':[]}};self.content.write_text(json.dumps(self.content_value));self.content.chmod(0o600)
         self.policy=copy.deepcopy(f.policy);self.policy.update(capabilities=releases.CONTENT_CAPABILITIES,file_prefixes=list(releases.CONTENT_CLIENT_FILES),repository=str(f.repository.resolve()),cache=str(self.base/'runtime'),runtime={'device_plan':str(self.device_plan),'device_plan_sha256':install.sha(self.device_plan.read_bytes()),'signing_policy':str(self.signing),'signing_policy_sha256':install.sha(self.signing.read_bytes()),'content_policy':str(self.content),'content_policy_sha256':install.sha(self.content.read_bytes()),'device_home':str(self.home),'codex_home':str(self.native),'content_cache':str(self.base/'content-cache')})
-        self.policy['runtime']['component_source_sha256']=install.sha((ROOT/'native/DeviceComponent.swift').read_bytes())
+        self.policy['runtime']['component_source_sha256']=install.sha((ROOT/'src/agent_brain_client/adapters/platforms/macos/native/DeviceComponent.swift').read_bytes())
         self.policy_path=self.base/'approved-policy.json';self.policy_path.write_text(json.dumps(self.policy));self.policy_path.chmod(0o600);self.policy_sha=install.sha(self.policy_path.read_bytes())
         self.channel=releases.ClientReleases(self.policy_path,self.policy_sha);self.publish();self.active=self.channel.update()['active'];self.package=Path(self.active['package'])
         self.platform=patch('sys.platform','darwin');self.platform.start();self.addCleanup(self.platform.stop)
@@ -57,7 +59,7 @@ class ContentInstall(unittest.TestCase):
         self.assertEqual(remote_connect.connect(self.home)['status'],'content-native-client-installed');self.assertEqual(remote_connect.connect(self.home)['installed_version'],'0.2.0');self.assertFalse((self.home/'.agents').exists())
 
     def test_private_plan_single_link_inspection_and_pending_startup_never_maps(self):
-        plan=self.plan();path=self.base/'native-plan.json';install.save(path,plan);before=self.native_files()
+        plan=self.plan();path=self.base/'native-plan.json';adapters_storage_private_files.save(path,plan);before=self.native_files()
         self.assertEqual(install.inspect_plan(path,self.digest(plan))['status'],'content-native-install-ready');self.assertEqual(self.native_files(),before)
         output=io.StringIO()
         with patch.object(sys,'argv',['connect.py','--agent','codex','--content-install-plan',str(path),'--plan-sha256',self.digest(plan)]),patch.object(sys,'stdout',output):
@@ -76,7 +78,7 @@ class ContentInstall(unittest.TestCase):
         self.assertEqual(result['status'],'content-install-rolled-back');self.assertEqual(self.config.read_bytes(),before);self.assertEqual(self.config.stat().st_mode&0o777,mode);self.assertFalse((self.home/'.config/agent-brain-client/codex-mcp.json').exists())
 
     def test_final_completion_receipt_save_failure_rolls_back_native_files(self):
-        plan=self.plan();before=self.native_files();real_save=install.save
+        plan=self.plan();before=self.native_files();real_save=adapters_storage_private_files.save
         def fail_complete(path,value):
             if value.get('phase')=='complete':raise OSError('Synthetic completion receipt failure')
             return real_save(path,value)
@@ -86,7 +88,7 @@ class ContentInstall(unittest.TestCase):
         after=self.native_files();after.pop('.config/agent-brain-client/content-install-receipt.json')
         self.assertEqual(after,before)
         receipt=self.home/'.config/agent-brain-client/content-install-receipt.json'
-        self.assertEqual(install.private_json(receipt)['phase'],'rolled-back')
+        self.assertEqual(adapters_storage_private_files.private_json(receipt)['phase'],'rolled-back')
 
     def test_postcheck_external_edit_blocks_recovery_and_preserves_both(self):
         plan=self.plan();calls=[]
@@ -195,7 +197,7 @@ class ContentInstall(unittest.TestCase):
         self.assertFalse(result['native_changed']);self.assertEqual(self.native_files(),before)
 
     def test_declared_local_tool_flows_to_plan_running_service_and_protocol_check(self):
-        original = content_mcp.local_tools
+        original = interfaces_mcp_tools_catalog.local_tools
         def declared(kinds, memory_sources, layered_recall=False):
             tools = original(kinds, memory_sources, layered_recall)
             if memory_sources:
@@ -216,86 +218,15 @@ class ContentInstall(unittest.TestCase):
             self.assertEqual(content_mcp.self_check()['content_mcp_self_check'], 'passed')
             self.assertEqual(plan['tool_contract_version'], result['tool_contract_version'])
 
-    def test_existing_authenticated_legacy_whitelist_is_inspected_without_enabling_tools(self):
-        from pending_install_recovery import legacy_plan
-        plan = legacy_plan(self.plan())
-        with patch.object(install, 'prepare', return_value=plan):
-            self.assertTrue(install.apply(plan, self.digest(plan), lambda p: None)['installed'])
-        before = self.native_files()
-        self.assertTrue(install.inspect(self.home)['installed'])
-        self.assertEqual(self.native_files(), before)
-        self.assertEqual(install.tomllib.loads(self.config.read_text())['mcp_servers'][install.NAME]['enabled_tools'],
-                         ['content_catalog', 'content_put', 'content_read'])
 
-    def test_previous_full_tool_filter_is_inspected_without_enabling_activation(self):
-        from pending_install_recovery import previous_tool_plans
-        plan = previous_tool_plans(self.plan())[1]
-        with patch.object(install, 'prepare', return_value=plan):
-            self.assertTrue(install.apply(plan, self.digest(plan), lambda p: None)['installed'])
-        before = self.native_files()
-        self.assertTrue(install.inspect(self.home)['installed'])
-        self.assertEqual(self.native_files(), before)
-        registered = install.tomllib.loads(self.config.read_text())['mcp_servers'][install.NAME]
-        self.assertNotIn('content_set_enabled', registered['enabled_tools'])
-        self.assertIn('content_queue_inspect', registered['enabled_tools'])
 
-    def test_contract_two_pending_plan_migrates_with_original_attempt_and_journal(self):
-        import pending_install_recovery as recovery
-        state = self.home / '.config/agent-brain-client/first-install'
-        state.mkdir(parents=True, mode=0o700)
-        path, attempt = state / 'install-plan.json', state / 'pairing-attempt.json'
-        current = self.plan()
-        old = recovery.previous_tool_plans(current)[1]
-        install.save(path, old)
-        original_attempt = {'schema': 1, 'plan_sha256': self.digest(old)}
-        install.save(attempt, original_attempt)
-        self.assertEqual(recovery.refresh_plan(path, lambda: {'status': 'current'}), current)
-        journal = install.private_json(state / 'tools-recovery.json')
-        self.assertEqual(journal['before'], old)
-        self.assertEqual(journal['attempt'], original_attempt)
-        self.assertEqual(journal['phase'], 'complete')
-        self.assertEqual(install.private_json(attempt)['plan_sha256'], self.digest(current))
-        self.assertIn('content_set_enabled', current['mcp']['enabled_tools'])
 
-    def test_three_tool_plan_migration_recovers_each_write_and_rejects_scope_drift(self):
-        import pending_install_recovery as recovery
-        state = self.home / '.config/agent-brain-client/first-install'
-        state.mkdir(parents=True, mode=0o700)
-        path, attempt, journal = (state / name for name in
-            ('install-plan.json', 'pairing-attempt.json', 'tools-recovery.json'))
-        current = self.plan()
-        old = recovery.legacy_plan(current)
-        before = self.config.read_bytes()
-        save = recovery.save
-        for failure in range(1, 5):
-            with self.subTest(write=failure):
-                journal.unlink(missing_ok=True)
-                save(path, old)
-                save(attempt, {'schema': 1, 'plan_sha256': self.digest(old)})
-                writes = []
-                def interrupt(p, value):
-                    save(p, value)
-                    writes.append(p)
-                    if len(writes) == failure:raise OSError('Synthetic interrupted migration')
-                with patch.object(recovery, 'save', side_effect=interrupt):
-                    with self.assertRaises(OSError):recovery.refresh_plan(path, lambda: {'status': 'current'})
-                result = recovery.refresh_plan(path, lambda: {'status': 'current'})
-                self.assertEqual(result, current)
-                self.assertEqual(install.private_json(attempt)['plan_sha256'], self.digest(current))
-                self.assertEqual(install.private_json(journal)['before'], old)
-                self.assertEqual(self.config.read_bytes(), before)
-        changed = install.private_json(journal)
-        changed['after']['mcp']['enabled_tools'].append('content_remove')
-        save(journal, changed)
-        with self.assertRaises(ValueError):recovery.refresh_plan(path, lambda: {'status': 'current'})
-        self.assertEqual(install.private_json(path), current)
-        self.assertEqual(self.config.read_bytes(), before)
 
     def test_content_release_discovery_update_failure_offline_and_startup_wiring(self):
         report=self.channel.discover('codex','darwin-arm64','0.1.0');self.assertEqual(report['status'],'compatible-update');self.assertEqual(len(report['releases'][0]['manifest']['files']),23)
         old=self.channel.engine.active();self.publish('0.2.1');self.assertEqual(self.channel.update()['status'],'updated');self.assertEqual(install.apply(self.plan(),self.digest(self.plan()),lambda p:None)['installed'],True);self.assertEqual(install.inspect(self.home)['installed_version'],'0.2.1')
         def bad(manifest,out):
-            p=out/'adapters/codex/content_mcp.py';p.write_text('BAD PYTHON (');manifest['files']['adapters/codex/content_mcp.py']=install.sha(p.read_bytes())
+            p=out/'src/agent_brain_client/interfaces/mcp/content.py';p.write_text('BAD PYTHON (');manifest['files']['src/agent_brain_client/interfaces/mcp/content.py']=install.sha(p.read_bytes())
         previous=self.channel.engine.active();self.publish('0.2.2',bad);self.assertEqual(self.channel.update()['status'],'release-review-required');self.assertEqual(self.channel.engine.active(),previous)
         with patch.object(self.channel.engine.source,'latest',side_effect=OSError('Synthetic offline')):
             self.assertEqual(self.channel.update()['status'],'offline');self.assertEqual(self.channel.engine.active(),previous)
@@ -338,7 +269,7 @@ class ContentInstall(unittest.TestCase):
 
     def test_package_drift_reports_safe_checkpoint_without_repair(self):
         plan=self.plan();install.apply(plan,self.digest(plan),lambda p:None)
-        target=self.package/'adapters/codex/content_cache.py';target.write_bytes(target.read_bytes()+b'\n# SYNTHETIC_UNAPPROVED_EDIT\n')
+        target=self.package/'src/agent_brain_client/adapters/harnesses/codex/content.py';target.write_bytes(target.read_bytes()+b'\n# SYNTHETIC_UNAPPROVED_EDIT\n')
         result=install.inspect(self.home)
         self.assertFalse(result['installed']);self.assertTrue(result['installation_present']);self.assertEqual(result['reason'],'bootstrap-package-changed')
         self.assertNotIn('SYNTHETIC_UNAPPROVED_EDIT',json.dumps(result));self.assertTrue(target.read_bytes().endswith(b'UNAPPROVED_EDIT\n'))
@@ -363,14 +294,14 @@ class ContentInstall(unittest.TestCase):
     def test_valid_syntax_failed_package_health_restores_previous_active_version(self):
         old=self.channel.engine.active()
         def unhealthy(manifest,out):
-            p=out/'adapters/codex/content_mcp.py';p.write_text('raise SystemExit(7)\n');manifest['files']['adapters/codex/content_mcp.py']=install.sha(p.read_bytes())
+            p=out/'src/agent_brain_client/interfaces/mcp/content.py';p.write_text('raise SystemExit(7)\n');manifest['files']['src/agent_brain_client/interfaces/mcp/content.py']=install.sha(p.read_bytes())
         self.publish('0.2.1',unhealthy);result=self.channel.update()
         self.assertEqual(result['status'],'release-review-required');self.assertEqual(self.channel.engine.active(),old);self.assertEqual(json.loads(self.channel.engine.journal.read_text())['phase'],'rolled-back')
 
     def test_native_component_source_change_requires_new_signed_plan_before_activation(self):
         old=self.channel.engine.active()
         def native_change(manifest,out):
-            p=out/'native/DeviceComponent.swift';p.write_text(p.read_text()+'\n// synthetic changed native source\n');manifest['files']['native/DeviceComponent.swift']=install.sha(p.read_bytes())
+            p=out/'src/agent_brain_client/adapters/platforms/macos/native/DeviceComponent.swift';p.write_text(p.read_text()+'\n// synthetic changed native source\n');manifest['files']['src/agent_brain_client/adapters/platforms/macos/native/DeviceComponent.swift']=install.sha(p.read_bytes())
         self.publish('0.2.1',native_change)
         self.assertEqual(self.channel.discover('codex','darwin-arm64','0.2.0')['status'],'release-review-required');self.assertEqual(self.channel.update()['status'],'release-review-required');self.assertEqual(self.channel.engine.active(),old)
 
@@ -380,12 +311,12 @@ class ContentInstall(unittest.TestCase):
         self.assertTrue(install.apply(original_plan,self.digest(original_plan),lambda p:None)['installed'])
         before=self.native_files()
         receipt_path=self.home/'.config/agent-brain-client/content-install-receipt.json'
-        original_receipt=install.private_json(receipt_path)
+        original_receipt=adapters_storage_private_files.private_json(receipt_path)
         self.publish('0.2.1')
         update=self.channel.update();self.assertEqual(update['status'],'updated')
         self.package=Path(update['active']['package'])
         replacement=self.plan(replace=True);replacement_digest=self.digest(replacement)
-        real_save=install.save
+        real_save=adapters_storage_private_files.save
         def fail_replacement_completion(path,value):
             if value.get('phase')=='complete' and value.get('plan_sha256')==replacement_digest:
                 raise OSError('Synthetic replacement completion receipt failure')
@@ -394,7 +325,7 @@ class ContentInstall(unittest.TestCase):
             result=install.apply(replacement,replacement_digest,lambda p:None)
         self.assertEqual(result['status'],'content-install-rolled-back')
         self.assertEqual(self.native_files(),before)
-        self.assertEqual(install.private_json(receipt_path),original_receipt)
+        self.assertEqual(adapters_storage_private_files.private_json(receipt_path),original_receipt)
         self.assertTrue(install.inspect(self.home)['installed'])
 
 if __name__=='__main__':unittest.main()

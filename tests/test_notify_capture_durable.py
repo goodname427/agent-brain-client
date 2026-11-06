@@ -10,9 +10,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "adapters/codex"))
-from codex_notify_mux import NotifyCaptureQueue
-from content_mcp import codex_notify_main
+sys.path.insert(0, str(ROOT / "src"))
+from dev.prototypes.notify_capture import NotifyCaptureQueue
 
 
 class NotifyCaptureDurableTests(unittest.TestCase):
@@ -45,10 +44,10 @@ class NotifyCaptureDurableTests(unittest.TestCase):
 
     def test_new_process_can_claim_and_finish_durable_job(self):
         event = self.event()
-        code = ("import json,sys; from codex_notify_mux import NotifyCaptureQueue; "
+        code = ("import json,sys; from dev.prototypes.notify_capture import NotifyCaptureQueue; "
                 "q=NotifyCaptureQueue(sys.argv[1]); print(q.enqueue(json.loads(sys.argv[2])))")
         env = dict(os.environ)
-        env["PYTHONPATH"] = str(ROOT / "adapters/codex")
+        env["PYTHONPATH"] = str(ROOT / "src")
         result = subprocess.run([sys.executable, "-c", code, str(self.ledger),
                                  json.dumps(event)], check=True, capture_output=True,
                                 text=True, env=env)
@@ -110,19 +109,7 @@ class NotifyCaptureDurableTests(unittest.TestCase):
         self.assertEqual(len(queue.snapshot()), 2)
         self.assertEqual(job["status"], "processing")
 
-    def test_deferred_entrypoint_is_noop_even_when_cli_is_missing(self):
-        event = json.dumps(self.event())
-        with patch.dict(os.environ, {"CODEX_CLI": "/missing/synthetic-codex"}):
-            runner = Mock(side_effect=OSError())
-            self.assertEqual(codex_notify_main([event], runner=runner), 0)
-            runner.assert_not_called()
 
-    def test_deferred_entrypoint_does_not_launch_codex_even_for_valid_event(self):
-        event = json.dumps(self.event())
-        with patch.dict(os.environ, {"CODEX_CLI": "/mock/synthetic-codex"}):
-            runner = Mock(return_value=subprocess.CompletedProcess([], 0))
-            self.assertEqual(codex_notify_main([event], runner=runner), 0)
-            runner.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -14,13 +14,15 @@ from unittest.mock import MagicMock,patch
 from urllib.error import HTTPError
 
 import test_content_outbox as fixture
-import content_mcp
-import content_cache
-from content_mcp import ContentServer,ProtocolError,run_event_hook,validate_hook_policy
-from content_cache import ContentAdapter,CacheBlocked
-from brain_http import RemoteClient
-import client_startup
-from client_release import HTTPS_CONTENT_CAPABILITIES
+import agent_brain_client.interfaces.mcp.content as content_mcp
+import agent_brain_client.adapters.harnesses.codex.content as content_cache
+from agent_brain_client.interfaces.mcp.content import ContentServer, ProtocolError
+from agent_brain_client.adapters.harnesses.codex.hooks import run_event_hook, validate_hook_policy
+from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.domain.errors import CacheBlocked
+from agent_brain_client.adapters.server.http import RemoteClient
+import agent_brain_client.runtime.launcher as client_startup
+from agent_brain_client.adapters.packages.client import HTTPS_CONTENT_CAPABILITIES
 import test_https_content as https_fixture
 
 
@@ -102,12 +104,12 @@ class EventHook(unittest.TestCase):
               '--event-hook','--event-hook-policy','synthetic-hook','--event-hook-policy-sha256','c'*64]
         self.policy['enabled']=False
         source=MagicMock();source.buffer.read.side_effect=AssertionError('Disabled hook must not read stdin')
-        with patch.object(sys,'argv',argv),patch.object(sys,'stdin',source),patch.object(sys,'stdout',io.StringIO()),patch.object(content_mcp,'pinned',side_effect=[fixture.POLICY,self.policy]),patch('https_content.HTTPSContentClient',side_effect=AssertionError('No credential construction')) as construct:
+        with patch.object(sys,'argv',argv),patch.object(sys,'stdin',source),patch.object(sys,'stdout',io.StringIO()),patch.object(content_mcp,'pinned',side_effect=[fixture.POLICY,self.policy]),patch('agent_brain_client.adapters.server.https.HTTPSContentClient',side_effect=AssertionError('No credential construction')) as construct:
             content_mcp.main()
         source.buffer.read.assert_not_called();construct.assert_not_called()
         self.policy['enabled']=True
         source.buffer.read.side_effect=None;source.buffer.read.return_value=json.dumps(dict(self.payload,session_id='synthetic-unregistered')).encode()
-        with patch.object(sys,'argv',argv),patch.object(sys,'stdin',source),patch.object(content_mcp,'pinned',side_effect=[fixture.POLICY,self.policy]),patch('https_content.HTTPSContentClient',side_effect=AssertionError('No credential construction')) as construct:
+        with patch.object(sys,'argv',argv),patch.object(sys,'stdin',source),patch.object(content_mcp,'pinned',side_effect=[fixture.POLICY,self.policy]),patch('agent_brain_client.adapters.server.https.HTTPSContentClient',side_effect=AssertionError('No credential construction')) as construct:
             with self.assertRaises(ValueError):content_mcp.main()
         construct.assert_not_called()
 
@@ -129,7 +131,7 @@ class EventHook(unittest.TestCase):
         for stage,policy,raw in cases:
             with self.subTest(stage=stage,policy_invalid=not policy['scopes']):
                 source=SimpleNamespace(buffer=io.BytesIO(raw));diagnostic=io.StringIO();output=io.StringIO()
-                with patch.object(sys,'argv',argv),patch.object(sys,'stdin',source),patch.object(sys,'stderr',diagnostic),patch.object(sys,'stdout',output),patch.object(content_mcp,'pinned',side_effect=[fixture.POLICY,policy]),patch('https_content.HTTPSContentClient',side_effect=AssertionError('No identity access')) as construct:
+                with patch.object(sys,'argv',argv),patch.object(sys,'stdin',source),patch.object(sys,'stderr',diagnostic),patch.object(sys,'stdout',output),patch.object(content_mcp,'pinned',side_effect=[fixture.POLICY,policy]),patch('agent_brain_client.adapters.server.https.HTTPSContentClient',side_effect=AssertionError('No identity access')) as construct:
                     self.assertEqual(content_mcp.cli(),0)
                 self.assertEqual(output.getvalue(),'{}\n')
                 self.assertEqual(json.loads(diagnostic.getvalue())['stage'],stage)
@@ -153,7 +155,7 @@ class EventHook(unittest.TestCase):
 
     def test_off_while_Stop_waits_for_content_lock_retains_pending_without_upload(self):
         self.prompt();waiting=threading.Event();results=[];errors=[]
-        import brain_cache
+        import agent_brain_client.adapters.storage.content as brain_cache
         actual_locked=brain_cache.locked
         @contextmanager
         def observed(path,*args,**kwargs):
@@ -322,9 +324,9 @@ class EventHook(unittest.TestCase):
                 seen.append(request);return Response(accepted(json.loads(request.data)))
         client.transport.opener=Opener()
         policy=dict(fixture.POLICY,ids=grant['ids'])
-        adapter=ContentAdapter(owned.home,owned.base/'event-cache',policy,client,codex_home=owned.home/'codex')
+        adapter=CodexContentSession(owned.home,owned.base/'event-cache',policy,client,codex_home=owned.home/'codex')
         hook_policy=dict(self.policy,profile_sha256=owned.digest)
-        with patch('https_content.native_store',side_effect=AssertionError('No second credential source')):
+        with patch('agent_brain_client.adapters.server.https.native_store',side_effect=AssertionError('No second credential source')):
             run_event_hook(adapter,hook_policy,self.payload)
             result=run_event_hook(adapter,hook_policy,dict(self.payload,hook_event_name='Stop',stop_hook_active=False,last_assistant_message='Synthetic official path'))
         self.assertEqual(result['local_queue']['state'],'confirmed');self.assertEqual(owned.backend.record,before)
@@ -339,7 +341,7 @@ class EventHook(unittest.TestCase):
         policy={'platform':self.adapter.platform,'capabilities':HTTPS_CONTENT_CAPABILITIES,
                 'runtime':{'device_home':str(self.fixture.home),'content_cache':str(self.fixture.cache)}}
         releases=SimpleNamespace(policy=policy,verified_active=MagicMock(return_value=active),update=MagicMock(side_effect=AssertionError('No per-turn update')))
-        with patch.object(client_startup,'ClientReleases',return_value=releases),patch('content_install.inspect',return_value={'installed':True}),patch.object(client_startup.subprocess,'run',return_value=SimpleNamespace(returncode=0)) as run:
+        with patch.object(client_startup,'ClientReleases',return_value=releases),patch('agent_brain_client.adapters.harnesses.codex.installation.inspect',return_value={'installed':True}),patch.object(client_startup.subprocess,'run',return_value=SimpleNamespace(returncode=0)) as run:
             result=client_startup.startup('synthetic-policy','a'*64,event_hook=('synthetic-hook','b'*64))
         self.assertTrue(result['served']);releases.update.assert_not_called();self.assertGreaterEqual(releases.verified_active.call_count,2)
         self.assertTrue(all(call.kwargs=={'serving':True} for call in releases.verified_active.call_args_list))

@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-import brain_windows as windows
-import brain_lock as storage
+import agent_brain_client.adapters.platforms.windows.native as windows
+import agent_brain_client.adapters.platforms.filesystem as storage
 
 
 class PrivateMetadata(unittest.TestCase):

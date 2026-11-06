@@ -1,3 +1,4 @@
+import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
 """Synthetic native ownership, serialized plans and fixed-bootstrap regressions."""
 from contextlib import contextmanager
 import copy
@@ -10,8 +11,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import test_content_install as fixtures
-import client_startup
-import content_install as install
+import agent_brain_client.runtime.launcher as client_startup
+import agent_brain_client.adapters.harnesses.codex.installation as install
 
 class InstallBoundaries(unittest.TestCase):
     def setUp(self):
@@ -84,8 +85,8 @@ class InstallBoundaries(unittest.TestCase):
         self.assertEqual(self.f.native_files(), before)
 
     def test_inflight_damaged_candidate_keeps_real_registered_predecessor_usable(self):
-        from brain_lock import locked
-        from brain_release import atomic_json, digest
+        from agent_brain_client.adapters.platforms.filesystem import locked
+        from agent_brain_client.adapters.packages.releases import atomic_json, digest
         self.apply()
         engine = self.f.channel.engine
         manifest = json.loads((self.f.package / 'verified.json').read_bytes())['manifest']
@@ -93,7 +94,7 @@ class InstallBoundaries(unittest.TestCase):
         package = engine.prepare('b' * 40, manifest, lambda name: (self.f.package / name).read_bytes())
         candidate = {'commit': 'b' * 40, 'version': '0.2.1', 'package': str(package),
                      'manifest_sha256': digest(json.dumps(manifest, sort_keys=True).encode())}
-        (package / 'scripts/remote_mcp.py').write_bytes(b'Synthetic damaged candidate')
+        (package / 'src/agent_brain_client/interfaces/mcp/topics.py').write_bytes(b'Synthetic damaged candidate')
         before = self.f.native_files()
         with locked(engine.local / 'update.lock', timeout=0), \
                 patch.object(client_startup, 'ClientReleases', return_value=self.f.channel), \
@@ -107,7 +108,7 @@ class InstallBoundaries(unittest.TestCase):
                 self.assertTrue(inspected['installed'], inspected)
                 result = client_startup.startup(self.f.policy_path, self.f.policy_sha)
                 self.assertTrue(result['served'], result)
-                self.assertIn(str(self.f.package / 'adapters/codex/content_mcp.py'), launch.call_args.args[0])
+                self.assertIn(str(self.f.package / 'src/agent_brain_client/interfaces/mcp/content.py'), launch.call_args.args[0])
                 self.assertEqual(engine.journal.read_bytes(), journal)
                 self.assertEqual(engine.pointer.read_bytes(), pointer)
                 self.assertEqual(self.f.native_files(), before)
@@ -146,7 +147,7 @@ class InstallBoundaries(unittest.TestCase):
         self.assertEqual(self.f.config.read_bytes(),current)
 
     def test_config_edit_between_render_and_journal_preimage_is_rejected(self):
-        plan=self.f.plan();real=install.raw;calls=[]
+        plan=self.f.plan();real=adapters_storage_private_files.raw;calls=[]
         def race(path, *args, **kwargs):
             if Path(path)==self.f.config:
                 calls.append(True)
@@ -169,19 +170,19 @@ class InstallBoundaries(unittest.TestCase):
                'before':{},'after':{}}
         def race(config,mcp,existing):
             rendered=real(config,mcp,existing)
-            install.save(receipt,raced)
+            adapters_storage_private_files.save(receipt,raced)
             return rendered
         with patch.object(install,'render',side_effect=race):
             with self.assertRaisesRegex(install.InstallBlocked,'receipt changed before commit'):
                 install.apply(plan,self.f.digest(plan),lambda p:None)
-        self.assertEqual(install.private_json(receipt),raced)
+        self.assertEqual(adapters_storage_private_files.private_json(receipt),raced)
         self.assertFalse((self.f.home/'.config/agent-brain-client/codex-mcp.json').exists())
 
     def test_fixed_bootstrap_process_imports_its_reviewed_dependency_after_model_change(self):
         self.apply();self.f.config.write_text(self.f.config.read_text().replace('synthetic-fixture','synthetic-model-changed'))
         fixed=self.f.base/'synthetic-fixed-bootstrap';shutil.copytree(self.f.package,fixed)
         payload={'fixed':str(fixed),'home':str(self.f.home),'active':self.f.active,'policy':self.f.policy,'policy_file':str(self.f.policy_path),'policy_sha':self.f.policy_sha}
-        code="""import json,platform,sys\nfrom pathlib import Path\nfrom types import SimpleNamespace\np=json.loads(sys.stdin.read());sys.path.insert(0,str(Path(p['fixed'])/'adapters/codex'));sys.path.insert(0,str(Path(p['fixed'])/'scripts'));sys.platform='darwin';platform.machine=lambda:'arm64'\nimport client_startup,content_install\ncommands=[]\nclient_startup.ClientReleases=lambda *a:SimpleNamespace(policy=p['policy'],verified_active=lambda **kwargs:p['active'],startup_check=lambda:None,update=lambda:{'status':'current','active':p['active']})\nclient_startup.subprocess.run=lambda command,**kw:commands.append(command) or SimpleNamespace(returncode=0)\nresult=client_startup.startup(p['policy_file'],p['policy_sha'])\nprint(json.dumps({'served':result.get('served',False),'dependency_is_fixed_package':Path(content_install.__file__).parent==Path(p['fixed'])/'adapters/codex','launch_count':len(commands),'model_preserved':'synthetic-model-changed' in (Path(p['home'])/'.codex/config.toml').read_text()}))\n"""
+        code="""import json,platform,sys\nfrom pathlib import Path\nfrom types import SimpleNamespace\np=json.loads(sys.stdin.read());sys.path.insert(0,str(Path(p['fixed'])/'src'));sys.path.insert(0,str(Path(p['fixed'])/'src'));sys.platform='darwin';platform.machine=lambda:'arm64'\nimport client_startup,content_install\ncommands=[]\nclient_startup.ClientReleases=lambda *a:SimpleNamespace(policy=p['policy'],verified_active=lambda **kwargs:p['active'],startup_check=lambda:None,update=lambda:{'status':'current','active':p['active']})\nclient_startup.subprocess.run=lambda command,**kw:commands.append(command) or SimpleNamespace(returncode=0)\nresult=client_startup.startup(p['policy_file'],p['policy_sha'])\nprint(json.dumps({'served':result.get('served',False),'dependency_is_fixed_package':Path(content_install.__file__).parent==Path(p['fixed'])/'src','launch_count':len(commands),'model_preserved':'synthetic-model-changed' in (Path(p['home'])/'.codex/config.toml').read_text()}))\n"""
         run=subprocess.run([sys.executable,'-I','-B','-c',code],input=json.dumps(payload),capture_output=True,text=True,timeout=15)
         self.assertEqual(run.returncode,0,run.stderr)
         self.assertEqual(json.loads(run.stdout),{'served':True,'dependency_is_fixed_package':True,'launch_count':1,'model_preserved':True})

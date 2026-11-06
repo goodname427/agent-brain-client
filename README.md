@@ -18,17 +18,17 @@
 每次从平台步骤指定的独立、干净官方 `main` checkout 启动；不从用户旧 checkout 执行。先运行平台入口的 `status`；已有核验安装使用 `check-update` 再 `update`，重复 `install` 只核验本地登记。Windows：
 
 ```powershell
-& ./tools/install-windows.ps1 -Action status
-& ./tools/install-windows.ps1 -Action check-update
-& ./tools/install-windows.ps1 -Action update
+& ./bootstrap/windows/install.ps1 -Action status
+& ./bootstrap/windows/install.ps1 -Action check-update
+& ./bootstrap/windows/install.ps1 -Action update
 ```
 
 Mac 从 [完整 checkout 步骤](docs/installation/mac.md#取得源码并连接-server) 取得并记录源码 SHA 后执行：
 
 ```sh
-sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action status
-sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action check-update
-sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action update
+sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --action status
+sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --action check-update
+sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --action update
 ```
 
 更新复用原 policy、凭据、信任锚、范围、依赖和队列，失败保留或恢复前版。分别报告 `active_package_version`（已验证活动包）、`latest_channel_version`（此次成功检查的候选）与 MCP 的 `client_runtime.running_worker_version`（实际 worker）；CLI 无法观察 worker 时相关字段为 null。检查失败时最新版未知。更新后先通过新鲜 MCP 结果比较 worker 与活动包的版本和 commit；一致无需重载，不一致才按宿主正常方式重载本服务，无法观察则报告 unknown；不强杀 worker，也无周期后台更新或热替换。正常 MCP 启动先选择已验证且健康的不可变包，并协调一次后台更新检查，握手不等待更新锁或发布源；后台成功更新只影响未来 worker。固定启动器及依赖需随官方更新入口交付，见 [并发启动与采集证据](docs/development/startup-capture.md)。
@@ -45,13 +45,13 @@ Python 3.11+、Git；源码测试使用标准库与合成资料。隔离 HOME/CO
 TEST_ROOT=$(mktemp -d)
 mkdir -p "$TEST_ROOT/home" "$TEST_ROOT/codex"
 export HOME="$TEST_ROOT/home" CODEX_HOME="$TEST_ROOT/codex"
-PYTHONPATH=.:scripts:adapters/codex:installer:tools:tests python3 -B -m unittest discover -s tests
-python3 -B tools/check_docs.py
-python3 -B tools/build_client.py --scan
-python3 -B tools/check_source.py
+PYTHONPATH=src:.:tests python3 -B -m unittest discover -s tests
+python3 -B dev/checks/docs.py
+python3 -B dev/build/package.py --scan
+python3 -B dev/checks/source.py
 ```
 
-构建、发布、安装分别授权和执行。构建不推送渠道、不安装、不访问凭据。运行库、宿主适配、安装器和开发工具已按职责分目录，旧 Python 入口已移除；manifest 格式与历史包校验保持兼容，见 [Harness 共用核心](docs/development/harness-core.md)；`export-manifest.json` 是安装校验元数据，名称不代表混合仓导出。普通 Mac login Keychain helper 不要求 Apple Team／provisioning；Swift helper 需要 macOS 工具链，`DeviceComponent.swift` 仍是另一个签名候选。新设备的真实依赖、凭据 UI、宿主重载和模型采用指令必须按设备验证，合成测试不能替代。
+构建、发布、安装分别授权和执行。构建不推送渠道、不安装、不访问凭据。运行库、宿主适配、安装器和开发工具已按职责分目录，旧 Python 入口已移除；只接受新版执行布局，旧安装可重新安装；现有数据与队列不会因整理而删除，见 [Harness 共用核心](docs/development/architecture.md)；`export-manifest.json` 是安装校验元数据，名称不代表混合仓导出。普通 Mac login Keychain helper 不要求 Apple Team／provisioning；Swift helper 需要 macOS 工具链，`DeviceComponent.swift` 仍是另一个签名候选。新设备的真实依赖、凭据 UI、宿主重载和模型采用指令必须按设备验证，合成测试不能替代。
 
 - [多平台架构与 Harness 边界](docs/reference/multiplatform-development.md)。
 - [开发检查与候选构建](docs/development/README.md)；[固定发布入口](docs/development/release-pipeline.md)。

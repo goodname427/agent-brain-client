@@ -1,3 +1,8 @@
+import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
+import agent_brain_client.adapters.storage.install_state as adapters_storage_install_state
+import agent_brain_client.interfaces.cli.install as interfaces_cli_install
+import agent_brain_client.runtime.dependencies as runtime_dependencies
+import agent_brain_client.runtime.updates as runtime_updates
 """Synthetic repository first-install transactions; no real UI, Keychain, issuer or server."""
 
 import copy
@@ -17,11 +22,11 @@ sys.path[:0] = [
 import test_https_content as fixtures
 
 GRANT, ROOT = fixtures.GRANT, fixtures.ROOT
-from client_pairing import EnrollmentTerminal
-from client_release import dependency_environment
-from system_credentials import canonical
-import first_install as wizard
-import content_install
+from agent_brain_client.application.installation.pairing import EnrollmentTerminal
+from agent_brain_client.adapters.packages.client import dependency_environment
+from agent_brain_client.adapters.platforms.credentials import canonical
+import agent_brain_client.runtime.installation as wizard
+import agent_brain_client.adapters.harnesses.codex.installation as content_install
 
 
 class FirstInstall(unittest.TestCase):
@@ -45,7 +50,7 @@ class FirstInstall(unittest.TestCase):
                   patch.object(wizard,'dependency_environment',return_value={}),
                   patch.object(sys.stdin,'isatty',return_value=interactive)):
                 runner = Mock(return_value=type('Reply',(),{'returncode':0})())
-                self.assertEqual(wizard.pinned_update_runtime(self.home,action,policy,mcp,self.home,runner),0)
+                self.assertEqual(runtime_updates.pinned_update_runtime(self.home,action,policy,mcp,self.home,runner),0)
                 self.assertIs(runner.call_args.kwargs['stdin'],expected)
 
     def fixture(self):
@@ -62,7 +67,7 @@ class FirstInstall(unittest.TestCase):
         helper.chmod(0o700)
         self.materials = {
             "source_sha256": hashlib.sha256(
-                (ROOT / "native/CredentialStore.swift").read_bytes()
+                (ROOT / "src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift").read_bytes()
             ).hexdigest(),
             "helper_sha256": hashlib.sha256(helper.read_bytes()).hexdigest(),
             "credential_helper": str(helper),
@@ -164,9 +169,9 @@ class FirstInstall(unittest.TestCase):
         output = io.StringIO()
         with patch.object(Path, 'home', return_value=self.home), \
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
-                patch.object(sys, 'argv', ['first_install.py', '--connection', str(self.base / 'connection.json')]), \
+                patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', '--connection', str(self.base / 'connection.json')]), \
                 patch.object(wizard, 'run', side_effect=run), patch.object(sys, 'stdout', output):
-            code = wizard.main()
+            code = interfaces_cli_install.main()
         result = json.loads(output.getvalue())
         self.assertEqual(code, 0, result)
         self.assertTrue(result['installed'])
@@ -185,7 +190,7 @@ class FirstInstall(unittest.TestCase):
             path.write_bytes(b"SYNTHETIC_COMPILED_HELPER")
             path.chmod(0o700)
             return {
-                "helper_sha256": wizard.sha(path.read_bytes()),
+                "helper_sha256": adapters_storage_install_state.sha(path.read_bytes()),
                 "source_sha256": self.materials["source_sha256"],
             }
 
@@ -202,11 +207,11 @@ class FirstInstall(unittest.TestCase):
         with patch.object(
             wizard.shutil, "which", return_value=self.materials["dependencies"]["git"]
         ):
-            prepared = wizard.prepare_dependencies(
+            prepared = runtime_dependencies.prepare_dependencies(
                 self.home, runner=runner, helper_builder=helper_builder
             )
             self.assertEqual(
-                wizard.prepare_dependencies(
+                runtime_dependencies.prepare_dependencies(
                     self.home, runner=runner, helper_builder=helper_builder
                 ),
                 prepared,
@@ -214,7 +219,7 @@ class FirstInstall(unittest.TestCase):
             self.assertEqual(len(builds), 1)
             builds[0].write_bytes(b"SYNTHETIC_DRIFT")
             with self.assertRaises(ValueError):
-                wizard.prepare_dependencies(
+                runtime_dependencies.prepare_dependencies(
                     self.home, runner=runner, helper_builder=helper_builder
                 )
         self.assertEqual(builds[0].read_bytes(), b"SYNTHETIC_DRIFT")
@@ -227,11 +232,11 @@ class FirstInstall(unittest.TestCase):
         result = self.run_wizard()
         self.assertTrue(result["installed"], result)
         state = self.home / ".config/agent-brain-client/first-install"
-        ready = content_install.private_json(next(state.glob("prior-ready-*.json")))
+        ready = adapters_storage_private_files.private_json(next(state.glob("prior-ready-*.json")))
         self.assertEqual(ready["status"], "first-install-ready")
         self.assertFalse(ready["credential_accessed"])
         self.assertFalse(ready["native_changed"])
-        plan = content_install.private_json(state / "install-plan.json")
+        plan = adapters_storage_private_files.private_json(state / "install-plan.json")
         self.assertIn(str(self.home / "tools"), plan["mcp"]["env"]["PATH"])
         self.assertIn('model="synthetic"', self.config.read_text())
         self.assertEqual(self.prompts, 1)
@@ -373,7 +378,7 @@ class FirstInstall(unittest.TestCase):
     def test_duplicate_launch_does_not_prompt_or_modify_transaction(self):
         self.fixture()
         lock = self.home / ".config/agent-brain-client/first-install/first-install.lock"
-        with wizard.private_lease(lock.parent):
+        with adapters_storage_install_state.private_lease(lock.parent):
             result = self.run_wizard(confirm=lambda *args: self.fail("Duplicate UI"))
         self.assertEqual(result["status"], "first-install-in-progress")
         self.assertEqual(self.prompts, 0)
@@ -404,7 +409,7 @@ class FirstInstall(unittest.TestCase):
         self.fixture()
         decisions = iter(["Continue", "Back"])
         self.run_wizard(confirm=lambda *args: next(decisions))
-        plan = content_install.private_json(
+        plan = adapters_storage_private_files.private_json(
             self.home / ".config/agent-brain-client/first-install/install-plan.json"
         )
         reply = {
@@ -435,7 +440,7 @@ class FirstInstall(unittest.TestCase):
                 self.run_wizard(confirm=lambda *args: next(decisions))["status"],
                 "first-install-ready",
             )
-        ready = content_install.private_json(
+        ready = adapters_storage_private_files.private_json(
             self.home / ".config/agent-brain-client/first-install/ready.json"
         )
         self.assertEqual(clock.call_count, 1)
@@ -452,13 +457,13 @@ class FirstInstall(unittest.TestCase):
             return self.run_wizard(confirm=lambda *args: next(decisions))
 
         self.assertEqual(ready_run()["status"], "first-install-ready")
-        first = content_install.private_json(state / "ready.json")
+        first = adapters_storage_private_files.private_json(state / "ready.json")
         self.assertEqual(first["schema"], 2)
         self.assertEqual(ready_run()["status"], "first-install-ready")
-        second = content_install.private_json(state / "ready.json")
+        second = adapters_storage_private_files.private_json(state / "ready.json")
         self.assertEqual(first["installation_id"], second["installation_id"])
         identity = state / "installation-id.json"
-        content_install.save(identity, {"schema": 1, "id": "9" * 32})
+        adapters_storage_private_files.save(identity, {"schema": 1, "id": "9" * 32})
         self.assertFalse(ready_run()["installed"])
         self.assertEqual(self.prompts, 0)
 
@@ -526,7 +531,7 @@ class PreparingReset(unittest.TestCase):
     def test_wire_prepare_denied_terminal_and_unknown_errors_retain_recovery(self):
         from urllib.error import HTTPError
         import io
-        from https_content import PairingHTTPS
+        from agent_brain_client.adapters.server.https import PairingHTTPS
 
         transport = PairingHTTPS("https://synthetic.invalid")
 
@@ -565,8 +570,8 @@ class PreparingReset(unittest.TestCase):
 class LifecycleExitCodes(unittest.TestCase):
     def command(self,action,response):
         output=io.StringIO()
-        with patch.object(sys,'argv',['first_install.py','--action',action]),patch.object(sys,'platform','darwin'),patch.object(wizard.platform,'machine',return_value='arm64'),patch.object(wizard.Path,'home',return_value=Path('/synthetic/home')),patch('client_lifecycle.'+action,return_value=response),patch.object(sys,'stdout',output):
-            code=wizard.main()
+        with patch.object(sys,'argv',['agent_brain_client.runtime.installation.py','--action',action]),patch.object(sys,'platform','darwin'),patch.object(wizard.platform,'machine',return_value='arm64'),patch.object(wizard.Path,'home',return_value=Path('/synthetic/home')),patch('agent_brain_client.adapters.harnesses.codex.lifecycle.'+action,return_value=response),patch.object(sys,'stdout',output):
+            code=interfaces_cli_install.main()
         self.assertEqual(json.loads(output.getvalue()),response)
         return code
 
@@ -594,7 +599,7 @@ class NewDeviceConnectionCLI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
             env = dict(os.environ, HOME=str(home), CODEX_HOME=str(home / 'codex'))
-            result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'installer/first_install.py')],
+            result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'src/agent_brain_client/interfaces/cli/install.py')],
                                     env=env, capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 2, result.stderr)
             value = json.loads(result.stdout)
@@ -608,12 +613,12 @@ class NewDeviceConnectionCLI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
             path = home / '.config/agent-brain-client/first-install/connection.json'
-            content_install.save(path, {'schema': 1})
+            adapters_storage_private_files.save(path, {'schema': 1})
             with patch.object(Path, 'home', return_value=home), \
-                    patch.object(sys, 'argv', ['first_install.py']), \
+                    patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py']), \
                     patch.object(sys, 'stdout', io.StringIO()) as output, \
                     patch.object(wizard, 'run', side_effect=AssertionError('Must not install')):
-                self.assertEqual(wizard.main(), 2)
+                self.assertEqual(interfaces_cli_install.main(), 2)
             self.assertEqual(json.loads(output.getvalue())['status'], 'connection-recovery-review-required')
 
 

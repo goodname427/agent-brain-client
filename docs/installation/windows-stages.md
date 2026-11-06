@@ -5,7 +5,7 @@
 Use the normal public entry from a fresh official Client checkout:
 
 ```powershell
-& ./tools/install-windows.ps1
+& ./bootstrap/windows/install.ps1
 ```
 
 The Windows entry reuses an existing device identity and release policy. It checks
@@ -52,8 +52,8 @@ Pause only Agent Brain MCP in Codex and use its normal reload; wait for its work
 to exit. Then run:
 
 ```powershell
-& ./tools/install-windows.ps1 -Action uninstall
-& ./tools/install-windows.ps1
+& ./bootstrap/windows/install.ps1 -Action uninstall
+& ./bootstrap/windows/install.ps1
 ```
 
 Normal uninstall removes only authenticated MCP/Rule/Skill mappings and the owned

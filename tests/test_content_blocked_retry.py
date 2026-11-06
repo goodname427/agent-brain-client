@@ -2,7 +2,7 @@
 import copy
 import unittest
 import test_content_outbox as fixture
-from content_cache import CacheBlocked
+from agent_brain_client.domain.errors import CacheBlocked
 
 
 class BlockedRetry(unittest.TestCase):

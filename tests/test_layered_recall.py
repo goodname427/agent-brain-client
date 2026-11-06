@@ -1,3 +1,4 @@
+import agent_brain_client.adapters.storage.recall_receipts as recall_receipts
 """Synthetic shared Mac/Windows recall, with no credentials or native sessions."""
 import copy
 import io
@@ -13,17 +14,17 @@ import unicodedata
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / name) for name in ('installer', 'tools', 'scripts', 'adapters/codex')]
-import global_memory as gm
-from global_memory_scope import digest, namespace, source_context
+sys.path[:0] = [str(ROOT / name) for name in ('src', 'src', 'src', 'src')]
+import agent_brain_client.runtime.collection as gm
+from agent_brain_client.domain.scopes import digest, namespace, source_context
 
 
 class LayeredRecall(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name).resolve(); gm.old.imports()
+        self.root = Path(tmp.name).resolve();
         if os.name == 'nt':
-            from brain_windows import protect_new
+            from agent_brain_client.adapters.platforms.windows.native import protect_new
             protect_new(self.root, directory=True)
         network = patch.object(socket.socket, 'connect', side_effect=AssertionError('Network forbidden'))
         network.start(); self.addCleanup(network.stop)
@@ -42,7 +43,7 @@ class LayeredRecall(unittest.TestCase):
         client = SimpleNamespace(actor='synthetic-owner', device=self.device,
                                  params=lambda session: {'origin': self.local, 'session_id': session},
                                  wire=lambda method, params, **kwargs: self.send(method, params))
-        for target in (patch.object(gm, 'GlobalClient', return_value=client),
+        for target in (patch.object(gm, 'CollectionClient', return_value=client),
                        patch.object(gm, 'settings_path', return_value=self.root/'settings.json')):
             target.start(); self.addCleanup(target.stop)
 
@@ -70,7 +71,7 @@ class LayeredRecall(unittest.TestCase):
         return gm.recall(self.value, self.local, 'synthetic-reader', 'synthetic question')
 
     def test_sharing_questions_survive_query_and_verified_layers(self):
-        from brain_content import global_recall_params, global_recall_result
+        from agent_brain_client.domain.contract import global_recall_params, global_recall_result
         group = self.response['result']['namespace_results'][0]
         for question in ('为什么规则禁止跨项目共享？', '禁止跨项目共享是什么意思？',
                          'What does keep this project-only mean?'):
@@ -85,7 +86,7 @@ class LayeredRecall(unittest.TestCase):
                 self.assertEqual(self.sent[-1][1]['query'], question)
 
     def test_body_shape_preserves_query_and_verified_recall_text(self):
-        from brain_content import global_recall_params, global_recall_result
+        from agent_brain_client.domain.contract import global_recall_params, global_recall_result
         text = 'Synthetic documentation password=example-only; Bearer ' + 'synthetic' * 4
         group = self.response['result']['namespace_results'][0]
         for row in [*group['recall']['L1'], *group['recall']['L2'], group['recall']['L3']]:
@@ -106,7 +107,7 @@ class LayeredRecall(unittest.TestCase):
                 group['recall']['L3']['content'] = text
 
     def test_mcp_contract_matches_shared_nfc_source_relation_on_both_platforms(self):
-        from brain_content import global_recall_result, recall_origin
+        from agent_brain_client.domain.contract import global_recall_result, recall_origin
         for root in ('/synthetic/projects/caf\u00e9', 'C:\\Synthetic\\Projects\\caf\u00e9'):
             for reader_form, source_form in (('NFC', 'NFD'), ('NFD', 'NFC')):
                 with self.subTest(root=root, reader=reader_form, source=source_form):
@@ -119,7 +120,7 @@ class LayeredRecall(unittest.TestCase):
                     self.assertEqual(recall_origin(self.local), recall_origin(self.foreign))
 
     def test_mcp_origin_normalizes_before_containment_without_compatibility_folding(self):
-        from brain_content import recall_origin
+        from agent_brain_client.domain.contract import recall_origin
         for root in ('/synthetic/projects/caf\u00e9', 'C:/Synthetic/Projects/caf\u00e9'):
             local = self.origin(root)
             local['cwd'] = unicodedata.normalize('NFD', root) + '/src'
@@ -169,7 +170,7 @@ class LayeredRecall(unittest.TestCase):
         self.response['result']['namespace_results']=[self.group(),self.group()]
         result=self.run_hook()
         self.assertTrue(result)
-        receipt=gm.recall_observation(self.value)
+        receipt=recall_receipts.recall_observation(self.value)
         self.assertEqual(receipt['item_count'],6)
         self.assertEqual(len(receipt['retrieval']['selected']),6)
 
@@ -195,7 +196,7 @@ class LayeredRecall(unittest.TestCase):
         observed = []; result = self.run_hook(observe=observed.append)
         context = result['hookSpecificOutput']['additionalContext']
         self.assertIn('Synthetic L2 answer marker', context); self.assertIn('Synthetic L3 answer marker', context)
-        receipt = gm.recall_observation(self.value)
+        receipt = recall_receipts.recall_observation(self.value)
         self.assertEqual(receipt, observed[0]); self.assertEqual(receipt['layer_counts'], {'L1': 1, 'L2': 1, 'L3': 1})
         self.assertEqual(receipt['status'], 'context-prepared'); self.assertEqual(receipt['model_used'], 'unknown')
         self.assertEqual(receipt['context_bytes'], len(context.encode()))
@@ -204,10 +205,10 @@ class LayeredRecall(unittest.TestCase):
         self.assertEqual(self.run_hook(), {}); self.assertEqual(len(self.sent), 1)
 
     def test_empty_recall_and_unobserved_are_distinct(self):
-        self.assertEqual(gm.recall_observation(self.value), {'status': 'unobserved', 'model_used': 'unknown'})
+        self.assertEqual(recall_receipts.recall_observation(self.value), {'status': 'unobserved', 'model_used': 'unknown'})
         self.response['result']['namespace_results'] = []
         self.assertEqual(self.run_hook(), {})
-        receipt = gm.recall_observation(self.value)
+        receipt = recall_receipts.recall_observation(self.value)
         self.assertEqual(receipt['status'], 'empty'); self.assertEqual(receipt['item_count'], 0)
         self.assertEqual(receipt['context_bytes'], 0)
 
@@ -220,7 +221,7 @@ class LayeredRecall(unittest.TestCase):
         result = self.run_hook()
         self.assertTrue(result)
         self.assertLessEqual(len(result['hookSpecificOutput']['additionalContext'].encode()), 24576)
-        receipt = gm.recall_observation(self.value)
+        receipt = recall_receipts.recall_observation(self.value)
         self.assertEqual(receipt['item_count'], 3)
         self.assertEqual(receipt['retrieval']['omitted_for_budget'], 0)
 
@@ -229,7 +230,7 @@ class LayeredRecall(unittest.TestCase):
         group['recall']['L1'][0]['content'] = 'x' * 25000
         result = self.run_hook()
         self.assertIn('Synthetic L2 answer marker', result['hookSpecificOutput']['additionalContext'])
-        receipt = gm.recall_observation(self.value)
+        receipt = recall_receipts.recall_observation(self.value)
         self.assertEqual(receipt['retrieval']['candidate_count'], 3)
         self.assertEqual(receipt['retrieval']['omitted_for_budget'], 1)
         self.assertEqual(len(receipt['retrieval']['returned']), 3)
@@ -238,7 +239,7 @@ class LayeredRecall(unittest.TestCase):
 
     def test_request_receipt_survives_later_query_and_failed_query_has_receipt(self):
         self.run_hook()
-        first = gm.recall_observation(self.value)
+        first = recall_receipts.recall_observation(self.value)
         self.assertFalse(first['output_written'])
         self.assertEqual(first['query_sha256'], digest('Synthetic question marker'))
         self.assertEqual(first['retrieval']['selected'][0]['content_sha256'], digest('Synthetic L1 answer marker'))
@@ -249,10 +250,10 @@ class LayeredRecall(unittest.TestCase):
             return SimpleNamespace(buffer=io.BytesIO(json.dumps(data).encode()))
         with patch.object(self, 'prompt', side_effect=next_prompt), patch.object(gm, 'recall', side_effect=ValueError('FICTIONAL_PRIVATE_ERROR')):
             with self.assertRaises(ValueError): self.run_hook()
-        failed = gm.recall_observation(self.value)
+        failed = recall_receipts.recall_observation(self.value)
         self.assertEqual(failed['status'], 'failed'); self.assertEqual(failed['error_type'], 'ValueError')
         self.assertNotEqual(first['request_key'], failed['request_key'])
-        self.assertEqual(gm.recall_observation(self.value, first['request_key']), first)
+        self.assertEqual(recall_receipts.recall_observation(self.value, first['request_key']), first)
         self.assertNotIn('FICTIONAL_PRIVATE_ERROR', json.dumps(failed))
 
     def test_cli_observes_stdout_and_redacts_failure(self):
@@ -262,7 +263,7 @@ class LayeredRecall(unittest.TestCase):
         self.assertIn('additionalContext', output.getvalue())
         receipt = json.loads(diagnostic.getvalue())
         self.assertEqual(receipt['status'], 'hook-output-written'); self.assertEqual(receipt['recall_status'], 'context-prepared')
-        self.assertTrue(gm.recall_observation(self.value, receipt['request_key'])['output_written'])
+        self.assertTrue(recall_receipts.recall_observation(self.value, receipt['request_key'])['output_written'])
         self.assertNotIn('answer marker', diagnostic.getvalue()); self.assertEqual(receipt['model_used'], 'unknown')
         with patch.object(sys, 'argv', ['global_memory', 'global-hook']), patch.object(gm, 'load', side_effect=RuntimeError('SYNTHETIC_SECRET')), patch.object(sys, 'stdout', io.StringIO()), patch.object(sys, 'stderr', io.StringIO()) as errors:
             self.assertEqual(gm.main(), 0)

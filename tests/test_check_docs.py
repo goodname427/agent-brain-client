@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-import check_docs
+import dev.checks.docs as check_docs
 
 
 class DocumentationChecks(unittest.TestCase):

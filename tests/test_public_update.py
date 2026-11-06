@@ -1,3 +1,6 @@
+import agent_brain_client.interfaces.cli.install as interfaces_cli_install
+import agent_brain_client.runtime.updates as runtime_updates
+import agent_brain_client.adapters.storage.collection as source_policy
 """Public update actions with verified synthetic registration; no real device."""
 
 import copy
@@ -12,10 +15,10 @@ import unittest
 from unittest.mock import patch
 
 import test_client_uninstall as fixtures
-import first_install as wizard
-import prepare_install_runtime as bootstrap
-import global_memory as gm
-import global_memory_install as hooks
+import agent_brain_client.runtime.installation as wizard
+import bootstrap.python_runtime as bootstrap
+import agent_brain_client.runtime.collection as gm
+import agent_brain_client.adapters.harnesses.codex.collection_installation as hooks
 
 
 class PublicUpdate(unittest.TestCase):
@@ -75,7 +78,7 @@ class PublicUpdate(unittest.TestCase):
         self.channel = Channel
         # This fixture isolates channel reporting. Actual launcher transactions
         # have their own synthetic package/registration integration tests.
-        import windows_install_complete as guide
+        import agent_brain_client.runtime.installation_completion as guide
         setup = patch.object(guide, 'source_setup', return_value={'collection_enabled':True})
         setup.start()
         self.addCleanup(setup.stop)
@@ -88,7 +91,7 @@ class PublicUpdate(unittest.TestCase):
         with (patch.object(
             self.f.f.backend, "load", side_effect=AssertionError("No credential access")
         ), patch.object(hooks, 'install', return_value={'status':'global-hook-installed','native_changed':False})):
-            result = wizard.manage_update(
+            result = runtime_updates.manage_update(
                 self.home, action, channel_factory=self.channel
             )
         self.assertEqual(dict(os.environ), before_env)
@@ -109,7 +112,7 @@ class PublicUpdate(unittest.TestCase):
         self.assertEqual(result["active_package_version"], "0.2.10")
         self.assertIsNone(result["running_worker_version"])
         self.assertFalse(result["active_package_changed"])
-        self.assertEqual(wizard.lifecycle_exit("check-update", result), 0)
+        self.assertEqual(interfaces_cli_install.lifecycle_exit("check-update", result), 0)
 
     def test_explicit_maintenance_tolerates_a_six_second_fetch(self):
         class SlowChannel(self.channel):
@@ -130,10 +133,10 @@ class PublicUpdate(unittest.TestCase):
         with (patch.object(wizard, 'ClientReleases', SlowChannel),
               patch.object(self.f.f.backend, 'load', side_effect=AssertionError('No credential access')),
               patch.object(hooks, 'install', return_value={'status':'global-hook-installed','native_changed':False})):
-            checked = wizard.manage_update(self.home, 'check-update')
+            checked = runtime_updates.manage_update(self.home, 'check-update')
             self.assertEqual(checked['status'], 'client-update-available', checked)
             self.assertFalse(checked['active_package_changed'])
-            updated = wizard.manage_update(self.home, 'update')
+            updated = runtime_updates.manage_update(self.home, 'update')
             self.assertEqual(updated['status'], 'client-update-updated', updated)
         self.assertEqual(self.f.f.config.read_bytes(), self.native_before)
         self.assertEqual((self.f.state / 'codex-mcp.json').read_bytes(), self.registration)
@@ -164,7 +167,7 @@ class PublicUpdate(unittest.TestCase):
                 self.discovery_status = failure
                 self.update_status = failure
                 result = self.action(action)
-                self.assertEqual(wizard.lifecycle_exit(action, result), 2, result)
+                self.assertEqual(interfaces_cli_install.lifecycle_exit(action, result), 2, result)
                 self.assertEqual(result["active_package_version"], "0.2.10")
                 self.assertIsNone(result["latest_channel_version"])
                 self.assertFalse(result["channel_checked"])
@@ -172,14 +175,14 @@ class PublicUpdate(unittest.TestCase):
 
     def test_current_channel_still_refreshes_existing_hook_through_public_update(self):
         hooks.install(SimpleNamespace(device_home=str(self.home), profile_id=None, operator=None, operator_sha256=None))
-        original = gm.load(self.home)
+        original = source_policy.load(self.home)
         self.latest = {'manifest': {'version': self.active['version']}, 'commit': self.active['commit']}
         self.discovery_status = 'current'
         self.update_status = 'current'
         with patch.object(self.f.f.backend, 'load', side_effect=AssertionError('No credential access')):
-            checked = wizard.manage_update(self.home, 'check-update', channel_factory=self.channel)
+            checked = runtime_updates.manage_update(self.home, 'check-update', channel_factory=self.channel)
             self.assertTrue(checked['global_hook']['update_available'], checked)
-            updated = wizard.manage_update(self.home, 'update', channel_factory=self.channel)
+            updated = runtime_updates.manage_update(self.home, 'update', channel_factory=self.channel)
         self.assertEqual(updated['status'], 'client-update-updated', updated)
         self.assertEqual(updated['global_hook']['status'], 'global-hook-updated')
         self.assertFalse(updated['active_package_changed'])
@@ -187,16 +190,16 @@ class PublicUpdate(unittest.TestCase):
         self.assertIsNone(updated['reload_required'])
         self.assertTrue(updated['reload_check']['hook_configuration_changed'])
         self.assertFalse(updated['reload_check']['mcp_registration_changed'])
-        self.assertEqual(gm.load(self.home), original)
+        self.assertEqual(source_policy.load(self.home), original)
 
     def test_hook_failure_reports_partial_update_and_nonzero_exit(self):
         with patch.object(hooks, 'refresh', side_effect=ValueError('Synthetic Hook drift')):
-            result = wizard.manage_update(self.home, 'update', channel_factory=self.channel)
+            result = runtime_updates.manage_update(self.home, 'update', channel_factory=self.channel)
         self.assertEqual(result['reason'], 'global-hook-refresh-required', result)
         self.assertEqual(result['active_package_version'], '0.2.11')
         self.assertTrue(result['active_package_changed'])
         self.assertIsNone(result['native_changed'])
-        self.assertEqual(wizard.lifecycle_exit('update', result), 2)
+        self.assertEqual(interfaces_cli_install.lifecycle_exit('update', result), 2)
 
     def test_real_hook_conflict_reaches_public_receipt_with_exact_field(self):
         hooks.install(SimpleNamespace(device_home=str(self.home), profile_id=None, operator=None, operator_sha256=None))
@@ -205,28 +208,28 @@ class PublicUpdate(unittest.TestCase):
         changed = config.read_bytes()
         for action in ('check-update', 'update'):
             with self.subTest(action=action), patch.object(self.f.f.backend, 'load', side_effect=AssertionError('No credential access')):
-                result = wizard.manage_update(self.home, action, channel_factory=self.channel)
+                result = runtime_updates.manage_update(self.home, action, channel_factory=self.channel)
             self.assertEqual(result['reason'], 'managed-config-conflict', result)
             self.assertEqual(result['conflict_field'], 'config.hooks.SessionStart[0].hooks[0].timeout')
             self.assertIn(result['conflict_field'], result['next_action'])
-            self.assertEqual(wizard.lifecycle_exit(action, result), 2)
+            self.assertEqual(interfaces_cli_install.lifecycle_exit(action, result), 2)
             self.assertEqual(config.read_bytes(), changed)
 
     def test_mcp_conflict_receipt_names_table_without_echoing_values(self):
         config = self.f.f.config
         changed = config.read_bytes().replace(b'command = ', b'command = "synthetic-unapproved" # ')
         config.write_bytes(changed)
-        result = wizard.manage_update(self.home, 'check-update', channel_factory=self.channel)
+        result = runtime_updates.manage_update(self.home, 'check-update', channel_factory=self.channel)
         self.assertEqual(result['reason'], 'mcp-binding-changed', result)
         self.assertEqual(result['conflict_field'], 'mcp_servers.agent_brain_server')
         self.assertNotIn('synthetic-unapproved', json.dumps(result))
         self.assertEqual(config.read_bytes(), changed)
 
     def test_busy_editor_receipt_gives_retry_action_without_claiming_conflict(self):
-        from brain_host_files import HostConfigChanged
+        from agent_brain_client.adapters.storage.host_files import HostConfigChanged
         for action in ('check-update', 'update'):
             with self.subTest(action=action), patch.object(hooks, 'refresh', side_effect=HostConfigChanged('synthetic-private-detail')):
-                result = wizard.manage_update(self.home, action, channel_factory=self.channel)
+                result = runtime_updates.manage_update(self.home, action, channel_factory=self.channel)
             self.assertEqual(result['reason'], 'config-edit-in-progress', result)
             self.assertNotIn('conflict_field', result)
             self.assertIn('editor finish', result['next_action'])
@@ -242,30 +245,30 @@ class PublicUpdate(unittest.TestCase):
             calls.append((argv, kwargs))
             return subprocess.CompletedProcess(argv, 2)
         with patch.object(sys, 'executable', str(self.home / 'synthetic-other-python')):
-            self.assertEqual(wizard.reexec_update_runtime(self.home, 'update', runner=runner), 2)
+            self.assertEqual(runtime_updates.reexec_update_runtime(self.home, 'update', runner=runner), 2)
         self.assertEqual(calls[0][0][0], self.f.f.materials['dependencies']['python'])
         self.assertEqual(calls[0][1]['env']['CODEX_HOME'], str(self.f.native))
         self.assertEqual(self.f.f.config.read_bytes(), torn)
-        checked = wizard.manage_update(self.home, 'check-update', channel_factory=self.channel)
+        checked = runtime_updates.manage_update(self.home, 'check-update', channel_factory=self.channel)
         self.assertEqual(checked['reason'], 'global-hook-recovery-required', checked)
         output = io.StringIO()
         with (patch.object(Path, 'home', return_value=self.home),
-              patch.object(sys, 'argv', ['first_install.py', '--action', 'update']),
+              patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', '--action', 'update']),
               patch.object(wizard, 'ClientReleases', self.channel),
               patch.object(sys, 'stdout', output)):
-            code = wizard.main()
+            code = interfaces_cli_install.main()
         value = json.loads(output.getvalue())
         self.assertEqual(code, 0, value)
         self.assertEqual(value['status'], 'client-update-updated', value)
         self.assertTrue(value['reload_check']['hook_configuration_changed'])
-        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        self.assertTrue(hooks.installation_status(source_policy.load(self.home)))
 
     def test_cli_does_not_resolve_connection_pair_or_install(self):
         output = io.StringIO()
         with (
             patch.object(Path, "home", return_value=self.home),
             patch.object(
-                sys, "argv", ["first_install.py", "--action", "check-update"]
+                sys, "argv", ["agent_brain_client.runtime.installation.py", "--action", "check-update"]
             ),
             patch.object(sys, "stdout", output),
             patch.object(wizard, "ClientReleases", self.channel),
@@ -275,7 +278,7 @@ class PublicUpdate(unittest.TestCase):
                 side_effect=AssertionError("No connection resolution"),
             ),
         ):
-            code = wizard.main()
+            code = interfaces_cli_install.main()
         self.assertEqual(code, 0, output.getvalue())
         self.assertEqual(
             json.loads(output.getvalue())["status"], "client-update-available"
@@ -288,7 +291,7 @@ class PublicUpdate(unittest.TestCase):
                 sys,
                 "argv",
                 [
-                    "first_install.py",
+                    "agent_brain_client.runtime.installation.py",
                     "--action",
                     "update",
                     "--connection",
@@ -302,7 +305,7 @@ class PublicUpdate(unittest.TestCase):
                 side_effect=AssertionError("No replacement policy"),
             ),
         ):
-            code = wizard.main()
+            code = interfaces_cli_install.main()
         self.assertEqual(code, 2)
         self.assertEqual(
             json.loads(output.getvalue())["reason"], "existing-policy-only"
@@ -316,7 +319,7 @@ class PublicUpdate(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 2)
 
         with patch.object(sys, "executable", str(self.home / "synthetic-other-python")):
-            code = wizard.reexec_update_runtime(self.home, "update", runner=runner)
+            code = runtime_updates.reexec_update_runtime(self.home, "update", runner=runner)
         self.assertEqual(code, 2)
         argv, options = calls[0]
         self.assertEqual(argv[0], self.f.f.materials["dependencies"]["python"])
@@ -327,7 +330,7 @@ class PublicUpdate(unittest.TestCase):
     def test_runtime_failure_reports_update_review_without_install_fallback(self):
         output = io.StringIO()
         with (
-            patch.object(sys, "argv", ["first_install.py", "--action", "update"]),
+            patch.object(sys, "argv", ["agent_brain_client.runtime.installation.py", "--action", "update"]),
             patch.object(sys, "stdout", output),
             patch.object(
                 wizard,
@@ -338,7 +341,7 @@ class PublicUpdate(unittest.TestCase):
                 wizard, "run", side_effect=AssertionError("No install fallback")
             ),
         ):
-            code = wizard.main()
+            code = interfaces_cli_install.main()
         result = json.loads(output.getvalue())
         self.assertEqual(code, 2)
         self.assertEqual(result["status"], "client-update-review-required")

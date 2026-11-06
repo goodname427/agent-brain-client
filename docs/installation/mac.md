@@ -17,7 +17,7 @@ SOURCE_SHA=$(git -C "$CHECKOUT_ROOT" rev-parse HEAD)
 printf '%s\n' "$SOURCE_SHA" > "$CHECKOUT_ROOT/.git/agent-brain-source-sha"
 printf '%s\n' "$SOURCE_SHA" > "$CHECKOUT_ROOT/.git/agent-brain-bootstrap-once"
 printf 'Installer source commit: %s\nCheckout: %s\n' "$SOURCE_SHA" "$CHECKOUT_ROOT"
-sh "$CHECKOUT_ROOT/tools/install-mac.sh"
+sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh"
 ```
 
 下载失败会停止，不会改用旧目录运行。新入口会核对 `origin`、`main`、commit SHA 和干净工作区，再消费一次性标记并执行该 checkout；从普通旧 checkout 启动时才会另建最新 `main` checkout。Git checkout 只负责安装器源码，不改变已安装 MCP 的 HTTPS 发布 origin/ref/anchor 或运行时信任锚。
@@ -25,7 +25,7 @@ sh "$CHECKOUT_ROOT/tools/install-mac.sh"
 如果手上只有旧 checkout，先运行上面的完整命令获取最新入口。首次只需在本机填写用户选择的 **HTTPS Server 地址**，然后在原生隐藏输入窗口填写 **Server 生成的长期接入密钥**。也可用非秘密参数指定地址：
 
 ```sh
-sh "$CHECKOUT_ROOT/tools/install-mac.sh" --server 'https://your-server.example'
+sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --server 'https://your-server.example'
 ```
 
 正常首次安装不要求 connection 文件、SHA-256、ready 回执或邀请码。地址必须准确且证书正常；安装器不追随认证重定向。密钥只进入本机隐藏输入和专用 login Keychain，不能粘贴到聊天、命令行或环境变量。Server 返回当前平台配置与已授权内容范围后，自动完成发行链验证、设备身份确认、MCP 配置事务和只读协议检查。服务未启用新协议、证书失败或范围漂移时停止并保留现场，不能借示例配置绕过。
@@ -41,7 +41,7 @@ sh "$CHECKOUT_ROOT/tools/install-mac.sh" --server 'https://your-server.example'
 ## 状态与实际使用
 
 ```sh
-sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action status
+sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --action status
 ```
 
 状态列出已装活动版本、队列各状态数量和自有映射数，不访问 Keychain、不请求 Server、不输出内容正文。它是本机完整性检查，不能替代在线使用验证。
@@ -57,8 +57,8 @@ sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action status
 先在宿主的 Settings → MCP servers 中，只停用 `agent_brain_server`，保存并使用宿主提供的 Restart/reload 让配置生效，使本工具 MCP worker 退出；不要退出 ChatGPT/CodexCLI，也不杀进程。此精确停用只将本工具表的 enabled 从 true 改为 false，不能改 command、args、env、工具范围、摘要或其他 MCP。公开 status 会报告 content-native-client-disabled、registration_verified:true 和队列/映射统计，卸载仍检查完整原绑定和排他 lease。管理界面没有单服务停用/正常关闭能力，或 worker 未退出时停止报告，不以退出整个宿主兜底。宿主配置能力见 [官方 MCP 说明](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。然后执行：
 
 ```sh
-sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action uninstall
-sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action status
+sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --action uninstall
+sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --action status
 ```
 
 确认 `Continue` 后移除本工具 MCP 表、登记和哈希一致的自有 Memory/Rule/Skill 文件；只删自有指令块，保留用户指令与其他 Codex 设置。空的自有 Skill 目录移除；不递归删除目录。退役缓存的 owned/active 映射指针，使再次安装能够重建相同版本映射。`client-uninstalled` 表示入口登记及映射已移除；不能以仍存有恢复材料称已安装，也不能以仍活着的旧进程称卸载验证通过。
@@ -74,8 +74,8 @@ sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action status
 ## 中断恢复与再次安装
 
 ```sh
-sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action repair
-sh "$CHECKOUT_ROOT/tools/install-mac.sh"
+sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --action repair
+sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh"
 ```
 
 repair 继续自身中断的卸载，只接受事务前后像，外部修改停止并保留双方。地址／密钥首次安装中断时重跑同一入口，自动恢复；旧 connection 协议的未完成事务仍用原文件及摘要恢复；已有身份的再次安装直接重跑无参数命令，复用已保存计划、原 identity/profile/helper 和同一缓存，按现有安装事务恢复。
@@ -93,8 +93,8 @@ repair 继续自身中断的卸载，只接受事务前后像，外部修改停�
 用户提出“帮我把 Agent Brain 更新到最新版，然后继续完成 Onboarding”时，Agent 使用公开仓库入口：
 
 ```sh
-sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action check-update
-sh "$CHECKOUT_ROOT/tools/install-mac.sh" --action update
+sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --action check-update
+sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --action update
 ```
 
 不传新 connection 或邀请。两项动作复用已验证登记中的原 policy、渠道、信任锚和固定依赖，不重新配对或访问设备凭据。update 通过既有安装事务交接旧固定启动器，再用既有健康检查及回滚机制切换活动包；保留 MCP 暂停状态及其他宿主设置。0.3.0 的专用兼容桥接见下文。安装或刷新全局 Hook，同时默认登记和开启所有项目的今后采集，包含旧设备与非交互更新；保留身份、数据、队列、排除目录和隔离规则。宿主提示时按正常流程审核 Hook。check-update 可以下载并校验候选缓存，但不激活、不运行候选健康检查、不刷新 Hook。维护所需工具/解释器缺失或漂移时停止审核，不重新准备或改写其绑定。重复 install 的已安装分支只核验登记，不检查或应用软件更新，输出会指向上述入口。
@@ -103,7 +103,7 @@ check-update 成功返回 client-update-available/current 与 channel_checked:tr
 
 #### 0.3.0 到 0.3.1 的 HTTPS 更新
 
-0.3.0 的已发布 updater 固定要求 22 个 HTTPS 文件，其中包含 `adapters/codex/codex_notify_mux.py`；0.2.14 固定要求的则是不同的 21 文件集合。0.3.0 自带 updater 会拒绝 21 文件补丁，因此这一个旧版本不能使用其活动包内的自动更新路径。不要改写本机 release policy，也不要把 mux 加回 0.3.1 包。
+0.3.0 的已发布 updater 固定要求 22 个 HTTPS 文件，其中包含 `src/agent_brain_client/adapters/harnesses/codex/notify.py`；0.2.14 固定要求的则是不同的 21 文件集合。0.3.0 自带 updater 会拒绝 21 文件补丁，因此这一个旧版本不能使用其活动包内的自动更新路径。不要改写本机 release policy，也不要把 mux 加回 0.3.1 包。
 
 0.3.0 的 checkout 尚没有 `bootstrap_main.py`，所以这一步必须从官方 HTTPS 仓库取得当前 main 源码；它只准备维护工具源码，不安装或改写 Client。先创建独立 checkout，并确认来源、分支与工作树：
 
@@ -120,8 +120,8 @@ test -z "$(/usr/bin/git -C "$MAIN_CHECKOUT" status --porcelain --untracked-files
 然后从该独立 checkout 调用已有更新入口：
 
 ```sh
-sh "$MAIN_CHECKOUT/tools/install-mac.sh" --action check-update
-sh "$MAIN_CHECKOUT/tools/install-mac.sh" --action update
+sh "$MAIN_CHECKOUT/bootstrap/macos/install.sh" --action check-update
+sh "$MAIN_CHECKOUT/bootstrap/macos/install.sh" --action update
 ```
 
 新 checkout 的 updater 只接受精确已知的 0.3.0 历史策略或 0.2.14 当前策略，并仍要求候选包恰好匹配当前 21 文件清单。它复用原 release policy 字节、信任锚和固定依赖；不重新配对、不改 allowlist、不访问设备凭据。

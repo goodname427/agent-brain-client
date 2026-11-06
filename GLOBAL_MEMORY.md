@@ -8,8 +8,8 @@ new definitions use the host's normal Hook review/trust flow.
 ## Install/update the entry
 
 ```sh
-sh tools/memory.sh global-install
-sh tools/memory.sh global-status
+sh bin/memory.sh global-install
+sh bin/memory.sh global-status
 ```
 
 Installation is repeatable and owns only a marked inline Hook block in the user
@@ -24,13 +24,13 @@ reuses their existing SSH identity and verified host. It contains references,
 never key material. Source setup previews a scope, then applies its exact digest.
 
 ```sh
-sh tools/memory.sh global-configure \
+sh bin/memory.sh global-configure \
   --include-root /absolute/personal-projects \
   --isolate-root /absolute/separate-projects \
   --exclude-root /absolute/company-work \
   --non-project-root /absolute/personal-notes
 # Review the preview, then use the printed command:
-sh tools/memory.sh global-configure --approve-scope PRINTED_SCOPE_SHA256
+sh bin/memory.sh global-configure --approve-scope PRINTED_SCOPE_SHA256
 ```
 
 These are illustrative paths, not guessed exclusions. Include roots share one
@@ -55,12 +55,12 @@ For an owner who explicitly approves all local future conversations with no dire
 ## Use/control
 
 ```sh
-sh tools/memory.sh global-status
-sh tools/memory.sh global-recall
-sh tools/memory.sh global-sync
-sh tools/memory.sh global-stop
-sh tools/memory.sh global-resume
-sh tools/memory.sh global-uninstall
+sh bin/memory.sh global-status
+sh bin/memory.sh global-recall
+sh bin/memory.sh global-sync
+sh bin/memory.sh global-stop
+sh bin/memory.sh global-resume
+sh bin/memory.sh global-uninstall
 ```
 
 Run recall from an approved context. It returns native-configured L1 results per namespace, independently assembled
@@ -88,7 +88,7 @@ for exclusion or left outside approved personal roots.
 
 ## Windows normal entry
 
-The normal `& ./tools/install-windows.ps1` flow now installs the owned inline Hook
+The normal `& ./bootstrap/windows/install.ps1` flow now installs the owned inline Hook
 and offers explicit local source selection and scope approval. See
 [Windows installation stages](docs/installation/windows-stages.md). Deferring selection
 keeps the Hook inert before reading its input. An unadmitted device receives a

@@ -11,7 +11,7 @@ Windows 正常设备没有 Server SSH 管理器。已批准精确范围后，`gl
 显式检查 Server 登记：
 
 ```powershell
-& ./tools/memory-windows.ps1 global-status --check-server
+& ./bin/memory.ps1 global-status --check-server
 ```
 
 此命令使用已有 HTTPS 身份，发出 `memory_global_status`、`params:{}` 的只读元数据请求，返回本设备是否已登记和已有个人池 ID；它不启用或恢复来源。老 Server 不支持空参数时会明确返回错误，不把错误当成未登记。仅凭 `global_source_device_denied` 不能区分“未登记”和“身份/授权不匹配”。

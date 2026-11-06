@@ -20,4 +20,4 @@
 
 [connection.example.json](connection.example.json) 是无凭据旧连接格式示例，包含合成端点和占位锚，只供合同说明／旧事务兼容，不能直接安装；[历史冻结映射](../FREEZE-4.0.json) 是既有 0.4 阶段不可变基线。二者及本地 [运行 manifest](../releases/manifest.json) 保留原字节与路径，不随文档归档或版本文案重写。
 
-`python3 -B tools/check_docs.py` 离线检查所有文档的相对链接／锚点；现有 Client checks CI 自动运行它及故障注入测试。维护规则见 [文档维护](maintenance.md)。
+`python3 -B dev/checks/docs.py` 离线检查所有文档的相对链接／锚点；现有 Client checks CI 自动运行它及故障注入测试。维护规则见 [文档维护](maintenance.md)。

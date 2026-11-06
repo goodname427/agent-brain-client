@@ -4,7 +4,7 @@ import json
 import unittest
 
 import test_content_outbox as fixture
-from content_mcp import ContentServer
+from agent_brain_client.interfaces.mcp.content import ContentServer
 
 
 class CatalogPages(unittest.TestCase):
@@ -86,7 +86,7 @@ class CatalogPages(unittest.TestCase):
 
     def test_offline_automation_finds_later_page_matches_and_stops_when_full(self):
         from unittest.mock import patch
-        import project_memory
+        import agent_brain_client.adapters.harnesses.codex.project as project_memory
         self.assertEqual(self.f.adapter.refresh()['status'],'content-refreshed')
         self.f.cloud.offline=True
         settings={'profile':'fictional-profile','profile_sha256':'a'*64,'content_policy':'fictional-content',
@@ -98,8 +98,8 @@ class CatalogPages(unittest.TestCase):
             if request['method']=='memory_query':return {'error':{'code':'transport_unconfirmed','retryable':True}}
             return original(request)
         with patch.object(project_memory,'private_json',side_effect=private), \
-                patch('https_content.HTTPSContentClient',return_value=self.f.cloud), \
-                patch('content_cache.ContentAdapter',return_value=self.f.adapter), \
+                patch('agent_brain_client.adapters.server.https.HTTPSContentClient',return_value=self.f.cloud), \
+                patch('agent_brain_client.adapters.harnesses.codex.content.CodexContentSession',return_value=self.f.adapter), \
                 patch.object(self.f.adapter,'invoke',side_effect=invoke):
             for query,pages in (('0',1),('599',3)):
                 with self.subTest(query=query),patch.object(self.f.adapter,'_offline_read',wraps=self.f.adapter._offline_read) as read:

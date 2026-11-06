@@ -1,3 +1,11 @@
+from agent_brain_client.adapters.storage import metadata as metadata_io, registration as registration_store
+from agent_brain_client.runtime import host_binding
+import agent_brain_client.runtime.host_binding as host_binding
+import agent_brain_client.adapters.storage.bounded_json as adapters_storage_bounded_json
+import agent_brain_client.adapters.harnesses.hook_output as adapters_harnesses_hook_output
+import agent_brain_client.application.memory.context as memory_context
+import agent_brain_client.adapters.storage.collection as source_policy
+import agent_brain_client.adapters.storage.metadata as metadata
 """CodeBuddy host transactions and real Client outbox with synthetic sources."""
 import copy
 import io
@@ -12,13 +20,13 @@ import unittest
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / p) for p in ('adapters/codebuddy', 'tools', 'tests')]
-import host as cbhost
-import runtime as cb
-import transcript as native_transcript
-import codebuddy as entry
-import global_memory as gm
-from global_memory_scope import digest
+sys.path[:0] = [str(ROOT / p) for p in ('src', 'src', 'tests')]
+import agent_brain_client.adapters.harnesses.codebuddy.configuration as cbhost
+import agent_brain_client.adapters.harnesses.codebuddy.events as cb
+import agent_brain_client.adapters.harnesses.codebuddy.transcript as native_transcript
+import agent_brain_client.interfaces.cli.codebuddy as entry
+import agent_brain_client.runtime.collection as gm
+from agent_brain_client.domain.scopes import digest
 import test_content_outbox as fixture
 from test_event_hook import accepted
 
@@ -29,9 +37,9 @@ class Configuration(unittest.TestCase):
             root = Path(temp).resolve()
             (root / 'tools').mkdir()
             (root / 'installer').mkdir()
-            script = root / 'tools/codebuddy.py'
-            script.write_bytes((ROOT / 'tools/codebuddy.py').read_bytes())
-            (root / 'installer/prepare_install_runtime.py').write_text(
+            script = root / 'src/agent_brain_client/interfaces/cli/codebuddy.py'
+            script.write_bytes((ROOT / 'src/agent_brain_client/interfaces/cli/codebuddy.py').read_bytes())
+            (root / 'bootstrap/python_runtime.py').write_text(
                 'import sys\nfrom pathlib import Path\n'
                 'def runtime(home, prepare):\n'
                 '    assert prepare is False\n'
@@ -111,7 +119,7 @@ class Installation(unittest.TestCase):
         self.settings = self.native / 'settings.json'
         self.original = b'{// keep comment\n"permissions":{"deny":["Bash"]},"hooks":{"Stop":[]}}\n'
         self.settings.write_bytes(self.original)
-        self.core = SimpleNamespace(old=gm.old)
+        self.core = SimpleNamespace()
 
     def install(self, **kwargs):
         return cbhost.install(self.home, ROOT, self.core, **kwargs)
@@ -122,7 +130,7 @@ class Installation(unittest.TestCase):
             host_before=host_security(self.settings)
         result = self.install()
         self.assertTrue(result['installed'])
-        from brain_lock import private_mode
+        from agent_brain_client.adapters.platforms.filesystem import private_mode
         private_mode(cbhost.state_directory(self.home)/'registration.json',owner=True)
         if os.name == 'nt':
             self.assertEqual(host_security(self.settings),host_before)
@@ -134,11 +142,11 @@ class Installation(unittest.TestCase):
         after = self.settings.read_bytes()
         self.install()
         self.assertEqual(after, self.settings.read_bytes())
-        receipt = cb.read_json(cbhost.state_directory(self.home) / 'registration.json')
+        receipt = adapters_storage_bounded_json.read_json(cbhost.state_directory(self.home) / 'registration.json')
         command = receipt['mcp']
         entry_path = Path(command['args'][command['args'].index('-B') + 1])
         self.assertNotIn(str(ROOT), str(entry_path))
-        self.assertEqual(entry_path.read_bytes(), (ROOT / 'tools/codebuddy.py').read_bytes())
+        self.assertEqual(entry_path.read_bytes(), (ROOT / 'src/agent_brain_client/interfaces/cli/codebuddy.py').read_bytes())
         self.assertTrue(self.install(remove=True)['backend_preserved'])
         settings = cbhost.Document(self.settings.read_text()).value
         self.assertEqual(settings['permissions'], {'deny': ['Bash']})
@@ -168,12 +176,12 @@ class Installation(unittest.TestCase):
         self.install()
         directory = cbhost.state_directory(self.home)
         file, journal = directory / 'registration.json', directory / 'transaction.json'
-        record = gm.old.private_json(journal)
+        record = metadata.private_json(journal)
         record['host'][str(file)].pop('private')
-        gm.old.write(journal, record)
+        metadata.write(journal, record)
         before = file.read_bytes()
         settings = self.settings.read_bytes()
-        actual = gm.old.private_json
+        actual = metadata.private_json
         failed = []
         def inherited_owner(path, *args, **kwargs):
             if Path(path) == file and not failed:
@@ -181,34 +189,34 @@ class Installation(unittest.TestCase):
                 raise ValueError('Owned private Windows item required')
             return actual(path, *args, **kwargs)
         with patch.object(cbhost, 'os', SimpleNamespace(name='nt')), \
-                patch.object(gm.old, 'private_json', side_effect=inherited_owner):
+                patch.object(metadata_io, 'private_json', side_effect=inherited_owner):
             self.assertEqual(cbhost.registration(file, journal, self.core), json.loads(before))
         self.assertEqual(file.read_bytes(), before)
         self.assertEqual(self.settings.read_bytes(), settings)
-        from brain_lock import private_mode
+        from agent_brain_client.adapters.platforms.filesystem import private_mode
         private_mode(file, owner=True)
         # A changed receipt cannot use the old owner failure to overwrite data.
         file.write_bytes(before + b' ')
         failed.clear()
         with patch.object(cbhost, 'os', SimpleNamespace(name='nt')), \
-                patch.object(gm.old, 'private_json', side_effect=inherited_owner), \
-                patch('brain_host_files.host_atomic') as write:
+                patch.object(metadata_io, 'private_json', side_effect=inherited_owner), \
+                patch('agent_brain_client.adapters.storage.host_files.host_atomic') as write:
             with self.assertRaises(ValueError):
                 cbhost.registration(file, journal, self.core)
             write.assert_not_called()
         self.assertEqual(file.read_bytes(), before + b' ')
 
     def test_failure_and_interrupted_transaction_restore_all_images(self):
-        from brain_host_files import host_apply as real_apply
+        from agent_brain_client.adapters.storage.host_files import host_apply as real_apply
         def interrupted(rows, persist):
             real_apply(rows, persist)
             raise OSError('Synthetic post-write failure')
-        with patch('brain_host_files.host_apply', side_effect=interrupted), self.assertRaises(OSError):
+        with patch('agent_brain_client.adapters.storage.host_files.host_apply', side_effect=interrupted), self.assertRaises(OSError):
             self.install()
         self.assertEqual(self.settings.read_bytes(), self.original)
         self.assertFalse((self.native / '.mcp.json').exists())
         self.assertFalse((cbhost.state_directory(self.home) / 'registration.json').exists())
-        with patch('brain_host_files.host_apply', side_effect=lambda rows, persist: (real_apply(rows, persist), (_ for _ in ()).throw(SystemExit(7)))):
+        with patch('agent_brain_client.adapters.storage.host_files.host_apply', side_effect=lambda rows, persist: (real_apply(rows, persist), (_ for _ in ()).throw(SystemExit(7)))):
             with self.assertRaises(SystemExit):
                 self.install()
         cbhost.recover(self.home, self.core)
@@ -245,9 +253,9 @@ class Hooks(unittest.TestCase):
             self.sent.append(copy.deepcopy(request))
             return accepted(request)
         self.fixture.cloud.request = send
-        self.core = SimpleNamespace(old=gm.old, approved=gm.approved, load=lambda home: self.value,
+        self.core = SimpleNamespace(approved=source_policy.approved, load=lambda home: self.value,
                                     adapter=lambda value, local: (self.client, self.queue),
-                                    eligible=lambda value, cwd: self.local, recall=Mock(return_value=[{'content': 'Synthetic recalled memory'}]), hook_context=gm.hook_context)
+                                    eligible=lambda value, cwd: self.local, recall=Mock(return_value=[{'content': 'Synthetic recalled memory'}]), hook_context=adapters_harnesses_hook_output.hook_context)
         queue = patch.object(cb, 'open_queue', return_value=(self.client, self.queue))
         queue.start()
         self.addCleanup(queue.stop)
@@ -350,8 +358,8 @@ class Protocol(unittest.TestCase):
             home.mkdir()
             log = root / 'operations'
             script = tools / 'install-codebuddy.sh'
-            script.write_bytes((ROOT / 'tools/install-codebuddy.sh').read_bytes())
-            (tools / 'codebuddy.py').write_text('import os,sys\nfrom pathlib import Path\nif sys.argv[1]=="backend-home": print(str(Path.home()/"shared-native"))\nelse: Path(os.environ["SYNTHETIC_LOG"]).open("a").write("bind\\n")\n')
+            script.write_bytes((ROOT / 'bootstrap/macos/codebuddy.sh').read_bytes())
+            (tools / 'agent_brain_client.interfaces.cli.codebuddy.py').write_text('import os,sys\nfrom pathlib import Path\nif sys.argv[1]=="backend-home": print(str(Path.home()/"shared-native"))\nelse: Path(os.environ["SYNTHETIC_LOG"]).open("a").write("bind\\n")\n')
             (tools / 'install-mac.sh').write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$SYNTHETIC_LOG"\n')
             env = dict(os.environ, HOME=str(home), SYNTHETIC_LOG=str(log))
             fresh = subprocess.run(['sh', str(script), '--server', 'https://synthetic.invalid'], env=env, capture_output=True)
@@ -366,19 +374,19 @@ class Protocol(unittest.TestCase):
             self.assertEqual(log.read_text().splitlines(), ['', '--action check-update', '--action update', 'bind'])
 
     def test_capture_queue_uses_shared_core_and_separate_host_binding(self):
-        from brain_memory import ContentOutbox
+        from agent_brain_client.application.queue.outbox import DurableOutbox
         source = fixture.Outbox('test_same_id_cannot_change_request_or_cas_base')
         source.setUp()
         self.addCleanup(source.doCleanups)
         file = source.home / 'content-policy.json'
-        gm.old.write(file, fixture.POLICY)
+        metadata.write(file, fixture.POLICY)
         source.cloud.queue_identity = {'transport': 'synthetic-shared-https'}
-        core = SimpleNamespace(old=gm.old, GlobalClient=lambda value, local: source.cloud)
-        registered = {'runtime': {'content_policy': str(file), 'content_policy_sha256': cb.digest(file.read_bytes()), 'codex_home': str(source.home / '.codex')}}
+        core = SimpleNamespace(CollectionClient=lambda value, local: source.cloud)
+        registered = {'runtime': {'content_policy': str(file), 'content_policy_sha256': adapters_storage_bounded_json.digest(file.read_bytes()), 'codex_home': str(source.home / '.codex')}}
         local = {'kind': 'non-project', 'cwd': str(source.home), 'project_root': None, 'repository_root': None}
-        with patch.object(gm.old, 'registration', return_value=({}, registered)):
+        with patch.object(registration_store, 'registration', return_value=({}, registered)):
             client, queue = cb.open_queue(core, {'device_home': str(source.home)}, local)
-        self.assertIsInstance(queue, ContentOutbox)
+        self.assertIsInstance(queue, DurableOutbox)
         self.assertEqual(client.queue_identity['host_adapter'], 'codebuddy')
         self.assertIn('codebuddy/outboxes', queue.cache.as_posix())
         self.assertNotEqual(queue.queue_sha, source.adapter.queue_sha)
@@ -387,14 +395,14 @@ class Protocol(unittest.TestCase):
     def test_gateway_preserves_backend_argv_and_environment(self):
         command = {'command': '/synthetic/python', 'args': ['-I', '/synthetic/startup.py'], 'env': {'SYNTHETIC_CLIENT': '1'}}
         execute = Mock()
-        with patch.object(cb, 'backend', return_value=(command, {})):
-            cb.execute_mcp('/synthetic/home', object(), execute)
+        with patch.object(host_binding, 'backend', return_value=(command, {})):
+            host_binding.execute_mcp('/synthetic/home', object(), execute)
         self.assertEqual(execute.call_args.args[:2], ('/synthetic/python', ['/synthetic/python', '-I', '/synthetic/startup.py']))
         self.assertEqual(execute.call_args.args[2]['SYNTHETIC_CLIENT'], '1')
 
     def test_probe_requires_authenticated_protocol_result(self):
         command = {'command': '/synthetic/python', 'args': ['-I', '/synthetic/startup.py']}
-        with patch.object(cb, 'backend', return_value=(command, {})):
+        with patch.object(host_binding, 'backend', return_value=(command, {})):
             for response in ({'installed': True}, {'protocol_checked': True}, {'protocol_checked': True, 'authentication_checked': True}):
                 runner = Mock(return_value=SimpleNamespace(returncode=0, stdout=json.dumps(response).encode()))
                 if response.get('authentication_checked'):
@@ -412,7 +420,7 @@ class Protocol(unittest.TestCase):
             policy = state / 'policy.json'
             native = home / 'original-native'
             policy.write_text(json.dumps({'runtime': {'codex_home': str(native)}}))
-            (state / 'codex-mcp.json').write_text(json.dumps({'release_policy': str(policy), 'release_policy_sha256': cb.digest(policy.read_bytes())}))
+            (state / 'codex-mcp.json').write_text(json.dumps({'release_policy': str(policy), 'release_policy_sha256': adapters_storage_bounded_json.digest(policy.read_bytes())}))
             self.assertEqual(entry.backend_home(home), native)
             self.assertFalse((home / '.codex').exists())
 
@@ -428,11 +436,11 @@ class Protocol(unittest.TestCase):
         fixture.config = fixture.native / 'config.toml'
         result = fixture.run_wizard()
         self.assertTrue(result['installed'], result)
-        metadata = cb.read_json(fixture.home / '.config/agent-brain-client/codex-mcp.json')
-        policy = cb.read_json(metadata['release_policy'])
+        metadata = adapters_storage_bounded_json.read_json(fixture.home / '.config/agent-brain-client/codex-mcp.json')
+        policy = adapters_storage_bounded_json.read_json(metadata['release_policy'])
         self.assertEqual(policy['runtime']['codex_home'], str(fixture.native))
         self.assertFalse((fixture.home / '.codex').exists())
-        bound = cbhost.install(fixture.home, ROOT, SimpleNamespace(old=gm.old))
+        bound = cbhost.install(fixture.home, ROOT, SimpleNamespace())
         self.assertTrue(bound['installed'])
         self.assertTrue((fixture.home / '.codebuddy/mcp.json').exists())
         self.assertFalse((fixture.home / '.codex').exists())

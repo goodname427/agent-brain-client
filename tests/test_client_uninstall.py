@@ -1,3 +1,4 @@
+import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
 """Synthetic install/use/remove/reinstall; no real Keychain, server or Codex."""
 import copy
 from contextlib import contextmanager
@@ -11,11 +12,12 @@ from unittest.mock import patch
 
 import test_mac_first_install as fixture
 from test_content_outbox import Cloud, MEMORY, RULE, SKILL
-from content_cache import ContentAdapter, BEGIN
-from https_content import HTTPSContentClient
-from brain_lock import cache_locked as locked, PlatformUnsupported
-import content_install as install
-import client_lifecycle as lifecycle
+from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.adapters.harnesses.codex.content_limits import BEGIN
+from agent_brain_client.adapters.server.https import HTTPSContentClient
+from agent_brain_client.adapters.platforms.filesystem import cache_locked as locked, PlatformUnsupported
+import agent_brain_client.adapters.harnesses.codex.installation as install
+import agent_brain_client.adapters.harnesses.codex.lifecycle as lifecycle
 
 
 class ClientUninstall(unittest.TestCase):
@@ -28,16 +30,16 @@ class ClientUninstall(unittest.TestCase):
         self.home, self.native = self.f.home, self.f.native
         self.state = self.home / '.config/agent-brain-client'
         self.preparation = self.state / 'first-install'
-        self.active = patch('client_release.ClientReleases.verified_active', return_value={'version': '0.2.5'})
+        self.active = patch('agent_brain_client.adapters.packages.client.ClientReleases.verified_active', return_value={'version': '0.2.5'})
         self.active.start()
         self.addCleanup(self.active.stop)
         self.cloud = Cloud()
         self.cloud.grant = copy.deepcopy(self.f.fixture_grant)
-        policy = install.private_json(self.preparation / 'release-policy.json')
+        policy = adapters_storage_private_files.private_json(self.preparation / 'release-policy.json')
         runtime = policy['runtime']
         client = HTTPSContentClient(runtime['https_profile'], runtime['https_profile_sha256'], store=self.f.store)
         self.cloud.queue_identity = client.queue_identity
-        self.adapter = ContentAdapter(self.home, runtime['content_cache'], install.private_json(self.preparation / 'content-policy.json'), self.cloud, codex_home=self.native)
+        self.adapter = CodexContentSession(self.home, runtime['content_cache'], adapters_storage_private_files.private_json(self.preparation / 'content-policy.json'), self.cloud, codex_home=self.native)
         (self.native / 'AGENTS.md').write_text('User instruction preserved.\n')
         (self.native / 'AGENTS.md').chmod(0o600)
         self.cloud.records = {('memory', 'synthetic-memory'): copy.deepcopy(MEMORY), ('rule', 'synthetic-rule'): dict(RULE, enabled=True), ('skill', 'synthetic-skill'): dict(SKILL, enabled=True)}
@@ -61,7 +63,7 @@ class ClientUninstall(unittest.TestCase):
                             installer=lambda p, d: install.apply(p, d, lambda value: None))
 
         output = io.StringIO()
-        with patch.object(sys, 'argv', ['first_install.py', *args]), \
+        with patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', *args]), \
                 patch.object(Path, 'home', return_value=self.home), \
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
                 patch.object(sys, 'stdout', output), \
@@ -90,7 +92,7 @@ class ClientUninstall(unittest.TestCase):
         self.assertEqual((self.preparation / 'connection.json').read_bytes(), before)
         saved = json.loads(before)
         saved['grant']['actor'] = 'synthetic-other-owner'
-        install.save(self.preparation / 'connection.json', saved)
+        adapters_storage_private_files.save(self.preparation / 'connection.json', saved)
         code, result = self.connection_cli(execute=False)
         self.assertEqual((code, result['status']), (2, 'connection-recovery-review-required'))
 
@@ -138,7 +140,7 @@ class ClientUninstall(unittest.TestCase):
             fixture.wizard.resolve_connection(self.home, self.home / 'different-codex')
         journal = lifecycle.read_removal(self.home)
         journal['phase'] = 'applying'
-        install.save(lifecycle.journal_path(self.home), journal)
+        adapters_storage_private_files.save(lifecycle.journal_path(self.home), journal)
         code, result = self.connection_cli(execute=False)
         self.assertEqual((code, result['status']), (2, 'connection-recovery-review-required'))
 
@@ -146,7 +148,7 @@ class ClientUninstall(unittest.TestCase):
         self.remove()
         receipt = lifecycle.read_removal(self.home)
         policy_path = Path(receipt['registration']['release_policy'])
-        policy = install.private_json(policy_path)
+        policy = adapters_storage_private_files.private_json(policy_path)
         profile_path = Path(policy['runtime']['https_profile'])
         for path in (profile_path, policy_path, lifecycle.journal_path(self.home), self.native / 'config.toml'):
             before = path.read_bytes()
@@ -297,7 +299,7 @@ class ClientUninstall(unittest.TestCase):
 
     def uninstall_cli(self):
         output = io.StringIO()
-        with patch.object(sys, 'argv', ['first_install.py', '--action', 'uninstall']), \
+        with patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', '--action', 'uninstall']), \
                 patch.object(Path, 'home', return_value=self.home), \
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
                 patch.object(sys, 'stdout', output), \
@@ -323,7 +325,7 @@ class ClientUninstall(unittest.TestCase):
 
     def status_cli(self, action='status'):
         output = io.StringIO()
-        with patch.object(sys, 'argv', ['first_install.py', '--action', action]), \
+        with patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', '--action', action]), \
                 patch.object(Path, 'home', return_value=self.home), \
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
                 patch.object(sys, 'stdout', output), \
@@ -605,7 +607,7 @@ class ClientUninstall(unittest.TestCase):
     def test_interrupted_receipt_does_not_overwrite_outside_edit(self):
         journal = lifecycle.prepare_removal(self.home)
         journal['phase'] = 'applying'
-        install.save(lifecycle.journal_path(self.home), journal)
+        adapters_storage_private_files.save(lifecycle.journal_path(self.home), journal)
         self.f.config.write_text(self.f.config.read_text() + '\n# Outside edit\n')
         with self.assertRaises(ValueError):
             lifecycle.repair(self.home)
@@ -705,7 +707,7 @@ class ClientUninstall(unittest.TestCase):
         self.assertEqual(result["reason"], "policy-profile-bootstrap-review-required")
 
     def test_host_can_pause_only_this_service_then_owned_uninstall(self):
-        metadata = install.private_json(self.state / "codex-mcp.json")
+        metadata = adapters_storage_private_files.private_json(self.state / "codex-mcp.json")
         self.f.config.write_text(
             self.f.config.read_text().replace("enabled = true", "enabled = false")
         )
@@ -714,7 +716,7 @@ class ClientUninstall(unittest.TestCase):
         self.assertFalse(result["installed"])
         self.assertTrue(result["registration_verified"])
         self.assertEqual(result["owned_mapping_files"], 4)
-        self.assertEqual(install.private_json(self.state / "codex-mcp.json"), metadata)
+        self.assertEqual(adapters_storage_private_files.private_json(self.state / "codex-mcp.json"), metadata)
         self.assertEqual(self.remove()["status"], "client-uninstalled")
         self.assertEqual(lifecycle.status(self.home)["status"], "client-uninstalled")
         self.assertEqual(self.f.backend.record, self.identity)

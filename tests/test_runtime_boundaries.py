@@ -9,12 +9,12 @@ import sys
 import tempfile
 import unittest
 
-import brain_content as contract
-from brain_cache import EventQueue
-from brain_memory import CacheBlocked
-from brain_host_files import atomic
-from brain_lock import cache_directory
-from check_source import check_layer_boundary
+import agent_brain_client.domain.contract as contract
+from agent_brain_client.adapters.storage.content import FileEventQueue
+from agent_brain_client.domain.errors import CacheBlocked
+from agent_brain_client.adapters.storage.host_files import atomic
+from agent_brain_client.adapters.platforms.filesystem import cache_directory
+from dev.checks.source import check_layer_boundary
 from test_content_outbox import POLICY
 from test_event_hook import accepted
 
@@ -25,11 +25,11 @@ class RuntimeBoundaries(unittest.TestCase):
     def test_shared_imports_work_without_any_adapter_or_installer_on_path(self):
         code = """import sys
 sys.path.insert(0,sys.argv[1])
-import brain_cache,brain_host_files,client_release,https_content,ssh_content,remote_mcp
+import agent_brain_client.adapters.storage.content as brain_cache,brain_host_files,client_release,https_content,ssh_content,remote_mcp
 assert not {'content_cache','content_mcp','codex_connect','project_memory','first_install'} & set(sys.modules)
 """
         result = subprocess.run(
-            [sys.executable, "-I", "-B", "-c", code, str(ROOT / "scripts")],
+            [sys.executable, "-I", "-B", "-c", code, str(ROOT / "src")],
             capture_output=True,
             timeout=15,
         )
@@ -37,30 +37,29 @@ assert not {'content_cache','content_mcp','codex_connect','project_memory','firs
 
     def test_dependency_fence_rejects_direct_qualified_and_dynamic_host_imports(self):
         for source in (
-            "import content_cache as cache",
+            "import agent_brain_client.adapters.harnesses.codex.content as cache",
             "from adapters.codex import content_cache",
             "from installer.first_install import run",
             "from tools import build_client",
-            "__import__('codex_connect')",
-            "importlib.import_module('project_memory')",
+            "__import__('agent_brain_client.adapters.harnesses.codex.configuration')",
+            "importlib.import_module('agent_brain_client.adapters.harnesses.codex.project')",
         ):
             with (
                 self.subTest(source=source),
                 self.assertRaisesRegex(ValueError, "dependency boundary"),
             ):
-                check_layer_boundary("scripts/brain_example.py", source)
+                check_layer_boundary("src/agent_brain_client/domain/example.py", source)
         for module in ("content_cache", "codex_connect", "project_memory"):
             with self.assertRaises(ValueError):
                 check_layer_boundary(
-                    "adapters/codebuddy/runtime.py", "import " + module
+                    "src/agent_brain_client/adapters/harnesses/codebuddy/events.py", "import " + module
                 )
         check_layer_boundary(
-            "scripts/brain_example.py", "from brain_memory import ContentOutbox"
+            "src/agent_brain_client/domain/example.py", "from agent_brain_client.domain.events import event"
         )
 
     def test_old_source_aliases_are_absent_and_current_frozen_files_exist(self):
-        import global_memory
-        from brain_layout import PRE_LAYOUT_HOOKS
+        import agent_brain_client.runtime.collection as global_memory
 
         for name in (
             "adapters/codex/content_contract.py",
@@ -71,10 +70,10 @@ assert not {'content_cache','content_mcp','codex_connect','project_memory','firs
         ):
             self.assertFalse((ROOT / name).exists(), name)
         self.assertTrue(all((ROOT / name).is_file() for name in global_memory.FILES))
-        self.assertNotEqual(set(global_memory.FILES), set(PRE_LAYOUT_HOOKS))
+        self.assertEqual(set(global_memory.FILES), set(__import__('agent_brain_client.adapters.packages.layout', fromlist=['PYTHON_FILES']).PYTHON_FILES))
         # Existing frozen CodeBuddy loaders accept only these original roots.
         self.assertLessEqual({name.split('/')[0] for name in global_memory.FILES},
-                             {'tools', 'scripts', 'adapters'})
+                             {'src'})
 
     def test_historical_pending_event_replays_exact_bytes_after_storage_split(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -148,7 +147,7 @@ assert not {'content_cache','content_mcp','codex_connect','project_memory','firs
                     calls.append(copy.deepcopy(value))
                     return accepted(value)
 
-            queue = EventQueue(home, cache, POLICY, Client(), binding=binding)
+            queue = FileEventQueue(home, cache, POLICY, Client(), binding=binding)
             self.assertEqual(queue.queue_sha, queue_sha)
             self.assertEqual(
                 queue.invoke(request, event_gate=lambda: False)["local_queue"]["state"],
@@ -156,7 +155,7 @@ assert not {'content_cache','content_mcp','codex_connect','project_memory','firs
             )
             self.assertEqual(file.read_bytes(), raw)
             self.assertEqual(calls, [])
-            restarted = EventQueue(home, cache, POLICY, Client(), binding=binding)
+            restarted = FileEventQueue(home, cache, POLICY, Client(), binding=binding)
             self.assertEqual(
                 restarted.invoke(request, event_gate=lambda: True)["local_queue"][
                     "state"
@@ -170,4 +169,4 @@ assert not {'content_cache','content_mcp','codex_connect','project_memory','firs
             with self.assertRaises(CacheBlocked):
                 restarted.invoke(changed, event_gate=lambda: True)
             with self.assertRaises(CacheBlocked):
-                restarted._assert_sources_shareable(["a" * 64])
+                restarted.sources._assert_sources_shareable(["a" * 64])

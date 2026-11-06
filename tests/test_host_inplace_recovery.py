@@ -1,3 +1,4 @@
+import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
 """Install journal fault injection with synthetic homes and portable data I/O."""
 
 import copy
@@ -7,8 +8,8 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-import brain_host_files as host
-import content_install as install
+import agent_brain_client.adapters.storage.host_files as host
+import agent_brain_client.adapters.harnesses.codex.installation as install
 import test_content_install as fixture
 
 
@@ -90,7 +91,7 @@ class HostInplaceRecovery(unittest.TestCase):
             self.assertRaises(SystemExit),
         ):
             self.apply()
-        journal = install.private_json(self.receipt)
+        journal = adapters_storage_private_files.private_json(self.receipt)
         self.assertEqual(journal["phase"], "applying")
         self.assertIn(str(self.config), journal["host_inplace"])
         return journal
@@ -102,7 +103,7 @@ class HostInplaceRecovery(unittest.TestCase):
             self.assertRaises(SystemExit),
         ):
             self.apply()
-        journal = install.private_json(self.receipt)
+        journal = adapters_storage_private_files.private_json(self.receipt)
         self.assertIn(str(self.config), journal["host_rollback"])
         self.assertTrue(self.apply()["installed"])
         self.assertEqual(self.config.stat().st_ino, self.identity)

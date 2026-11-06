@@ -12,14 +12,14 @@ from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "adapters" / "codex"))
 
-import client_release
-import client_startup
-from brain_release import UpdateBlocked
-from brain_lock import LockTimeout, locked
-import brain_lock
+import agent_brain_client.adapters.packages.client as client_release
+import agent_brain_client.runtime.launcher as client_startup
+from agent_brain_client.adapters.packages.releases import UpdateBlocked
+from agent_brain_client.adapters.platforms.filesystem import LockTimeout, locked
+import agent_brain_client.adapters.platforms.filesystem as brain_lock
 import types
-import content_mcp
-from content_mcp import emit_startup_failure
+import agent_brain_client.interfaces.mcp.content as content_mcp
+from agent_brain_client.interfaces.mcp.content import emit_startup_failure
 
 
 class StartupDiagnostics(unittest.TestCase):
@@ -27,7 +27,7 @@ class StartupDiagnostics(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         package = Path(temporary.name)
-        manifest = {'files': {'scripts/remote_mcp.py': 'b' * 64}}
+        manifest = {'files': {'src/agent_brain_client/interfaces/mcp/topics.py': 'b' * 64}}
         (package / 'verified.json').write_text(json.dumps({'manifest': manifest}))
         return {'version': version, 'package': str(package),
                 'manifest_sha256': hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()}
@@ -105,7 +105,7 @@ class StartupDiagnostics(unittest.TestCase):
 
     def test_invalid_arguments_do_not_echo_untrusted_values(self):
         output = io.StringIO()
-        argv = ["content_mcp.py", "--unknown-option", "SYNTHETIC_SECRET_ARGUMENT"]
+        argv = ["agent_brain_client.interfaces.mcp.content.py", "--unknown-option", "SYNTHETIC_SECRET_ARGUMENT"]
         with mock.patch.object(sys, "argv", argv), mock.patch("sys.stderr", output):
             with self.assertRaises(SystemExit) as failure:
                 content_mcp.main()

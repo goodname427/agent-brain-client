@@ -1,3 +1,4 @@
+import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
 """HTTPS content with fake Keychain/UI, synthetic ledger and isolated homes."""
 import copy
 import hashlib
@@ -11,27 +12,28 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'));sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/codex'))
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'));sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from fake_pairing import PairingAuthority
-from https_content import DeviceEnrollment,HTTPSContentClient,PairingHTTPS,profile_file
-from content_enrollment import install_once
-from system_credentials import CredentialStore,NativeKeychain,canonical
-from content_cache import ContentAdapter,CacheBlocked
-from brain_http import RemoteClient,NoRedirect
-from build_client import export
-from client_release import HTTPS_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,LEGACY_030_HTTPS_CONTENT_CLIENT_FILES
+from agent_brain_client.adapters.server.https import DeviceEnrollment,HTTPSContentClient,PairingHTTPS,profile_file
+from agent_brain_client.runtime.enrollment import install_once
+from agent_brain_client.adapters.platforms.credentials import CredentialStore,NativeKeychain,canonical
+from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.domain.errors import CacheBlocked
+from agent_brain_client.adapters.server.http import RemoteClient, NoRedirect
+from dev.build.package import export
+from agent_brain_client.adapters.packages.client import HTTPS_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES
 
 ROOT=Path(__file__).resolve().parents[1]
 GRANT={'actor':'owner-adapter','scopes':['read','put'],'artifact_types':['memory','rule','skill'],
        'ids':{'memory':['synthetic-memory']+['synthetic-memory-'+str(i) for i in range(28)],'rule':['synthetic-rule'],'skill':['synthetic-skill']},'adapter':'codex','platform':'darwin-'+platform.machine().lower()}
 FROZEN_0214_HTTPS_FILES={'.gitignore','ADAPTERS.md','BOOTSTRAP.md','PROTOCOL.md','README.md',
     'adapters/codex/client_pairing.py','adapters/codex/client_release.py','adapters/codex/client_startup.py',
-    'adapters/codex/codex_connect.py','adapters/codex/content_cache.py','adapters/codex/content_contract.py',
-    'adapters/codex/content_install.py','adapters/codex/content_mcp.py','adapters/codex/https_content.py',
+    'src/agent_brain_client/adapters/harnesses/codex/configuration.py','src/agent_brain_client/adapters/harnesses/codex/content.py','adapters/codex/content_contract.py',
+    'src/agent_brain_client/adapters/harnesses/codex/installation.py','src/agent_brain_client/interfaces/mcp/content.py','adapters/codex/https_content.py',
     'adapters/codex/remote_http.py','adapters/codex/remote_mcp.py','adapters/codex/system_credentials.py',
-    'connect.py','native/CredentialStore.swift','scripts/brain_lock.py','scripts/brain_release.py'}
-FROZEN_030_HTTPS_FILES=FROZEN_0214_HTTPS_FILES|{'adapters/codex/codex_notify_mux.py'}
+    'connect.py','src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift','src/agent_brain_client/adapters/platforms/filesystem.py','src/agent_brain_client/adapters/packages/releases.py'}
+FROZEN_030_HTTPS_FILES=FROZEN_0214_HTTPS_FILES|{'src/agent_brain_client/adapters/harnesses/codex/notify.py'}
 
 class Backend:
     def __init__(self):self.record=None;self.fail=False
@@ -51,7 +53,7 @@ class Transport:
         return value
     def confirm(self,token,nonce):
         from fake_pairing import PairingBlocked
-        from client_pairing import EnrollmentTerminal
+        from agent_brain_client.application.installation.pairing import EnrollmentTerminal
         try:value=self.authority.confirm(token,nonce)
         except PairingBlocked as error:
             if error.code in ('device_revoked','pairing_expired'):raise EnrollmentTerminal(error.code)
@@ -66,7 +68,7 @@ class HTTPSContent(unittest.TestCase):
         self.backend=Backend();self.store=CredentialStore(self.backend,self.home/'.config/agent-brain-client/https')
         self.authority=PairingAuthority(self.base/'synthetic.sqlite3',b'SYNTHETIC_HTTPS_AUTHORITY_KEY_1234567890');self.transport=Transport(self.authority)
         self.code=self.authority.issue(GRANT,300);self.prompts=0
-        self.profile={'schema':1,'transport':'https-system-credential','adapter':'codex','platform':GRANT['platform'],'data_mode':'personal','endpoint':'https://synthetic.invalid','grant':copy.deepcopy(GRANT),'credential_helper':str(self.home/'helper'),'credential_helper_sha256':'a'*64,'credential_source_sha256':hashlib.sha256((ROOT/'native/CredentialStore.swift').read_bytes()).hexdigest(),'state_directory':str(self.store.directory)}
+        self.profile={'schema':1,'transport':'https-system-credential','adapter':'codex','platform':GRANT['platform'],'data_mode':'personal','endpoint':'https://synthetic.invalid','grant':copy.deepcopy(GRANT),'credential_helper':str(self.home/'helper'),'credential_helper_sha256':'a'*64,'credential_source_sha256':hashlib.sha256((ROOT/'src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift').read_bytes()).hexdigest(),'state_directory':str(self.store.directory)}
         self.profile_path=self.base/'profile.json';self.profile_path.write_bytes(canonical(self.profile));self.profile_path.chmod(0o600);self.digest=hashlib.sha256(self.profile_path.read_bytes()).hexdigest()
     def input(self):self.prompts+=1;return self.code
     def coordinator(self):return DeviceEnrollment(self.profile,self.digest,self.store,self.transport,self.input)
@@ -135,11 +137,11 @@ class HTTPSContent(unittest.TestCase):
 
     def test_device_change_retains_old_outbox_in_distinct_namespace(self):
         first=self.paired();policy={'schema':1,'adapter':'codex','kinds':GRANT['artifact_types'],'ids':GRANT['ids'],'dependencies':{'commands':[],'python_modules':[]}}
-        cache=self.base/'cache';adapter=ContentAdapter(self.home,cache,policy,first,codex_home=self.home/'codex');old=adapter.queue_sha
+        cache=self.base/'cache';adapter=CodexContentSession(self.home,cache,policy,first,codex_home=self.home/'codex');old=adapter.queue_sha
         request={'request_id':'synthetic_pending_write_123456','method':'content_put','params':{'kind':'memory','id':'synthetic-memory','record':{'title':'Synthetic','description':'Synthetic only','body':'Synthetic offline','type':'feedback'},'expected_revision':'missing'}}
         adapter._enqueue(request);outbox=cache/'outbox'/ (request['request_id']+'.json');before=outbox.read_bytes()
         self.backend.record['device_id']='f'*32
-        second=HTTPSContentClient(self.profile_path,self.digest,store=self.store);other=ContentAdapter(self.home,cache,policy,second,codex_home=self.home/'codex');self.assertNotEqual(old,other.queue_sha)
+        second=HTTPSContentClient(self.profile_path,self.digest,store=self.store);other=CodexContentSession(self.home,cache,policy,second,codex_home=self.home/'codex');self.assertNotEqual(old,other.queue_sha)
         self.assertNotIn(self.backend.record['credential'],json.dumps(first.queue_identity));self.assertEqual(first.request({'request_id':'synthetic_request_123456','method':'content_catalog','params':{'kinds':['memory']}})['error']['code'],'device_transport_blocked')
 
         with self.assertRaises(CacheBlocked):other._drain()
@@ -147,7 +149,7 @@ class HTTPSContent(unittest.TestCase):
 
     def test_native_l1_https_receipt_confirms_adapter_outbox_without_git_commit(self):
         client=self.paired();policy={'schema':1,'adapter':'codex','kinds':GRANT['artifact_types'],'ids':GRANT['ids'],'dependencies':{'commands':[],'python_modules':[]}}
-        adapter=ContentAdapter(self.home,self.base/'native-cache',policy,client,codex_home=self.home/'codex')
+        adapter=CodexContentSession(self.home,self.base/'native-cache',policy,client,codex_home=self.home/'codex')
         request={'request_id':'synthetic_native_https_0001','method':'content_put','params':{'kind':'memory','id':'synthetic-memory',
             'record':{'title':'Synthetic','description':'Native L1 fixture','body':'Synthetic direct fact','type':'user'},'expected_revision':'missing'}}
         response={'request_id':request['request_id'],'result':{'content_api_version':1,'kind':'memory','id':'synthetic-memory',
@@ -169,8 +171,8 @@ class HTTPSContent(unittest.TestCase):
         self.assertFalse(reply['persistence']['github_confirmed'])
 
     def test_https_owned_install_plan_readonly_then_failed_postcheck_restores_preimage(self):
-        import content_install as install
-        import client_release as releases
+        import agent_brain_client.adapters.harnesses.codex.installation as install
+        import agent_brain_client.adapters.packages.client as releases
         native=self.home/'codex';native.mkdir(mode=0o700);config=native/'config.toml';config.write_text('model="synthetic"\n');config.chmod(0o600);before=config.read_bytes()
         package=self.base/'package';manifest=export(ROOT,package,https_content_candidate=True)
         content=self.base/'content.json';content.write_bytes(canonical({'schema':1,'adapter':'codex','kinds':GRANT['artifact_types'],'ids':GRANT['ids'],'dependencies':{'commands':[],'python_modules':[]}}));content.chmod(0o600)
@@ -198,9 +200,9 @@ class HTTPSContent(unittest.TestCase):
     def test_https_pinned_release_health_and_helper_source_change_retains_active(self):
         import shutil
         import test_client_lifecycle as fixtures
-        import client_release as releases
-        import client_startup
-        from build_client import release
+        import agent_brain_client.adapters.packages.client as releases
+        import agent_brain_client.runtime.launcher as client_startup
+        from dev.build.package import release
         from types import SimpleNamespace
         f=fixtures.Releases('test_orphan_allowlist_discovery_install_upgrade_and_current');f.setUp();self.addCleanup(f.doCleanups)
         content=self.base/'content.json';content.write_bytes(canonical({'schema':1,'adapter':'codex','kinds':GRANT['artifact_types'],'ids':GRANT['ids'],'dependencies':{'commands':[],'python_modules':[]}}));content.chmod(0o600)
@@ -210,7 +212,7 @@ class HTTPSContent(unittest.TestCase):
         def publish(version,mutate=False):
             out=self.base/('https-release-'+version);manifest=release(ROOT,out,version,'personal-content-https')
             if mutate:
-                source=out/'native/CredentialStore.swift';source.write_bytes(source.read_bytes()+b'\n// SYNTHETIC_UNAPPROVED_HELPER_CHANGE\n');manifest['files']['native/CredentialStore.swift']=hashlib.sha256(source.read_bytes()).hexdigest();(out/'releases/manifest.json').write_text(json.dumps(manifest))
+                source=out/'src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift';source.write_bytes(source.read_bytes()+b'\n// SYNTHETIC_UNAPPROVED_HELPER_CHANGE\n');manifest['files']['src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift']=hashlib.sha256(source.read_bytes()).hexdigest();(out/'releases/manifest.json').write_text(json.dumps(manifest))
             for name in [*HTTPS_CONTENT_CLIENT_FILES,'releases/manifest.json']:
                 destination=f.publisher/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(out/name,destination)
             f.git(f.publisher,'add','--',*HTTPS_CONTENT_CLIENT_FILES,'releases/manifest.json');f.git(f.publisher,'commit','-m','synthetic HTTPS '+version);f.git(f.publisher,'push','origin','releases/stable')
@@ -222,271 +224,15 @@ class HTTPSContent(unittest.TestCase):
             self.assertTrue(client_startup.startup(path,digest,installation_check=True)['served'])
         self.assertIn('--https-profile-sha256',commands[0]);self.assertIn('--credential-source-sha256',commands[0]);self.assertNotIn('--token-file',commands[0])
 
-    def test_frozen_0214_https_allowlist_updates_to_031_with_real_updater(self):
-        import shutil
-        import test_client_lifecycle as fixtures
-        from build_client import release as build_release
-        import client_release as releases
-        f=fixtures.Releases('test_orphan_allowlist_discovery_install_upgrade_and_current');f.setUp();self.addCleanup(f.doCleanups)
-        frozen_files=list(releases.LEGACY_HTTPS_CONTENT_CLIENT_FILES)
-        self.assertEqual(len(frozen_files),21)
-        self.assertEqual(set(frozen_files),FROZEN_0214_HTTPS_FILES)
-        self.assertNotIn('adapters/codex/codex_notify_mux.py',frozen_files)
-        content=self.base/'frozen-policy-content.json';content.write_bytes(canonical({'schema':1,'adapter':'codex','kinds':GRANT['artifact_types'],'ids':GRANT['ids'],'dependencies':{'commands':[],'python_modules':[]}}));content.chmod(0o600)
-        runtime={'https_profile':str(self.profile_path),'https_profile_sha256':self.digest,'credential_source_sha256':self.profile['credential_source_sha256'],'content_policy':str(content),'content_policy_sha256':hashlib.sha256(content.read_bytes()).hexdigest(),'device_home':str(self.home),'codex_home':str(self.home/'codex'),'content_cache':str(self.base/'frozen-content-cache')}
-        old_policy=copy.deepcopy(f.policy);old_policy.update(capabilities=releases.HTTPS_CONTENT_CAPABILITIES,file_prefixes=frozen_files,runtime=runtime)
-        path=self.base/'unchanged-0214-policy.json';path.write_bytes(canonical(old_policy));path.chmod(0o600);digest=hashlib.sha256(path.read_bytes()).hexdigest()
-        policy_before=path.read_bytes()
-        channel=releases.ClientReleases(path,digest)
-        def publish(version):
-            output=self.base/('frozen-policy-'+version);manifest=build_release(ROOT,output,version,'personal-content-https')
-            self.assertEqual(set(manifest['files']),set(releases.HTTPS_CONTENT_CLIENT_FILES))
-            for name in [*manifest['files'],'releases/manifest.json']:
-                destination=f.publisher/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(output/name,destination)
-            f.git(f.publisher,'add','--',*manifest['files'],'releases/manifest.json');f.git(f.publisher,'commit','-m','synthetic frozen-policy HTTPS '+version);f.git(f.publisher,'push','origin','releases/stable')
-        publish('0.2.14');old=channel.update();self.assertEqual(old['status'],'updated',old);self.assertEqual(old['active']['version'],'0.2.14')
-        publish('0.3.1');updated=channel.update();self.assertEqual(updated['status'],'updated',updated);self.assertEqual(updated['active']['version'],'0.3.1')
-        self.assertEqual(channel.verified_active()['version'],'0.3.1')
-        self.assertEqual(path.read_bytes(),policy_before)
 
-    def test_frozen_030_policy_uses_official_update_entry_to_migrate_to_031(self):
-        import shutil
-        import test_client_lifecycle as fixtures
-        import client_release as releases
-        import content_install
-        import first_install as installer
-        import tomllib
-        from build_client import release as build_release
-        f=fixtures.Releases('test_orphan_allowlist_discovery_install_upgrade_and_current');f.setUp();self.addCleanup(f.doCleanups)
-        legacy_files=list(releases.LEGACY_030_HTTPS_CONTENT_CLIENT_FILES)
-        self.assertEqual(len(legacy_files),22)
-        self.assertEqual(set(legacy_files),FROZEN_030_HTTPS_FILES)
-        self.assertIn('adapters/codex/codex_notify_mux.py',set(legacy_files)-set(releases.HTTPS_CONTENT_CLIENT_FILES))
-        content=self.base/'legacy-030-policy-content.json';content.write_bytes(canonical({'schema':1,'adapter':'codex','kinds':GRANT['artifact_types'],'ids':GRANT['ids'],'dependencies':{'commands':[],'python_modules':[]}}));content.chmod(0o600)
-        runtime={'https_profile':str(self.profile_path),'https_profile_sha256':self.digest,'credential_source_sha256':self.profile['credential_source_sha256'],'content_policy':str(content),'content_policy_sha256':hashlib.sha256(content.read_bytes()).hexdigest(),'device_home':str(self.home),'codex_home':str(self.home/'codex'),'content_cache':str(self.base/'legacy-030-content-cache')}
-        old_policy=copy.deepcopy(f.policy);old_policy.update(capabilities=releases.HTTPS_CONTENT_CAPABILITIES,file_prefixes=legacy_files,runtime=runtime)
-        path=self.base/'unchanged-030-policy.json';path.write_bytes(canonical(old_policy));path.chmod(0o600);policy_sha=hashlib.sha256(path.read_bytes()).hexdigest();policy_before=path.read_bytes()
-        widened=copy.deepcopy(old_policy);widened['file_prefixes'].append('adapters/codex/unapproved.py')
-        widened_path=self.base/'widened-030-policy.json';widened_path.write_bytes(canonical(widened));widened_path.chmod(0o600)
-        with self.assertRaises(releases.UpdateBlocked):releases.policy_file(widened_path,hashlib.sha256(widened_path.read_bytes()).hexdigest())
-        channel=releases.ClientReleases(path,policy_sha)
 
-        # Model the already verified package installed by the historical 0.3.0 updater.
-        old_out=self.base/'synthetic-installed-030';old_manifest=build_release(ROOT,old_out,'0.3.0','personal-content-https')
-        mux=old_out/'adapters/codex/codex_notify_mux.py';mux.parent.mkdir(parents=True,exist_ok=True);mux.write_text('# Synthetic historical manifest member; never executed by this test.\n')
-        old_manifest['files']['adapters/codex/codex_notify_mux.py']=hashlib.sha256(mux.read_bytes()).hexdigest()
-        # Model a pre-split package membership, with a standalone synthetic tool
-        # declaration; it must not need the new shared modules to enumerate.
-        declared=content_install.enabled_tools(json.loads(content.read_bytes()),GRANT)
-        entry=old_out/'adapters/codex/content_mcp.py'
-        entry.write_text('def enabled_tools(policy,grant):return '+repr(declared)+'\n')
-        old_manifest['files']['adapters/codex/content_mcp.py']=hashlib.sha256(entry.read_bytes()).hexdigest()
-        # Removed paths still describe the old package, but no current source
-        # shim is retained. This fixture only inspects its metadata/tool list.
-        for name in legacy_files:
-            if name not in old_manifest['files']:
-                file=old_out/name;file.parent.mkdir(parents=True,exist_ok=True)
-                file.write_bytes(b'# Synthetic historical member; never executed.\n')
-                old_manifest['files'][name]=hashlib.sha256(file.read_bytes()).hexdigest()
-        old_manifest['files']={name:pin for name,pin in old_manifest['files'].items() if name in legacy_files}
-        old_commit='a'*40;old_package=Path(old_policy['cache'])/'packages'/('0.3.0-'+old_commit);old_package.mkdir(parents=True)
-        for name in old_manifest['files']:
-            destination=old_package/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(old_out/name,destination)
-        (old_package/'verified.json').write_bytes(canonical({'commit':old_commit,'manifest':old_manifest}))
-        cache=Path(old_policy['cache']);cache.mkdir(parents=True,exist_ok=True)
-        (cache/'active.json').write_bytes(canonical({'commit':old_commit,'version':'0.3.0','package':str(old_package.resolve()),'manifest_sha256':releases.digest(json.dumps(old_manifest,sort_keys=True).encode())}))
-        with self.assertRaises(releases.UpdateBlocked):channel.engine.adapter.preflight(old_package,old_manifest)
-        self.assertEqual(channel.verified_active()['version'],'0.3.0')
-
-        out=self.base/'synthetic-release-031';manifest=build_release(ROOT,out,'0.3.1','personal-content-https')
-        self.assertEqual(set(manifest['files']),set(releases.HTTPS_CONTENT_CLIENT_FILES))
-        (out/'releases/manifest.json').write_bytes(canonical(manifest))
-        for name in [*releases.HTTPS_CONTENT_CLIENT_FILES,'releases/manifest.json']:
-            destination=f.publisher/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(out/name,destination)
-        f.git(f.publisher,'add','--',*releases.HTTPS_CONTENT_CLIENT_FILES,'releases/manifest.json');f.git(f.publisher,'commit','-m','synthetic 0.3.1 legacy-policy bridge');f.git(f.publisher,'push','origin','releases/stable')
-
-        # Build the same private registration/receipt shape that inspect() reads,
-        # without mocking inspect(), registered_context(), or package_check().
-        native=self.home/'codex';native.mkdir(mode=0o700)
-        config=native/'config.toml';config.write_text('model="synthetic"\n');config.chmod(0o600)
-        # An unmanifested current-path file must never become the old launcher.
-        unpinned=old_package/'scripts/client_startup.py'
-        unpinned.parent.mkdir(parents=True,exist_ok=True)
-        unpinned.write_text('raise RuntimeError("Synthetic unpinned launcher")\n')
-        policy_value,mcp,package_sha,validated_native=content_install.context(
-            self.home,old_package.resolve(),path,policy_sha,inspection=True,allow_legacy_030_active=True)
-        self.assertEqual(validated_native,native)
-        self.assertEqual(mcp['args'][2],str(old_package.resolve()/'adapters/codex/client_startup.py'))
-        config.write_bytes(content_install.render(config.read_bytes(),mcp,False));config.chmod(0o600)
-        state=self.home/'.config/agent-brain-client';registration=state/'codex-mcp.json';state.mkdir(parents=True,mode=0o700)
-        metadata={'schema':1,'native_mcp_name':content_install.NAME,'content_candidate':True,'data_mode':'personal-explicit',
-                  'installation_complete':True,'protocol_checked':True,'model_loaded':'unknown','platform':GRANT['platform'],
-                  'mcp_sha256':content_install.sha(json.dumps(mcp,sort_keys=True).encode()),'release_policy':str(path),
-                  'release_policy_sha256':policy_sha,'package':str(old_package.resolve()),'package_sha256':package_sha,
-                  'plan_sha256':'f'*64,'owned_install_paths':sorted([str(config),str(registration)])}
-        content_install.save(registration,metadata)
-        after={str(config):content_install.sha(config.read_bytes()),str(registration):content_install.sha(registration.read_bytes())}
-        content_install.save(state/'content-install-receipt.json',{'schema':1,'phase':'complete','plan_sha256':'f'*64,'after':after})
-        with patch('sys.platform','darwin'),patch('platform.machine',return_value='arm64'):
-            inspected=content_install.inspect(self.home)
-            self.assertTrue(inspected['registration_verified'],inspected)
-            checked=installer.manage_update(self.home,'check-update',channel_factory=lambda *_:channel)
-            self.assertEqual(checked['status'],'client-update-available',checked)
-            self.assertEqual(channel.verified_active()['version'],'0.3.0')
-            original_apply=content_install.apply;bridge_checks=[]
-            config_before_bridge=config.read_bytes();registration_before_bridge=registration.read_bytes()
-            def fail_second_bridge_check(plan,approved_digest,check=None):
-                checks=0;verify=check
-                def fail_after_check(value):
-                    nonlocal checks
-                    checks+=1
-                    self.assertEqual(channel.verified_active()['version'],'0.3.0')
-                    verify(value)
-                    if checks==2:raise ValueError('Synthetic bootstrap handover postcheck failure')
-                return original_apply(plan,approved_digest,check=fail_after_check)
-            with patch.object(content_install,'apply',side_effect=fail_second_bridge_check):
-                failed=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
-            self.assertEqual(failed['status'],'client-update-review-required',failed)
-            self.assertEqual(channel.verified_active()['version'],'0.3.0')
-            self.assertEqual(config.read_bytes(),config_before_bridge)
-            self.assertEqual(registration.read_bytes(),registration_before_bridge)
-            self.assertTrue(content_install.inspect(self.home)['registration_verified'])
-            paused=tomllib.loads(config.read_text())['mcp_servers'][content_install.NAME]
-            paused['enabled']=False
-            config.write_bytes(content_install.render(config.read_bytes(),paused,True));config.chmod(0o600)
-            self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
-            pre_bridge_state={p:p.read_bytes() for p in (config,registration,state/'content-install-receipt.json',cache/'active.json')}
-            # Each synthetic rewind restores the complete pre-update Hook
-            # state too: updates now install it automatically on old devices.
-            global_root=state/'global-memory'
-            pre_bridge_state.update({p:p.read_bytes() if p.exists() else None for p in
-                (global_root/'settings.json',global_root/'hook-install.json',
-                 global_root/'code-refresh.json',global_root/'pending-scope.json',global_root/'global.off')})
-            def apply_bridge_with_bootstrap_check(plan,approved_digest,check=None):
-                def verify(value):
-                    self.assertEqual(channel.verified_active()['version'],'0.3.0')
-                    self.assertFalse(value['mcp']['enabled'])
-                    self.assertEqual(Path(value['mcp']['args'][2]),Path(value['package'])/'scripts/client_startup.py')
-                    if len(bridge_checks)==1:
-                        import client_startup
-                        concurrent=client_startup.startup(path,policy_sha)
-                        self.assertEqual(concurrent['status'],'client-bootstrap-handover-in-progress',concurrent)
-                        self.assertFalse(concurrent['served'])
-                        self.assertEqual(channel.verified_active()['version'],'0.3.0')
-                    check(value)
-                    bridge_checks.append(value['package'])
-                return original_apply(plan,approved_digest,check=verify)
-            with patch.object(content_install,'apply',side_effect=apply_bridge_with_bootstrap_check):
-                updated=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
-        self.assertEqual(updated['status'],'client-update-updated',updated)
-        self.assertEqual(updated['active_package_version'],'0.3.1')
-        self.assertEqual(len(bridge_checks),2)
-        new_active=channel.verified_active();new_manifest=json.loads((Path(new_active['package'])/'verified.json').read_text())['manifest']
-        self.assertNotIn('adapters/codex/codex_notify_mux.py',new_manifest['files'])
-        self.assertEqual(path.read_bytes(),policy_before)
-        registered=tomllib.loads(config.read_text())['mcp_servers'][content_install.NAME]
-        self.assertEqual(registered['args'][2],str(Path(new_active['package'])/'scripts/client_startup.py'))
-        self.assertFalse(registered['enabled'])
-        self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
-
-        import client_startup
-        with patch('sys.platform','darwin'),patch('platform.machine',return_value='arm64'):
-            startup=client_startup.startup(path,policy_sha,check_only=True)
-        self.assertEqual(startup['active']['version'],'0.3.1',startup)
-        # If channel activation raises after the handover transaction commits,
-        # report the native registration change to the caller.
-        for target,data in pre_bridge_state.items():
-            if data is None: target.unlink(missing_ok=True)
-            else: target.write_bytes(data);target.chmod(0o600)
-        with patch.object(channel,'update',side_effect=RuntimeError('Synthetic activation failure')):
-            failed_activation=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
-        self.assertEqual(failed_activation['status'],'client-update-review-required',failed_activation)
-        self.assertTrue(failed_activation['native_changed'],failed_activation)
-        self.assertEqual(channel.verified_active()['version'],'0.3.0')
-        self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
-        for target,data in pre_bridge_state.items():
-            if data is None: target.unlink(missing_ok=True)
-            else: target.write_bytes(data);target.chmod(0o600)
-        plan_path=state/'bootstrap-handover-plan.json';receipt_path=state/'content-install-receipt.json'
-        original_save=content_install.save
-        def interrupt_after_journal(target,value):
-            original_save(target,value)
-            if target==receipt_path and value.get('phase')=='applying':raise KeyboardInterrupt()
-        with patch.object(content_install,'save',side_effect=interrupt_after_journal):
-            with self.assertRaises(KeyboardInterrupt):
-                installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
-        self.assertTrue(plan_path.is_file())
-        self.assertEqual(content_install.private_json(receipt_path)['phase'],'applying')
-        self.assertEqual(config.read_bytes(),pre_bridge_state[config])
-        resumed=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
-        self.assertEqual(resumed['status'],'client-update-updated',resumed)
-        self.assertEqual(resumed['active_package_version'],'0.3.1')
-        self.assertFalse(plan_path.exists())
-        self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
-        for target,data in pre_bridge_state.items():
-            if data is None: target.unlink(missing_ok=True)
-            else: target.write_bytes(data);target.chmod(0o600)
-        original_unlink=Path.unlink
-        def interrupt_plan_cleanup(target,*args,**kwargs):
-            if target==plan_path:raise KeyboardInterrupt()
-            return original_unlink(target,*args,**kwargs)
-        with patch.object(Path,'unlink',new=interrupt_plan_cleanup):
-            with self.assertRaises(KeyboardInterrupt):
-                installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
-        self.assertTrue(plan_path.is_file())
-        self.assertEqual(content_install.private_json(receipt_path)['phase'],'complete')
-        self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
-        activated_by_new_bootstrap=channel.update()
-        self.assertEqual(activated_by_new_bootstrap['status'],'updated',activated_by_new_bootstrap)
-        self.assertEqual(channel.verified_active()['version'],'0.3.1')
-        resumed_after_commit=installer.manage_update(self.home,'update',channel_factory=lambda *_:channel)
-        self.assertEqual(resumed_after_commit['status'],'client-update-current',resumed_after_commit)
-        self.assertEqual(resumed_after_commit['active_package_version'],'0.3.1')
-        self.assertFalse(plan_path.exists())
-        self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
-
-    def test_interrupted_handover_reexecs_the_registered_dependency_python(self):
-        import first_install as installer
-        import client_release
-        import content_install
-        state=self.home/'.config/agent-brain-client';state.mkdir(parents=True,mode=0o700)
-        policy_path=state/'release-policy.json';policy_path.write_text('{}');policy_path.chmod(0o600)
-        pinned=self.home/'pinned-python';pinned.write_text('synthetic executable');pinned.chmod(0o700)
-        dependency_path=state/'dependencies.json';dependency_path.write_text(json.dumps({'python':str(pinned)}));dependency_path.chmod(0o600)
-        metadata={'content_candidate':True,'release_policy':str(policy_path),'release_policy_sha256':'a'*64}
-        registration=state/'codex-mcp.json';registration.write_bytes(canonical(metadata));registration.chmod(0o600)
-        handover_path=state/'bootstrap-handover-plan.json'
-        plan={'schema':1,'platform':'darwin-arm64','device_home':str(self.home.resolve()),
-              'codex_home':str(self.home/'codex'),'release_policy':str(policy_path),
-              'release_policy_sha256':'a'*64,'package':str(self.home/'candidate'),
-              'mcp':{'command':str(pinned)}}
-        handover_path.write_bytes(canonical(plan));handover_path.chmod(0o600)
-        digest=content_install.sha(content_install.contract.encode(plan))
-        receipt=state/'content-install-receipt.json'
-        receipt.write_bytes(canonical({'phase':'applying','plan_sha256':digest}));receipt.chmod(0o600)
-        policy={'runtime':{'dependency_policy':str(dependency_path),'dependency_policy_sha256':'b'*64}}
-        captured=[]
-        def runner(argv,**kwargs):
-            captured.append((argv,kwargs));return type('Reply',(),{'returncode':0})()
-        with patch.object(content_install,'inspect',return_value={'registration_verified':False}), \
-                patch.object(content_install,'validate_install_scope'), \
-                patch.object(client_release,'policy_file',return_value=policy), \
-                patch.object(installer,'dependency_environment',return_value={'PATH':'/synthetic/bin'}), \
-                patch.object(sys.stdin,'isatty',return_value=True), \
-                patch.object(sys,'executable','/synthetic/maintenance-python'):
-            result=installer.reexec_update_runtime(self.home,'update',runner=runner)
-        self.assertEqual(result,0)
-        self.assertEqual(captured[0][0][:3],[str(pinned),'-I','-B'])
-        self.assertEqual(captured[0][1]['env']['PATH'],'/synthetic/bin')
-        self.assertEqual(captured[0][1]['env']['CODEX_HOME'],plan['codex_home'])
-        self.assertIsNone(captured[0][1]['stdin'])
 
     def test_pairing_transport_terminal_redacts_error_and_does_not_follow_redirect(self):
         transport=PairingHTTPS('https://synthetic.invalid');token='SYNTHETIC_DEVICE_TOKEN_1234567890123456'
         class Fail:
             def open(s,request,**kwargs):raise HTTPError(request.full_url,403,'ignored',{},io.BytesIO(json.dumps({'error':{'code':'device_revoked','debug':token}}).encode()))
         transport.opener=Fail()
-        from client_pairing import EnrollmentTerminal
+        from agent_brain_client.application.installation.pairing import EnrollmentTerminal
         with self.assertRaises(EnrollmentTerminal) as caught:transport.confirm(token,'SYNTHETIC_NONCE_1234567890123456789012')
         self.assertNotIn(token,str(caught.exception));self.assertIsNone(NoRedirect().redirect_request(None,None,302,'',{},'https://elsewhere.invalid'))
         with self.assertRaises(ValueError):RemoteClient('http://127.0.0.1',credential_provider=lambda:token)
@@ -510,11 +256,11 @@ class HTTPSContent(unittest.TestCase):
 
     def test_https_export_separate_allowlist_no_server_signed_component_or_stable_manifest(self):
         out=self.base/'export';manifest=export(ROOT,out,https_content_candidate=True)
-        self.assertEqual(set(manifest['files']),set(HTTPS_CONTENT_CLIENT_FILES));self.assertEqual(len(manifest['files']),25);self.assertFalse(manifest['keychain_accessed']);self.assertFalse((out/'releases').exists());self.assertFalse((out/'native/DeviceComponent.swift').exists());self.assertFalse(any('brain_server' in path for path in manifest['files']))
+        self.assertEqual(set(manifest['files']),set(HTTPS_CONTENT_CLIENT_FILES));self.assertEqual(len(manifest['files']),25);self.assertFalse(manifest['keychain_accessed']);self.assertFalse((out/'releases').exists());self.assertFalse((out/'src/agent_brain_client/adapters/platforms/macos/native/DeviceComponent.swift').exists());self.assertFalse(any('brain_server' in path for path in manifest['files']))
         with self.assertRaises(ValueError):export(ROOT,self.base/'mixed',ssh_content_candidate=True,https_content_candidate=True)
 
     def install_fixture(self):
-        import content_install as install
+        import agent_brain_client.adapters.harnesses.codex.installation as install
         native=self.home/'codex';native.mkdir(mode=0o700);config=native/'config.toml';config.write_text('model="synthetic"\n');config.chmod(0o600)
         package=self.base/'install-package';export(ROOT,package,https_content_candidate=True)
         content=self.base/'install-content.json';content.write_bytes(canonical({'schema':1,'adapter':'codex','kinds':GRANT['artifact_types'],'ids':GRANT['ids'],'dependencies':{'commands':[],'python_modules':[]}}));content.chmod(0o600)
@@ -549,10 +295,10 @@ class HTTPSContent(unittest.TestCase):
         self.assertTrue(install_once(plan,digest,**kwargs)['installed'])
         after=config.read_bytes();credential=copy.deepcopy(self.backend.record)
         receipt=self.home/'.config/agent-brain-client/content-install-receipt.json'
-        journal=install.private_json(receipt);journal['phase']='applying';install.save(receipt,journal)
+        journal=adapters_storage_private_files.private_json(receipt);journal['phase']='applying';adapters_storage_private_files.save(receipt,journal)
         result=install_once(plan,digest,**kwargs)
         self.assertTrue(result['installed'],result);self.assertEqual(config.read_bytes(),after)
-        self.assertEqual(install.private_json(receipt)['phase'],'complete')
+        self.assertEqual(adapters_storage_private_files.private_json(receipt)['phase'],'complete')
         self.assertEqual(self.backend.record,credential);self.assertEqual(self.prompts,1)
 
     def test_install_once_cancel_leaves_native_config_credential_and_network_untouched(self):

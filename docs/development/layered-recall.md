@@ -14,7 +14,7 @@ count only for wire compatibility when it lacks the native `recall` object.
 Both Mac and Windows can persist Hook settings without changing source approval:
 
 ```sh
-python3 scripts/global_memory.py global-recall-configure --recall-options '{"maxResults":8,"scoreThreshold":0.3,"maxCharsPerMemory":0,"maxTotalRecallChars":0}'
+python3 src/agent_brain_client/runtime/collection.py global-recall-configure --recall-options '{"maxResults":8,"scoreThreshold":0.3,"maxCharsPerMemory":0,"maxTotalRecallChars":0}'
 ```
 
 This example demonstrates configuration, not a universally recommended count.

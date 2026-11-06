@@ -8,16 +8,16 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import test_content_install as fixtures
-import client_release as releases
-import content_install as install
-import client_startup
-from build_client import release as build
-from ssh_content import PREFIX,SSHChannel
+import agent_brain_client.adapters.packages.client as releases
+import agent_brain_client.adapters.harnesses.codex.installation as install
+import agent_brain_client.runtime.launcher as client_startup
+from dev.build.package import release as build
+from agent_brain_client.adapters.server.ssh import PREFIX,SSHChannel
 
 class SSHInstall(unittest.TestCase):
     def setUp(self):
         self.f=fixtures.ContentInstall('test_prepare_read_only_then_apply_inspect_reuse_and_single_link_state');self.f.setUp();self.addCleanup(self.f.doCleanups)
-        f=self.f;self.base=f.base;self.patch=patch('brain_lock.platform.machine',return_value='arm64');self.patch.start();self.addCleanup(self.patch.stop)
+        f=self.f;self.base=f.base;self.patch=patch('agent_brain_client.adapters.platforms.filesystem.platform.machine',return_value='arm64');self.patch.start();self.addCleanup(self.patch.stop)
         key=self.base/'unexecuted-synthetic-ssh-key';key.write_text('SYNTHETIC_NOT_A_KEY');key.chmod(0o600)
         known=self.base/'ssh-known';known.write_text('synthetic pinned host');known.chmod(0o600)
         value={'schema':1,'adapter':'codex','platform':'darwin-arm64','data_mode':'personal','transport':'ssh-fixed-proxy','grant':f.grant,'ssh':{'host':'synthetic.invalid','user':'ubuntu','port':22,'identity_file':str(key),'known_hosts_file':str(known),'known_hosts_sha256':install.sha(known.read_bytes()),'remote_command':PREFIX+'/opt/agent-brain-client/ssh-bootstrap/scripts/brain_ssh_proxy.py --policy-file /var/lib/agent-brain/auth/ssh-proxy.json --policy-sha256 '+'e'*64}}
@@ -46,12 +46,12 @@ class SSHInstall(unittest.TestCase):
         commands=[];fixed=SimpleNamespace(policy=self.policy,update=lambda:{'status':'current','active':self.active},verified_active=lambda:self.active)
         with patch.object(client_startup,'ClientReleases',return_value=fixed),patch.object(client_startup.subprocess,'run',side_effect=lambda argv,**kw:commands.append(argv) or SimpleNamespace(returncode=0)):
             self.assertTrue(client_startup.startup(self.path,self.digest,installation_check=True)['served'])
-        self.assertIn('--ssh-profile',commands[-1]);self.assertNotIn('--signing-policy',commands[-1]);self.assertNotIn('--token-file',commands[-1]);self.assertNotIn('native/DeviceComponent.swift',releases.SSH_CONTENT_CLIENT_FILES)
+        self.assertIn('--ssh-profile',commands[-1]);self.assertNotIn('--signing-policy',commands[-1]);self.assertNotIn('--token-file',commands[-1]);self.assertNotIn('src/agent_brain_client/adapters/platforms/macos/native/DeviceComponent.swift',releases.SSH_CONTENT_CLIENT_FILES)
 
     def test_release_compatible_update_offline_health_rollback_and_capability_mixing(self):
         self.publish('0.3.1');self.assertEqual(self.channel.update()['status'],'updated');previous=self.channel.verified_active()
         def unhealthy(manifest,out):
-            p=out/'adapters/codex/content_mcp.py';p.write_text('raise SystemExit(9)\n');manifest['files']['adapters/codex/content_mcp.py']=install.sha(p.read_bytes())
+            p=out/'src/agent_brain_client/interfaces/mcp/content.py';p.write_text('raise SystemExit(9)\n');manifest['files']['src/agent_brain_client/interfaces/mcp/content.py']=install.sha(p.read_bytes())
         self.publish('0.3.2',unhealthy);self.assertEqual(self.channel.update()['status'],'release-review-required');self.assertEqual(self.channel.verified_active(),previous)
         with patch.object(self.channel.engine.source,'latest',side_effect=OSError('synthetic offline')):self.assertEqual(self.channel.update()['status'],'offline')
         wrong=copy.deepcopy(self.policy);wrong['capabilities']=releases.CONTENT_CAPABILITIES;self.path.write_bytes(install.contract.encode(wrong))
@@ -68,8 +68,8 @@ class SSHInstall(unittest.TestCase):
 
 
     def test_owned_legacy_instruction_retirement_is_explicit_restorable_and_mapping_owned(self):
-        from codex_connect import PERSONAL_MANAGED
-        from content_cache import ContentAdapter
+        from agent_brain_client.adapters.harnesses.codex.configuration import PERSONAL_MANAGED
+        from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
         agents=self.f.native/'AGENTS.md';agents.write_text('Keep unrelated user instructions\n'+PERSONAL_MANAGED)
         old={'command':'synthetic-old-fixed-ssh'};self.f.config.write_text(self.f.config.read_text()+'\n[mcp_servers.'+install.NAME+']\ncommand="synthetic-old-fixed-ssh"\n')
         registry=self.f.home/'.config/agent-brain-client/codex-mcp.json';registry.parent.mkdir(parents=True,exist_ok=True,mode=0o700);old_receipt=self.base/'old-migration.json'
@@ -84,7 +84,7 @@ class SSHInstall(unittest.TestCase):
         class Client:
             grant=self.f.grant
             def request(c,r):return {'request_id':r['request_id'],'result':{'content_api_version':1,'commit':'a'*40,'artifacts':[]}}
-        adapter=ContentAdapter(self.f.home,self.policy['runtime']['content_cache'],self.f.content_value,Client(),codex_home=self.f.native)
+        adapter=CodexContentSession(self.f.home,self.policy['runtime']['content_cache'],self.f.content_value,Client(),codex_home=self.f.native)
         self.assertEqual(adapter.refresh()['status'],'content-refreshed');self.assertTrue(install.inspect(self.f.home)['installed']);agents.write_text(agents.read_text()+'External user edit\n');self.assertFalse(install.inspect(self.f.home)['installed'])
 
     def test_preserved_legacy_registration_and_paused_hooks_need_both_pinned_preimages(self):

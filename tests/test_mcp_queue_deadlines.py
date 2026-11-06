@@ -4,7 +4,7 @@ import queue
 import threading
 import unittest
 
-from content_mcp import serve
+from agent_brain_client.interfaces.mcp.server import serve
 from test_content_read_requests import Source, Output, call
 
 

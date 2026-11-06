@@ -58,7 +58,7 @@ python3 connect.py --agent codex --service-profile <已批准profile> --apply --
 在固定 bootstrap 已安装的机器和现有执行授权内，可使用原有更新检查命令：
 
 ```sh
-python3 <固定bootstrap>/scripts/client_startup.py --policy-file <受信policy> --policy-sha256 <固定摘要> --check-only
+python3 <固定bootstrap>/src/agent_brain_client/runtime/launcher.py --policy-file <受信policy> --policy-sha256 <固定摘要> --check-only
 ```
 
 检查源/ref/anchor、版本、文件哈希、平台、能力、协议及依赖。`not-configured` 表示尚无正式受信源；`release-review-required` 表示兼容/政策阻碍；网络暂不可用时报告状态并保留已验证包，不覆盖本地改动或扩大源信任。`client_updates` 是发现信息，不能代替固定政策授权。个人模式还需核对服务器指导与本机托管块一致；只用合成数据测试写入，生产验收优先只读，不能为验收编造用户记忆。
@@ -81,7 +81,7 @@ python3 <固定bootstrap>/scripts/client_startup.py --policy-file <受信policy>
 
 配对是另行准备的源代码候选，当前 stable 包和现有 SSH MCP 不依赖它。服务端默认关闭配对入口，没有凭据签发的模型工具、隐式 Keychain 操作或新监听。第一段验证使用合成码、合成范围和内存存储；Swift 组件仅编译及离线 `--self-check`，没有真实签名安装或 Keychain 运行验收。
 
-候选包提供 `scripts/client_pairing.py` 和 `native/DeviceComponent.swift`。生成候选不会复制 Git 历史、Core、服务权限、用户资料、签名材料或本机 profile；它没有 stable release manifest，既有 13 个 payload 文件的发布政策会拒绝其新增文件，需另外审核版本/能力/签名与范围才能成为兼容发布源。
+候选包提供 `src/agent_brain_client/application/installation/pairing.py` 和 `src/agent_brain_client/adapters/platforms/macos/native/DeviceComponent.swift`。生成候选不会复制 Git 历史、Core、服务权限、用户资料、签名材料或本机 profile；它没有 stable release manifest，既有 13 个 payload 文件的发布政策会拒绝其新增文件，需另外审核版本/能力/签名与范围才能成为兼容发布源。
 
 Agent 只读检查 `<设备home>/.config/agent-brain-client/pairing-plan.json` 或使用 `connect.py --agent codex --pairing-plan <计划>`。计划固定 schema、实际 Mac 平台、组件与私密 profile 的绝对路径及 SHA256。profile 固定 HTTPS 服务目标、Keychain access group 和被冻结的设备权限范围。发现计划不能代替签名、传输和权限批准；`pairing-ready-for-secure-user-input` 仅表示元数据相符，不能报告已配对或安装。现有原生/HTTP 登记和旧 Brain 迁移检查优先，不能用配对计划覆盖它们。未知 Harness 仍返回 `adapter-review-required`，待开发并验证适配器。
 

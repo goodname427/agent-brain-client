@@ -1,3 +1,5 @@
+import agent_brain_client.adapters.storage.metadata as metadata
+import agent_brain_client.domain.privacy as privacy
 """Isolated global routing/ownership fixtures; no native session or service."""
 import copy
 import io
@@ -11,10 +13,10 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'tools'))
-import global_memory as gm
-import global_memory_install as install
-from global_memory_scope import select, source_id, namespace, digest
+sys.path.insert(0, str(ROOT / 'src'))
+import agent_brain_client.runtime.collection as gm
+import agent_brain_client.adapters.harnesses.codex.collection_installation as install
+from agent_brain_client.domain.scopes import select, source_id, namespace, digest
 
 
 class GlobalMemoryFixtures(unittest.TestCase):
@@ -22,33 +24,33 @@ class GlobalMemoryFixtures(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name).resolve()
         self.scope = {'schema': 1, 'profile_id': 'a' * 32, 'include_roots': [{'root': '/synthetic/personal', 'sharing': 'personal'}, {'root': '/synthetic/personal/isolated', 'sharing': 'project'}], 'exclude_roots': ['/synthetic/company'], 'non_project_roots': ['/synthetic/notes'], 'recall_personal': True}
-        gm.old.imports()
+
 
     def origin(self, root):
         return {'kind': 'project', 'cwd': root + '/src', 'project_root': root, 'repository_root': root}
 
     def test_body_shape_is_not_a_privacy_verdict_but_explicit_markers_are(self):
-        from brain_content import private_recall_text
-        from global_memory_scope import restricted
+        from agent_brain_client.domain.contract import private_recall_text
+        from agent_brain_client.domain.scopes import restricted
         examples = ('password=example-only', 'api_key=synthetic-example',
                     'secret_key=synthetic-example', 'Bearer ' + 'synthetic' * 4,
                     'sk-' + 'synthetic' * 4,
                     '-----BEGIN ' + 'PRIVATE KEY-----\nsynthetic example')
         for text in examples:
             with self.subTest(text=text):
-                self.assertFalse(gm.old.private_content(text))
+                self.assertFalse(privacy.private_content(text))
                 self.assertFalse(private_recall_text(text))
                 self.assertFalse(restricted(text))
                 for marker in ('[LocalOnly]', '[no-memory]', '[private]', 'LocalOnly:', '不要记忆：'):
-                    self.assertTrue(gm.old.private_content(marker + ' ' + text))
+                    self.assertTrue(privacy.private_content(marker + ' ' + text))
                     self.assertTrue(private_recall_text(marker + ' ' + text))
                 for marker in ('[no-share]', '[project-only]', '禁止跨项目共享', '仅限本项目'):
                     self.assertTrue(restricted(marker + ' ' + text))
                     self.assertTrue(private_recall_text(marker + ' ' + text))
 
     def test_sharing_keywords_in_questions_and_quotes_are_not_directives(self):
-        from brain_content import private_recall_text
-        from global_memory_scope import restricted
+        from agent_brain_client.domain.contract import private_recall_text
+        from agent_brain_client.domain.scopes import restricted
         questions = ('为什么规则禁止跨项目共享？', '禁止跨项目共享是什么意思？',
                      '仅限本项目是什么意思？', '如何理解“不要跨项目共享”这句话？',
                      '文档写着“仅限当前项目”，请解释。',
@@ -82,7 +84,7 @@ class GlobalMemoryFixtures(unittest.TestCase):
 
     def test_unapproved_router_never_reads_stdin_or_activates_identity(self):
         value = {'enabled': True, 'scope': self.scope, 'approved_scope_sha256': None, 'server_scope_sha256': None}
-        with patch.object(sys, 'stdin') as stdin, patch.object(gm, 'GlobalClient', side_effect=AssertionError('credential activation')):
+        with patch.object(sys, 'stdin') as stdin, patch.object(gm, 'CollectionClient', side_effect=AssertionError('credential activation')):
             stdin.buffer.read.side_effect = AssertionError('unapproved body access')
             self.assertEqual(gm.hook(value), {})
         stdin.buffer.read.assert_not_called()
@@ -99,7 +101,7 @@ class GlobalMemoryFixtures(unittest.TestCase):
             self.assertEqual(gm.hook(value), {})
 
     def test_hook_failure_reports_stage_without_content_or_exception_text(self):
-        from content_cache import operation_stage
+        from agent_brain_client.adapters.storage.content import operation_stage
         def failed(*args, **kwargs):
             with operation_stage('global-cache-open'):
                 raise PermissionError('SYNTHETIC_SECRET path and request body')
@@ -123,12 +125,12 @@ class GlobalMemoryFixtures(unittest.TestCase):
         file = self.root / 'staged.json'
         file.write_text('{"synthetic":true}', encoding='utf-8')
         file.chmod(0o600)
-        self.assertEqual(gm.old.private_json(file, cache=True), {'synthetic':True})
+        self.assertEqual(metadata.private_json(file, cache=True), {'synthetic':True})
         os.link(file, self.root / 'linked.json')
-        with self.assertRaises(ValueError): gm.old.private_json(file, cache=True)
+        with self.assertRaises(ValueError): metadata.private_json(file, cache=True)
 
     def test_question_drives_recall_without_promoting_other_project_rules(self):
-        from global_memory_scope import source_context, restricted
+        from agent_brain_client.domain.scopes import source_context, restricted
         local = self.origin('/synthetic/personal/one')
         foreign = self.origin('/synthetic/personal/two')
         context = source_context([foreign], local)

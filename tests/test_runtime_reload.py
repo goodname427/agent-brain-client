@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 from test_content_error_stages import Adapter
-from content_mcp import ContentServer
+from agent_brain_client.interfaces.mcp.content import ContentServer
 
 
 class RuntimeReload(TestCase):
@@ -21,11 +21,11 @@ class RuntimeReload(TestCase):
     def test_worker_compares_fresh_local_active_version_and_commit(self):
         adapter = Adapter()
         adapter.home = Path('/synthetic').resolve()
-        with patch('content_mcp.worker_commit', return_value='a'*40):
+        with patch('agent_brain_client.interfaces.mcp.content.worker_commit', return_value='a'*40):
             server = ContentServer(adapter, '0.6.6')
-        with (patch('content_install.private_json', return_value={'release_policy':'synthetic-policy', 'release_policy_sha256':'b'*64}),
-              patch('content_install.registered_context', side_effect=AssertionError('No installer or subprocess probe')) as registration,
-              patch('client_release.ClientReleases') as releases):
+        with (patch('agent_brain_client.adapters.storage.private_files.private_json', return_value={'release_policy':'synthetic-policy', 'release_policy_sha256':'b'*64}),
+              patch('agent_brain_client.adapters.harnesses.codex.installation.registered_context', side_effect=AssertionError('No installer or subprocess probe')) as registration,
+              patch('agent_brain_client.adapters.packages.client.ClientReleases') as releases):
             releases.return_value.policy = {'runtime': {'device_home': str(adapter.home)}}
             active = releases.return_value.verified_active
             for version, commit, required, reason in (
@@ -55,11 +55,11 @@ class RuntimeReload(TestCase):
     def test_legacy_worker_commit_does_not_prove_version_equality(self):
         adapter = Adapter()
         adapter.home = Path('/synthetic').resolve()
-        with patch('content_mcp.worker_commit', return_value=None):
+        with patch('agent_brain_client.interfaces.mcp.content.worker_commit', return_value=None):
             server = ContentServer(adapter, '0.6.6')
-        with (patch('content_install.private_json', return_value={'release_policy':'synthetic-policy', 'release_policy_sha256':'b'*64}),
-              patch('content_install.registered_context'),
-              patch('client_release.ClientReleases') as releases):
+        with (patch('agent_brain_client.adapters.storage.private_files.private_json', return_value={'release_policy':'synthetic-policy', 'release_policy_sha256':'b'*64}),
+              patch('agent_brain_client.adapters.harnesses.codex.installation.registered_context'),
+              patch('agent_brain_client.adapters.packages.client.ClientReleases') as releases):
             releases.return_value.policy = {'runtime': {'device_home': str(adapter.home)}}
             active = releases.return_value.verified_active
             active.return_value = {'version':'0.6.6', 'commit':'a'*40}

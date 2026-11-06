@@ -40,22 +40,22 @@ class ContentRuntimeLifetime(unittest.TestCase):
         worker = '''import importlib.util,json,os,sys
 from pathlib import Path
 ROOT=Path(ROOT_LITERAL)
-sys.path[:0]=[str(ROOT/'tests'),str(ROOT/'adapters/codex'),str(ROOT/'scripts')]
+sys.path[:0]=[str(ROOT/'tests'),str(ROOT/'src'),str(ROOT/'src')]
 from test_content_outbox import Cloud as FakeCloud,POLICY,MEMORY
-import brain_content as contract
+import agent_brain_client.domain.contract as contract
 def arg(name):return sys.argv[sys.argv.index(name)+1]
 base=Path(arg('--cache')).parent
 version=arg('--client-version')
 if version=='0.2.0':
  spec=importlib.util.spec_from_file_location('synthetic_legacy',base/'legacy_cache.py');module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 else:
- import content_cache as module
+ import agent_brain_client.adapters.harnesses.codex.content as module
 class Cloud(FakeCloud):
  def request(self,request):
   state=json.loads((base/'synthetic-remote.json').read_bytes());self.offline=state['offline']
   self.records={('memory','synthetic-topic'):dict(MEMORY,body=state['body'])}
   return super().request(request)
-cloud=Cloud();adapter=module.ContentAdapter(arg('--device-home'),arg('--cache'),POLICY,cloud,codex_home=arg('--codex-home'))
+cloud=Cloud();adapter=module.CodexContentSession(arg('--device-home'),arg('--cache'),POLICY,cloud,codex_home=arg('--codex-home'))
 lock=base/'cache'/'.content-runtime.lock';inherited=False
 if lock.exists():
  for fd in range(3,64):
@@ -74,18 +74,18 @@ for line in sys.stdin:
 '''.replace('ROOT_LITERAL', repr(str(ROOT)))
         for name in ('legacy-package', 'modern-package'):
             path = self.base/name/'adapters/codex';path.mkdir(parents=True)
-            (path/'content_mcp.py').write_text(worker)
+            (path/'agent_brain_client.interfaces.mcp.content.py').write_text(worker)
         driver = '''import importlib.util,json,sys
 from pathlib import Path
 from types import SimpleNamespace
 ROOT=Path(ROOT_LITERAL)
-sys.path[:0]=[str(ROOT/'adapters/codex'),str(ROOT/'scripts')]
+sys.path[:0]=[str(ROOT/'src'),str(ROOT/'src')]
 base=Path(sys.argv[1]);version=sys.argv[2]
 if sys.argv[3]=='baseline':
  spec=importlib.util.spec_from_file_location('synthetic_baseline',base/'baseline_startup.py');startup=importlib.util.module_from_spec(spec);spec.loader.exec_module(startup)
 else:
- import client_startup as startup
-import content_install
+ import agent_brain_client.runtime.launcher as startup
+import agent_brain_client.adapters.harnesses.codex.installation as content_install
 content_install.inspect=lambda home:{'installed':True}
 active={'version':version,'commit':'a'*40,'package':str(base/('legacy-package' if version=='0.2.0' else 'modern-package'))}
 policy={'capabilities':startup.SSH_CONTENT_CAPABILITIES,'runtime':{'device_home':str(base/'home'),'codex_home':str(base/'native'),'content_cache':str(base/'cache')}}

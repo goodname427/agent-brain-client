@@ -11,9 +11,9 @@ import unittest
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
-sys.path[:0]=[str(ROOT/'adapters/codex'),str(ROOT/'scripts')]
-import client_startup as startup
-from client_release import SSH_CONTENT_CAPABILITIES,CONTENT_CAPABILITIES,CAPABILITIES
+sys.path[:0]=[str(ROOT/'src'),str(ROOT/'src')]
+import agent_brain_client.runtime.launcher as startup
+from agent_brain_client.adapters.packages.client import SSH_CONTENT_CAPABILITIES,CONTENT_CAPABILITIES,CAPABILITIES
 
 
 class StartupGuard(unittest.TestCase):
@@ -31,7 +31,7 @@ class StartupGuard(unittest.TestCase):
     def call(self,**options):
         result={'status':self.status,'active':copy.deepcopy(self.active)}
         fixed=SimpleNamespace(policy=self.policy,update=lambda:result,verified_active=lambda **kwargs:self.active,startup_check=lambda:None)
-        with patch.object(startup,'ClientReleases',return_value=fixed),patch.object(startup.subprocess,'run') as serve,patch('content_install.inspect',return_value={'installed':True}):
+        with patch.object(startup,'ClientReleases',return_value=fixed),patch.object(startup.subprocess,'run') as serve,patch('agent_brain_client.adapters.harnesses.codex.installation.inspect',return_value={'installed':True}):
             serve.return_value=SimpleNamespace(returncode=0)
             value=startup.startup('unused-policy','a'*64,**options)
             return value,serve.call_count
@@ -108,7 +108,7 @@ class StartupGuard(unittest.TestCase):
         self.assertEqual(calls,0);self.assertTrue(lease.is_symlink());self.assertFalse(lease.resolve().exists())
 
     def test_launch_failure_releases_kernel_lease_for_next_start(self):
-        with patch.object(startup.subprocess,'run',side_effect=OSError('Synthetic launch failed')), patch('content_install.inspect',return_value={'installed':True}):
+        with patch.object(startup.subprocess,'run',side_effect=OSError('Synthetic launch failed')), patch('agent_brain_client.adapters.harnesses.codex.installation.inspect',return_value={'installed':True}):
             result=startup.serve_content(['synthetic-unused'],self.active,self.policy,'offline')
         self.assertEqual(result['status'],'content-runtime-lifecycle-review-required')
         result,calls=self.call();self.assertTrue(result['served']);self.assertEqual(calls,1)
@@ -116,7 +116,7 @@ class StartupGuard(unittest.TestCase):
     def test_removed_registration_after_initial_inspect_cannot_launch_worker(self):
         self.active['version']='0.2.5'
         fixed=SimpleNamespace(policy=self.policy,update=lambda:{'status':'current','active':self.active},verified_active=lambda **kwargs:self.active,startup_check=lambda:None)
-        with patch.object(startup,'ClientReleases',return_value=fixed),patch.object(startup.subprocess,'run') as serve,patch('content_install.inspect',side_effect=[{'installed':True},{'installed':False}]):
+        with patch.object(startup,'ClientReleases',return_value=fixed),patch.object(startup.subprocess,'run') as serve,patch('agent_brain_client.adapters.harnesses.codex.installation.inspect',side_effect=[{'installed':True},{'installed':False}]):
             result=startup.startup('unused-policy','a'*64)
         self.assertEqual(result['status'],'content-native-install-pending');self.assertFalse(result['served']);serve.assert_not_called()
 

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from brain_host_files import host_stage,host_atomic
+from agent_brain_client.adapters.storage.host_files import host_stage,host_atomic
 
 
 @unittest.skipUnless(
@@ -20,7 +20,7 @@ class HostConfig(unittest.TestCase):
         self.path = self.root / "codex/config.toml"
         self.path.parent.mkdir()
         self.path.write_bytes(b'model="synthetic"\n')
-        self.platform = patch("codex_connect.require_platform")
+        self.platform = patch("agent_brain_client.adapters.harnesses.codex.configuration.require_platform")
         self.platform.start()
         self.addCleanup(self.platform.stop)
 
@@ -100,7 +100,7 @@ class WindowsBoundary(unittest.TestCase):
     def test_existing_open_requests_only_data_io_and_excludes_writers(self):
         from types import SimpleNamespace
         from unittest.mock import Mock
-        from brain_host_files import windows_host_file
+        from agent_brain_client.adapters.storage.host_files import windows_host_file
 
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -110,8 +110,8 @@ class WindowsBoundary(unittest.TestCase):
         descriptor = os.open(path, os.O_RDWR)
         crt = SimpleNamespace(open_osfhandle=Mock(return_value=descriptor))
         with (
-            patch("brain_windows.canonical", return_value=path),
-            patch("brain_windows.libraries", return_value=(SimpleNamespace(), kernel)),
+            patch("agent_brain_client.adapters.platforms.windows.native.canonical", return_value=path),
+            patch("agent_brain_client.adapters.platforms.windows.native.libraries", return_value=(SimpleNamespace(), kernel)),
             patch.dict("sys.modules", msvcrt=crt),
         ):
             with windows_host_file(path) as file:

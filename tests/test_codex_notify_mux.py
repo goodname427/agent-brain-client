@@ -11,8 +11,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "adapters/codex"))
-from codex_notify_mux import dispatch_notify
+sys.path.insert(0, str(ROOT / "src"))
+from dev.prototypes.notify_capture import dispatch_notify
 
 
 class CodexNotifyMuxTests(unittest.TestCase):

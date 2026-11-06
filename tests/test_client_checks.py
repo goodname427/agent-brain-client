@@ -8,8 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import client_checks as cc
-import release_client as rc
+import dev.checks.client as cc
+import dev.release.client as rc
 import test_release_pipeline as fixtures
 
 
@@ -210,13 +210,13 @@ class LocalChecks(unittest.TestCase):
         mapping = {'documentation': 'documentation', 'source': 'source-checks',
                    'macos': 'isolated-client', 'windows': 'windows-contracts'}
         for scope, job in mapping.items():
-            self.assertIn('tools/client_checks.py ' + scope + ' --ci --output', jobs[job])
+            self.assertIn('dev/checks/client.py ' + scope + ' --ci --output', jobs[job])
             self.assertNotIn('python -B -m unittest', jobs[job])
             self.assertNotIn('ruff check', jobs[job])
         self.assertIn("python: ['3.11', '3.13']", workflow)
         self.assertIn('ruff==0.14.0 mypy==1.18.2', workflow)
         self.assertIn('test_codebuddy', {item for command in cc.COMMANDS['windows'] for item in command})
-        for name in ('tools/install-windows.ps1', 'tools/memory-windows.ps1', 'tools/install-codebuddy.ps1'):
+        for name in ('bootstrap/windows/install.ps1', 'bin/memory.ps1', 'bootstrap/windows/codebuddy.ps1'):
             self.assertIn(name, cc.COMMANDS['windows'][-1][-1])
         self.assertTrue(any('adapters/codebuddy' in command for command in cc.COMMANDS['source']))
 
@@ -231,9 +231,9 @@ class LocalChecks(unittest.TestCase):
                 patch.object(cc.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
             cc.run_checks('macos', Path(tmp) / 'checks', ci=True)
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertIn('tools/run_ci_tests.py', commands[0])
-        self.assertFalse(any('tools/build_credential_helper.py' in command for command in commands))
-        self.assertTrue(any('tools/install-codebuddy.sh' in command for command in commands))
+        self.assertIn('dev/checks/tests.py', commands[0])
+        self.assertFalse(any('dev/build/credentials.py' in command for command in commands))
+        self.assertTrue(any('bootstrap/macos/codebuddy.sh' in command for command in commands))
 
 
 if __name__ == '__main__':

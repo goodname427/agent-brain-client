@@ -1,3 +1,5 @@
+import agent_brain_client.adapters.storage.install_state as adapters_storage_install_state
+import agent_brain_client.interfaces.cli.install as interfaces_cli_install
 """Synthetic address/key flow and TLS transport; no real credential UI or data."""
 
 import copy
@@ -17,11 +19,11 @@ sys.path[:0] = [
     str(Path(__file__).resolve().parents[1] / p)
     for p in ("tools", "adapters/codex", "scripts", "tests")
 ]
-import access_install as access
-import first_install as wizard
+import agent_brain_client.interfaces.cli.access as access
+import agent_brain_client.runtime.installation as wizard
 import test_mac_first_install as fixtures
 from test_https_content import Backend
-from system_credentials import canonical
+from agent_brain_client.adapters.platforms.credentials import canonical
 
 KEY = "SYNTHETIC_ACCESS_KEY_12345678901234567890123456789"
 CONNECTION = {
@@ -45,7 +47,7 @@ CONNECTION = {
 
 class AddressInstall(unittest.TestCase):
     def setUp(self):
-        from brain_lock import native_platform
+        from agent_brain_client.adapters.platforms.filesystem import native_platform
 
         self.target = native_platform()
         self.connection = copy.deepcopy(CONNECTION)
@@ -83,7 +85,7 @@ class AddressInstall(unittest.TestCase):
         self.platform.start()
         self.addCleanup(self.platform.stop)
         self.grant_platform = patch(
-            "brain_lock.native_platform", return_value=self.target
+            "agent_brain_client.adapters.platforms.filesystem.native_platform", return_value=self.target
         )
         self.grant_platform.start()
         self.addCleanup(self.grant_platform.stop)
@@ -201,7 +203,7 @@ class AccessTransport(unittest.TestCase):
 
     def test_no_redirect_tls_error_or_unknown_rejection_retires_key(self):
         peer = access.AccessHTTPS("https://synthetic.invalid")
-        from brain_http import NoRedirect
+        from agent_brain_client.adapters.server.http import NoRedirect
 
         self.assertTrue(any(isinstance(h, NoRedirect) for h in peer.opener.handlers))
         for status, code, expected in (
@@ -261,7 +263,7 @@ class AccessTransaction(unittest.TestCase):
         self.assertTrue(second["installed"], second)
         device_id = fixture.backend.record["device_id"]
         with patch(
-            "content_install.inspect",
+            "agent_brain_client.adapters.harnesses.codex.installation.inspect",
             return_value={"installed": True, "native_changed": False},
         ):
             third = fixture.run_wizard(
@@ -274,7 +276,7 @@ class AccessTransaction(unittest.TestCase):
 class WindowsAccessDialog(unittest.TestCase):
     def test_generic_hidden_key_prompt_no_os_auth_or_automatic_persistence(self):
         import ctypes as C
-        from access_windows import secure_input
+        from agent_brain_client.adapters.platforms.windows.access import secure_input
 
         captured = []
 
@@ -305,7 +307,7 @@ class WindowsAccessDialog(unittest.TestCase):
         self.assertEqual(captured[0].value, "")
 
     def test_cancel_error_and_invalid_input_clear_buffers_without_fallback(self):
-        from access_windows import secure_input
+        from agent_brain_client.adapters.platforms.windows.access import secure_input
 
         for status, value in ((1223, KEY), (5, KEY), (0, "invalid")):
             captured = []
@@ -340,7 +342,7 @@ class WindowsAccessDialog(unittest.TestCase):
     )
     def test_native_dialog_api_binding_without_opening_ui(self):
         import ctypes as C
-        from access_windows import dialog_api, CredUIInfo
+        from agent_brain_client.adapters.platforms.windows.access import dialog_api, CredUIInfo
 
         prompt = dialog_api()
         self.assertEqual(len(prompt.argtypes), 10)
@@ -353,7 +355,7 @@ class BootstrapCacheEntry(unittest.TestCase):
     def test_fresh_checkout_cache_reaches_address_and_key_input_without_legacy_file(
         self,
     ):
-        import bootstrap_main
+        import bootstrap.source_checkout as bootstrap_main
         import subprocess
 
         def git(args, **kwargs):
@@ -399,11 +401,11 @@ class BootstrapCacheEntry(unittest.TestCase):
         with (
             patch.object(Path, "home", return_value=self.home),
             patch.dict(os.environ, CODEX_HOME=str(self.native)),
-            patch.object(sys, "argv", ["first_install.py"]),
+            patch.object(sys, "argv", ["agent_brain_client.runtime.installation.py"]),
             patch.object(sys, "stdout", io.StringIO()) as output,
             patch.object(access, "run_address_install", side_effect=install),
         ):
-            self.assertEqual(wizard.main(), 2)
+            self.assertEqual(interfaces_cli_install.main(), 2)
         self.assertEqual(
             json.loads(output.getvalue())["status"], "access-input-cancelled"
         )
@@ -417,7 +419,7 @@ class BootstrapCacheEntry(unittest.TestCase):
 )
 class ApplyingAccessEntry(unittest.TestCase):
     def fixture(self, unicode_home=False):
-        import content_install
+        import agent_brain_client.adapters.harnesses.codex.installation as content_install
 
         f = fixtures.FirstInstall(
             "test_first_install_cli_emits_onboard_handoff_without_importing"
@@ -425,7 +427,7 @@ class ApplyingAccessEntry(unittest.TestCase):
         f.setUp()
         self.addCleanup(f.doCleanups)
         if unicode_home:
-            from system_credentials import CredentialStore
+            from agent_brain_client.adapters.platforms.credentials import CredentialStore
 
             destination = f.home.with_name("home & 文本")
             f.home.rename(destination)
@@ -444,16 +446,16 @@ class ApplyingAccessEntry(unittest.TestCase):
         receipt = wizard.private_json(state / "content-install-receipt.json")
         receipt["phase"] = "applying"
         wizard.save(state / "content-install-receipt.json", receipt)
-        wizard.same_private(
+        adapters_storage_install_state.same_private(
             state / "access-bootstrap/endpoint.json",
             {"schema": 1, "endpoint": f.connection["endpoint"]},
         )
-        wizard.same_private(state / "access-bootstrap/connection.json", f.connection)
+        adapters_storage_install_state.same_private(state / "access-bootstrap/connection.json", f.connection)
         self.assertFalse(content_install.inspect(f.home).get("registration_verified"))
         return f, state, receipt
 
     def exercise_recovery(self, unicode_home=False):
-        import content_install
+        import agent_brain_client.adapters.harnesses.codex.installation as content_install
 
         f, state, _ = self.fixture(unicode_home=unicode_home)
         identity = copy.deepcopy(f.backend.record)
@@ -478,11 +480,11 @@ class ApplyingAccessEntry(unittest.TestCase):
         with (
             patch.object(Path, "home", return_value=f.home),
             patch.dict(os.environ, CODEX_HOME=str(f.native)),
-            patch.object(sys, "argv", ["first_install.py"]),
+            patch.object(sys, "argv", ["agent_brain_client.runtime.installation.py"]),
             patch.object(wizard, "run", side_effect=run),
             patch.object(sys, "stdout", io.StringIO()) as output,
         ):
-            self.assertEqual(wizard.main(), 0, output.getvalue())
+            self.assertEqual(interfaces_cli_install.main(), 0, output.getvalue())
         self.assertTrue(json.loads(output.getvalue())["installed"])
         self.assertEqual(
             wizard.private_json(state / "content-install-receipt.json")["phase"],
@@ -508,7 +510,7 @@ class ApplyingAccessEntry(unittest.TestCase):
         with (
             patch.object(Path, "home", return_value=f.home),
             patch.dict(os.environ, CODEX_HOME=str(f.native)),
-            patch.object(sys, "argv", ["first_install.py"]),
+            patch.object(sys, "argv", ["agent_brain_client.runtime.installation.py"]),
             patch.object(
                 wizard,
                 "run",
@@ -516,7 +518,7 @@ class ApplyingAccessEntry(unittest.TestCase):
             ),
             patch.object(sys, "stdout", io.StringIO()) as output,
         ):
-            self.assertEqual(wizard.main(), 2)
+            self.assertEqual(interfaces_cli_install.main(), 2)
         self.assertFalse(json.loads(output.getvalue())["installed"])
         self.assertEqual(f.config.read_bytes(), before)
         self.assertEqual((state / "content-install-receipt.json").read_bytes(), journal)

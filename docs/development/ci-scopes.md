@@ -2,7 +2,7 @@
 
 > 当前维护；Client 0.6 开发。核对日期：2026-11-05。
 
-普通 PR 和 main push 都启动 [Client checks](../../.github/workflows/client-checks.yml)，由 [分类器](../../tools/ci_scope.py) 选择 job。没有工作流级 paths 过滤；文档标点改动不会申请 Mac 或 Windows runner。轻量检查包括全仓文档链接／锚点、文档检查器与 CI 分类／汇总回归、diff 格式。它不证明代码或平台已完整验证。
+普通 PR 和 main push 都启动 [Client checks](../../.github/workflows/client-checks.yml)，由 [分类器](../../dev/checks/scope.py) 选择 job。没有工作流级 paths 过滤；文档标点改动不会申请 Mac 或 Windows runner。轻量检查包括全仓文档链接／锚点、文档检查器与 CI 分类／汇总回归、diff 格式。它不证明代码或平台已完整验证。
 
 | 变更 | 轻量文档检查 | 源码检查／lint／类型 | Mac 完整标准库测试与 helper 自检 | Windows 原生合同（3.11、3.13） |
 | --- | --- | --- | --- | --- |
@@ -16,7 +16,7 @@
 | 仅 CI 分类器／文档检查器及它们的测试，可带普通文档 | 是（含对应回归） | 是 | 跳过 | 跳过 |
 | 手动 Run workflow、merge queue、基准缺失／不可判定 | 是 | 是 | 是 | 是 |
 
-平台专用路径是短小的精确白名单，新增文件默认走全量，确认边界和测试覆盖后才加入白名单。`installer/first_install.py` 同时承接两平台安装，因此归公共代码；`windows_install_complete.py` 及 POSIX 故障注入 fixture 同样保守覆盖两端。依赖和 CI 配置不按目录名猜测。docs 下的连接 JSON 是合同，仍跑全量。根目录 Markdown 的文件集合改变一律走全量，保护 README／BOOTSTRAP／PROTOCOL／ADAPTERS 等固定包文件；仅改标点不改变集合。Markdown 变成可执行文件、符号链接或子模块等特殊变更走全量。
+平台专用路径是短小的精确白名单，新增文件默认走全量，确认边界和测试覆盖后才加入白名单。`src/agent_brain_client/interfaces/cli/install.py` 同时承接两平台安装，因此归公共代码；`windows_install_complete.py` 及 POSIX 故障注入 fixture 同样保守覆盖两端。依赖和 CI 配置不按目录名猜测。docs 下的连接 JSON 是合同，仍跑全量。根目录 Markdown 的文件集合改变一律走全量，保护 README／BOOTSTRAP／PROTOCOL／ADAPTERS 等固定包文件；仅改标点不改变集合。Markdown 变成可执行文件、符号链接或子模块等特殊变更走全量。
 
 ## 基准和结果
 
@@ -32,12 +32,12 @@
 
 在 Actions 的 **Client checks → Run workflow** 选择目标 ref，可强制所有检查；不需要额外审批输入。手动运行固定当次 ref 的 SHA。正式发布／阶段封板必须记录对应最终源码树的完整验证证据；文档合入后的绿色局部 CI 不可冒充封板。若最终提交只有文档变化，先对该提交运行全量 Client checks，再执行独立授权的发布／封板。
 
-[发布工具](../../tools/release_client.py)继续核对精确源码树与 PR 合成合并语义，并读取同一次 run attempt 的实际 jobs：分类、文档、源码、Mac、Windows 两版本、汇总和完整标记必须全部 success；任何 skipped、cancelled、failure、缺失或重复证据均拒绝。它允许 main push、main 手动全量以及满足既有树条件的 PR，不凭祖先提交的绿色状态替代当前树。更早的无完整标记工作流也不能作为新的发布证据。发布准备自身的完整离线测试和现有不可变资产／渠道校验继续执行。
+[发布工具](../../dev/release/client.py)继续核对精确源码树与 PR 合成合并语义，并读取同一次 run attempt 的实际 jobs：分类、文档、源码、Mac、Windows 两版本、汇总和完整标记必须全部 success；任何 skipped、cancelled、failure、缺失或重复证据均拒绝。它允许 main push、main 手动全量以及满足既有树条件的 PR，不凭祖先提交的绿色状态替代当前树。更早的无完整标记工作流也不能作为新的发布证据。发布准备自身的完整离线测试和现有不可变资产／渠道校验继续执行。
 
 合成 Git 历史、各类路径／改名／删除／混合、失败汇总与发布证据回归见 [test_ci_scope.py](../../tests/test_ci_scope.py) 和 [test_release_pipeline.py](../../tests/test_release_pipeline.py)。平台原生检查仍以 GitHub 对应 runner 的实际结果为准；合成测试不证明真实桌面、设备或生产验收。
 
 
-本地与 Actions 均直接执行 `tools/client_checks.py` 的同一份 `COMMANDS`；工作流不再复制测试／lint／类型清单。CodeBuddy 的静态检查、Windows 专项及安装入口解析都包含在共用清单中。
+本地与 Actions 均直接执行 `dev/checks/client.py` 的同一份 `COMMANDS`；工作流不再复制测试／lint／类型清单。CodeBuddy 的静态检查、Windows 专项及安装入口解析都包含在共用清单中。
 
 ## 日常增量检查
 
@@ -48,13 +48,13 @@ Mac 测试在同一个 runner 的两个独立进程执行，每个进程分别�
 本地可先查看实际 Git 范围，再复用同一测试选择。以下只执行测试；其他检查按 `plan` 结果使用现有本地入口，发布继续要求完整证据：
 
 ```sh
-python3 -B tools/ci_scope.py plan origin/main HEAD
+python3 -B dev/checks/scope.py plan origin/main HEAD
 TEST_ROOT=$(mktemp -d)
 mkdir -p "$TEST_ROOT/home" "$TEST_ROOT/codex"
 export HOME="$TEST_ROOT/home" CODEX_HOME="$TEST_ROOT/codex"
 export PYTHONPATH=scripts:adapters/codex:installer:tools:tests
-export CI_TESTS="$(python3 -B tools/ci_scope.py tests origin/main HEAD)"
-python3 -B tools/run_ci_tests.py
+export CI_TESTS="$(python3 -B dev/checks/scope.py tests origin/main HEAD)"
+python3 -B dev/checks/tests.py
 ```
 
 `CI_TESTS` 只接受 JSON 测试模块列表，不作为 shell 命令拼接；空列表执行完整 discover。耗时比较应区分测试执行、runner 设置与等待／调度时间，不能把减少检查数量当作实测耗时。

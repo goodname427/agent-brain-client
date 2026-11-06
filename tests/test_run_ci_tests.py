@@ -4,7 +4,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-import run_ci_tests as runner
+import dev.checks.tests as runner
 
 
 class RunnerContract(unittest.TestCase):

@@ -10,9 +10,10 @@ import unittest
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
-sys.path.insert(0,str(ROOT/'adapters/codex'));sys.path.insert(0,str(ROOT/'scripts'));sys.path.insert(0,str(ROOT/'tools'))
-from content_cache import ContentAdapter,CacheBlocked
-import brain_content as contract
+sys.path.insert(0,str(ROOT/'src'));sys.path.insert(0,str(ROOT/'src'));sys.path.insert(0,str(ROOT/'src'))
+from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.domain.errors import CacheBlocked
+import agent_brain_client.domain.contract as contract
 
 MEMORY={'title':'Synthetic','description':'Synthetic only','body':'Synthetic local content','type':'feedback'}
 RULE={'title':'Synthetic rule','body':'Synthetic rule body','enabled':False,'trigger':{'mode':'on-demand','patterns':[]}}
@@ -46,7 +47,7 @@ class Cloud:
 class Outbox(unittest.TestCase):
     def setUp(self):
         tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);self.base=Path(tmp.name).resolve();self.home=self.base/'home';self.home.mkdir();self.cache=self.base/'cache';self.cloud=Cloud();self.adapter=self.restart()
-    def restart(self):return ContentAdapter(self.home,self.cache,POLICY,self.cloud,codex_home=self.home/'.codex')
+    def restart(self):return CodexContentSession(self.home,self.cache,POLICY,self.cloud,codex_home=self.home/'.codex')
     def request(self,rid='synthetic_write_0001',body=None,revision='missing'):
         return {'request_id':rid,'method':'content_put','params':{'kind':'memory','id':'synthetic-topic','record':dict(MEMORY,body=body or MEMORY['body']),'expected_revision':revision}}
     def plan(self,records=None,fingerprint='a'*64):
@@ -58,7 +59,7 @@ class Outbox(unittest.TestCase):
         def inspect(value):
             self.assertTrue((self.cache/'outbox'/(request['request_id']+'.json')).is_file());return original(value)
         self.cloud.request=inspect
-        with patch('content_cache.os.fsync',wraps=__import__('os').fsync) as fsync:
+        with patch('agent_brain_client.adapters.harnesses.codex.content.os.fsync',wraps=__import__('os').fsync) as fsync:
             reply=self.adapter.invoke(request);self.assertGreaterEqual(fsync.call_count,3)
         self.assertEqual(reply['error']['code'],'content_upload_queued');self.assertFalse(reply['persistence']['durable']);self.assertTrue(reply['local_queue']['saved'])
         self.assertEqual(json.loads((self.cache/'outbox'/(request['request_id']+'.json')).read_bytes())['request'],request)
@@ -75,7 +76,7 @@ class Outbox(unittest.TestCase):
                 self.cloud.crash=False;before=self.cloud.puts;self.adapter=self.restart();self.adapter.refresh();self.assertEqual(self.cloud.puts,before);self.assertEqual(self.adapter.invoke(request)['local_queue']['state'],'confirmed')
 
     def test_actual_subprocess_exit_keeps_request_for_next_process(self):
-        code="import sys;sys.path.insert(0,sys.argv[1]);from test_content_outbox import *;c=Cloud();c.offline=True;a=ContentAdapter(sys.argv[2],sys.argv[3],POLICY,c,codex_home=Path(sys.argv[2])/'.codex');a.invoke("+repr(self.request())+");raise SystemExit(23)"
+        code="import sys;sys.path.insert(0,sys.argv[1]);from test_content_outbox import *;c=Cloud();c.offline=True;a=CodexContentSession(sys.argv[2],sys.argv[3],POLICY,c,codex_home=Path(sys.argv[2])/'.codex');a.invoke("+repr(self.request())+");raise SystemExit(23)"
         run=subprocess.run([sys.executable,'-I','-B','-c',code,str(ROOT/'tests'),str(self.home),str(self.cache)],capture_output=True,text=True);self.assertEqual(run.returncode,23,run.stderr)
         self.assertEqual(self.restart().queue_status()['pending'],1);self.restart().refresh();self.assertEqual(self.cloud.puts,1)
 
@@ -87,26 +88,26 @@ class Outbox(unittest.TestCase):
 
     def test_process_killed_before_confirmation_rename_keeps_original_replayable(self):
         self.cloud.offline=True;self.adapter.invoke(self.request())
-        code=("import os,sys\nsys.path.insert(0,sys.argv[1])\nfrom test_content_outbox import *\nc=Cloud();a=ContentAdapter(sys.argv[2],sys.argv[3],POLICY,c,codex_home=Path(sys.argv[2])/'.codex')\noriginal=os.replace\ndef killed(source,target):\n if str(target).endswith('/outbox/synthetic_write_0001.json'):os._exit(37)\n return original(source,target)\nos.replace=killed\na.refresh()\n")
+        code=("import os,sys\nsys.path.insert(0,sys.argv[1])\nfrom test_content_outbox import *\nc=Cloud();a=CodexContentSession(sys.argv[2],sys.argv[3],POLICY,c,codex_home=Path(sys.argv[2])/'.codex')\noriginal=os.replace\ndef killed(source,target):\n if str(target).endswith('/outbox/synthetic_write_0001.json'):os._exit(37)\n return original(source,target)\nos.replace=killed\na.refresh()\n")
         run=subprocess.run([sys.executable,'-I','-B','-c',code,str(ROOT/'tests'),str(self.home),str(self.cache)],capture_output=True,text=True);self.assertEqual(run.returncode,37,run.stderr)
         orphans=list((self.cache/'outbox').glob('.client-native-*'));self.assertTrue(orphans)
         self.assertEqual(self.restart().queue_status()['pending'],1);self.cloud.offline=False;self.assertEqual(self.restart().refresh()['status'],'content-refreshed');self.assertEqual(self.cloud.puts,1);self.assertTrue(all(p.exists() for p in orphans))
 
     def test_oversized_ledger_and_failed_durable_save_preserve_state_without_network(self):
-        self.adapter.stage_import(self.plan());before=(self.cache/'imports.json').read_bytes()
+        self.adapter.sources.stage_import(self.plan());before=(self.cache/'imports.json').read_bytes()
         with self.assertRaises(CacheBlocked):self.adapter._save('imports.json',{'oversized':'x'*1048576})
         self.assertEqual((self.cache/'imports.json').read_bytes(),before)
-        with patch('content_cache.os.fsync',side_effect=OSError('Synthetic durable save failure')):
+        with patch('agent_brain_client.adapters.harnesses.codex.content.os.fsync',side_effect=OSError('Synthetic durable save failure')):
             with self.assertRaises(OSError):self.adapter.invoke(self.request())
         self.assertEqual(self.cloud.calls,[])
 
     def test_inventory_entry_capacity_preserves_previous_readable_ledger(self):
         for batch in range(4):
             plan=self.plan([('memory','synthetic-topic',MEMORY)]);source=plan['sources'][0]
-            plan['sources']=[dict(source,source_id='approved:source:'+str(batch*256+i)) for i in range(256)];self.adapter.stage_import(plan)
+            plan['sources']=[dict(source,source_id='approved:source:'+str(batch*256+i)) for i in range(256)];self.adapter.sources.stage_import(plan)
         before=(self.cache/'imports.json').read_bytes()
-        with self.assertRaises(CacheBlocked):self.adapter.stage_import(self.plan([('memory','synthetic-topic',MEMORY)]))
-        self.assertEqual((self.cache/'imports.json').read_bytes(),before);self.assertEqual(self.adapter.import_status()['counts'],{'inventoried':1024});self.assertEqual(self.cloud.calls,[])
+        with self.assertRaises(CacheBlocked):self.adapter.sources.stage_import(self.plan([('memory','synthetic-topic',MEMORY)]))
+        self.assertEqual((self.cache/'imports.json').read_bytes(),before);self.assertEqual(self.adapter.sources.import_status()['counts'],{'inventoried':1024});self.assertEqual(self.cloud.calls,[])
 
     def test_missing_or_wrong_confirmation_never_completes(self):
         original=self.cloud.request
@@ -146,18 +147,18 @@ class Outbox(unittest.TestCase):
         self.cloud.offline=False;self.assertEqual(self.restart().refresh()['status'],'content-refresh-blocked');self.assertEqual(path.read_text(),'User hand edit');self.assertEqual(self.cloud.records[('memory','synthetic-topic')]['body'],'Approved queued edit')
 
     def test_first_repeat_import_offline_inventory_mapping_no_enable(self):
-        plan=self.plan();self.cloud.offline=True;self.assertFalse(self.adapter.stage_import(plan)['data_transferred']);self.assertEqual(self.adapter.refresh()['status'],'content-local-changes-retained');self.assertEqual(self.cloud.puts,0);self.assertFalse((self.home/'.codex/AGENTS.md').exists())
-        self.cloud.offline=False;self.adapter=self.restart();self.assertEqual(self.adapter.refresh()['status'],'content-refreshed');self.assertEqual(self.cloud.puts,3);self.assertEqual(self.adapter.import_status()['counts'],{'imported':3});self.assertFalse((self.home/'.agents/skills/synthetic-skill').exists())
-        self.adapter.stage_import(plan);self.adapter.refresh();self.assertEqual(self.cloud.puts,3);self.assertFalse(self.adapter.import_status()['account_complete'])
+        plan=self.plan();self.cloud.offline=True;self.assertFalse(self.adapter.sources.stage_import(plan)['data_transferred']);self.assertEqual(self.adapter.refresh()['status'],'content-local-changes-retained');self.assertEqual(self.cloud.puts,0);self.assertFalse((self.home/'.codex/AGENTS.md').exists())
+        self.cloud.offline=False;self.adapter=self.restart();self.assertEqual(self.adapter.refresh()['status'],'content-refreshed');self.assertEqual(self.cloud.puts,3);self.assertEqual(self.adapter.sources.import_status()['counts'],{'imported':3});self.assertFalse((self.home/'.agents/skills/synthetic-skill').exists())
+        self.adapter.sources.stage_import(plan);self.adapter.refresh();self.assertEqual(self.cloud.puts,3);self.assertFalse(self.adapter.sources.import_status()['account_complete'])
 
     def test_duplicates_and_existing_rule_skill_enablement_untouched(self):
         for kind,identity,value in [('memory','synthetic-topic',MEMORY),('rule','synthetic-rule',dict(RULE,enabled=True)),('skill','synthetic-skill',dict(SKILL,enabled=True))]:self.cloud.records[(kind,identity)]=copy.deepcopy(value)
-        self.adapter.stage_import(self.plan());self.adapter.refresh();self.assertEqual(self.cloud.puts,0);self.assertEqual(self.adapter.import_status()['counts'],{'duplicate':3})
+        self.adapter.sources.stage_import(self.plan());self.adapter.refresh();self.assertEqual(self.cloud.puts,0);self.assertEqual(self.adapter.sources.import_status()['counts'],{'duplicate':3})
         self.assertTrue(self.cloud.records[('skill','synthetic-skill')]['enabled']);self.assertTrue(self.cloud.records[('rule','synthetic-rule')]['enabled'])
-        changed=dict(RULE,body='Changed source rule');self.adapter.stage_import(self.plan([('rule','synthetic-rule',changed)],'b'*64));self.adapter.refresh();self.assertEqual(self.cloud.records[('rule','synthetic-rule')],dict(changed,enabled=True))
+        changed=dict(RULE,body='Changed source rule');self.adapter.sources.stage_import(self.plan([('rule','synthetic-rule',changed)],'b'*64));self.adapter.refresh();self.assertEqual(self.cloud.records[('rule','synthetic-rule')],dict(changed,enabled=True))
 
     def test_nonretryable_automatic_rule_and_skill_imports_keep_remote_snapshot(self):
-        self.adapter.stage_import(self.plan([('rule','synthetic-rule',RULE),('skill','synthetic-skill',SKILL)]))
+        self.adapter.sources.stage_import(self.plan([('rule','synthetic-rule',RULE),('skill','synthetic-skill',SKILL)]))
         original=self.cloud.request
         def reject_rule_write(request):
             if request['method']=='content_put' and request['params']['kind'] in ('rule','skill'):
@@ -165,7 +166,7 @@ class Outbox(unittest.TestCase):
             return original(request)
         self.cloud.request=reject_rule_write
         self.adapter.refresh()
-        for item in self.adapter._imports()['items'].values():
+        for item in self.adapter.sources._imports()['items'].values():
             with self.subTest(kind=item['source']['kind']):
                 self.assertEqual(item['status'],'blocked')
                 self.assertEqual(item['remote']['revision'],'missing')
@@ -177,11 +178,11 @@ class Outbox(unittest.TestCase):
             value=original(request)
             if request['method']=='content_read':value['result']['revision']='b'*64
             return value
-        self.cloud.request=tombstone;self.adapter.stage_import(self.plan([('memory','synthetic-topic',MEMORY)]));self.assertEqual(self.adapter.refresh()['status'],'content-local-changes-retained');self.assertEqual(self.adapter.import_status()['counts'],{'conflict':1});self.assertEqual(self.cloud.puts,0)
+        self.cloud.request=tombstone;self.adapter.sources.stage_import(self.plan([('memory','synthetic-topic',MEMORY)]));self.assertEqual(self.adapter.refresh()['status'],'content-local-changes-retained');self.assertEqual(self.adapter.sources.import_status()['counts'],{'conflict':1});self.assertEqual(self.cloud.puts,0)
 
     def test_changed_source_after_synthetic_remote_tombstone_revision_is_not_reimported(self):
         plan=self.plan([('memory','synthetic-topic',MEMORY)])
-        self.adapter.stage_import(plan);self.adapter.refresh();self.assertEqual(self.cloud.puts,1)
+        self.adapter.sources.stage_import(plan);self.adapter.refresh();self.assertEqual(self.cloud.puts,1)
         self.cloud.records.pop(('memory','synthetic-topic'))
         original=self.cloud.request
         def forgotten(request):
@@ -191,8 +192,8 @@ class Outbox(unittest.TestCase):
         self.cloud.request=forgotten
         changed=dict(MEMORY,body='Synthetic changed source after forget')
         new_plan=self.plan([('memory','synthetic-topic',changed)],'c'*64)
-        self.adapter.stage_import(new_plan);self.adapter.refresh()
-        self.assertEqual(self.adapter.import_status()['counts'],{'conflict':1,'imported':1})
+        self.adapter.sources.stage_import(new_plan);self.adapter.refresh()
+        self.assertEqual(self.adapter.sources.import_status()['counts'],{'conflict':1,'imported':1})
         self.assertEqual(self.cloud.puts,1)
         self.assertNotIn(('memory','synthetic-topic'),self.cloud.records)
 
@@ -205,21 +206,21 @@ class Outbox(unittest.TestCase):
         self.cloud.request=original;self.restart().refresh();row=self.adapter._load('outbox/'+conflicted['request_id']+'.json');self.assertEqual(row['remote']['record'],MEMORY);self.assertEqual(row['request'],conflicted);self.assertEqual(self.cloud.puts,1)
 
     def test_incremental_changed_memory_preserves_unique_info_until_explicit_merge(self):
-        self.adapter.stage_import(self.plan());self.adapter.refresh();changed=dict(MEMORY,body='Updated source');self.adapter.stage_import(self.plan([('memory','synthetic-topic',changed)],'b'*64));self.assertEqual(self.adapter.refresh()['status'],'content-local-changes-retained');self.assertEqual(self.cloud.puts,3);self.assertEqual(self.cloud.records[('memory','synthetic-topic')],MEMORY)
-        key,item=next((k,v) for k,v in self.adapter._imports()['items'].items() if v['status']=='conflict');self.assertEqual(item['source']['record'],changed);self.assertEqual(item['remote']['record'],MEMORY)
+        self.adapter.sources.stage_import(self.plan());self.adapter.refresh();changed=dict(MEMORY,body='Updated source');self.adapter.sources.stage_import(self.plan([('memory','synthetic-topic',changed)],'b'*64));self.assertEqual(self.adapter.refresh()['status'],'content-local-changes-retained');self.assertEqual(self.cloud.puts,3);self.assertEqual(self.cloud.records[('memory','synthetic-topic')],MEMORY)
+        key,item=next((k,v) for k,v in self.adapter.sources._imports()['items'].items() if v['status']=='conflict');self.assertEqual(item['source']['record'],changed);self.assertEqual(item['remote']['record'],MEMORY)
         merged=self.request('synthetic_reviewed_merge',body=MEMORY['body']+'\nUpdated source',revision=item['remote']['revision'])
-        result=self.adapter.invoke(merged,reconciles={'request_ids':[],'source_keys':[key]});self.assertEqual(result['local_queue']['state'],'confirmed');self.assertIn(MEMORY['body'],self.cloud.records[('memory','synthetic-topic')]['body']);self.assertEqual(self.adapter.import_status()['counts'],{'imported':3,'reconciled':1})
+        result=self.adapter.invoke(merged,reconciles={'request_ids':[],'source_keys':[key]});self.assertEqual(result['local_queue']['state'],'confirmed');self.assertIn(MEMORY['body'],self.cloud.records[('memory','synthetic-topic')]['body']);self.assertEqual(self.adapter.sources.import_status()['counts'],{'imported':3,'reconciled':1})
 
     def test_import_fingerprint_scope_activation_and_binding_drift_block(self):
-        plan=self.plan();self.adapter.stage_import(plan);changed=copy.deepcopy(plan);changed['sources'][0]['record']['body']='Changed without fingerprint'
-        with self.assertRaises(CacheBlocked):self.adapter.stage_import(changed)
+        plan=self.plan();self.adapter.sources.stage_import(plan);changed=copy.deepcopy(plan);changed['sources'][0]['record']['body']='Changed without fingerprint'
+        with self.assertRaises(CacheBlocked):self.adapter.sources.stage_import(changed)
         changed=copy.deepcopy(plan);changed['binding']['codex_home']=str(self.base/'other')
-        with self.assertRaises(CacheBlocked):self.adapter.stage_import(changed)
+        with self.assertRaises(CacheBlocked):self.adapter.sources.stage_import(changed)
         for index in (1,2):
             changed=copy.deepcopy(plan);changed['sources'][index]['record']['enabled']=True
-            with self.assertRaises(CacheBlocked):self.adapter.stage_import(changed)
+            with self.assertRaises(CacheBlocked):self.adapter.sources.stage_import(changed)
         changed=copy.deepcopy(plan);changed['sources'][1]['id']='unapproved-rule'
-        with self.assertRaises(CacheBlocked):self.adapter.stage_import(changed)
+        with self.assertRaises(CacheBlocked):self.adapter.sources.stage_import(changed)
         self.assertEqual(self.cloud.puts,0)
 
     def test_explicit_merge_preserves_evidence_and_recovers_lost_ack(self):
@@ -229,10 +230,10 @@ class Outbox(unittest.TestCase):
         self.restart().refresh();old=self.adapter._load('outbox/'+conflicted['request_id']+'.json');self.assertEqual(old['state'],'reconciled');self.assertEqual(old['request'],conflicted);self.assertEqual(old['remote']['record'],MEMORY);self.assertEqual(old['resolution_request_id'],merged['request_id']);self.assertEqual(self.cloud.puts,2);self.assertTrue(self.adapter.invoke(merged,reconciles=refs)['persistence']['durable'])
 
     def test_source_conflict_merge_and_local_mcp_metadata_not_forwarded(self):
-        from content_mcp import ContentServer
-        self.cloud.records[('memory','synthetic-topic')]=dict(MEMORY,body='Other remote content');self.adapter.stage_import(self.plan([('memory','synthetic-topic',MEMORY)]));self.adapter.refresh();key=self.adapter.import_status()['conflicts'][0]['source_key']
+        from agent_brain_client.interfaces.mcp.content import ContentServer
+        self.cloud.records[('memory','synthetic-topic')]=dict(MEMORY,body='Other remote content');self.adapter.sources.stage_import(self.plan([('memory','synthetic-topic',MEMORY)]));self.adapter.refresh();key=self.adapter.sources.import_status()['conflicts'][0]['source_key']
         request=self.request('synthetic_source_merge',body='Merged source and remote',revision=contract.envelope('memory','synthetic-topic',self.cloud.records[('memory','synthetic-topic')])['revision'])
-        reply=ContentServer(self.adapter).invoke('content_put',dict(request['params'],request_id=request['request_id'],reconciles={'request_ids':[],'source_keys':[key]}));self.assertFalse(reply['isError'],reply);self.assertEqual(self.adapter._imports()['items'][key]['status'],'reconciled');self.assertEqual({k:v for k,v in next(r for r in self.cloud.calls if r['method']=='content_put')['params'].items() if k!='source_context'},request['params']);self.assertEqual(self.adapter.refresh()['status'],'content-current')
+        reply=ContentServer(self.adapter).invoke('content_put',dict(request['params'],request_id=request['request_id'],reconciles={'request_ids':[],'source_keys':[key]}));self.assertFalse(reply['isError'],reply);self.assertEqual(self.adapter.sources._imports()['items'][key]['status'],'reconciled');self.assertEqual({k:v for k,v in next(r for r in self.cloud.calls if r['method']=='content_put')['params'].items() if k!='source_context'},request['params']);self.assertEqual(self.adapter.refresh()['status'],'content-current')
 
     def test_service_principal_switch_preserves_queue_without_replay(self):
         self.cloud.offline=True;self.adapter.invoke(self.request());before=(self.cache/'outbox/synthetic_write_0001.json').read_bytes();self.cloud.grant=dict(self.cloud.grant,actor='another-principal');self.cloud.offline=False
@@ -245,7 +246,7 @@ class Outbox(unittest.TestCase):
         agents=self.home/'.codex/AGENTS.md'
         old=agents.read_bytes()
         snapshot=self.adapter._load('snapshots/'+first['commit']+'.json')
-        with patch.object(contract,'HOST_GUIDANCE','Synthetic updated Agent Brain host guidance.'):
+        with patch('agent_brain_client.adapters.harnesses.codex.mapping.HOST_GUIDANCE','Synthetic updated Agent Brain host guidance.'):
             second=self.adapter.refresh()
         self.assertEqual(second['status'],'content-refreshed')
         self.assertEqual(second['commit'],first['commit'])

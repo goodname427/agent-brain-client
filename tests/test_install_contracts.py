@@ -13,10 +13,10 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / n) for n in ("tools", "scripts", "adapters/codex")]
-from client_release import runtime_environment, UpdateBlocked
-from https_content import DeviceEnrollment, grant_check, native_store
-import prepare_install_runtime as bootstrap
+sys.path[:0] = [str(ROOT / n) for n in ("src", "src", "src")]
+from agent_brain_client.adapters.packages.client import runtime_environment, UpdateBlocked
+from agent_brain_client.adapters.server.https import DeviceEnrollment, grant_check, native_store
+import bootstrap.python_runtime as bootstrap
 
 
 class Contracts(unittest.TestCase):
@@ -98,7 +98,7 @@ class Contracts(unittest.TestCase):
             profile, "a" * 64, store, transport, lambda: calls.append(True) or "i" * 40
         )
         with patch(
-            "https_content.NativeKeychain",
+            "agent_brain_client.adapters.server.https.NativeKeychain",
             side_effect=AssertionError("No Mac backend in shared contract"),
         ):
             self.assertEqual(enrollment.run()["status"], "pairing-resume-required")
@@ -124,8 +124,8 @@ class Contracts(unittest.TestCase):
 
 class PlatformMainContracts(unittest.TestCase):
     def config(self):
-        from https_content import profile_metadata
-        from client_release import (
+        from agent_brain_client.adapters.server.https import profile_metadata
+        from agent_brain_client.adapters.packages.client import (
             HTTPS_CONTENT_CAPABILITIES,
             WINDOWS_HTTPS_CONTENT_CLIENT_FILES,
         )
@@ -205,9 +205,9 @@ class PlatformMainContracts(unittest.TestCase):
     def test_shared_configuration_generates_windows_without_mac_helper_or_source_fields(
         self,
     ):
-        from https_content import validate_profile_metadata
-        from client_release import validate_release_policy
-        from content_install import render, validate_install_scope
+        from agent_brain_client.adapters.server.https import validate_profile_metadata
+        from agent_brain_client.adapters.packages.client import validate_release_policy
+        from agent_brain_client.adapters.harnesses.codex.installation import render, validate_install_scope
         import tomllib
 
         profile, policy, plan = self.config()
@@ -239,7 +239,7 @@ class PlatformMainContracts(unittest.TestCase):
             validate_install_scope(bad)
 
     def test_legacy_mac_metadata_generation_remains_byte_compatible(self):
-        from https_content import profile_metadata, validate_profile_metadata
+        from agent_brain_client.adapters.server.https import profile_metadata, validate_profile_metadata
 
         grant = {
             "adapter": "codex",
@@ -277,8 +277,8 @@ class PlatformMainContracts(unittest.TestCase):
     def test_shared_release_validation_preserves_permission_and_rollback_constraints(
         self,
     ):
-        from brain_release import ReleaseEngine
-        from client_release import validate_release_policy
+        from agent_brain_client.adapters.packages.releases import ReleaseEngine
+        from agent_brain_client.adapters.packages.client import validate_release_policy
 
         _, policy, _ = self.config()
         validate_release_policy(policy)
@@ -311,8 +311,8 @@ class PlatformMainContracts(unittest.TestCase):
 
     @unittest.skipIf(sys.platform == "win32", "Foreign-platform rejection; native Windows has separate integration coverage")
     def test_update_and_discovery_reject_before_fetch_activation_or_recovery(self):
-        from brain_lock import PlatformUnsupported
-        from client_release import ClientReleases
+        from agent_brain_client.adapters.platforms.filesystem import PlatformUnsupported
+        from agent_brain_client.adapters.packages.client import ClientReleases
         from unittest.mock import Mock
 
         _, policy, _ = self.config()
@@ -330,18 +330,18 @@ class PlatformMainContracts(unittest.TestCase):
 
     @unittest.skipIf(sys.platform == "win32", "Foreign-platform rejection; native Windows has separate integration coverage")
     def test_windows_install_and_recovery_never_mutate_existing_images(self):
-        from brain_lock import PlatformUnsupported
-        from content_install import apply, restore, inspect
+        from agent_brain_client.adapters.platforms.filesystem import PlatformUnsupported
+        from agent_brain_client.adapters.harnesses.codex.installation import apply, restore, inspect
         from unittest.mock import Mock
 
         _, _, plan = self.config()
         check = Mock()
         with (
             patch(
-                "content_install.atomic",
+                "agent_brain_client.adapters.harnesses.codex.installation.atomic",
                 side_effect=AssertionError("No platform write"),
             ),
-            patch("content_install.raw", side_effect=AssertionError("No private read")),
+            patch("agent_brain_client.adapters.storage.private_files.raw", side_effect=AssertionError("No private read")),
         ):
             result = apply(plan, "a" * 64, check)
             self.assertEqual(result["status"], "platform-unsupported")
@@ -358,15 +358,15 @@ class PlatformMainContracts(unittest.TestCase):
     def test_windows_permissions_cache_recovery_credentials_and_workers_fail_before_posix(
         self,
     ):
-        from brain_lock import PlatformUnsupported, private_mode, sync_directory
-        from content_cache import ContentAdapter
-        from system_credentials import CredentialStore
-        from client_release import policy_file
-        from client_startup import serve_content
-        from brain_host_files import atomic
+        from agent_brain_client.adapters.platforms.filesystem import PlatformUnsupported, private_mode, sync_directory
+        from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+        from agent_brain_client.adapters.platforms.credentials import CredentialStore
+        from agent_brain_client.adapters.packages.client import policy_file
+        from agent_brain_client.runtime.launcher import serve_content
+        from agent_brain_client.adapters.storage.host_files import atomic
 
         profile, policy, plan = self.config()
-        adapter = ContentAdapter.__new__(ContentAdapter)
+        adapter = CodexContentSession.__new__(CodexContentSession)
         adapter.platform = "win32-amd64"
         with (
             patch("os.open", side_effect=AssertionError("No POSIX open")),
@@ -377,7 +377,7 @@ class PlatformMainContracts(unittest.TestCase):
         ):
             for call in (
                 lambda: native_store(profile, "a" * 64),
-                lambda: adapter._restore({}),
+                lambda: adapter.mapping._restore({}),
                 lambda: adapter.refresh(),
             ):
                 with self.assertRaises(PlatformUnsupported):
@@ -392,7 +392,7 @@ class PlatformMainContracts(unittest.TestCase):
                     lambda: sync_directory("synthetic"),
                     lambda: CredentialStore(None, "synthetic").lease(),
                     lambda: policy_file("synthetic", "a" * 64),
-                    lambda: ContentAdapter("synthetic", "cache", {}, None),
+                    lambda: CodexContentSession("synthetic", "cache", {}, None),
                     lambda: atomic(Path("synthetic"), b"SYNTHETIC", 0o600),
                 ):
                     with self.assertRaises(PlatformUnsupported):

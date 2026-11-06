@@ -1,3 +1,5 @@
+import agent_brain_client.adapters.storage.collection as source_policy
+import agent_brain_client.adapters.storage.metadata as metadata
 """Both native host writers, fictional metadata, no server or credential IO."""
 
 import copy
@@ -13,12 +15,12 @@ import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from brain_lock import private_directory
-import codex_connect as host
-import brain_host_files as host_files
-import global_memory as gm
-import global_memory_install as hooks
-import project_memory as old
+from agent_brain_client.adapters.platforms.filesystem import private_directory
+import agent_brain_client.adapters.harnesses.codex.configuration as host
+import agent_brain_client.adapters.storage.host_files as host_files
+import agent_brain_client.runtime.collection as gm
+import agent_brain_client.adapters.harnesses.codex.collection_installation as hooks
+import agent_brain_client.adapters.harnesses.codex.project as project_sources
 
 
 class GlobalMemoryUpdate(unittest.TestCase):
@@ -27,11 +29,11 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.home = private_directory(Path(temp.name).resolve() / "fixture")
         self.native = private_directory(self.home / "codex")
-        self.file = gm.settings_path(self.home)
+        self.file = source_policy.settings_path(self.home)
         private_directory(self.file.parent)
         state = self.file.parent.parent
         for name in ("profile.json", "content.json"):
-            old.write(state / name, {"schema": 1})
+            metadata.write(state / name, {"schema": 1})
         policy = {
             "capabilities": [
                 "codex-stdio-mcp",
@@ -41,21 +43,21 @@ class GlobalMemoryUpdate(unittest.TestCase):
             "runtime": {
                 "codex_home": str(self.native),
                 "https_profile": str(state / "profile.json"),
-                "https_profile_sha256": old.digest(
+                "https_profile_sha256": metadata.digest(
                     (state / "profile.json").read_bytes()
                 ),
                 "content_policy": str(state / "content.json"),
-                "content_policy_sha256": old.digest(
+                "content_policy_sha256": metadata.digest(
                     (state / "content.json").read_bytes()
                 ),
             },
         }
-        old.write(state / "policy.json", policy)
-        old.write(
+        metadata.write(state / "policy.json", policy)
+        metadata.write(
             state / "codex-mcp.json",
             {
                 "release_policy": str(state / "policy.json"),
-                "release_policy_sha256": old.digest(
+                "release_policy_sha256": metadata.digest(
                     (state / "policy.json").read_bytes()
                 ),
             },
@@ -79,13 +81,13 @@ class GlobalMemoryUpdate(unittest.TestCase):
             "operator_sha256": None,
             "code_sha256": {name: "b" * 64 for name in gm.FILES},
         }
-        old.write(self.file, self.value)
+        metadata.write(self.file, self.value)
         self.config = self.native / "config.toml"
-        old.write(self.config, {})
+        metadata.write(self.config, {})
         self.config.write_bytes(b'# User setting\nmodel = "synthetic"\n')
         hooks.transact(self.native, self.file.parent, hooks.block(self.value))
         self.no_client = patch.object(
-            gm, "GlobalClient", side_effect=AssertionError("No credential activation")
+            gm, "CollectionClient", side_effect=AssertionError("No credential activation")
         )
         self.no_client.start()
         self.addCleanup(self.no_client.stop)
@@ -98,13 +100,13 @@ class GlobalMemoryUpdate(unittest.TestCase):
 
     def assert_historical_hook_refresh(self, files):
         legacy = dict(self.value, code_sha256={name: 'b' * 64 for name in files})
-        old.write(self.file, legacy)
+        metadata.write(self.file, legacy)
         hooks.transact(self.native, self.file.parent, hooks.block(legacy))
         pending = self.file.parent / 'fictional-pending.json'
-        old.write(pending, {'request_id': 'fictional-retained-request'})
+        metadata.write(pending, {'request_id': 'fictional-retained-request'})
         before = pending.read_bytes()
         hooks.refresh(self.home)
-        actual = old.private_json(self.file)
+        actual = metadata.private_json(self.file)
         self.assertEqual(set(actual['code_sha256']), set(gm.FILES))
         self.assertEqual({k:v for k,v in actual.items() if k!='code_sha256'},
                          {k:v for k,v in legacy.items() if k!='code_sha256'})
@@ -115,7 +117,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         previous = hooks.block(self.value).replace('async = false', 'async = true')
         hooks.transact(self.native, self.file.parent, previous)
         pending = self.file.parent / 'fictional-pending.json'
-        old.write(pending, {'request_id': 'fictional-retained-request'})
+        metadata.write(pending, {'request_id': 'fictional-retained-request'})
         before = pending.read_bytes()
         hooks.refresh(self.home)
         stop = hooks.tomllib.loads(self.config.read_text())['hooks']['Stop'][0]['hooks'][0]
@@ -123,7 +125,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertEqual(pending.read_bytes(), before)
 
     def preserved(self):
-        actual = old.private_json(self.file)
+        actual = metadata.private_json(self.file)
         self.assertEqual(
             {k: v for k, v in actual.items() if k != "code_sha256"},
             {k: v for k, v in self.value.items() if k != "code_sha256"},
@@ -143,9 +145,9 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertEqual(result["status"], "global-hook-updated")
         self.assertTrue(result["native_changed"])
         self.preserved()
-        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        self.assertTrue(hooks.installation_status(source_policy.load(self.home)))
         root = next((self.file.parent / "code").iterdir())
-        code = 'import sys;sys.path.insert(0,sys.argv[1]);import global_memory as g;g.old.imports();import content_mcp,brain_cache;assert "global_memory_install" not in sys.modules;g.load(sys.argv[2]);print("frozen-runtime-loaded")'
+        code = 'import sys;sys.path.insert(0,sys.argv[1]);import agent_brain_client.runtime.collection as g;g.;import agent_brain_client.interfaces.mcp.content as content_mcp,brain_cache;assert "global_memory_install" not in sys.modules;source_policy.load(sys.argv[2]);print("frozen-runtime-loaded")'
         environment = dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.native))
         proc = subprocess.run(
             [
@@ -180,13 +182,13 @@ class GlobalMemoryUpdate(unittest.TestCase):
             operator=str(self.home / "operator.json"),
             operator_sha256="e" * 64,
         )
-        old.write(self.file, self.value)
+        metadata.write(self.file, self.value)
         off = self.file.parent / "global.off"
         off.write_bytes(b"Paused by user")
         hooks.refresh(self.home)
         self.preserved()
         self.assertEqual(off.read_bytes(), b"Paused by user")
-        self.assertFalse(gm.approved(gm.load(self.home)))
+        self.assertFalse(source_policy.approved(source_policy.load(self.home)))
 
     def test_absent_and_explicitly_uninstalled_hooks_are_never_added(self):
         hooks.transact(self.native, self.file.parent, "", remove=True)
@@ -216,7 +218,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         with self.assertRaises(ValueError):
             hooks.refresh(self.home)
         self.assertEqual(self.config.read_bytes(), before)
-        self.assertEqual(old.private_json(self.file), self.value)
+        self.assertEqual(metadata.private_json(self.file), self.value)
 
     def test_host_trust_tables_survive_refresh_without_becoming_owned(self):
         state = (b'[hooks.state."synthetic:session_start:0:0"]\ntrusted_hash = "sha256:one"\n'
@@ -230,7 +232,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         result = hooks.refresh(self.home)
         self.assertEqual(result['status'], 'global-hook-updated')
         self.assertIn(state, self.config.read_bytes())
-        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        self.assertTrue(hooks.installation_status(source_policy.load(self.home)))
         before_current = self.config.read_bytes()
         self.assertEqual(hooks.refresh(self.home)['status'], 'global-hook-current')
         self.assertEqual(self.config.read_bytes(), before_current)
@@ -262,10 +264,10 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertTrue(hooks.installation_status(self.value))
         self.assertTrue(hooks.refresh(self.home, check_only=True)['update_available'])
         self.assertEqual(self.config.read_bytes(), before)
-        self.assertEqual(old.private_json(self.file), self.value)
+        self.assertEqual(metadata.private_json(self.file), self.value)
         hooks.refresh(self.home)
         self.assertIn(foreign, self.config.read_bytes())
-        current = gm.load(self.home)
+        current = source_policy.load(self.home)
         self.assertTrue(hooks.installation_status(current))
         self.assertEqual(hooks.unowned_config(hooks.tomllib.loads(self.config.read_text()),
                                              hooks.split_owned(self.config.read_bytes())[1]), expected)
@@ -286,7 +288,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Outside edit'):
                 action()
             self.assertEqual(self.config.read_bytes(), before)
-            self.assertEqual(old.private_json(self.file), self.value)
+            self.assertEqual(metadata.private_json(self.file), self.value)
 
     def test_multiline_foreign_data_and_quoted_headers_preserve_toml_scope(self):
         foreign = (b'["apps"."synthetic-sites"]\ntext = """\n'
@@ -321,13 +323,13 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertEqual(record['phase'], 'applying')
         hooks.recover_record(self.config, receipt, record)
         self.assertEqual(self.config.read_bytes(), before)
-        self.assertEqual(old.private_json(self.file), self.value)
+        self.assertEqual(metadata.private_json(self.file), self.value)
         hooks.transact(self.native, self.file.parent, target)
         self.assertIn(foreign, self.config.read_bytes())
 
     def test_previous_version_journal_with_comments_before_trust_table_recovers(self):
         state = '[hooks.state."synthetic:stop:0:0"]\nenabled = false\ntrusted_hash = "sha256:keep"\n'
-        comments = '\n# Host trust comment retained in the old owned image\n'
+        comments = '\n# Host trust comment retained in the project_sources owned image\n'
         original = self.config.read_text()
         before = original.replace(hooks.END, comments + state + hooks.END).encode()
         self.config.write_bytes(before)
@@ -339,9 +341,9 @@ class GlobalMemoryUpdate(unittest.TestCase):
         after = (outside.rstrip() + '\n\n' + target).encode()
         receipt = self.file.parent / 'hook-install.json'
         record = {'schema': 2, 'phase': 'applying', 'block': target,
-                  'previous_block': previous, 'before_sha256': old.digest(before),
-                  'after_sha256': old.digest(after), 'host': host_files.host_plan({self.config: after})}
-        host_files.host_apply(record['host'], lambda: old.write(receipt, record))
+                  'previous_block': previous, 'before_sha256': metadata.digest(before),
+                  'after_sha256': metadata.digest(after), 'host': host_files.host_plan({self.config: after})}
+        host_files.host_apply(record['host'], lambda: metadata.write(receipt, record))
         hooks.recover_record(self.config, receipt, hooks.read_receipt(receipt))
         self.assertEqual(self.config.read_bytes(), before)
         self.assertEqual(hooks.read_receipt(receipt)['phase'], 'rolled-back')
@@ -366,7 +368,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
                                'source_device_id': 'd' * 32, 'global_profile_id': 'e' * 32}}
         client = SimpleNamespace(wire=lambda method, params: response)
         output = io.StringIO()
-        with (patch.object(gm, 'GlobalClient', return_value=client),
+        with (patch.object(gm, 'CollectionClient', return_value=client),
               patch.object(sys, 'argv', ['global_memory', 'global-status', '--device-home', str(self.home), '--check-server']),
               patch.object(sys, 'stdout', output)):
             self.assertEqual(gm.main(), 0)
@@ -375,19 +377,19 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertIsNone(result['expanded_sources_enabled'])
         self.assertEqual(result['server_admission'], response)
         with self.assertRaises(ValueError):
-            gm.load(self.home)
+            source_policy.load(self.home)
         self.assertEqual(before, {p: p.read_bytes() for p in self.home.rglob('*') if p.is_file()})
 
     def test_isolated_status_cli_loads_shared_toml_editor_without_pythonpath(self):
         environment = dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.native))
-        proc = subprocess.run([sys.executable, '-I', '-B', str(gm.ROOT / 'scripts/global_memory.py'),
+        proc = subprocess.run([sys.executable, '-I', '-B', str(gm.ROOT / 'src/agent_brain_client/runtime/collection.py'),
                                'global-status', '--device-home', str(self.home)],
                               cwd=self.home, env=environment, capture_output=True, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stdout.decode() + proc.stderr.decode())
         self.assertTrue(json.loads(proc.stdout)['global_entry_installed'])
 
     def test_retained_removal_requires_authenticated_journal_and_exact_block(self):
-        import client_lifecycle as lifecycle
+        import agent_brain_client.adapters.harnesses.codex.lifecycle as lifecycle
         outside, previous = hooks.split_owned(self.config.read_bytes())
         lines = previous.splitlines(keepends=True)
         for index in range(len(lines) - 1):
@@ -416,7 +418,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
                         hooks.refresh(self.home)
                 authenticate.assert_called_once()
         self.assertEqual(self.config.read_bytes(), outside.encode())
-        self.assertEqual(old.private_json(self.file), self.value)
+        self.assertEqual(metadata.private_json(self.file), self.value)
 
     def test_interrupted_settings_write_is_recovered_before_retry(self):
         apply = host_files.host_apply
@@ -437,7 +439,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
             "applying",
         )
         self.assertTrue(hooks.recover_update(self.home))
-        self.assertEqual(old.private_json(self.file), self.value)
+        self.assertEqual(metadata.private_json(self.file), self.value)
         self.assertEqual(hooks.refresh(self.home)["status"], "global-hook-updated")
         self.preserved()
 
@@ -454,12 +456,12 @@ class GlobalMemoryUpdate(unittest.TestCase):
             self.assertRaises(SystemExit),
         ):
             hooks.refresh(self.home)
-        value = copy.deepcopy(old.private_json(self.file))
+        value = copy.deepcopy(metadata.private_json(self.file))
         value["enabled"] = True
-        old.write(self.file, value)
+        metadata.write(self.file, value)
         with self.assertRaises(ValueError):
             hooks.recover_update(self.home)
-        self.assertEqual(old.private_json(self.file), value)
+        self.assertEqual(metadata.private_json(self.file), value)
 
     def test_recognized_torn_settings_write_recovers_original_then_retries(self):
         stage = host_files.host_stage
@@ -510,14 +512,14 @@ class GlobalMemoryUpdate(unittest.TestCase):
         ):
             hooks.refresh(self.home)
         self.assertTrue(hooks.recover_update(self.home))
-        self.assertEqual(old.private_json(self.file), self.value)
+        self.assertEqual(metadata.private_json(self.file), self.value)
         self.assertEqual(hooks.refresh(self.home)["status"], "global-hook-updated")
         self.preserved()
 
     def test_frozen_code_tampering_is_rejected(self):
         hooks.refresh(self.home)
         root = next((self.file.parent / "code").iterdir())
-        (root / "scripts/global_memory.py").write_bytes(b"Changed by outside actor")
+        (root / "src/agent_brain_client/runtime/collection.py").write_bytes(b"Changed by outside actor")
         with self.assertRaises(ValueError):
             hooks.refresh(self.home)
 
@@ -534,7 +536,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertTrue(hooks.refresh(self.home, check_only=True)['update_available'])
         hooks.refresh(self.home)
         self.assertIn(foreign, self.config.read_bytes())
-        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        self.assertTrue(hooks.installation_status(source_policy.load(self.home)))
         hooks.transact(self.native, self.file.parent, '', remove=True)
         self.assertTrue(hooks.typed_equal(hooks.tomllib.loads(self.config.read_text()), expected))
         self.preserved()
@@ -549,7 +551,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.config.write_bytes(raw)
         expected = hooks.unowned_config(hooks.tomllib.loads(raw.decode()), hooks.block(self.value))
         hooks.refresh(self.home)
-        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        self.assertTrue(hooks.installation_status(source_policy.load(self.home)))
         hooks.transact(self.native, self.file.parent, '', remove=True)
         actual = hooks.tomllib.loads(self.config.read_text())
         self.assertEqual(hooks.unowned_config(actual, None), hooks.unowned_config(expected, None))
@@ -572,7 +574,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertTrue(hooks.refresh(self.home, check_only=True)['update_available'])
         self.assertEqual(self.config.read_bytes(), before)
         hooks.refresh(self.home)
-        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        self.assertTrue(hooks.installation_status(source_policy.load(self.home)))
         hooks.transact(self.native, self.file.parent, '', remove=True)
         self.assertTrue(hooks.typed_equal(hooks.unowned_config(hooks.tomllib.loads(self.config.read_text()), None), expected))
         self.preserved()
@@ -609,7 +611,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         expected = hooks.unowned_config(hooks.tomllib.loads(before.decode()), hooks.block(self.value))
         hooks.refresh(self.home)
         self.assertIn(foreign, self.config.read_bytes())
-        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        self.assertTrue(hooks.installation_status(source_policy.load(self.home)))
         hooks.transact(self.native, self.file.parent, '', remove=True)
         self.assertTrue(hooks.typed_equal(hooks.tomllib.loads(self.config.read_text()), expected))
 
@@ -629,7 +631,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         with patch.object(host_files, 'host_stage', side_effect=edit_once):
             hooks.refresh(self.home)
         self.assertIn(b'new_tool_setting = true\n', self.config.read_bytes())
-        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        self.assertTrue(hooks.installation_status(source_policy.load(self.home)))
         self.assertEqual(off.read_bytes(), b'paused')
         self.preserved()
 
@@ -648,7 +650,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, r'hooks.SessionStart\[0\].hooks\[0\].timeout'):
                 hooks.refresh(self.home)
         self.assertEqual(self.config.read_bytes(), edits[0])
-        self.assertEqual(old.private_json(self.file), self.value)
+        self.assertEqual(metadata.private_json(self.file), self.value)
 
     @unittest.skipUnless(os.name == 'posix', 'Windows excludes competing writers while staged')
     def test_concurrent_edit_at_commit_discards_stale_journal_and_retries(self):
@@ -668,7 +670,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         with patch.object(host_files, 'host_stage', side_effect=edit_at_commit):
             hooks.refresh(self.home)
         self.assertIn(b'commit_time_setting = true', self.config.read_bytes())
-        self.assertTrue(hooks.installation_status(gm.load(self.home)))
+        self.assertTrue(hooks.installation_status(source_policy.load(self.home)))
         self.assertEqual(hooks.read_receipt(self.file.parent / 'hook-install.json')['phase'], 'complete')
 
     def test_linked_code_cache_is_rejected_without_writing_outside(self):
@@ -682,14 +684,14 @@ class GlobalMemoryUpdate(unittest.TestCase):
             hooks.refresh(self.home)
         self.assertEqual(list(outside.iterdir()), [])
         self.assertEqual(self.config.read_bytes(), before)
-        self.assertEqual(old.private_json(self.file), self.value)
+        self.assertEqual(metadata.private_json(self.file), self.value)
 
 
 class SemanticConfigMerge(unittest.TestCase):
     def test_del_values_and_keys_stay_valid_toml_when_reencoding_shared_assignments(self):
-        import content_install as ci
-        from client_lifecycle import remove_table
-        source = ('mcp_servers={agent_brain_server={command="old"}, other={command="other", '
+        import agent_brain_client.adapters.harnesses.codex.installation as ci
+        from agent_brain_client.adapters.harnesses.codex.lifecycle import remove_table
+        source = ('mcp_servers={agent_brain_server={command="project_sources"}, other={command="other", '
                   'env={TOKEN="\\u007f", "\\u007f"="\U0001f600", "\U0001f600"="value"}}}\n').encode()
         expected = hooks.tomllib.loads(source.decode())
         target = {'command': 'new', 'enabled': False}
@@ -708,29 +710,29 @@ class SemanticConfigMerge(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         state = private_directory(Path(temp.name).resolve() / 'state')
         config = state / 'config.toml'
-        original = b'model="old"\n[mcp_servers.agent_brain_server]\ncommand="fixed"\nenabled=true\n'
-        current = original.replace(b'model="old"', b'model="new"').replace(b'enabled=true', b'enabled=false')
+        original = b'model="project_sources"\n[mcp_servers.agent_brain_server]\ncommand="fixed"\nenabled=true\n'
+        current = original.replace(b'model="project_sources"', b'model="new"').replace(b'enabled=true', b'enabled=false')
         pin = host.sha(original)
         self.assertFalse(host.migration_config_matches(config, current, pin, state, {}))
         journal = {'before': {str(config): {'data': base64.b64encode(original).decode()}}}
         saved = state / 'native-install-receipt.json'
-        old.write(saved, journal)
+        metadata.write(saved, journal)
         self.assertTrue(host.migration_config_matches(config, current, pin, state, {}))
         self.assertFalse(host.migration_config_matches(config, current.replace(b'command="fixed"', b'command="changed"'), pin, state, {}))
         journal['before'][str(config)]['data'] = base64.b64encode(current).decode()
-        old.write(saved, journal)
+        metadata.write(saved, journal)
         self.assertFalse(host.migration_config_matches(config, current, pin, state, {}))
 
     def test_equivalent_mcp_syntax_and_shared_inline_tables(self):
-        import content_install as ci
-        from client_lifecycle import remove_table
+        import agent_brain_client.adapters.harnesses.codex.installation as ci
+        from agent_brain_client.adapters.harnesses.codex.lifecycle import remove_table
         import uuid
         name = 'tool_' + uuid.uuid4().hex + '\U0001f3a8'
         forms = [
-            '["mcp_servers".\'agent_brain_server\']\ncommand="old"\n',
-            'mcp_servers.agent_brain_server.command="old"\n',
-            '[mcp_servers]\nagent_brain_server.command="old"\n',
-            'mcp_servers={agent_brain_server={command="old"}, ' + json.dumps(name, ensure_ascii=False) + '={command="other"}}\n',
+            '["mcp_servers".\'agent_brain_server\']\ncommand="project_sources"\n',
+            'mcp_servers.agent_brain_server.command="project_sources"\n',
+            '[mcp_servers]\nagent_brain_server.command="project_sources"\n',
+            'mcp_servers={agent_brain_server={command="project_sources"}, ' + json.dumps(name, ensure_ascii=False) + '={command="other"}}\n',
         ]
         target = {'command': 'new', 'enabled': False, 'env': {'z': 'keep', 'a': 'keep'}}
         for form in forms:

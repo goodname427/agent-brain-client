@@ -17,14 +17,15 @@ import json,sys
 from contextlib import contextmanager
 from pathlib import Path
 root,base,role=map(Path,sys.argv[1:4])
-sys.path[:0]=[str(root/'tests'),str(root/'adapters/codex'),str(root/'scripts'),str(root/'installer')]
+sys.path[:0]=[str(root/'tests'),str(root/'src'),str(root/'src'),str(root/'src')]
 from test_content_outbox import Cloud,POLICY
 from test_event_hook import accepted
-import content_cache
-import brain_cache
-from content_cache import ContentAdapter
-from content_mcp import ContentServer,run_event_hook
-from brain_lock import locked
+import agent_brain_client.adapters.harnesses.codex.content as content_cache
+import agent_brain_client.adapters.storage.content as brain_cache
+from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.interfaces.mcp.content import ContentServer
+from agent_brain_client.adapters.harnesses.codex.hooks import run_event_hook
+from agent_brain_client.adapters.platforms.filesystem import locked
 
 def emit(value):print(json.dumps(value),flush=True)
 class Remote(Cloud):
@@ -39,7 +40,7 @@ class Remote(Cloud):
    if mode=='unknown':reply['unrecognized']=True
    return reply
   return super().request(request)
-cloud=Remote();adapter=ContentAdapter(base/'home',base/'cache',POLICY,cloud,codex_home=base/'native')
+cloud=Remote();adapter=CodexContentSession(base/'home',base/'cache',POLICY,cloud,codex_home=base/'native')
 with locked(base/'cache'/'.content-runtime.lock',shared=True):
  if str(role)=='worker':
   result=ContentServer(adapter,'0.4.0').handle({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'synthetic','version':'1'}}})
@@ -112,7 +113,7 @@ class NativeHookLocking(unittest.TestCase):
             for stream in (child.stdin, child.stdout, child.stderr):stream.close()
 
     def test_append_lock_serializes_enqueue_before_transport(self):
-        from brain_lock import locked
+        from agent_brain_client.adapters.platforms.filesystem import locked
         hook,ready=self.start('hook');self.assertEqual(ready['phase'],'hook-ready')
         with locked(self.base/'cache'/'outbox-enqueue.lock'):
             hook.stdin.write('stop\n');hook.stdin.flush()
@@ -123,7 +124,7 @@ class NativeHookLocking(unittest.TestCase):
         self.assertEqual(len(list((self.base/'cache'/'outbox').glob('*.json'))),1)
 
     def test_staging_enqueues_while_refresh_holds_content_lock_then_exact_retry(self):
-        from brain_lock import locked,LockTimeout
+        from agent_brain_client.adapters.platforms.filesystem import locked,LockTimeout
         worker,ready=self.start('worker')
         self.assertEqual(ready['phase'],'refresh-holds-content-lock')
         hook,ready=self.start('hook');self.assertEqual(ready['phase'],'hook-ready')

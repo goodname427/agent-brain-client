@@ -1,3 +1,4 @@
+import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
 """Real isolated launcher processes and MCP handshakes; fictional content only."""
 
 import io
@@ -13,10 +14,11 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from brain_lock import native_platform, private_directory, private_mode
-from brain_release import ReleaseEngine, UpdateBlocked, atomic_json, digest
-from client_release import CAPABILITIES, ClientReleases
-from content_mcp import ContentServer, serve
+from agent_brain_client.adapters.platforms.filesystem import native_platform, private_directory, private_mode
+from agent_brain_client.adapters.packages.releases import ReleaseEngine, UpdateBlocked, atomic_json, digest
+from agent_brain_client.adapters.packages.client import CAPABILITIES, ClientReleases
+from agent_brain_client.interfaces.mcp.content import ContentServer
+from agent_brain_client.interfaces.mcp.server import serve
 from test_content_error_stages import Adapter
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,14 +51,15 @@ class StartupConcurrency(unittest.TestCase):
         }
         worker = """import sys
 from pathlib import Path
-sys.path[:0]=[str(Path(ROOT)/p) for p in ('scripts','adapters/codex','tests')]
-from content_mcp import ContentServer,serve
+sys.path[:0]=[str(Path(ROOT)/p) for p in ('src','src','tests')]
+from agent_brain_client.interfaces.mcp.content import ContentServer
+from agent_brain_client.interfaces.mcp.server import serve
 from test_content_error_stages import Adapter
 adapter=Adapter();adapter.refresh=lambda:{'status':'synthetic','model_loaded':'unknown'}
 version=sys.argv[sys.argv.index('--client-version')+1]
 serve(ContentServer(adapter,version),sys.stdin.buffer,sys.stdout)
 """.replace("ROOT", repr(str(ROOT)))
-        self.payload = {"scripts/remote_mcp.py": worker.encode()}
+        self.payload = {"src/agent_brain_client/interfaces/mcp/topics.py": worker.encode()}
         self.manifest = {
             "schema": 1,
             "version": "0.6.1",
@@ -89,10 +92,10 @@ serve(ContentServer(adapter,version),sys.stdin.buffer,sys.stdout)
 from pathlib import Path
 from unittest.mock import Mock
 root=Path(ROOT)
-sys.path[:0]=[str(root/p) for p in ('scripts','adapters/codex')]
-from brain_release import ReleaseEngine,atomic_json
-from client_release import ClientReleases
-import client_startup
+sys.path[:0]=[str(root/p) for p in ('src','src')]
+from agent_brain_client.adapters.packages.releases import ReleaseEngine,atomic_json
+from agent_brain_client.adapters.packages.client import ClientReleases
+import agent_brain_client.runtime.launcher as client_startup
 base=Path(sys.argv[1]);mode=sys.argv[2]
 policy=json.loads((base/'policy.json').read_bytes())
 class Source:
@@ -264,7 +267,7 @@ else:
             )
             self.engine.set_active(candidate)
             self.assertEqual(self.engine.serving_active(), self.old)
-        Path(self.old["package"], "scripts/remote_mcp.py").write_bytes(
+        Path(self.old["package"], "src/agent_brain_client/interfaces/mcp/topics.py").write_bytes(
             b"corrupted"
         )
         with self.assertRaises(UpdateBlocked):
@@ -289,8 +292,8 @@ else:
                 self.engine.serving_active()
 
     def test_installation_inspection_uses_snapshot_and_keeps_ownership_checks(self):
-        import content_install as install
-        from brain_lock import locked
+        import agent_brain_client.adapters.harnesses.codex.installation as install
+        from agent_brain_client.adapters.platforms.filesystem import locked
 
         home, native = self.base / "home", self.base / "codex"
         state = home / ".config" / "agent-brain-client"
@@ -308,8 +311,8 @@ else:
             "mcp_sha256": install.registered_mcp_digest(mcp),
             "owned_install_paths": [str(config), str(registration)],
         }
-        install.save(registration, meta)
-        install.save(
+        adapters_storage_private_files.save(registration, meta)
+        adapters_storage_private_files.save(
             state / "content-install-receipt.json",
             {
                 "phase": "complete",
@@ -328,7 +331,7 @@ else:
             "package": str(package),
             "manifest_sha256": digest(json.dumps(target, sort_keys=True).encode()),
         }
-        (package / "scripts/remote_mcp.py").write_bytes(b"damaged candidate")
+        (package / "src/agent_brain_client/interfaces/mcp/topics.py").write_bytes(b"damaged candidate")
         atomic_json(
             self.engine.journal,
             {"phase": "activated", "before": self.old, "target": candidate},
@@ -421,7 +424,7 @@ class EvidenceDiagnostics(unittest.TestCase):
         self.assertEqual(server.client_runtime["service_mode"], "approved-content")
 
     def test_remote_failure_and_synthetic_tools_remain_distinct(self):
-        from remote_mcp import Server
+        from agent_brain_client.interfaces.mcp.topics import Server
 
         request = {
             "jsonrpc": "2.0",

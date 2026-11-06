@@ -17,17 +17,17 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
-sys.path.insert(0,str(ROOT/'scripts'));sys.path.insert(0,str(ROOT/'tools'));sys.path.insert(0,str(ROOT/'adapters/codex'))
-import build_client as builder
-import client_release as release
-import client_startup
-import codex_connect as native
+sys.path.insert(0,str(ROOT/'src'));sys.path.insert(0,str(ROOT/'src'));sys.path.insert(0,str(ROOT/'src'))
+import dev.build.package as builder
+import agent_brain_client.adapters.packages.client as release
+import agent_brain_client.runtime.launcher as client_startup
+import agent_brain_client.adapters.harnesses.codex.configuration as native
 import connect as remote_connect
 
 
 class Releases(unittest.TestCase):
     def test_check_only_offline_requires_a_verified_active_package(self):
-        args=['client_startup.py','--policy-file','unused-policy','--policy-sha256','a'*64,'--check-only']
+        args=['agent_brain_client.runtime.launcher.py','--policy-file','unused-policy','--policy-sha256','a'*64,'--check-only']
         for active,expected in ((None,2),({'commit':'a'*40,'version':'0.1.1'},0)):
             result={'status':'offline','active':active}
             with patch.object(sys,'argv',args),patch.object(client_startup,'startup',return_value=result),patch.object(sys,'stdout',io.StringIO()):
@@ -137,7 +137,7 @@ class Releases(unittest.TestCase):
         checked=client_startup.startup(self.policy_path,self.policy_sha,True);self.assertEqual(checked['status'],'offline');self.assertEqual(checked['active'],old)
         run=subprocess.run;commands=[]
         def serve_only(command,**kwargs):
-            if any(str(arg).endswith('remote_mcp.py') for arg in command):
+            if any(str(arg).endswith('agent_brain_client.interfaces.mcp.topics.py') for arg in command):
                 commands.append(command);return subprocess.CompletedProcess(command,0)
             return run(command,**kwargs)
         background=[];thread_type=client_startup.threading.Thread
@@ -153,7 +153,7 @@ class Releases(unittest.TestCase):
                 for worker in background:
                     worker.join(30)
                     self.assertFalse(worker.is_alive(),'Synthetic startup check did not finish')
-        self.assertTrue(result['served']);command=commands[0];self.assertIn(str(Path(old['package'])/'scripts/remote_mcp.py'),command);self.assertEqual(command[-1],'darwin-arm64')
+        self.assertTrue(result['served']);command=commands[0];self.assertIn(str(Path(old['package'])/'src/agent_brain_client/interfaces/mcp/topics.py'),command);self.assertEqual(command[-1],'darwin-arm64')
         target=Path(old['package'])/'connect.py';target.write_text('external package change')
         with patch.object(client_startup.subprocess,'run') as runner:
             result=client_startup.startup(self.policy_path,self.policy_sha)

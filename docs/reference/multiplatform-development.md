@@ -6,7 +6,7 @@
 
 共用业务核心：HTTPS 请求与回执、CAS/outbox、断网缓存、Rule/Skill 映射、安装事务及前后像、release manifest/健康回滚、来源语法和排除规则。共用 Codex 适配：Hook 输入、事件身份、来源发现、召回上下文、用户级 owned Hook 块与 MCP 协议。薄 OS 层：实际平台识别、路径语法、凭据 API、DACL/POSIX 权限、原子替换/刷盘、命令转义、共享锁与 worker 生命周期。
 
-`installer/first_install.py` 是两平台共用的安装流程，原 `tools/mac_first_install.py` 入口已删除；`install-mac.sh` 与 `install-windows.ps1` 只是依赖/入口包装。Windows 原生边界集中在 `scripts/brain_windows.py`，公共调用在 `brain_lock.py`。不为假想 OS 建框架，也不复制整套 OS×Harness 产品。
+`src/agent_brain_client/interfaces/cli/install.py` 是两平台共用的安装流程，原 `tools/mac_first_install.py` 入口已删除；`install-mac.sh` 与 `install-windows.ps1` 只是依赖/入口包装。Windows 原生边界集中在 `src/agent_brain_client/adapters/platforms/windows/native.py`，公共调用在 `brain_lock.py`。不为假想 OS 建框架，也不复制整套 OS×Harness 产品。
 
 服务端个人池采用明确登记的设备路由与读取合并。每台设备独立 source/cursor/session/receipt/Core 目录，沿用同一 owner、profile_id 和累计预算。这样不会违反 Core 的单写入者 lease，也不需要搬迁现有 Mac 数据。跨设备 recall 仍使用真实请求者身份；provenance 按原来源设备的 scope、暂停和 enrollment 检查。主设备 schema-1 原目录保持兼容。新设备暂停不暂停 Mac；撤销设备后不继续从该设备召回。
 

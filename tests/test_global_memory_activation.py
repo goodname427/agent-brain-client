@@ -1,3 +1,6 @@
+import agent_brain_client.runtime.updates as runtime_updates
+import agent_brain_client.adapters.storage.collection as source_policy
+import agent_brain_client.adapters.storage.metadata as metadata
 """Source activation/control regressions with synthetic state and no network."""
 import copy
 import io
@@ -9,9 +12,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-import global_memory as gm
-import global_memory_operator as operator
-from global_memory_scope import digest
+import agent_brain_client.runtime.collection as gm
+import agent_brain_client.runtime.source_enrollment as operator
+from agent_brain_client.domain.scopes import digest
 
 
 class GlobalMemoryActivation(unittest.TestCase):
@@ -19,7 +22,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         temp = tempfile.TemporaryDirectory(prefix='synthetic-source-activation-')
         self.addCleanup(temp.cleanup)
         self.home = Path(temp.name).resolve()
-        self.file = gm.settings_path(self.home)
+        self.file = source_policy.settings_path(self.home)
         self.file.parent.mkdir(parents=True, mode=0o700)
         self.scope = {'schema':1, 'profile_id':'a' * 32,
                       'include_roots':[{'root':str(self.home), 'sharing':'personal'}],
@@ -35,7 +38,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         value['scope']['include_roots'] = []
         self.off.touch()
         before = self.off.read_bytes()
-        with patch.object(gm, 'GlobalClient', side_effect=AssertionError('No credentials')):
+        with patch.object(gm, 'CollectionClient', side_effect=AssertionError('No credentials')):
             result = gm.resume(value)
         self.assertEqual(result['status'], 'global-memory-activation-required')
         self.assertFalse(result['remote_confirmed'])
@@ -52,7 +55,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         client = SimpleNamespace(device_id='c'*32, wire=Mock(side_effect=[
             {'error':{'code':'transport_unconfirmed','retryable':True}}, response]))
         before = copy.deepcopy(value)
-        with (patch.object(gm,'GlobalClient',return_value=client),
+        with (patch.object(gm,'CollectionClient',return_value=client),
               patch.object(operator,'activate',return_value={'activated':True}) as activate):
             first = operator.register(value,packet)
             self.assertFalse(first['activated']); activate.assert_not_called()
@@ -66,7 +69,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         value = dict(self.value, enabled=False, server_scope_sha256=None)
         packet = {'schema':2,'scope':self.scope,'approved_scope_sha256':'0'*64,
                   'client':{'source_device_id':'c'*32}}
-        with patch.object(gm,'GlobalClient',side_effect=AssertionError('No credential access')):
+        with patch.object(gm,'CollectionClient',side_effect=AssertionError('No credential access')):
             with self.assertRaises(ValueError): operator.register(value,packet)
 
     def test_each_missing_approval_keeps_source_fenced_without_server_request(self):
@@ -75,7 +78,7 @@ class GlobalMemoryActivation(unittest.TestCase):
             with self.subTest(field=field):
                 value = dict(self.value, **{field:missing})
                 self.off.touch()
-                with patch.object(gm, 'GlobalClient', side_effect=AssertionError('No credentials')):
+                with patch.object(gm, 'CollectionClient', side_effect=AssertionError('No credentials')):
                     self.assertFalse(gm.resume(value)['remote_confirmed'])
                 self.assertTrue(self.off.exists())
 
@@ -87,7 +90,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         for response in responses:
             with self.subTest(response=response):
                 client = SimpleNamespace(wire=Mock(return_value=response))
-                with patch.object(gm, 'GlobalClient', return_value=client):
+                with patch.object(gm, 'CollectionClient', return_value=client):
                     result = gm.resume(self.value)
                 self.assertEqual(result['status'], 'global-memory-resume-unconfirmed')
                 self.assertFalse(result['collection_enabled'])
@@ -98,7 +101,7 @@ class GlobalMemoryActivation(unittest.TestCase):
 
     def test_transport_exception_leaves_even_previously_running_source_fenced(self):
         client = SimpleNamespace(wire=Mock(side_effect=OSError('Synthetic transport failure')))
-        with patch.object(gm, 'GlobalClient', return_value=client), self.assertRaises(OSError):
+        with patch.object(gm, 'CollectionClient', return_value=client), self.assertRaises(OSError):
             gm.resume(self.value)
         self.assertTrue(self.off.exists())
 
@@ -106,7 +109,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         before = copy.deepcopy(self.value)
         self.off.touch()
         client = SimpleNamespace(wire=Mock(return_value={'result':{'schema':1, 'stopped':False}}))
-        with patch.object(gm, 'GlobalClient', return_value=client): result = gm.resume(self.value)
+        with patch.object(gm, 'CollectionClient', return_value=client): result = gm.resume(self.value)
         self.assertTrue(result['remote_confirmed'])
         self.assertTrue(result['collection_enabled'])
         self.assertFalse(self.off.exists())
@@ -115,10 +118,10 @@ class GlobalMemoryActivation(unittest.TestCase):
 
     def test_local_stop_guidance_resumes_original_approval_without_recreating_packet(self):
         self.off.touch()
-        self.assertEqual(gm.admission_state(self.value)['next_action'],
+        self.assertEqual(source_policy.admission_state(self.value)['next_action'],
                          'explicit-global-resume-for-the-existing-approved-source')
         pending = dict(self.value, server_scope_sha256=None)
-        self.assertEqual(gm.admission_state(pending)['next_action'],
+        self.assertEqual(source_policy.admission_state(pending)['next_action'],
                          'check-server-and-have-existing-operator-apply-the-saved-device-packet')
 
     def test_legacy_resume_keeps_original_project_control_and_no_expanded_source_claim(self):
@@ -126,7 +129,7 @@ class GlobalMemoryActivation(unittest.TestCase):
                      server_scope_sha256=None,
                      legacy_projects=[{'settings':'synthetic-settings', 'settings_sha256':'b' * 64}])
         source = {'off_file':str(self.home / 'synthetic-project.off')}
-        with (patch.object(gm, 'GlobalClient', side_effect=AssertionError('No global credentials')),
+        with (patch.object(gm, 'CollectionClient', side_effect=AssertionError('No global credentials')),
               patch.object(gm.old, 'load', return_value=source),
               patch.object(gm.old, 'daily_command', return_value={}) as command):
             result = gm.resume(value)
@@ -141,14 +144,14 @@ class GlobalMemoryActivation(unittest.TestCase):
         with (patch.object(gm, 'load', return_value=value),
               patch.object(sys, 'argv', ['global_memory', 'global-resume']),
               patch.object(sys, 'stdout', output),
-              patch.object(gm, 'GlobalClient', side_effect=AssertionError('No credentials'))):
+              patch.object(gm, 'CollectionClient', side_effect=AssertionError('No credentials'))):
             self.assertEqual(gm.main(), 2)
         self.assertEqual(json.loads(output.getvalue())['status'], 'global-memory-activation-required')
 
     def test_migrated_legacy_sources_are_not_reenabled_while_global_admission_is_pending(self):
         value = dict(self.value, enabled=False, server_scope_sha256=None,
                      legacy_projects=[{'capture_delegated':False}])
-        with (patch.object(gm, 'GlobalClient', side_effect=AssertionError('No credentials')),
+        with (patch.object(gm, 'CollectionClient', side_effect=AssertionError('No credentials')),
               patch.object(gm.old, 'daily_command', side_effect=AssertionError('No legacy reactivation'))):
             result = gm.resume(value)
         self.assertEqual(result['status'], 'global-memory-activation-required')
@@ -168,7 +171,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         status = {'result':{'source_registered':True, 'scope_sha256':digest(self.scope),
                             'global_profile_id':self.scope['profile_id'], 'source_device_id':'c' * 32}}
         client = SimpleNamespace(device_id='c' * 32, wire=Mock(side_effect=[status, {'result':{}}]))
-        with patch.object(gm, 'GlobalClient', return_value=client):
+        with patch.object(gm, 'CollectionClient', return_value=client):
             result = operator.activate(value, self.scope)
         self.assertFalse(result['activated'])
         self.assertFalse(result['collection_enabled'])
@@ -180,7 +183,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         args = SimpleNamespace(device_home=str(self.home), include_root=[], isolate_root=[],
             exclude_root=[], non_project_root=[], all_projects=True, activate_packet=None)
         client = SimpleNamespace(device_id='c'*32, wire=Mock(return_value={'error':{'code':'transport_unconfirmed'}}))
-        with patch.object(gm, 'load', return_value=self.value), patch.object(gm, 'GlobalClient', return_value=client):
+        with patch.object(gm, 'load', return_value=self.value), patch.object(gm, 'CollectionClient', return_value=client):
             result = operator.configure(args)
         self.assertEqual(result['status'], 'global-memory-connection-pending')
         self.assertEqual(self.value, before)
@@ -193,14 +196,14 @@ class AutomaticCapture(unittest.TestCase):
     setUp = GlobalMemoryActivation.setUp
 
     def test_automatic_setup_binds_failed_placeholder_and_retries_lost_resume(self):
-        from windows_install_complete import source_setup
-        from global_memory_scope import select
+        from agent_brain_client.runtime.installation_completion import source_setup
+        from agent_brain_client.domain.scopes import select
         value = dict(self.value, enabled=False, server_scope_sha256=None)
-        gm.old.write(self.file, value)
+        metadata.write(self.file, value)
         profile = self.file.parent/'synthetic-profile.json'
-        gm.old.write(profile, {'endpoint':'https://synthetic.invalid',
+        metadata.write(profile, {'endpoint':'https://synthetic.invalid',
             'grant':{'actor':'synthetic-owner','platform':'win32-amd64','scopes':['read','put']}})
-        runtime = {'https_profile':str(profile),'https_profile_sha256':gm.old.digest(profile.read_bytes()),
+        runtime = {'https_profile':str(profile),'https_profile_sha256':metadata.digest(profile.read_bytes()),
             'content_policy_sha256':'f'*64}
         state = {'scope':None,'fail_resume':True,'calls':[]}
         def wire(method, params, rid=None):
@@ -219,9 +222,9 @@ class AutomaticCapture(unittest.TestCase):
                 return {'error':{'code':'transport_unconfirmed'}} if state['fail_resume'] else {'result':{'schema':1,'stopped':False}}
             self.fail('No model or history request: ' + method)
         client = SimpleNamespace(device_id='c'*32, wire=wire)
-        def load(*args, **kwargs): return gm.old.private_json(self.file)
+        def load(*args, **kwargs): return metadata.private_json(self.file)
         with (patch.object(gm, 'load', side_effect=load),
-              patch.object(gm, 'GlobalClient', return_value=client),
+              patch.object(gm, 'CollectionClient', return_value=client),
               patch.object(gm.old, 'registration', return_value=(None, {'runtime':runtime})),
               patch.object(gm, 'discover', side_effect=AssertionError('No history scan'))):
             before = self.file.read_bytes()
@@ -232,7 +235,7 @@ class AutomaticCapture(unittest.TestCase):
         self.assertEqual(state['calls'].count('memory_global_register'), 1)
         stored = load()
         self.assertTrue(stored['scope']['all_projects'])
-        self.assertTrue(gm.approved(stored))
+        self.assertTrue(source_policy.approved(stored))
         for root in ('C:/synthetic/new-project', 'Z:/future-volume/project', '/synthetic/elsewhere'):
             local = {'kind':'project','cwd':root,'project_root':root,'repository_root':root}
             self.assertEqual(select(stored['scope'], local)['sharing'], 'personal')
@@ -240,16 +243,16 @@ class AutomaticCapture(unittest.TestCase):
             'project_root':None,'repository_root':None}))
 
     def test_noninteractive_update_runs_source_setup_and_status_does_not(self):
-        import first_install as wizard
-        import windows_install_complete as guide
+        import agent_brain_client.runtime.installation as wizard
+        import agent_brain_client.runtime.installation_completion as guide
         result = {'status':'client-update-current','channel_checked':True}
         with (patch.object(wizard, '_manage_update', return_value=result),
               patch.object(guide, 'source_setup', return_value={'collection_enabled':True}) as setup):
-            gm.old.write(self.file, self.value)
-            self.assertTrue(wizard.manage_update(self.home, 'update')['source_setup']['collection_enabled'])
+            metadata.write(self.file, self.value)
+            self.assertTrue(runtime_updates.manage_update(self.home, 'update')['source_setup']['collection_enabled'])
             setup.assert_called_once_with(self.home)
             setup.reset_mock()
-            wizard.manage_update(self.home, 'check-update')
+            runtime_updates.manage_update(self.home, 'check-update')
             setup.assert_not_called()
 
 

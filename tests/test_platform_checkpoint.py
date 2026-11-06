@@ -9,12 +9,12 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT)] + [str(ROOT / n) for n in ('scripts', 'adapters/codex', 'tools')]
-import connect
-import remote_mcp
-from brain_lock import native_platform
-from build_client import release
-from check_source import check_platform_boundary
+sys.path[:0] = [str(ROOT)] + [str(ROOT / n) for n in ('src', 'src', 'src')]
+import dev.integration.checkpoint as connect
+import agent_brain_client.interfaces.mcp.topics as remote_mcp
+from agent_brain_client.adapters.platforms.filesystem import native_platform
+from dev.build.package import release
+from dev.checks.source import check_platform_boundary
 
 
 class PlatformCheckpoint(unittest.TestCase):
@@ -39,10 +39,10 @@ class PlatformCheckpoint(unittest.TestCase):
     def test_python311_blank_stdlib_architecture_still_reaches_real_checkpoint(self):
         code = """import json,platform,sys
 from pathlib import Path
-root=Path(sys.argv[1]);sys.path[:0]=[str(root/n) for n in ('scripts','adapters/codex')]
+root=Path(sys.argv[1]);sys.path[:0]=[str(root/n) for n in ('src','src')]
 assert platform.machine()==''
-from remote_mcp import Server
-from brain_lock import require_platform
+from agent_brain_client.interfaces.mcp.topics import Server
+from agent_brain_client.adapters.platforms.filesystem import require_platform
 assert Server(None,'0.5.6').client_platform==require_platform('checkpoint-regression')
 print(json.dumps({'stdlib_machine_empty':True,'fixed_checkpoint':Server(None,'0.5.6').client_platform}))
 """
@@ -82,12 +82,11 @@ print(json.dumps({'stdlib_machine_empty':True,'fixed_checkpoint':Server(None,'0.
                 check_platform_boundary('adapters/codex/example.py', source)
             with self.subTest(root_source=source), self.assertRaises(ValueError):
                 check_platform_boundary('connect.py', source)
-        check_platform_boundary('scripts/brain_lock.py', 'import platform\nplatform.machine()')
+        check_platform_boundary('src/agent_brain_client/adapters/platforms/filesystem.py', 'import platform\nplatform.machine()')
 
 
-import content_install as ci
+import agent_brain_client.adapters.harnesses.codex.installation as ci
 from test_content_outbox import POLICY
-from test_package_tool_binding import old_contract
 
 
 class HistoricalPackageTools(unittest.TestCase):
@@ -97,36 +96,13 @@ class HistoricalPackageTools(unittest.TestCase):
         self.root=Path(temporary.name).resolve()
         self.grant={'scopes':['read','put'],'artifact_types':POLICY['kinds'],'ids':POLICY['ids']}
 
-    def test_target_contract_is_independent_of_newer_inspecting_source(self):
-        package=self.root/'old-package'
-        manifest=release(ROOT,package,'0.6.2','personal-content-https',native_platform())
-        old_contract(manifest,package)
-        with patch.object(ci,'enabled_tools',side_effect=AssertionError('Updater tool contract must not select old package tools')):
-            tools=ci.package_tools(package,POLICY,self.grant)
-        self.assertEqual(len(tools),9)
-        self.assertNotIn('memory_recall',tools)
-        self.assertIn('memory_query',tools)
 
-    def test_historical_validator_fixture_imports_from_clean_new_layout(self):
-        from test_windows_native import historical_launcher
-        package=self.root/'stale-launcher'
-        manifest=release(ROOT,package,'0.5.7','personal-content-https',native_platform())
-        names=set(manifest['files'])
-        historical_launcher(package,manifest)
-        self.assertEqual(set(manifest['files']),names)
-        run=subprocess.run([sys.executable,'-I','-B',str(package/'scripts/client_startup.py'),'--help'],
-                           capture_output=True,timeout=30)
-        self.assertEqual(run.returncode,0,run.stderr.decode())
-        code="import sys;sys.path.insert(0,sys.argv[1]);import content_install"
-        run=subprocess.run([sys.executable,'-I','-B','-c',code,str(package/'adapters/codex')],
-                           capture_output=True,timeout=30)
-        self.assertEqual(run.returncode,0,run.stderr.decode())
 
     def test_future_package_addition_needs_no_version_or_name_allowlist(self):
         package=self.root/'future-package'
         release(ROOT,package,'0.9.0','personal-content-https',native_platform())
         before=set(ci.package_tools(package,POLICY,self.grant))
-        file=package/'adapters/codex/content_mcp.py'
+        file=package/'src/agent_brain_client/application/tools/catalog.py'
         raw=file.read_text().replace('    return tools\n',"    tools.append({'name':'synthetic_future_read'})\n    return tools\n",1)
         file.write_text(raw)
         tools=ci.package_tools(package,POLICY,self.grant)
@@ -137,7 +113,6 @@ class HistoricalPackageTools(unittest.TestCase):
     def test_probe_failure_is_bounded_and_does_not_accept_updater_fallback(self):
         package=self.root/'old-package'
         manifest=release(ROOT,package,'0.6.2','personal-content-https',native_platform())
-        old_contract(manifest,package)
         with patch.object(ci.subprocess,'run',return_value=type('Result',(),{'returncode':1,'stdout':b''})()):
             with self.assertRaises(ci.InstallBlocked):
                 ci.package_tools(package,POLICY,self.grant)

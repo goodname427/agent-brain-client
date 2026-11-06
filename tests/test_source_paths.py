@@ -1,7 +1,7 @@
 """Portable source identity contract; paths are metadata, never opened."""
 import copy
 import unittest
-from global_memory_scope import path, select, source_id
+from agent_brain_client.domain.scopes import path, select, source_id
 
 
 class SourcePaths(unittest.TestCase):

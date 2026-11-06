@@ -10,9 +10,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / name) for name in ('scripts', 'adapters/codex', 'tools')]
-import global_memory as gm
-import https_content
+sys.path[:0] = [str(ROOT / name) for name in ('src', 'src', 'src')]
+import agent_brain_client.runtime.collection as gm
+import agent_brain_client.adapters.server.https as https_content
 
 
 def main():
@@ -27,7 +27,7 @@ def main():
             print(json.dumps({'url': request.full_url, 'headers': dict(request.header_items()),
                               'request': json.loads(request.data)}), flush=True)
             return Response()
-    # Only credential storage and the network are replaced. GlobalClient builds
+    # Only credential storage and the network are replaced. CollectionClient builds
     # the actual authenticated HTTP frame and validates the actual Server reply.
     base = SimpleNamespace(grant={'actor': config['actor']}, data_mode='personal',
                            device_id=config['device_id'], profile_sha='a' * 64,
@@ -36,7 +36,7 @@ def main():
     with tempfile.TemporaryDirectory() as directory:
         directory = str(Path(directory).resolve())
         if os.name == 'nt':
-            from brain_windows import protect_new
+            from agent_brain_client.adapters.platforms.windows.native import protect_new
             protect_new(Path(directory), directory=True)
         value = dict(config['value'], device_home=directory)
         payload = {'cwd': config['origin']['cwd'], 'hook_event_name': 'UserPromptSubmit',
