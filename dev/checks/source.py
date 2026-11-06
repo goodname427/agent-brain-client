@@ -62,7 +62,7 @@ def check_layer_boundary(name, source):
     module = PACKAGE + "." + relative.removesuffix(".py").replace("/", ".")
     for node, target in import_targets(ast.parse(source, filename=name), module):
         parts = target.split(".")
-        forbidden = parts[0] in {"dev", "bootstrap", "tests"}
+        forbidden = parts[0] not in {PACKAGE, *sys.stdlib_module_names}
         if parts[0] == PACKAGE and len(parts) > 1:
             dependency = parts[1]
             if layer == "domain":

@@ -22,6 +22,10 @@ class Architecture(unittest.TestCase):
             ("domain/example.py", "from agent_brain_client import adapters"),
             ("domain/example.py", "from ..adapters.server import https"),
             ("domain/example.py", "import os"),
+            (
+                "adapters/platforms/windows/example.py",
+                "from system_credentials import unique",
+            ),
             ("application/example.py", "import subprocess"),
             ("application/example.py", "cache.read_bytes()"),
             ("application/example.py", "cache.exists()"),
@@ -50,8 +54,14 @@ class Architecture(unittest.TestCase):
                 "from agent_brain_client.interfaces.mcp import content",
             ),
             ("interfaces/example.py", "from dev.build import package"),
-            ("adapters/platforms/macos/example.py", "from agent_brain_client.adapters.platforms.windows import native"),
-            ("adapters/platforms/windows/example.py", "from agent_brain_client.adapters.platforms.macos import keychain"),
+            (
+                "adapters/platforms/macos/example.py",
+                "from agent_brain_client.adapters.platforms.windows import native",
+            ),
+            (
+                "adapters/platforms/windows/example.py",
+                "from agent_brain_client.adapters.platforms.macos import keychain",
+            ),
         ]
         for name, source in vectors:
             with (

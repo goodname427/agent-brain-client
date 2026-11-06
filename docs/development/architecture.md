@@ -88,3 +88,5 @@ Contract regression covers queues, original request IDs/CAS, source approval and
 Mac helper compilation/self-check does not access Keychain or display UI. Native Windows checks must execute on Windows 3.11 and 3.13; passing portable mocks on Mac is not native Windows acceptance. No real-device installation, historical-memory scan, Server change or publication belongs to this refactor.
 
 The CodeBuddy frozen gateway contains the complete current runtime, with per-file hashes. It refuses a shared-runtime/code mismatch before loading services; rerun the official integration installation to refresh its binding. This avoids importing an unrelated checkout while merely validating another directory.
+
+Windows native CI caught a remaining pre-layout credential import. Its import now names the shared credential module directly; this changes the pinned Python backend source digest. New profiles/packages derive that digest from the current source. No old digest is accepted or rewritten to bypass review. Native credential, ACL, CAS and removal behavior is otherwise unchanged; the Swift sources retain their original bytes.

@@ -161,7 +161,7 @@ class WindowsCredentials:
             if not 0 < item.CredentialBlobSize <= 2560 or not item.CredentialBlob or item.Type != 1 or item.TargetName != self.service:
                 raise ValueError('Unknown credential record')
             raw = C.string_at(item.CredentialBlob, item.CredentialBlobSize)
-            from system_credentials import unique
+            from agent_brain_client.adapters.platforms.credentials import unique
             value = json.loads(raw, object_pairs_hook=unique)
             if not isinstance(value, dict): raise ValueError('Unknown credential record')
             return value
