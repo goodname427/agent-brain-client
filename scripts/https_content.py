@@ -3,7 +3,6 @@
 Profiles contain reviewed metadata only. Codes and tokens remain inside the
 dedicated OS credential item, HTTP Authorization and private helper pipes.
 """
-import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -17,9 +16,9 @@ from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 BASE=Path(__file__).resolve().parent
-ROOT=BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
+ROOT=BASE.parent
 sys.path.insert(0,str(ROOT/'scripts'))
-from remote_http import RemoteClient,NoRedirect,RequestStopped
+from brain_http import RemoteClient,NoRedirect,RequestStopped
 from client_pairing import EnrollmentTerminal,reviewed_ids,allowed_id
 from system_credentials import NativeKeychain,canonical,unique,owned,credential_fields,profile_credentials,credential_paths,store_for_profile
 from brain_lock import require_platform,platform_paths,PlatformUnsupported,native_platform
@@ -32,7 +31,7 @@ def grant_metadata_check(grant):
     if grant['scopes']!=['read','put'] or not isinstance(grant['artifact_types'],list) or not grant['artifact_types'] or len(set(grant['artifact_types']))!=len(grant['artifact_types']) or set(grant['artifact_types'])-{'memory','rule','skill'}:raise ValueError('Reviewed read/put grant required')
     platform_paths(grant['platform'])
     reviewed_ids(grant['artifact_types'],grant['ids'])
-    from content_contract import personal_owner
+    from brain_content import personal_owner
     if not personal_owner(grant['ids']) and (any(not isinstance(v,list) for v in grant['ids'].values()) or sum(map(len,grant['ids'].values()))!=31):raise ValueError('Personal owner or legacy 31 exact approved IDs required')
 
 def grant_check(grant):
@@ -223,7 +222,7 @@ class PinnedDeviceTask:
             raise ValueError('Finite pinned device task required')
         extract,recall=value['extract_request'],value['recall_request']
         if extract is None:
-            from content_contract import validate
+            from brain_content import validate
             if not isinstance(recall,dict) or set(recall)!={'request_id','method','params'} or recall['method']!='memory_query' or not re.fullmatch(r'[A-Za-z0-9_-]{16,128}',recall['request_id']):raise ValueError('Exact read-only task required')
             validate('memory_query',recall['params'])
             if 'selection' not in recall['params']:raise ValueError('Exact read selection required')
@@ -235,7 +234,7 @@ class PinnedDeviceTask:
                     or not isinstance(request['params'],dict)):
                 raise ValueError('One exact task request required')
         e,r=extract['params'],recall['params']
-        from content_contract import validate
+        from brain_content import validate
         validate('memory_query',r)
         if (set(e)!={'project_id','session_id'} or any(not isinstance(x,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',x) for x in e.values())
                 or set(r)!={'kind','query','since','until','limit','context'}
@@ -251,7 +250,7 @@ class PinnedDeviceTask:
 
     def check(self,request,device_id):
         value=self.load()
-        from content_contract import personal_owner
+        from brain_content import personal_owner
         if (value!=self.value or value['enabled'] is not True
                 or not value['not_before']<=self.clock()<value['expires_at']
                 or device_id!=value['device_id'] or not personal_owner(self.profile['grant']['ids'])
@@ -278,7 +277,7 @@ class PinnedRecallPolicy:
                 or p['endpoint']!=self.profile['endpoint'] or p['profile_sha256']!=self.profile_sha
                 or not isinstance(p['device_id'],str) or not re.fullmatch(r'[a-f0-9]{32}',p['device_id'])
                 or type(p['max_results']) is not int or not 1<=p['max_results']<=2**31-1):raise ValueError('Finite read-only recall policy required')
-        from content_contract import event_identifier
+        from brain_content import event_identifier
         event_identifier(p['project_id'])
         for name in ('source_sessions','recall_sessions'):
             rows=p[name]
@@ -291,7 +290,7 @@ class PinnedRecallPolicy:
 
     def daily(self,p):
         fields={'schema','enabled','lifecycle','actor','device_id','endpoint','profile_sha256','project_id','source_mode','source_session_id','recall_session_id','source_device_id','max_results','off_file'}
-        from content_contract import event_identifier
+        from brain_content import event_identifier
         if (set(p)!=fields or p['lifecycle']!='until-disabled' or type(p['enabled']) is not bool
                 or p['source_mode'] not in ('codex-project','operator-notes') or p['actor']!=self.profile['grant']['actor']
                 or p['endpoint']!=self.profile['endpoint'] or p['profile_sha256']!=self.profile_sha
@@ -306,7 +305,7 @@ class PinnedRecallPolicy:
     def check(self,request,device_id):
         p=self.load();off=Path(p['off_file'])
         if p.get('schema')==2:return self.check_daily(request,device_id)
-        from content_contract import validate,personal_owner
+        from brain_content import validate,personal_owner
         if (p!=self.value or not p['enabled'] or not p['not_before']<=self.clock()<p['expires_at']
                 or off.exists() or off.is_symlink() or device_id!=p['device_id']
                 or self.profile['grant']['scopes']!=['read','put'] or not personal_owner(self.profile['grant']['ids'])
@@ -320,7 +319,7 @@ class PinnedRecallPolicy:
 
     def check_daily(self,request,device_id):
         p=self.load()
-        from content_contract import validate,personal_owner
+        from brain_content import validate,personal_owner
         if (p!=self.value or not p['enabled'] or device_id!=p['device_id']
                 or self.profile['grant']['scopes']!=['read','put'] or not personal_owner(self.profile['grant']['ids'])
                 or not isinstance(request,dict) or set(request)!={'request_id','method','params'} or request['method']!='memory_query'):
@@ -359,7 +358,7 @@ class HTTPSContentClient:
 
     def recall(self, request):
         """One read through the Server's existing per-device global source gate."""
-        from content_contract import global_recall_params, global_recall_result
+        from brain_content import global_recall_params, global_recall_result
         if self.device_task is not None or self.recall_policy is not None or request.get('method') not in ('memory_query','memory_global_query'):
             raise ValueError('Normal approved-source recall required')
         if 'read' not in self.grant['scopes'] or 'memory' not in self.grant['artifact_types']:
@@ -379,18 +378,18 @@ class HTTPSContentClient:
                 self.device_task.check(request,self.device_id)
             elif method not in ('memory_query','memory_event_submit','memory_status','memory_resume','memory_stop','memory_revoke','memory_sync','content_catalog','content_read','content_put','content_set_enabled','client_updates'):raise ValueError('Device-only methods required')
             if method in ('memory_status','memory_resume','memory_stop','memory_revoke','memory_sync'):
-                from content_contract import validate
+                from brain_content import validate
                 validate(method,params)
                 if 'memory' not in self.grant['artifact_types']:raise ValueError('Memory grant required')
             if method=='content_set_enabled':
-                from content_contract import validate, permits_scope
+                from brain_content import validate, permits_scope
                 validate(method,params)
                 if not permits_scope(self.grant['scopes'],method):raise ValueError('Content put grant required')
             if method=='memory_query' and 'memory' not in self.grant['artifact_types']:raise ValueError('Memory read grant required')
             if method in ('content_read','content_put','content_set_enabled','memory_event_submit') and not allowed_id(self.grant['ids'],params['kind'],params['id']):raise ValueError('Unreviewed content ID')
             result=self.transport.request(request)
             if method=='memory_query' and (self.device_task is not None or self.recall_policy is not None) and 'error' not in result:
-                from content_contract import core_recall
+                from brain_content import core_recall
                 core_recall(result['result'],params['context'])
                 if self.recall_policy is not None:
                     recalled=result['result']['recall']
@@ -409,88 +408,9 @@ class HTTPSContentClient:
                                 raise ValueError('Recall source evidence changed')
                     if count>params['limit']:raise ValueError('Recall response exceeds requested bound')
                 if 'selection' in params:
-                    from content_contract import exact_capture_response
+                    from brain_content import exact_capture_response
                     exact_capture_response(result['result']['recall'],params,self.device_task.value['device_id'])
             return result
         except RequestStopped:raise
         except Exception:
             return {'request_id':request.get('request_id') if isinstance(request,dict) else None,'error':{'code':'device_transport_blocked','retryable':False,'stage':'client-policy-or-credential'},'persistence':{'durable':False}}
-
-
-def install_once(plan,approved_digest,*,store=None,transport=None,secure_input=None,installer=None):
-    """One approved native plan: verify before UI, resume pairing, then install.
-
-    This does not create an invitation, read a token from argv or broaden an
-    existing profile. Pairing recovery remains in the same dedicated OS item.
-    """
-    from content_install import context,prepare,apply,private_json,InstallBlocked
-    from content_contract import encode as plan_bytes
-    try:
-        if not isinstance(plan,dict) or hashlib.sha256(plan_bytes(plan)).hexdigest()!=approved_digest:
-            raise InstallBlocked('Exact approved native plan required')
-        policy,_,_,_=context(plan['device_home'],plan['package'],plan['release_policy'],plan['release_policy_sha256'])
-        from client_release import HTTPS_CONTENT_CAPABILITIES
-        if policy['capabilities']!=HTTPS_CONTENT_CAPABILITIES:raise InstallBlocked('HTTPS install scope required')
-        runtime=policy['runtime'];profile=profile_file(runtime['https_profile'],runtime['https_profile_sha256'])
-        install=installer or apply
-        receipt=Path(plan['device_home'])/'.config/agent-brain-client/content-install-receipt.json'
-        if receipt.exists():
-            previous=private_json(receipt)
-            removed=Path(plan['device_home'])/'.config/agent-brain-client/uninstall-receipt.json'
-            reinstallation=removed.exists() and not (receipt.parent/'codex-mcp.json').exists()
-            if previous.get('phase') in ('complete','applying') and previous.get('plan_sha256')==approved_digest and (previous.get('phase')=='applying' or not reinstallation):
-                # Existing apply verifies/restores an interrupted matching journal
-                # before checking the original preimage; pairing already preceded it.
-                return install(plan,approved_digest)
-        if prepare(plan['device_home'],plan['package'],plan['release_policy'],plan['release_policy_sha256'],plan['replace_existing'])!=plan:
-            raise InstallBlocked('Install preimage changed before credential input')
-        credentials=store if store is not None else native_store(profile,runtime['https_profile_sha256'])
-        enrollment=DeviceEnrollment(profile,runtime['https_profile_sha256'],credentials,transport if transport is not None else PairingHTTPS(profile['endpoint']),secure_input if secure_input is not None else credentials.backend.secure_input)
-        paired=enrollment.run()
-        if paired.get('status')!='device-paired':
-            return {'status':paired.get('status','pairing-resume-required'),'installed':False,'native_changed':False,'credential_record_preserved':True,**({'reason':paired['reason']} if 'reason' in paired else {})}
-        return install(plan,approved_digest)
-    except PlatformUnsupported as error:
-        return error.result(installed=False,native_changed=False,credential_record_preserved=True)
-    except Exception:
-        return {'status':'https-install-review-or-resume-required','installed':False,'native_changed':False,'credential_record_preserved':True}
-
-
-def main():
-    parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('inspect','pair','reset-terminal','install','task-check','task-execute'))
-    parser.add_argument('--https-profile');parser.add_argument('--https-profile-sha256')
-    parser.add_argument('--device-task-policy');parser.add_argument('--device-task-policy-sha256')
-    parser.add_argument('--task-request-file');parser.add_argument('--task-request-sha256')
-    parser.add_argument('--content-install-plan');parser.add_argument('--approved-plan-sha256')
-    args=parser.parse_args()
-    if args.action=='install':
-        try:
-            from content_mcp import pinned
-            result=install_once(pinned(args.content_install_plan,args.approved_plan_sha256),args.approved_plan_sha256)
-        except PlatformUnsupported as error:result=error.result(installed=False,native_changed=False)
-        except Exception:result={'status':'https-install-review-required','installed':False,'native_changed':False}
-        print(json.dumps(result));return 0 if result.get('installed') else 2
-    try:
-        profile=profile_file(args.https_profile,args.https_profile_sha256)
-        if args.action in ('task-check','task-execute'):
-            task=PinnedDeviceTask(args.device_task_policy,args.device_task_policy_sha256,profile,args.https_profile_sha256)
-            raw=owned(args.task_request_file).read_bytes()
-            if len(raw)>4096 or hashlib.sha256(raw).hexdigest()!=args.task_request_sha256:raise ValueError('Pinned request required')
-            request=json.loads(raw,object_pairs_hook=unique)
-            task.check(request,task.value['device_id'])
-            if args.action=='task-check':
-                result={'status':'device-task-metadata-checked','credential_accessed':False,'http_requests':0,'authorization_verified':False}
-            else:
-                client=HTTPSContentClient(args.https_profile,args.https_profile_sha256,device_task=(args.device_task_policy,args.device_task_policy_sha256))
-                result=client.request(request)  # Exactly one call; never enqueue or retry.
-        elif args.action=='inspect':result={'status':'https-content-profile-reviewed','credential_accessed':False,'installed':False,'native_changed':False,'methods':['content_catalog','content_read','content_put']}
-        else:
-            store=native_store(profile,args.https_profile_sha256)
-            enrollment=DeviceEnrollment(profile,args.https_profile_sha256,store,PairingHTTPS(profile['endpoint']),store.backend.secure_input)
-            result=enrollment.run() if args.action=='pair' else enrollment.reset_terminal(store.backend.confirm_reset)
-    except PlatformUnsupported as error:result=error.result(installed=False,native_changed=False)
-    except Exception:result={'status':'https-device-review-required','installed':False,'native_changed':False}
-    print(json.dumps(result));return 0 if 'error' not in result and (args.action=='task-execute' and 'result' in result or result.get('status') in ('device-paired','https-content-profile-reviewed','device-task-metadata-checked')) else 2
-
-if __name__=='__main__':sys.exit(main())

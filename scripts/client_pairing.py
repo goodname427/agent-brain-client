@@ -6,11 +6,11 @@ transport or credential store is created implicitly; all secrets stay internal.
 import secrets
 
 def reviewed_ids(types,ids):
-    from content_contract import grant_ids
+    from brain_content import grant_ids
     grant_ids(types,ids)
 
 def allowed_id(ids,kind,identity):
-    from content_contract import allows
+    from brain_content import allows
     return allows(ids,kind,identity)
 
 class EnrollmentTerminal(Exception):
@@ -139,7 +139,7 @@ class ComponentClient:
             name,params=request['method'],request['params']
             if name not in ('content_read','content_catalog','content_put','content_remove','content_set_enabled') or not isinstance(params,dict):return blocked('invalid_content_request')
             if name=='content_set_enabled':
-                from content_contract import validate
+                from brain_content import validate
                 validate(name,params)
             if name=='content_remove':return blocked('device_scope_review_required')
             if ('write' if name in ('content_put','content_remove','content_set_enabled') else 'read') not in self.grant['scopes']:return blocked('device_scope_review_required')
