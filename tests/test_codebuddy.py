@@ -89,8 +89,15 @@ class Installation(unittest.TestCase):
         return cbhost.install(self.home, ROOT, self.core, **kwargs)
 
     def test_install_repeat_uninstall_and_frozen_code_survive_source_checkout(self):
+        if os.name == 'nt':
+            from test_windows_native import host_security
+            host_before=host_security(self.settings)
         result = self.install()
         self.assertTrue(result['installed'])
+        from brain_lock import private_mode
+        private_mode(cbhost.state_directory(self.home)/'registration.json',owner=True)
+        if os.name == 'nt':
+            self.assertEqual(host_security(self.settings),host_before)
         self.assertFalse(result['model_loaded'])
         settings = cbhost.Document(self.settings.read_text()).value
         self.assertEqual(settings['permissions'], {'deny': ['Bash']})
@@ -125,6 +132,40 @@ class Installation(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.install()
         self.assertEqual(self.settings.read_text(), text)
+
+    def test_legacy_receipt_owner_repair_requires_the_original_private_journal(self):
+        self.install()
+        directory = cbhost.state_directory(self.home)
+        file, journal = directory / 'registration.json', directory / 'transaction.json'
+        record = gm.old.private_json(journal)
+        record['host'][str(file)].pop('private')
+        gm.old.write(journal, record)
+        before = file.read_bytes()
+        settings = self.settings.read_bytes()
+        actual = gm.old.private_json
+        failed = []
+        def inherited_owner(path, *args, **kwargs):
+            if Path(path) == file and not failed:
+                failed.append(True)
+                raise ValueError('Owned private Windows item required')
+            return actual(path, *args, **kwargs)
+        with patch.object(cbhost, 'os', SimpleNamespace(name='nt')), \
+                patch.object(gm.old, 'private_json', side_effect=inherited_owner):
+            self.assertEqual(cbhost.registration(file, journal, self.core), json.loads(before))
+        self.assertEqual(file.read_bytes(), before)
+        self.assertEqual(self.settings.read_bytes(), settings)
+        from brain_lock import private_mode
+        private_mode(file, owner=True)
+        # A changed receipt cannot use the old owner failure to overwrite data.
+        file.write_bytes(before + b' ')
+        failed.clear()
+        with patch.object(cbhost, 'os', SimpleNamespace(name='nt')), \
+                patch.object(gm.old, 'private_json', side_effect=inherited_owner), \
+                patch('brain_host_files.host_atomic') as write:
+            with self.assertRaises(ValueError):
+                cbhost.registration(file, journal, self.core)
+            write.assert_not_called()
+        self.assertEqual(file.read_bytes(), before + b' ')
 
     def test_failure_and_interrupted_transaction_restore_all_images(self):
         from brain_host_files import host_apply as real_apply
@@ -299,8 +340,7 @@ class Protocol(unittest.TestCase):
         source.setUp()
         self.addCleanup(source.doCleanups)
         file = source.home / 'content-policy.json'
-        file.write_text(json.dumps(fixture.POLICY))
-        file.chmod(0o600)
+        gm.old.write(file, fixture.POLICY)
         source.cloud.queue_identity = {'transport': 'synthetic-shared-https'}
         core = SimpleNamespace(old=gm.old, GlobalClient=lambda value, local: source.cloud)
         registered = {'runtime': {'content_policy': str(file), 'content_policy_sha256': cb.digest(file.read_bytes()), 'codex_home': str(source.home / '.codex')}}

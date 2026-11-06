@@ -130,7 +130,7 @@ def host_write(file, raw):
 
 
 @contextmanager
-def host_stage(path, raw, mode, expected):
+def host_stage(path, raw, mode, expected, *, private=False):
     """Preflight host writes without applying the private-store policy.
 
     Windows existing files keep their object (and unknown SACL/owner/streams).
@@ -139,13 +139,23 @@ def host_stage(path, raw, mode, expected):
     New files and POSIX writes use staged, atomic publication instead.
     """
     require_platform("native-install")
-    from brain_lock import atomic_replace, sync_directory
+    from brain_lock import (
+        atomic_replace,
+        sync_directory,
+        private_directory,
+        file_mode,
+    )
 
     path = Path(path)
     image = host_image(path)
+    if private:
+        # Only caller-owned Client metadata uses this branch. Existing host
+        # files retain their object/security; private metadata uses the same
+        # protected atomic replacement as the private store, with a CAS image.
+        private_directory(path.parent)
     if (image[0] if image is not None else None) != expected:
         raise HostConfigChanged("Host configuration concurrently changed")
-    if os.name == "nt" and image is not None:
+    if os.name == "nt" and image is not None and not private:
         with windows_host_file(path) as file:
             st = os.fstat(file.fileno())
             original = file.read(1048577)
@@ -171,6 +181,8 @@ def host_stage(path, raw, mode, expected):
     pending = Path(name)
     try:
         with os.fdopen(fd, "wb") as file:
+            if private and os.name == "nt":
+                file_mode(file.fileno(), mode)
             if os.name != "nt":
                 if image is not None:
                     st = pending.stat()
@@ -200,14 +212,18 @@ def host_stage(path, raw, mode, expected):
         pending.unlink(missing_ok=True)
 
 
-def host_atomic(path, raw, mode, expected):
-    with host_stage(path, raw, mode, expected) as commit:
+def host_atomic(path, raw, mode, expected, *, private=False):
+    options = {"private": True} if private else {}
+    with host_stage(path, raw, mode, expected, **options) as commit:
         commit()
 
 
-def host_plan(payload):
+def host_plan(payload, *, private_paths=()):
     """Bounded data images for nonsecret host files; journal stays private."""
     rows = {}
+    private_paths = set(map(str, private_paths))
+    if private_paths - set(map(str, payload)):
+        raise ValueError("Private metadata outside transaction")
     for path, target in payload.items():
         image = host_image(path)
         before = image[0] if image else None
@@ -222,6 +238,8 @@ def host_plan(payload):
             "target_sha": sha(target) if target is not None else None,
             "mode": path.stat().st_mode & 0o777 if image else 0o600,
         }
+        if str(path) in private_paths:
+            rows[str(path)]["private"] = True
     return rows
 
 
@@ -229,7 +247,9 @@ def host_row(path, row):
     keys = {"before", "target", "before_sha", "target_sha", "mode"}
     if (
         not keys <= set(row)
-        or set(row) - keys - {"identity", "rollback"}
+        or set(row) - keys - {"identity", "rollback", "private"}
+        or "private" in row
+        and row["private"] is not True
         or type(row["mode"]) is not int
         or row["mode"] & ~0o777
     ):
@@ -310,8 +330,9 @@ def host_apply(rows, persist):
             if current != before:
                 raise ValueError("Host preimage changed")
             if target is not None:
+                options = {"private": True} if row.get("private") else {}
                 commit = staging.enter_context(
-                    host_stage(path, target, row["mode"], before)
+                    host_stage(path, target, row["mode"], before, **options)
                 )
                 if hasattr(commit, "inplace_identity"):
                     row["identity"] = commit.inplace_identity
@@ -349,4 +370,5 @@ def host_restore(rows, persist):
                     "sha": sha(current),
                 }
                 persist()
-            host_atomic(path, before, row["mode"], current)
+            options = {"private": True} if row.get("private") else {}
+            host_atomic(path, before, row["mode"], current, **options)

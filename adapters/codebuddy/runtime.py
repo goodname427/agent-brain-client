@@ -184,7 +184,7 @@ def capture_messages(core, value, local, payload, messages, phase):
 def capture(core, value, local, payload, *, messages=None, phase='prompt', send=True):
     """Capture actual observed text with the existing global outbox/receipt."""
     from datetime import datetime, timezone
-    from brain_lock import locked
+    from brain_lock import cache_locked as locked
     from global_memory_scope import source_id, namespace, select, restricted
     import brain_content as contract
     messages = messages if messages is not None else [{'role': 'user', 'content': payload['prompt']}]
