@@ -163,8 +163,8 @@ class Architecture(unittest.TestCase):
         code = """import json,sys
 sys.path.insert(0,sys.argv[1])
 before=list(sys.path)
-from agent_brain_client.domain import contract
-from agent_brain_client.application.memory import capture,recall
+from agent_brain_client.domain import contract,hook_coverage
+from agent_brain_client.application.memory import capture,recall,rule_fallback
 from agent_brain_client.application.queue import outbox
 from agent_brain_client.application.tools import catalog
 assert sys.path==before

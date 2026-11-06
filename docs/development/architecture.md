@@ -71,7 +71,7 @@ This source accepts one exact current executable layout. There are no old source
 
 Executable-layout compatibility is distinct from data preservation. No memory, profile, credential, source decision, queue, cursor or stop marker is deleted by this source reorganization. Existing enrollment and queue identities must not be silently replaced or transferred to another binding. Installation/uninstallation journals, outside-edit refusal and rollback remain implemented. Real-device reinstallation and retained-data access must be verified independently before deployment; synthetic tests do not establish that a user's installed model or Harness has adopted the new source.
 
-Rule fallback PR #130 remains separate. No new Harness, fallback, grant, source range, Server deployment or release is activated by this refactor.
+The [Rule fallback core](rule-fallback-core.md) assigns one owner per required Hook capability in `domain/hook_coverage.py`; `application/memory/rule_fallback.py` calls an explicit typed queue port for manual observations. The existing application outbox owns exact persistence, cache locking and gated retry. These inert modules follow the exact package inventory but remain unwired to Harnesses, interfaces and runtime composition. Complete Hook coverage produces no Rule guidance; partial coverage produces guidance only for missing capabilities. No fallback, grant, source range, Harness activation, Server deployment or release is performed by this source work.
 
 ## Review of the structural change
 

@@ -44,6 +44,69 @@ class DurableOutbox:
     _require_storage: Callable[..., Any]
     _queued: Callable[..., Any]
 
+    def submit_rule_capture(self, request: dict, *, gate: Callable[[], bool]) -> dict:
+        """Stage and retry one explicit Rule observation under this queue's lock.
+
+        The queue owns its ledger and cache lock; the memory use case supplies
+        only immutable request bytes and a live coverage/source predicate.
+        """
+        if (
+            request.get("method") != "content_put"
+            or request.get("params", {}).get("kind") != "memory"
+            or not request.get("request_id", "").startswith("agentbrain_rule_")
+        ):
+            raise CacheBlocked()
+        self._enqueue(request)
+        with self._outbox_locked(self.cache / "content.lock"):
+            # Recheck grant, source and exact stored bytes after waiting for the
+            # content lock. A blocked row is retried only by this explicit entry.
+            row = self._enqueue(request)
+            if row["state"] == "blocked":
+                self._retry_blocked(row, event_gate=gate)
+            self._drain(
+                request["request_id"],
+                event_gate=gate,
+                exact_request_id=request["request_id"],
+            )
+            row = self._load("outbox/" + request["request_id"] + ".json")
+            if row is None:
+                raise CacheBlocked()
+            return self._queue_result(row)
+
+    def _retry_blocked(self, row, *, event_gate=None):
+        """One explicit retry of an already validated immutable queue row.
+
+        Never called by a drain/refresh. An uncertain or invalid receipt leaves
+        the retained refusal intact; a later explicit call reuses the same ID.
+        """
+        request = row["request"]
+        self._check_write(request)
+        self.sources.assert_shareable(row["reconciles"]["source_keys"])
+        if not self._event_allowed(request, event_gate):
+            return
+        try:
+            response = self.client.request(json.loads(contract.encode(request)))
+        except Exception:
+            response = None
+        if self._server_saved(response, request):
+            row.update(state="confirmed", response=response)
+            self._save("outbox/" + request["request_id"] + ".json", row)
+        elif (
+            isinstance(response, dict)
+            and response.get("request_id") == request["request_id"]
+            and isinstance(response.get("error"), dict)
+            and response["error"].get("code") == "revision_conflict"
+        ):
+            row.update(state="conflict", response=response)
+            if self._event_allowed(request, event_gate):
+                try:
+                    row["remote"] = self._read_target(
+                        request["params"]["kind"], request["params"]["id"]
+                    )
+                except Exception:
+                    pass
+            self._save("outbox/" + request["request_id"] + ".json", row)
+
     def invoke_write(self, request, reconciles=None, *, event_gate=None):
         """One write/replay implementation for native mapping and event hosts."""
         check_request()
@@ -66,33 +129,7 @@ class DurableOutbox:
                     },
                 )
             if row["state"] == "blocked":
-                # Only an explicit identical call retries a blocked request.
-                # Startup/refresh never discard or automatically replay it.
-                try:
-                    response = (
-                        self.client.request(request)
-                        if self._event_allowed(request, event_gate)
-                        else None
-                    )
-                except Exception:
-                    response = None
-                if self._server_saved(response, request):
-                    row.update(state="confirmed", response=response)
-                    self._save("outbox/" + request["request_id"] + ".json", row)
-                elif (
-                    isinstance(response, dict)
-                    and response.get("request_id") == request["request_id"]
-                    and isinstance(response.get("error"), dict)
-                    and response["error"].get("code") == "revision_conflict"
-                ):
-                    row.update(state="conflict", response=response)
-                    try:
-                        row["remote"] = self._read_target(
-                            request["params"]["kind"], request["params"]["id"]
-                        )
-                    except Exception:
-                        pass
-                    self._save("outbox/" + request["request_id"] + ".json", row)
+                self._retry_blocked(row, event_gate=event_gate)
             # Only an explicit same-ID retry upgrades an old local receipt.
             # No automatic loop over the backed-up journal or new scheduler.
             elif (
@@ -268,32 +305,46 @@ class DurableOutbox:
 
     @staticmethod
     def _event_allowed(request, event_gate):
-        if request["method"] != "memory_event_submit" or event_gate is None:
+        rule = request["request_id"].startswith("agentbrain_rule_")
+        if request["method"] != "memory_event_submit" and not rule:
             return True
+        if event_gate is None:
+            return not rule
         try:
             return event_gate() is True
         except Exception:
             return False
 
-    def _drain(self, event_request_id=None, event_gate=None):
+    def _drain(self, event_request_id=None, event_gate=None, *, exact_request_id=None):
         # A resolver can follow older waiters in creation order. Revisit those
         # only after confirmed reconciliation made progress. An uncertain send
         # ends the whole drain, so this never loops over an unconfirmed request.
-        while self._drain_pass(event_request_id, event_gate):
+        while self._drain_pass(
+            event_request_id, event_gate, exact_request_id=exact_request_id
+        ):
             pass
 
-    def _drain_pass(self, event_request_id=None, event_gate=None):
+    def _drain_pass(
+        self, event_request_id=None, event_gate=None, *, exact_request_id=None
+    ):
         resolved = False
         for row in self._queued():
             request = row["request"]
             params = request["params"]
             target = (params["kind"], params["id"])
-            # Automatic legacy refresh never uploads captured text. An exact
-            # Stop retry must pass the current finite hook policy again.
             if (
-                request["method"] == "memory_event_submit"
-                and request["request_id"] != event_request_id
+                exact_request_id is not None
+                and request["request_id"] != exact_request_id
             ):
+                continue
+            # Captured native/Rule text requires an explicit retry and current
+            # source/route policy; ordinary refresh never replays it.
+            rule = request["request_id"].startswith("agentbrain_rule_")
+            if (request["method"] == "memory_event_submit" or rule) and request[
+                "request_id"
+            ] != event_request_id:
+                continue
+            if rule and not self._event_allowed(request, event_gate):
                 continue
             if row["state"] in ("conflict", "blocked"):
                 if row["state"] == "conflict" and row["remote"] is None:
