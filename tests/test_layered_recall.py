@@ -69,6 +69,21 @@ class LayeredRecall(unittest.TestCase):
     def read(self):
         return gm.recall(self.value, self.local, 'synthetic-reader', 'synthetic question')
 
+    def test_sharing_questions_survive_query_and_verified_layers(self):
+        from brain_content import global_recall_params, global_recall_result
+        group = self.response['result']['namespace_results'][0]
+        for question in ('为什么规则禁止跨项目共享？', '禁止跨项目共享是什么意思？',
+                         'What does keep this project-only mean?'):
+            with self.subTest(question=question):
+                params = {'origin': self.local, 'session_id': 'synthetic-reader', 'query': question, 'limit': 3}
+                for row in [*group['recall']['L1'], *group['recall']['L2'], group['recall']['L3']]:
+                    row['content'] = question
+                global_recall_params(params)
+                global_recall_result(self.response['result'], params, self.device)
+                rows = gm.recall(self.value, self.local, params['session_id'], question)
+                self.assertEqual([row['content'] for row in rows], [question] * 3)
+                self.assertEqual(self.sent[-1][1]['query'], question)
+
     def test_body_shape_preserves_query_and_verified_recall_text(self):
         from brain_content import global_recall_params, global_recall_result
         text = 'Synthetic documentation password=example-only; Bearer ' + 'synthetic' * 4

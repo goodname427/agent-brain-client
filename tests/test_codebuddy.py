@@ -541,6 +541,32 @@ class Transcript(Hooks):
         self.stop()
         self.assertEqual(self.sent, [])
 
+    def test_sharing_question_keeps_both_sides_of_the_turn(self):
+        path = self.native_file()
+        path.write_text('')
+        question = '为什么规则禁止跨项目共享？'
+        self.payload['prompt'] = question
+        output, result = self.hook()
+        self.assertTrue(output)
+        self.assertEqual(result['local_queue']['state'], 'confirmed')
+        answer = '文档中的“仅限本项目”说明来源适用范围。'
+        path.write_text(json.dumps({'type': 'assistant', 'message': {'content': answer}}) + '\n')
+        _, result = self.stop()
+        self.assertEqual(result['local_queue']['state'], 'confirmed')
+        self.assertEqual([request['params']['event']['messages'] for request in self.sent],
+                         [[{'role': 'user', 'content': question}], [{'role': 'assistant', 'content': answer}]])
+
+    def test_explicit_sharing_request_keeps_both_sides_excluded_even_as_question(self):
+        path = self.native_file()
+        path.write_text('')
+        self.payload['prompt'] = '请不要跨项目共享这条信息，可以吗？'
+        output, result = self.hook()
+        self.assertEqual(output, {})
+        self.assertFalse(result['data_transferred'])
+        path.write_text('{"type":"assistant","message":{"content":"synthetic private answer"}}\n')
+        self.stop()
+        self.assertEqual(self.sent, [])
+
     def test_body_shape_keeps_prompt_and_native_assistant_capture(self):
         path = self.native_file()
         path.write_text('')

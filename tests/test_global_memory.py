@@ -46,6 +46,30 @@ class GlobalMemoryFixtures(unittest.TestCase):
                     self.assertTrue(restricted(marker + ' ' + text))
                     self.assertTrue(private_recall_text(marker + ' ' + text))
 
+    def test_sharing_keywords_in_questions_and_quotes_are_not_directives(self):
+        from brain_content import private_recall_text
+        from global_memory_scope import restricted
+        questions = ('为什么规则禁止跨项目共享？', '禁止跨项目共享是什么意思？',
+                     '仅限本项目是什么意思？', '如何理解“不要跨项目共享”这句话？',
+                     '文档写着“仅限当前项目”，请解释。',
+                     'Why does the policy say do not share this across projects?',
+                     'What does keep this project-only mean?',
+                     '"Do not share this" is a documentation example.')
+        directives = ('禁止跨项目共享', '禁止跨项目共享这段内容',
+                      '请不要跨项目共享这条信息，可以吗？', '仅限本项目使用。',
+                      'Do not share this across projects, please.', 'Please keep this project-only.',
+                      '[no-share] 为什么规则禁止跨项目共享？',
+                      'Synthetic context\r\n\u3000禁止跨项目共享\r\n',
+                      'Synthetic context\n[project-only] synthetic information')
+        for text in questions:
+            with self.subTest(question=text):
+                self.assertFalse(restricted(text))
+                self.assertFalse(private_recall_text(text))
+        for text in directives:
+            with self.subTest(directive=text):
+                self.assertTrue(restricted(text))
+                self.assertTrue(private_recall_text(text))
+
     def test_personal_sharing_project_isolation_and_worktree_deny(self):
         one, two = self.origin('/synthetic/personal/one'), self.origin('/synthetic/personal/two')
         self.assertEqual(namespace('owner', source_id(self.scope, one, select(self.scope, one)['sharing'])), namespace('owner', source_id(self.scope, two, select(self.scope, two)['sharing'])))
