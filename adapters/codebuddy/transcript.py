@@ -53,7 +53,7 @@ def marker(home, payload):
 
 
 def observe(home, payload, core):
-    from brain_lock import cache_directory, locked
+    from brain_lock import cache_directory, cache_locked as locked
     from global_memory_scope import restricted
     try:
         path = native_path(home, payload)

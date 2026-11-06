@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'adapters/codex'))
-from remote_http import RemoteClient
+from brain_http import RemoteClient
 
 
 class ReceiptTransport(unittest.TestCase):

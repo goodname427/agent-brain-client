@@ -22,14 +22,14 @@ try {
     if ($Connection) { $arguments += @('--connection', $Connection) }
     if ($ExpectedConnectionSha256) { $arguments += @('--expected-connection-sha256', $ExpectedConnectionSha256) }
     if ($Action -eq 'install') {
-        $checkout = & $python -X utf8 -I -B (Join-Path $root 'tools/bootstrap_main.py') --ensure
+        $checkout = & $python -X utf8 -I -B (Join-Path $root 'installer/bootstrap_main.py') --ensure
         if ($LASTEXITCODE -ne 0) { throw 'Fresh official checkout could not be verified; preserve existing installation.' }
         if ($checkout -ne $root) {
             & (Join-Path $checkout 'tools/install-windows.ps1') -Action $Action -Server $Server -Connection $Connection -ExpectedConnectionSha256 $ExpectedConnectionSha256
             exit $LASTEXITCODE
         }
     }
-    & $python -X utf8 -I -B (Join-Path $root 'tools/mac_first_install.py') @arguments
+    & $python -X utf8 -I -B (Join-Path $root 'installer/first_install.py') @arguments
     exit $LASTEXITCODE
 } finally {
     [Console]::OutputEncoding = $previousConsoleEncoding

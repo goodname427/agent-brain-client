@@ -7,6 +7,38 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def check_layer_boundary(name, source):
+    """Shared leaf libraries cannot acquire host, installer or developer imports."""
+    path = Path(name)
+    shared = (path.parent.as_posix() == 'scripts' and
+              (path.stem.startswith('brain_') or path.stem in
+               {'client_release', 'client_pairing', 'https_content',
+                'ssh_content', 'system_credentials', 'remote_mcp', 'global_memory_scope'}))
+    codebuddy = name.startswith('adapters/codebuddy/')
+    if not (shared or codebuddy):
+        return
+    native = {file.stem for file in (ROOT / 'adapters').rglob('*.py')}
+    commands = {file.stem for directory in ('tools', 'installer')
+                for file in (ROOT / directory).glob('*.py')}
+    forbidden = (native | commands | {'tools', 'installer', 'adapters'}) if shared else {
+        'codex_connect', 'content_cache', 'project_memory'}
+    tree = ast.parse(source, filename=name)
+    for node in ast.walk(tree):
+        imports = []
+        if isinstance(node, ast.Import):
+            imports = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            imports = [node.module or '', *(alias.name for alias in node.names)]
+        elif isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant):
+            function = node.func
+            if ((isinstance(function, ast.Name) and function.id == '__import__') or
+                    (isinstance(function, ast.Attribute) and function.attr == 'import_module')):
+                if isinstance(node.args[0].value, str):
+                    imports = [node.args[0].value]
+        if any(set(module.split('.')) & forbidden for module in imports):
+            raise ValueError(f"Client dependency boundary crossed: {name}:{getattr(node, 'lineno', 0)}")
+
+
 def check_platform_boundary(name, source):
     """Architecture discovery has one implementation, shared by every caller."""
     if name == 'scripts/brain_lock.py' or name.split('/')[0] == 'tests':
@@ -50,6 +82,7 @@ def check():
         source = path.read_bytes()
         compile(source, name, "exec")
         check_platform_boundary(name, source)
+        check_layer_boundary(name, source)
         count += 1
     return {
         "status": "source-syntax-checked",

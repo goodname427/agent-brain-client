@@ -23,6 +23,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 from publication_check import require_publishable
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / name) for name in ('scripts', 'installer', 'adapters/codex', 'tools')]
 TOOL_ROOT = ROOT
 REPOSITORY = 'goodname427/agent-brain-client'
 ORIGIN = 'https://github.com/' + REPOSITORY + '.git'
@@ -155,8 +156,8 @@ def compatible(before, after, credential='scripts/brain_windows.py'):
     if set(before['files']) != set(after['files']):
         sys.path.insert(0,str(ROOT/'scripts'))
         sys.path.insert(0,str(ROOT/'adapters/codex'))
-        from client_release import LEGACY_CLIENT_FILE_SETS, CLIENT_FILES, CONTENT_CLIENT_FILES, SSH_CONTENT_CLIENT_FILES, HTTPS_CONTENT_CLIENT_FILES, WINDOWS_HTTPS_CONTENT_CLIENT_FILES
-        approved=zip(LEGACY_CLIENT_FILE_SETS,(CLIENT_FILES,CONTENT_CLIENT_FILES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CLIENT_FILES,WINDOWS_HTTPS_CONTENT_CLIENT_FILES))
+        from client_release import PRE_LAYOUT_FILE_SETS, LEGACY_CLIENT_FILE_SETS, CLIENT_FILES, CONTENT_CLIENT_FILES, SSH_CONTENT_CLIENT_FILES, HTTPS_CONTENT_CLIENT_FILES, WINDOWS_HTTPS_CONTENT_CLIENT_FILES
+        approved=zip((*LEGACY_CLIENT_FILE_SETS,*PRE_LAYOUT_FILE_SETS),2*(CLIENT_FILES,CONTENT_CLIENT_FILES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CLIENT_FILES,WINDOWS_HTTPS_CONTENT_CLIENT_FILES))
         if not any(set(before['files'])==set(old) and set(after['files'])==set(new) for old,new in approved):
             raise ValueError('Release file scope change requires review')
     if before['files'][credential] != after['files'][credential]:

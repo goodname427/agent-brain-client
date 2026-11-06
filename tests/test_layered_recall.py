@@ -13,7 +13,7 @@ import unicodedata
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / name) for name in ('tools', 'scripts', 'adapters/codex')]
+sys.path[:0] = [str(ROOT / name) for name in ('installer', 'tools', 'scripts', 'adapters/codex')]
 import global_memory as gm
 from global_memory_scope import digest, namespace, source_context
 
@@ -70,7 +70,7 @@ class LayeredRecall(unittest.TestCase):
         return gm.recall(self.value, self.local, 'synthetic-reader', 'synthetic question')
 
     def test_mcp_contract_matches_shared_nfc_source_relation_on_both_platforms(self):
-        from content_contract import global_recall_result, recall_origin
+        from brain_content import global_recall_result, recall_origin
         for root in ('/synthetic/projects/caf\u00e9', 'C:\\Synthetic\\Projects\\caf\u00e9'):
             for reader_form, source_form in (('NFC', 'NFD'), ('NFD', 'NFC')):
                 with self.subTest(root=root, reader=reader_form, source=source_form):
@@ -83,7 +83,7 @@ class LayeredRecall(unittest.TestCase):
                     self.assertEqual(recall_origin(self.local), recall_origin(self.foreign))
 
     def test_mcp_origin_normalizes_before_containment_without_compatibility_folding(self):
-        from content_contract import recall_origin
+        from brain_content import recall_origin
         for root in ('/synthetic/projects/caf\u00e9', 'C:/Synthetic/Projects/caf\u00e9'):
             local = self.origin(root)
             local['cwd'] = unicodedata.normalize('NFD', root) + '/src'

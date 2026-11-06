@@ -93,7 +93,7 @@ class InstallBoundaries(unittest.TestCase):
         package = engine.prepare('b' * 40, manifest, lambda name: (self.f.package / name).read_bytes())
         candidate = {'commit': 'b' * 40, 'version': '0.2.1', 'package': str(package),
                      'manifest_sha256': digest(json.dumps(manifest, sort_keys=True).encode())}
-        (package / 'adapters/codex/remote_mcp.py').write_bytes(b'Synthetic damaged candidate')
+        (package / 'scripts/remote_mcp.py').write_bytes(b'Synthetic damaged candidate')
         before = self.f.native_files()
         with locked(engine.local / 'update.lock', timeout=0), \
                 patch.object(client_startup, 'ClientReleases', return_value=self.f.channel), \

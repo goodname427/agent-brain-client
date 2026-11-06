@@ -1,16 +1,18 @@
 # Shared Client runtime
 
-> Current development reference; applies to the Client 0.7 preparation. Checked 2026-11-05.
+> Current development reference; applies to the Client runtime layout cleanup after 0.7. Checked 2026-11-06.
 
-The Client now separates three reusable modules from Codex's native adapter. This is source preparation for Client 0.7; it does not publish a version or install another Harness.
+The Client separates reusable runtime libraries from native host behavior, installation and developer commands. See [runtime layout](runtime-layout.md) for directory ownership and upgrade boundaries. Source changes do not publish or install a release.
 
 | Module | Shared responsibility | Host supplies |
 | --- | --- | --- |
 | `scripts/brain_content.py` | Existing typed content, event, recall and receipt contracts | Native event parsing and policy selection |
 | `scripts/brain_http.py` | Existing authenticated HTTP requests, deadlines, cancellation and receipt validation | Endpoint, credential provider, data mode and adapter identity |
-| `scripts/brain_memory.py` | Existing schema-1 CAS outbox and normalized prompt/final event submission | Storage, locks, source review, target validation and native mapping |
+| `scripts/brain_memory.py` | Existing schema-1 CAS outbox, write/replay handling and normalized turn submission | Storage, locks, source review, target validation and native mapping |
+| `scripts/brain_cache.py` | Private cache storage, operation diagnostics and event-only queue | Exact binding, policy, protected paths and enrolled client |
+| `scripts/brain_host_files.py` | Bounded host-file images, journals, atomic writes and in-place recovery | Host paths, desired bytes and journal persistence |
 
-`adapters/codex/content_contract.py` and `remote_http.py` remain compatibility imports of the same module objects. Existing callers and request cancellation share one implementation and request-local state. `RemoteClient` keeps `adapter='codex'` as its default; another Harness passes its own explicit identity. This header does not enroll a device, alter its grant, or change authentication.
+Current callers import `brain_content` and `brain_http` directly. The old `content_contract` and `remote_http` source aliases are removed; there is one contract and one request-local cancellation context. `RemoteClient` retains its enrolled `adapter='codex'` default, and another enrollment passes its own explicit identity. This header does not change device authorization.
 
 ## Next Harness integration
 
@@ -24,18 +26,14 @@ Codex retains native memory inventory, `CODEX_HOME`, TOML installation, native R
 
 ## Package and upgrade compatibility
 
-The split adds exactly `scripts/brain_content.py`, `scripts/brain_http.py`, and `scripts/brain_memory.py` to content packages; the synthetic bridge needs only the first two. Current content packages have 22 SSH files and 24 HTTPS files on Mac and Windows. Published manifests remain immutable.
+Current content packages contain 23 SSH files or 25 HTTPS files on either OS. Exact historical memberships, including pre-shared and 0.7 layouts, remain metadata in `brain_layout.py`; published manifests remain immutable. An official source checkout also accepts the exact already released 0.7 layout for discovery, install and update until a new package is published; mixed layouts are rejected. New builds produce only the current layout and report both added and removed paths. The release tool accepts only exact known old-to-current transitions, retaining origin, anchor, capability, credential-source and protocol checks. Unknown extra or missing files fail validation.
 
-The new release code recognizes the exact historical package/policy lists and the exact shared dependencies. Existing on-disk policy bytes, origin, anchor, capabilities, credential component and cache bindings remain unchanged. Unknown additional files, removed files, and credential/capability changes still fail existing validation. Historical active packages remain inspectable; new packages include the shared files, hash them in their manifest and pass the same package health check. The release tool permits only the known old-to-new file-set transition.
-
-An already running old launcher cannot import new dependencies from an old package. Use the official source checkout update path and the existing owned launcher handover when shipping 0.7; source merge alone is not publication or installation. Hook code freezing now includes all three shared dependencies. The normal owned Hook refresh recognizes historical pin sets for metadata/recovery, then writes a complete new pin set without changing source decisions, stop state or pending data. The new runtime requires the complete current pin set before execution.
+An old fixed launcher cannot discover relocated modules. Shipping this source requires the official checkout update path and existing journaled launcher handover; source merge alone is not publication. Read-only inspection selects the launcher inside the verified historical package. Hook refresh recognizes both historical pin families, preserves source decisions, stop state, pending data and request IDs, and freezes the current runtime before changing its owned command. Only runtime files are frozen; installation and operator configuration modules stay in the source installer. This also keeps the frozen runtime readable by existing CodeBuddy loaders. The new Hook requires its complete current pin set before execution.
 
 ## Validation
 
 `test_harness_core` exercises shared-only imports, a fictional host with no Codex adapter, explicit HTTP identity, cancellation aliasing, exact event/request IDs, restart/replay and changed-request refusal, and the narrowly defined release dependency transition. Existing event, outbox, HTTP, installation, Windows contract and offline recovery tests continue to exercise the Codex boundary. Synthetic checks do not assert that CodeBuddy has been installed or that a physical Windows device was tested.
 
-## Adapter size after this split
+## Native responsibilities
 
-At this change, Python source under `adapters/codex` decreases from 6,510 to 5,339 lines; the three shared modules contain 1,305 lines. These are physical source lines, not a complexity score. Most shared code is moved rather than reimplemented. The outbox still delegates native-source review and mapping to the host, so pending requests keep their original identity.
-
-The Codex layer is not yet uniformly small: `content_cache.py` remains about 1,288 lines and `content_mcp.py` about 809. Native memory inventory, transactional mapping/recovery and source review account for much of the former; MCP schemas and local native-source tools account for much of the latter. A new Harness should reuse the shared modules and add its event/config/context behavior, rather than copy these two files. Further extracting generic MCP presentation is a possible later cleanup, but is not required for the current core split and has not been mixed into this change.
+Codex retains TOML ownership, native memory inventory/review, Rule/Skill mapping, Hook parsing and context formatting. Project-scoped Codex memory automation now lives in `adapters/codex/project_memory.py`; its former tools entry is removed. CodeBuddy uses `EventQueue` directly and never loads Codex mapping merely to stage or replay an event. Its binding still uses the original enrolled runtime path fields, preserving existing queue hashes and requests.

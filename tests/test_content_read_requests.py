@@ -18,9 +18,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import build_opener, ProxyHandler
 
 import test_content_outbox as fixtures
-import content_contract as contract
+import brain_content as contract
 from content_mcp import ContentServer, serve
-from remote_http import (
+from brain_http import (
     RemoteClient,
     RequestControl,
     RequestStopped,
@@ -486,7 +486,7 @@ class HTTPRequests(unittest.TestCase):
     def test_cancel_does_not_require_shutdown_to_wake_native_receive(self):
         # Model the Windows CI failure: cross-thread socket abort does not wake
         # the native receive. The executor itself must observe cancellation.
-        with patch('remote_http._watch_socket'):
+        with patch('brain_http._watch_socket'):
             source, output = self.start(request_timeout=2)
             source.send(call(1))
             self.assertTrue(self.started.wait(1))
@@ -581,7 +581,7 @@ class HTTPRequests(unittest.TestCase):
                         finished.set()
                 return original(*args, **kwargs)
 
-            with patch("remote_http.socket.getaddrinfo", side_effect=lookup):
+            with patch("brain_http.socket.getaddrinfo", side_effect=lookup):
                 source, output = self.start(request_timeout=0.15 if not cancel else 2)
                 source.send(call(1))
                 self.assertTrue(resolving.wait(1))

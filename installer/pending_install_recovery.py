@@ -9,7 +9,7 @@ from pathlib import Path
 
 from brain_lock import WINDOWS_PLATFORMS, native_platform
 from client_release import ClientReleases, dependency_environment, version
-from content_contract import encode
+from brain_content import encode
 from content_install import prepare, private_json, raw, safe, save, sha, render, validate_recovery, digest_or_none
 
 # Exact pre-fix platform detector shipped by runtime 0.5.0 / installer 0.5.2.
@@ -25,7 +25,7 @@ def repair_crlf_preparation(home, native):
     """
     if native_platform() not in WINDOWS_PLATFORMS:
         return
-    import mac_first_install as wizard
+    import first_install as wizard
     from https_content import profile_metadata
     from system_credentials import canonical
     state = safe(Path(home) / '.config/agent-brain-client/first-install')
@@ -186,7 +186,7 @@ def validate_change(old, new):
     expected = copy.deepcopy(old)
     expected['package'] = new['package']
     expected['package_sha256'] = new['package_sha256']
-    expected['mcp']['args'][2] = str(Path(new['package']) / 'adapters/codex/client_startup.py')
+    expected['mcp']['args'][2] = str(Path(new['package']) / 'scripts/client_startup.py')
     expected['config_after_sha256'] = new['config_after_sha256']
     if expected != new or old['replace_existing'] or old['legacy_agents'] is not None:
         raise ValueError('Pending installation scope changed')

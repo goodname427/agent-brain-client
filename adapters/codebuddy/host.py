@@ -1,6 +1,7 @@
 """Owned CodeBuddy JSONC configuration over the Client host-file transaction."""
 import copy
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -138,7 +139,7 @@ def mcp_paths(home, surface):
 
 
 def read_host(path):
-    from codex_connect import host_image
+    from brain_host_files import host_image
     image = host_image(path)
     return image[0].decode('utf-8-sig') if image else '{}\n'
 
@@ -203,7 +204,7 @@ def definitions(entry, home):
 
 def freeze(source, home, core):
     from brain_lock import private_directory
-    from codex_connect import atomic
+    from brain_host_files import atomic
     files = ('tools/codebuddy.py', 'adapters/codebuddy/host.py', 'adapters/codebuddy/runtime.py', 'adapters/codebuddy/transcript.py')
     payload = {name: (source / name).read_bytes() for name in files}
     pins = {name: digest(raw) for name, raw in payload.items()}
@@ -222,7 +223,7 @@ def freeze(source, home, core):
 
 
 def recover(home, core):
-    from codex_connect import host_restore
+    from brain_host_files import host_restore
     directory = state_directory(home)
     file = directory / 'transaction.json'
     if not file.exists():
@@ -238,15 +239,41 @@ def recover(home, core):
         core.old.write(file, record)
 
 
+def registration(file, journal, core):
+    """Repair only the exact first-install receipt authenticated by its journal.
+
+    Old Windows creation inherited the token's default owner even inside the
+    private Client directory. Keep native files and their security unchanged;
+    replace only this Client metadata with identical authenticated bytes.
+    """
+    try:
+        return core.old.private_json(file)
+    except ValueError as error:
+        if os.name != 'nt' or str(error) != 'Owned private Windows item required':
+            raise
+        from brain_host_files import host_row, host_atomic
+        record = core.old.private_json(journal)
+        row = record.get('host', {}).get(str(file), {})
+        if (record.get('schema') != 1 or record.get('phase') != 'complete'
+                or row.get('before') is not None or 'private' in row
+                or 'identity' in row or 'rollback' in row):
+            raise ValueError('Original private CodeBuddy receipt required') from error
+        _, target, current = host_row(file, row)
+        if target is None or current != target:
+            raise ValueError('Outside edit to CodeBuddy receipt preserved') from error
+        host_atomic(file, target, row['mode'], current, private=True)
+        return core.old.private_json(file)
+
+
 def install(home, source, core, *, surface='both', remove=False):
     from brain_lock import locked, private_directory
-    from codex_connect import host_plan, host_apply, host_restore
+    from brain_host_files import host_plan,host_apply,host_restore
     directory = state_directory(home)
     private_directory(directory)
     with locked(directory / 'install.lock'):
         recover(home, core)
         receipt_file = directory / 'registration.json'
-        receipt = core.old.private_json(receipt_file) if receipt_file.exists() else None
+        receipt = registration(receipt_file, directory / 'transaction.json', core) if receipt_file.exists() else None
         if receipt and receipt['surface'] != surface:
             raise ValueError('Uninstall the original CodeBuddy surface before changing its scope')
         if remove and (receipt is None or receipt.get('removed')):
@@ -262,12 +289,12 @@ def install(home, source, core, *, surface='both', remove=False):
         settings = canonical(Path(home) / '.codebuddy/settings.json')
         payload[settings] = render_json(read_host(settings), hooks, previous_hooks, hooks=True, remove=remove)
         instructions = canonical(Path(home) / '.codebuddy/CODEBUDDY.md')
-        from codex_connect import host_image
+        from brain_host_files import host_image
         image = host_image(instructions)
         payload[instructions] = guidance(image[0].decode() if image else '', previous=receipt is not None, remove=remove)
         saved = {'schema': 1, 'surface': surface, 'mcp_paths': list(map(str, paths)), 'mcp': mcp, 'hooks': hooks, 'removed': remove}
         payload[receipt_file] = (json.dumps(saved, sort_keys=True, indent=2) + '\n').encode()
-        record = {'schema': 1, 'phase': 'applying', 'surface': surface, 'host': host_plan(payload)}
+        record = {'schema': 1, 'phase': 'applying', 'surface': surface, 'host': host_plan(payload, private_paths=(receipt_file,))}
         journal = directory / 'transaction.json'
         core.old.write(journal, record)
         try:

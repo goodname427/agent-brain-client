@@ -363,7 +363,7 @@ class PlatformMainContracts(unittest.TestCase):
         from system_credentials import CredentialStore
         from client_release import policy_file
         from client_startup import serve_content
-        from codex_connect import atomic
+        from brain_host_files import atomic
 
         profile, policy, plan = self.config()
         adapter = ContentAdapter.__new__(ContentAdapter)

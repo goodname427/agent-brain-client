@@ -48,8 +48,8 @@ class ClientExport(unittest.TestCase):
         relative = 'adapters/codex/codex_notify_mux.py'
         self.assertNotIn(relative, manifest['files'])
         self.assertFalse((output / relative).exists())
-        self.assertEqual(manifest['release_policy_scope_delta'], {'added': list(build_client_export.SHARED_CLIENT_FILES), 'removed': []})
-        self.assertEqual(manifest['production_release_policy_scope_compatibility'], 'explicit-shared-runtime-dependencies')
+        self.assertEqual(manifest['release_policy_scope_delta'], {'added': sorted(set(build_client_export.SSH_CONTENT_CLIENT_FILES)-set(build_client_export.PRE_LAYOUT_FILE_SETS[2])), 'removed': sorted(set(build_client_export.PRE_LAYOUT_FILE_SETS[2])-set(build_client_export.SSH_CONTENT_CLIENT_FILES))})
+        self.assertEqual(manifest['production_release_policy_scope_compatibility'], 'explicit-runtime-layout-transition')
         self.assertFalse(manifest['production_release_policy_compatible'])
         self.assertIn('production_release_policy_compatibility_reason', manifest)
 

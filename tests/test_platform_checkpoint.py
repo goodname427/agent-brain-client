@@ -107,6 +107,21 @@ class HistoricalPackageTools(unittest.TestCase):
         self.assertNotIn('memory_recall',tools)
         self.assertIn('memory_query',tools)
 
+    def test_historical_validator_fixture_imports_from_clean_new_layout(self):
+        from test_windows_native import historical_launcher
+        package=self.root/'stale-launcher'
+        manifest=release(ROOT,package,'0.5.7','personal-content-https',native_platform())
+        names=set(manifest['files'])
+        historical_launcher(package,manifest)
+        self.assertEqual(set(manifest['files']),names)
+        run=subprocess.run([sys.executable,'-I','-B',str(package/'scripts/client_startup.py'),'--help'],
+                           capture_output=True,timeout=30)
+        self.assertEqual(run.returncode,0,run.stderr.decode())
+        code="import sys;sys.path.insert(0,sys.argv[1]);import content_install"
+        run=subprocess.run([sys.executable,'-I','-B','-c',code,str(package/'adapters/codex')],
+                           capture_output=True,timeout=30)
+        self.assertEqual(run.returncode,0,run.stderr.decode())
+
     def test_future_package_addition_needs_no_version_or_name_allowlist(self):
         package=self.root/'future-package'
         release(ROOT,package,'0.9.0','personal-content-https',native_platform())

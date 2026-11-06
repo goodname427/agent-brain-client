@@ -153,7 +153,7 @@ class Releases(unittest.TestCase):
                 for worker in background:
                     worker.join(30)
                     self.assertFalse(worker.is_alive(),'Synthetic startup check did not finish')
-        self.assertTrue(result['served']);command=commands[0];self.assertIn(str(Path(old['package'])/'adapters/codex/remote_mcp.py'),command);self.assertEqual(command[-1],'darwin-arm64')
+        self.assertTrue(result['served']);command=commands[0];self.assertIn(str(Path(old['package'])/'scripts/remote_mcp.py'),command);self.assertEqual(command[-1],'darwin-arm64')
         target=Path(old['package'])/'connect.py';target.write_text('external package change')
         with patch.object(client_startup.subprocess,'run') as runner:
             result=client_startup.startup(self.policy_path,self.policy_sha)

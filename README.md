@@ -45,13 +45,13 @@ Python 3.11+、Git；源码测试使用标准库与合成资料。隔离 HOME/CO
 TEST_ROOT=$(mktemp -d)
 mkdir -p "$TEST_ROOT/home" "$TEST_ROOT/codex"
 export HOME="$TEST_ROOT/home" CODEX_HOME="$TEST_ROOT/codex"
-PYTHONPATH=.:scripts:adapters/codex:tools:tests python3 -B -m unittest discover -s tests
+PYTHONPATH=.:scripts:adapters/codex:installer:tools:tests python3 -B -m unittest discover -s tests
 python3 -B tools/check_docs.py
 python3 -B tools/build_client.py --scan
 python3 -B tools/check_source.py
 ```
 
-构建、发布、安装分别授权和执行。构建不推送渠道、不安装、不访问凭据。共用核心拆分新增三个明确的运行依赖，manifest 格式与历史包校验保持兼容，见 [Harness 共用核心](docs/development/harness-core.md)；`export-manifest.json` 是安装校验元数据，名称不代表混合仓导出。普通 Mac login Keychain helper 不要求 Apple Team／provisioning；Swift helper 需要 macOS 工具链，`DeviceComponent.swift` 仍是另一个签名候选。新设备的真实依赖、凭据 UI、宿主重载和模型采用指令必须按设备验证，合成测试不能替代。
+构建、发布、安装分别授权和执行。构建不推送渠道、不安装、不访问凭据。运行库、宿主适配、安装器和开发工具已按职责分目录，旧 Python 入口已移除；manifest 格式与历史包校验保持兼容，见 [Harness 共用核心](docs/development/harness-core.md)；`export-manifest.json` 是安装校验元数据，名称不代表混合仓导出。普通 Mac login Keychain helper 不要求 Apple Team／provisioning；Swift helper 需要 macOS 工具链，`DeviceComponent.swift` 仍是另一个签名候选。新设备的真实依赖、凭据 UI、宿主重载和模型采用指令必须按设备验证，合成测试不能替代。
 
 - [多平台架构与 Harness 边界](docs/reference/multiplatform-development.md)。
 - [开发检查与候选构建](docs/development/README.md)；[固定发布入口](docs/development/release-pipeline.md)。

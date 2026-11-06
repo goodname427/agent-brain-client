@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 import test_client_uninstall as fixtures
-import mac_first_install as wizard
+import first_install as wizard
 import prepare_install_runtime as bootstrap
 import global_memory as gm
 import global_memory_install as hooks
@@ -223,7 +223,7 @@ class PublicUpdate(unittest.TestCase):
         self.assertEqual(config.read_bytes(), changed)
 
     def test_busy_editor_receipt_gives_retry_action_without_claiming_conflict(self):
-        from codex_connect import HostConfigChanged
+        from brain_host_files import HostConfigChanged
         for action in ('check-update', 'update'):
             with self.subTest(action=action), patch.object(hooks, 'refresh', side_effect=HostConfigChanged('synthetic-private-detail')):
                 result = wizard.manage_update(self.home, action, channel_factory=self.channel)
@@ -250,7 +250,7 @@ class PublicUpdate(unittest.TestCase):
         self.assertEqual(checked['reason'], 'global-hook-recovery-required', checked)
         output = io.StringIO()
         with (patch.object(Path, 'home', return_value=self.home),
-              patch.object(sys, 'argv', ['mac_first_install.py', '--action', 'update']),
+              patch.object(sys, 'argv', ['first_install.py', '--action', 'update']),
               patch.object(wizard, 'ClientReleases', self.channel),
               patch.object(sys, 'stdout', output)):
             code = wizard.main()
@@ -265,7 +265,7 @@ class PublicUpdate(unittest.TestCase):
         with (
             patch.object(Path, "home", return_value=self.home),
             patch.object(
-                sys, "argv", ["mac_first_install.py", "--action", "check-update"]
+                sys, "argv", ["first_install.py", "--action", "check-update"]
             ),
             patch.object(sys, "stdout", output),
             patch.object(wizard, "ClientReleases", self.channel),
@@ -288,7 +288,7 @@ class PublicUpdate(unittest.TestCase):
                 sys,
                 "argv",
                 [
-                    "mac_first_install.py",
+                    "first_install.py",
                     "--action",
                     "update",
                     "--connection",
@@ -327,7 +327,7 @@ class PublicUpdate(unittest.TestCase):
     def test_runtime_failure_reports_update_review_without_install_fallback(self):
         output = io.StringIO()
         with (
-            patch.object(sys, "argv", ["mac_first_install.py", "--action", "update"]),
+            patch.object(sys, "argv", ["first_install.py", "--action", "update"]),
             patch.object(sys, "stdout", output),
             patch.object(
                 wizard,

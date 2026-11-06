@@ -4,6 +4,7 @@ Deploy this bootstrap and its dependencies in a reviewed fixed directory; pass
 the policy digest through the forced SSH command. No daemon or native rewriting.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,7 @@ import subprocess
 import sys
 import threading
 
-sys.path.insert(0,str(Path(__file__).resolve().parent))
+sys.path[:0]=[str(Path(__file__).resolve().parent),str(Path(__file__).resolve().parents[1]/'adapters/codex')]
 from client_release import ClientReleases,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES,LEGACY_PRESERVATION,DEPENDENCY_RUNTIME,version
 from brain_lock import file_mode,require_platform,PlatformUnsupported,private_directory,private_mode,locked
 import brain_lock
@@ -163,7 +164,11 @@ def startup(policy_path, policy_sha256, check_only=False, installation_check=Fal
         if installation_check:return {'status':result['status'],'served':True,'exit_code':subprocess.run(command).returncode}
         return serve_content(command,active,releases.policy,result['status'])
     if installation_check:return {'status':'content-runtime-review-required','served':False}
-    command=[sys.executable,'-I','-B',str(Path(active['package'])/'adapters/codex/remote_mcp.py'),
+    manifest=json.loads((Path(active['package'])/'verified.json').read_bytes())['manifest']
+    if hashlib.sha256(json.dumps(manifest,sort_keys=True).encode()).hexdigest()!=active['manifest_sha256']:
+        return {'status':'client-startup-retry-required','served':False,'native_changed':False}
+    bridge='scripts/remote_mcp.py' if 'scripts/remote_mcp.py' in manifest['files'] else 'adapters/codex/remote_mcp.py'
+    command=[sys.executable,'-I','-B',str(Path(active['package'])/bridge),
              '--endpoint',runtime['endpoint'],'--token-file',runtime['token_file'],'--client-version',active['version'],
              '--client-platform',releases.policy['platform']]
     if 'personal-memory-explicit' in releases.policy['capabilities']:command.extend(['--data-mode','personal'])

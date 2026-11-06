@@ -15,6 +15,7 @@ import tempfile
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / name) for name in ('scripts', 'installer', 'adapters/codex', 'tools')]
 URL = 'https://github.com/astral-sh/python-build-standalone/releases/download/20261009/cpython-3.12.15%2B20261009-aarch64-apple-darwin-install_only_stripped.tar.gz'
 DIGEST = '233f8e15255b3e1d1fd47ea5dd5230dfed803f371138e896e54d98c60ae19f6f'
 
@@ -114,7 +115,7 @@ def main():
         if 'CODEX_HOME' in os.environ:
             env['CODEX_HOME'] = os.environ['CODEX_HOME']
         # Only bootstrap switches interpreter; installer never copies/restarts itself.
-        return subprocess.run([str(python), '-I', '-B', str(ROOT / 'tools/mac_first_install.py'), *sys.argv[1:]], env=env).returncode
+        return subprocess.run([str(python), '-I', '-B', str(ROOT / 'installer/first_install.py'), *sys.argv[1:]], env=env).returncode
     except Exception:
         print('{"status":"install-dependencies-review-or-resume-required","installed":false,"credential_accessed":false}')
         return 2

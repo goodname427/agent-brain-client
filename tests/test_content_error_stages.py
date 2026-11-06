@@ -8,9 +8,9 @@ import unittest
 from unittest.mock import MagicMock
 from urllib.error import HTTPError, URLError
 
-import content_contract as contract
+import brain_content as contract
 from content_mcp import ContentServer, ContentParameterError, serve
-from remote_http import RemoteClient
+from brain_http import RemoteClient
 
 
 class Adapter:

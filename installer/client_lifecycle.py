@@ -121,7 +121,7 @@ def remove_table(raw):
     parsed = install.tomllib.loads(text)
     if install.NAME not in parsed.get('mcp_servers', {}):
         raise install.InstallBlocked('Owned table missing')
-    from codex_connect import toml_remove, toml_equal
+    from codex_connect import toml_remove,toml_equal
     desired=toml_remove(text,[('mcp_servers',install.NAME)]).encode()
     expected = copy.deepcopy(parsed)
     del expected['mcp_servers'][install.NAME]
@@ -337,7 +337,7 @@ def validate_uninstalled_state(home, journal, *, allow_unrelated_config_edits=Fa
 
 def finish_removal(home, journal):
     adapter=validate_journal(home, journal)
-    from codex_connect import host_plan,host_apply,host_restore
+    from brain_host_files import host_plan,host_apply,host_restore
     if 'host' in journal:
         host_restore(journal['host'],lambda:install.save(journal_path(home),journal))
     # All preimages checked before any write; interrupted runs accept only own images.

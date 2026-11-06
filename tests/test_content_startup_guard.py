@@ -1,6 +1,8 @@
 """Fixed bootstrap refuses a legacy runtime while preserving local evidence."""
 import copy
 import io
+import hashlib
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -20,6 +22,10 @@ class StartupGuard(unittest.TestCase):
         self.cache=self.base/'content-cache';self.cache.mkdir(mode=0o700)
         self.policy={'capabilities':SSH_CONTENT_CAPABILITIES,'runtime':{'content_cache':str(self.cache),'device_home':str(self.base/'home')}}
         self.active={'version':'0.2.0','commit':'a'*40,'package':str(self.base/'old-package')}
+        package=Path(self.active['package']);package.mkdir()
+        manifest={'files':{'adapters/codex/remote_mcp.py':'b'*64}}
+        (package/'verified.json').write_text(json.dumps({'manifest':manifest}))
+        self.active['manifest_sha256']=hashlib.sha256(json.dumps(manifest,sort_keys=True).encode()).hexdigest()
         self.status='offline'
 
     def call(self,**options):

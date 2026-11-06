@@ -1,6 +1,7 @@
 """Real Windows API/transaction tests with only synthetic private state."""
 import copy
 import ctypes
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,26 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / n) for n in ('scripts', 'adapters/codex', 'tools', 'tests')]
 from brain_lock import private_directory, private_mode, locked, LockTimeout, command_line, native_platform, cache_mode
+
+
+def historical_launcher(package, manifest):
+    """Keep frozen validator semantics, adapting only source layout in this fixture."""
+    fixture=ROOT/'tests/fixtures/windows_launcher_053'
+    pins=json.loads((fixture/'manifest.json').read_bytes())['files']
+    for name,pin in pins.items():
+        raw=(fixture/name).read_bytes()
+        if hashlib.sha256(raw).hexdigest()!=pin:raise ValueError('Frozen launcher fixture changed')
+        startup=name.startswith('client_startup.')
+        destination='scripts/client_startup.py' if startup else 'adapters/codex/content_install.py'
+        depth=1 if startup else 2
+        imports=("import sys\nsys.path[:0]=[str(Path(__file__).resolve().parents["+str(depth)+"]/'scripts'),"
+                 "str(Path(__file__).resolve().parents["+str(depth)+"]/'adapters/codex')]\n").encode()
+        raw=raw.replace(b'import sys\n',imports,1)
+        raw=raw.replace(b'adapters/codex/client_startup.py',b'scripts/client_startup.py')
+        (Path(package)/destination).write_bytes(raw)
+        manifest['files'][destination]=hashlib.sha256(raw).hexdigest()
+    (Path(package)/'export-manifest.json').write_text(json.dumps(manifest),encoding='utf-8')
+    return manifest
 
 
 def host_security(path, information=7):
@@ -89,7 +110,7 @@ class WindowsNative(unittest.TestCase):
         return host_security(path)
 
     def test_host_directory_sandbox_acl_and_administrator_owner_are_not_private(self):
-        from codex_connect import host_atomic
+        from brain_host_files import host_atomic
         native = self.home / 'host-codex'; native.mkdir()
         original = self.host_acl(native)
         with self.assertRaises(ValueError): private_directory(native)
@@ -105,7 +126,7 @@ class WindowsNative(unittest.TestCase):
         from unittest.mock import patch
         import global_memory as gm
         from global_memory_scope import digest
-        from codex_connect import atomic
+        from brain_host_files import atomic
         from content_cache import ContentAdapter
         from test_content_outbox import Cloud, POLICY
         from test_event_hook import accepted
@@ -171,7 +192,7 @@ class WindowsNative(unittest.TestCase):
         self.assertEqual(retained.read_bytes(), b'synthetic retained data')
 
     def test_administrator_owned_host_directory_and_file_keep_security(self):
-        from codex_connect import host_atomic
+        from brain_host_files import host_atomic
         admin = self.home / 'admin-codex'; admin.mkdir()
         admin_security = self.host_acl(admin, owner='BA')
         with self.assertRaises(ValueError): private_directory(admin)
@@ -185,7 +206,7 @@ class WindowsNative(unittest.TestCase):
         self.assertEqual(config.stat().st_ino, identity)
 
     def test_existing_host_security_preflight_rollback_and_conflicts(self):
-        from codex_connect import host_atomic, host_stage
+        from brain_host_files import host_atomic,host_stage
         native = self.home / 'host-codex'; native.mkdir()
         self.host_acl(native)
         path = native / 'config.toml'; path.write_bytes(b'original')
@@ -206,7 +227,7 @@ class WindowsNative(unittest.TestCase):
         self.assertEqual(list(native.glob('.client-host-*')), [])
 
     def test_existing_host_handle_excludes_writes_and_renames_but_allows_readers(self):
-        from codex_connect import host_stage
+        from brain_host_files import host_stage
         native = self.home / 'host-codex'; native.mkdir()
         self.host_acl(native)
         config = native / 'config.toml'; config.write_bytes(b'original')
@@ -222,7 +243,7 @@ class WindowsNative(unittest.TestCase):
         self.assertEqual(config.stat().st_ino, identity)
 
     def test_readable_sacl_is_unchanged_without_production_security_api_calls(self):
-        from codex_connect import host_atomic
+        from brain_host_files import host_atomic
         path = self.home / 'audited-config.toml'; path.write_bytes(b'original')
         try: original = host_security(path, 15)
         except ValueError: self.skipTest('Audit descriptor observation needs a pre-authorized test token')
@@ -259,7 +280,7 @@ class WindowsNative(unittest.TestCase):
         from contextlib import nullcontext
         from types import SimpleNamespace
         from unittest.mock import patch
-        import mac_first_install as wizard
+        import first_install as wizard
         import content_install
         from build_client import export, release
         from client_release import ClientReleases
@@ -388,7 +409,7 @@ class WindowsNative(unittest.TestCase):
 
     def test_exact_crlf_pre_enrollment_metadata_recovers_without_resetting_dependencies(self):
         from unittest.mock import patch
-        import mac_first_install as wizard
+        import first_install as wizard
         import pending_install_recovery as recovery
         native = private_directory(self.home / 'codex')
         connection = {'schema': 1, 'endpoint': 'https://synthetic.invalid',
@@ -498,7 +519,7 @@ class WindowsNative(unittest.TestCase):
         self.assertEqual(run.stdout.strip(), expected)
 
     def test_real_shared_installer_and_owned_global_hook_transaction(self):
-        import mac_first_install as installer
+        import first_install as installer
         import content_install
         import global_memory_install as hooks
         import global_memory
@@ -565,7 +586,7 @@ class WindowsNative(unittest.TestCase):
                     updater=lambda: self.fail('No replacement release'),
                     installer=lambda p, d: content_install.apply(p, d, lambda value: None))
             import io
-            with patch.object(Path, 'home', return_value=self.home), patch.object(sys, 'argv', ['mac_first_install.py']), patch.object(installer, 'run', side_effect=resume), patch.object(sys, 'stdout', io.StringIO()) as output:
+            with patch.object(Path, 'home', return_value=self.home), patch.object(sys, 'argv', ['first_install.py']), patch.object(installer, 'run', side_effect=resume), patch.object(sys, 'stdout', io.StringIO()) as output:
                 self.assertEqual(installer.main(), 0, output.getvalue())
             self.assertTrue(json.loads(output.getvalue())['installed'])
             self.assertTrue(content_install.inspect(self.home).get('registration_verified'))
@@ -578,7 +599,7 @@ class WindowsNative(unittest.TestCase):
             from test_windows_install_closure import torn_hook
             before_hook=torn_hook(self,self.home,native)
             self.assertFalse(content_install.inspect(self.home).get('registration_verified'))
-            with patch.object(Path,'home',return_value=self.home),patch.object(sys,'argv',['mac_first_install.py']),patch.object(installer,'run',side_effect=lambda *a,**k:content_install.inspect(self.home)),patch.object(installer,'finish_install',side_effect=lambda home,value:value),patch.object(sys,'stdout',io.StringIO()) as output:
+            with patch.object(Path,'home',return_value=self.home),patch.object(sys,'argv',['first_install.py']),patch.object(installer,'run',side_effect=lambda *a,**k:content_install.inspect(self.home)),patch.object(installer,'finish_install',side_effect=lambda home,value:value),patch.object(sys,'stdout',io.StringIO()) as output:
                 self.assertEqual(installer.main(),0,output.getvalue())
             self.assertEqual(config.read_bytes(),before_hook)
             hooks.install(args)
@@ -591,7 +612,7 @@ class WindowsNative(unittest.TestCase):
             self.assertEqual(value['legacy_projects'], [])
             self.assertFalse(global_memory.approved(value))
             checkout = self.home / 'Public 工具 checkout'
-            for name in ('adapters', 'scripts', 'tools'):
+            for name in ('adapters', 'scripts', 'installer', 'tools'):
                 shutil.copytree(ROOT / name, checkout / name)
             environment = dict(os.environ, HOME=str(self.home), USERPROFILE=str(self.home), CODEX_HOME=str(native))
             for shell in ('powershell.exe', 'pwsh.exe'):
@@ -628,7 +649,7 @@ class WindowsNative(unittest.TestCase):
         from types import SimpleNamespace
         from unittest.mock import patch
         from build_client import release,export
-        import mac_first_install as wizard
+        import first_install as wizard
         import content_install as ci
         import client_lifecycle as lifecycle
         import global_memory_install as hooks
@@ -660,15 +681,7 @@ class WindowsNative(unittest.TestCase):
             policy=self.home/'.config/agent-brain-client/first-install/release-policy.json'
             return channel(policy,wizard.sha(policy.read_bytes())).update()
         def old_export(source,output,**options):
-            result=export(source,output,**options)
-            fixture=ROOT/'tests/fixtures/windows_launcher_053'
-            pins=json.loads((fixture/'manifest.json').read_bytes())['files']
-            for name,pin in pins.items():
-                raw=(fixture/name).read_bytes();self.assertEqual(wizard.sha(raw),pin)
-                destination='adapters/codex/'+name.removesuffix('.fixture')
-                (Path(output)/destination).write_bytes(raw);result['files'][destination]=pin
-            (Path(output)/'export-manifest.json').write_text(json.dumps(result),encoding='utf-8')
-            return result
+            return historical_launcher(output,export(source,output,**options))
         backend=Backend();store=SimpleNamespace(load=backend.load,save=backend.save,lease=nullcontext)
         grant=connection['grant']
         peer=SimpleNamespace(prepare=lambda code,nonce,profile:{'phase':'pending','nonce':nonce,'credential':'t'*40,'device_id':'d'*32,'grant':grant},confirm=lambda token,nonce:{'phase':'active','device_id':'d'*32,'grant':grant})
@@ -699,7 +712,7 @@ class WindowsNative(unittest.TestCase):
         def resume_update(home,action):
             result=original_update(home,action,channel_factory=channel);recovered_updates.append(result);return result
         import io
-        with patch.object(Path,'home',return_value=self.home),patch.dict(os.environ,CODEX_HOME=str(native)),patch.object(sys,'argv',['mac_first_install.py']),patch.object(wizard,'manage_update',side_effect=resume_update),patch.object(wizard,'run',side_effect=lambda *a,**k:ci.inspect(self.home)),patch.object(wizard,'finish_install',side_effect=lambda home,value:value),patch.object(sys,'stdout',io.StringIO()) as output:
+        with patch.object(Path,'home',return_value=self.home),patch.dict(os.environ,CODEX_HOME=str(native)),patch.object(sys,'argv',['first_install.py']),patch.object(wizard,'manage_update',side_effect=resume_update),patch.object(wizard,'run',side_effect=lambda *a,**k:ci.inspect(self.home)),patch.object(wizard,'finish_install',side_effect=lambda home,value:value),patch.object(sys,'stdout',io.StringIO()) as output:
             self.assertEqual(wizard.main(),0,output.getvalue())
         self.assertTrue(json.loads(output.getvalue())['installed'])
         fixed=recovered_updates[0]

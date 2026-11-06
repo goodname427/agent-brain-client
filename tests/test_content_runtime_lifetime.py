@@ -42,7 +42,7 @@ from pathlib import Path
 ROOT=Path(ROOT_LITERAL)
 sys.path[:0]=[str(ROOT/'tests'),str(ROOT/'adapters/codex'),str(ROOT/'scripts')]
 from test_content_outbox import Cloud as FakeCloud,POLICY,MEMORY
-import content_contract as contract
+import brain_content as contract
 def arg(name):return sys.argv[sys.argv.index(name)+1]
 base=Path(arg('--cache')).parent
 version=arg('--client-version')

@@ -14,13 +14,13 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-import codex_connect as host
+import brain_host_files as host
 import content_cache as cache
 import content_install as ci
 import content_mcp
 import global_memory as gm
 import global_memory_install as hooks
-import mac_first_install as wizard
+import first_install as wizard
 import windows_install_complete as guide
 import access_install
 from global_memory_scope import digest
@@ -69,7 +69,7 @@ def normal_retry(test, home, native):
     with (
         patch.object(Path, "home", return_value=home),
         patch.dict(os.environ, CODEX_HOME=str(native)),
-        patch.object(sys, "argv", ["mac_first_install.py"]),
+        patch.object(sys, "argv", ["first_install.py"]),
         patch.object(wizard, "native_platform", return_value="win32-amd64"),
         patch.object(
             access_install,

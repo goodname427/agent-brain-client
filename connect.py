@@ -7,10 +7,10 @@ import sys
 import uuid
 
 BASE = Path(__file__).resolve().parent
-sys.path.insert(0, str(BASE if (BASE / 'remote_http.py').is_file() else BASE / 'adapters/codex'))
+sys.path.insert(0, str(BASE if (BASE / 'brain_http.py').is_file() else BASE / 'adapters/codex'))
 sys.path.insert(0, str(BASE / 'scripts'))
 from brain_lock import native_platform
-from remote_http import RemoteClient
+from brain_http import RemoteClient
 
 
 def connect(home, endpoint=None, token_file=None, apply=False, service_profile=None, plan_sha256=None):

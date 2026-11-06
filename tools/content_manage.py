@@ -14,10 +14,11 @@ import sys
 import webbrowser
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / p) for p in ('tools', 'scripts', 'adapters/codex')]
-import content_contract as contract
+sys.path[:0] = [str(ROOT / name) for name in ('scripts', 'installer', 'adapters/codex', 'tools')]
+sys.path[:0] = [str(ROOT / p) for p in ('installer', 'tools', 'scripts', 'adapters/codex')]
+import brain_content as contract
 from content_cache import ContentAdapter
-from memory_automation import registration, private_json, canonical
+from project_memory import registration, private_json, canonical
 
 GOOD_REFRESH = {'content-current', 'content-refreshed'}
 

@@ -20,7 +20,7 @@ GRANT, ROOT = fixtures.GRANT, fixtures.ROOT
 from client_pairing import EnrollmentTerminal
 from client_release import dependency_environment
 from system_credentials import canonical
-import mac_first_install as wizard
+import first_install as wizard
 import content_install
 
 
@@ -164,7 +164,7 @@ class FirstInstall(unittest.TestCase):
         output = io.StringIO()
         with patch.object(Path, 'home', return_value=self.home), \
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
-                patch.object(sys, 'argv', ['mac_first_install.py', '--connection', str(self.base / 'connection.json')]), \
+                patch.object(sys, 'argv', ['first_install.py', '--connection', str(self.base / 'connection.json')]), \
                 patch.object(wizard, 'run', side_effect=run), patch.object(sys, 'stdout', output):
             code = wizard.main()
         result = json.loads(output.getvalue())
@@ -565,7 +565,7 @@ class PreparingReset(unittest.TestCase):
 class LifecycleExitCodes(unittest.TestCase):
     def command(self,action,response):
         output=io.StringIO()
-        with patch.object(sys,'argv',['mac_first_install.py','--action',action]),patch.object(sys,'platform','darwin'),patch.object(wizard.platform,'machine',return_value='arm64'),patch.object(wizard.Path,'home',return_value=Path('/synthetic/home')),patch('client_lifecycle.'+action,return_value=response),patch.object(sys,'stdout',output):
+        with patch.object(sys,'argv',['first_install.py','--action',action]),patch.object(sys,'platform','darwin'),patch.object(wizard.platform,'machine',return_value='arm64'),patch.object(wizard.Path,'home',return_value=Path('/synthetic/home')),patch('client_lifecycle.'+action,return_value=response),patch.object(sys,'stdout',output):
             code=wizard.main()
         self.assertEqual(json.loads(output.getvalue()),response)
         return code
@@ -594,7 +594,7 @@ class NewDeviceConnectionCLI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
             env = dict(os.environ, HOME=str(home), CODEX_HOME=str(home / 'codex'))
-            result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'tools/mac_first_install.py')],
+            result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'installer/first_install.py')],
                                     env=env, capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 2, result.stderr)
             value = json.loads(result.stdout)
@@ -610,7 +610,7 @@ class NewDeviceConnectionCLI(unittest.TestCase):
             path = home / '.config/agent-brain-client/first-install/connection.json'
             content_install.save(path, {'schema': 1})
             with patch.object(Path, 'home', return_value=home), \
-                    patch.object(sys, 'argv', ['mac_first_install.py']), \
+                    patch.object(sys, 'argv', ['first_install.py']), \
                     patch.object(sys, 'stdout', io.StringIO()) as output, \
                     patch.object(wizard, 'run', side_effect=AssertionError('Must not install')):
                 self.assertEqual(wizard.main(), 2)

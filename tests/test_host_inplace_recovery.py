@@ -7,7 +7,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-import codex_connect as host
+import brain_host_files as host
 import content_install as install
 import test_content_install as fixture
 

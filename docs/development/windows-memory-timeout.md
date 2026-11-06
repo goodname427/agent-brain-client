@@ -8,7 +8,7 @@
 可读、正文不存在或搜索没有结果。本次不使用真实记忆正文或测试暗号。
 
 独立开发基线是 main `3dc6fa027da46369c86e4fd59ad0cd4251de8dd9`。
-该基线的 `content_mcp.py` 与 `remote_http.py` 相对报告运行提交没有变化。
+该基线的 `content_mcp.py` 与 `brain_http.py` 相对报告运行提交没有变化。
 没有 Windows 用户设备控制授权，未访问该设备、生产凭据或 Server 工作区。
 以下均为合成测试证据，不代表真实 Windows 问题已完成设备验收。
 
@@ -65,7 +65,7 @@ TLS 握手或 Server 根因。
   传输测试。测试凭据为合成来源；这不替代 Windows 原生凭据套件或用户设备验收。
 
 隔离 HOME / CODEX_HOME（Windows 另隔离 USERPROFILE），使用 Python 3.11+
-及包含 `scripts:adapters/codex:tools:tests` 的 PYTHONPATH，运行：
+及包含 `scripts:adapters/codex:installer:tools:tests` 的 PYTHONPATH，运行：
 
 ```sh
 python -B -m unittest test_mcp_queue_deadlines test_content_read_requests test_memory_query test_remote_mcp

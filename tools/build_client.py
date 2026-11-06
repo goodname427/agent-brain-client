@@ -2,12 +2,13 @@
 import argparse,hashlib,json,shutil,sys
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / name) for name in ('scripts', 'installer', 'adapters/codex', 'tools')]
 sys.path.insert(0,str(ROOT/'adapters/codex'));sys.path.insert(0,str(ROOT/'scripts'))
-from client_release import LEGACY_HTTPS_CONTENT_CLIENT_FILES,SHARED_CLIENT_FILES,WINDOWS_HTTPS_CONTENT_CLIENT_FILES,CLIENT_FILES,CONTENT_CLIENT_FILES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CLIENT_FILES,CAPABILITIES,PERSONAL_CAPABILITIES,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES
+from client_release import PRE_LAYOUT_FILE_SETS,LEGACY_HTTPS_CONTENT_CLIENT_FILES,SHARED_CLIENT_FILES,WINDOWS_HTTPS_CONTENT_CLIENT_FILES,CLIENT_FILES,CONTENT_CLIENT_FILES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CLIENT_FILES,CAPABILITIES,PERSONAL_CAPABILITIES,CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES
 from brain_release import version as validate_version
 from publication_check import require_publishable
 FILES={n:n for n in CLIENT_FILES}
-PAIRING_FILES={n:n for n in ('adapters/codex/client_pairing.py','native/DeviceComponent.swift')}
+PAIRING_FILES={n:n for n in ('scripts/client_pairing.py','native/DeviceComponent.swift')}
 CONTENT_FILES={n:n for n in CONTENT_CLIENT_FILES if n not in CLIENT_FILES and n not in PAIRING_FILES}
 
 def export(source,output,pairing_candidate=False,content_candidate=False,ssh_content_candidate=False,https_content_candidate=False,target_platform=None):
@@ -16,7 +17,9 @@ def export(source,output,pairing_candidate=False,content_candidate=False,ssh_con
     if output.exists():raise ValueError('Existing artifact preserved')
     if https_content_candidate and any((pairing_candidate,content_candidate,ssh_content_candidate)):raise ValueError('Separate HTTPS capability candidate required')
     if ssh_content_candidate and any((pairing_candidate,content_candidate)):raise ValueError('Separate reviewed transport capability required')
-    names=(WINDOWS_HTTPS_CONTENT_CLIENT_FILES if target_platform and target_platform.startswith('win32-') else HTTPS_CONTENT_CLIENT_FILES) if https_content_candidate else SSH_CONTENT_CLIENT_FILES if ssh_content_candidate else CONTENT_CLIENT_FILES if content_candidate else CLIENT_FILES+('adapters/codex/client_pairing.py','native/DeviceComponent.swift') if pairing_candidate else CLIENT_FILES
+    names=(WINDOWS_HTTPS_CONTENT_CLIENT_FILES if target_platform and target_platform.startswith('win32-') else HTTPS_CONTENT_CLIENT_FILES) if https_content_candidate else SSH_CONTENT_CLIENT_FILES if ssh_content_candidate else CONTENT_CLIENT_FILES if content_candidate else CLIENT_FILES+('scripts/client_pairing.py','native/DeviceComponent.swift') if pairing_candidate else CLIENT_FILES
+    prior=PRE_LAYOUT_FILE_SETS[4 if https_content_candidate and target_platform and target_platform.startswith('win32-') else 3 if https_content_candidate else 2 if ssh_content_candidate else 1 if content_candidate else 0]
+    if pairing_candidate:prior=prior+('adapters/codex/client_pairing.py','native/DeviceComponent.swift')
     payload={}
     for name in names:
         p=ROOT/name
@@ -26,7 +29,7 @@ def export(source,output,pairing_candidate=False,content_candidate=False,ssh_con
     output.mkdir(parents=True)
     for name,data in payload.items():
         p=output/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(data)
-    manifest={'schema':1,'review_status':'unpublished-candidate','files':{n:hashlib.sha256(v).hexdigest() for n,v in payload.items()},'git_history_copied':False,'core_exported':False,'native_install_wired':not any((pairing_candidate,content_candidate,ssh_content_candidate,https_content_candidate)),'actual_deployment':'not-performed-by-build','source_authority':'independent-client-repository','release_policy_scope_delta':{'added':[name for name in SHARED_CLIENT_FILES if name in names],'removed':[]},'production_release_policy_scope_compatibility':'explicit-shared-runtime-dependencies'}
+    manifest={'schema':1,'review_status':'unpublished-candidate','files':{n:hashlib.sha256(v).hexdigest() for n,v in payload.items()},'git_history_copied':False,'core_exported':False,'native_install_wired':not any((pairing_candidate,content_candidate,ssh_content_candidate,https_content_candidate)),'actual_deployment':'not-performed-by-build','source_authority':'independent-client-repository','release_policy_scope_delta':{'added':sorted(set(names)-set(prior)),'removed':sorted(set(prior)-set(names))},'production_release_policy_scope_compatibility':'explicit-runtime-layout-transition'}
     if https_content_candidate:manifest.update(content='https-system-credential-uninstalled-candidate',production_release_policy_compatible=False,production_release_policy_compatibility_reason='Candidate has not been installed or deployed; production compatibility is not claimed.',credential_helper_installed=False,keychain_accessed=False)
     if ssh_content_candidate:manifest.update(content='ssh-server-credential-uninstalled-candidate',production_release_policy_compatible=False,production_release_policy_compatibility_reason='Candidate has not been installed or deployed; production compatibility is not claimed.')
     if pairing_candidate or content_candidate:manifest.update(pairing='source-only-uninstalled-unsigned-candidate',production_release_policy_compatible=False,production_release_policy_compatibility_reason='Candidate has not been installed or deployed; production compatibility is not claimed.',existing_ssh_checkpoint_available=True)

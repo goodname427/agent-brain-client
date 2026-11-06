@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import test_content_outbox as fixture
 from content_cache import ContentAdapter
-import content_contract as contract
+import brain_content as contract
 
 
 class IncrementalRefresh(unittest.TestCase):
@@ -70,15 +70,15 @@ class IncrementalRefresh(unittest.TestCase):
         self.assertEqual((self.f.cache/'active.json').read_bytes(),active)
 
     def test_unchanged_busy_host_file_does_not_block_unrelated_write(self):
-        import codex_connect
-        original=codex_connect.host_stage;written=[]
+        import brain_host_files
+        original=brain_host_files.host_stage;written=[]
         def busy(path,raw,mode,expected):
             # Models the Windows sharing violation for an unchanged AGENTS
             # file held open by the host. No real native files are touched.
             if path.name=='AGENTS.md':raise PermissionError('Synthetic host reader excludes writes')
             written.append(path.name)
             return original(path,raw,mode,expected)
-        with patch.object(codex_connect,'host_stage',side_effect=busy):
+        with patch.object(brain_host_files,'host_stage',side_effect=busy):
             result=self.restart().invoke(self.f.request())
         self.assertEqual(result['local_refresh']['status'],'content-refreshed')
         self.assertEqual(written,['synthetic-topic.md'])

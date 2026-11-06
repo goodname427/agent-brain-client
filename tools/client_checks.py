@@ -14,6 +14,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / name) for name in ('scripts', 'installer', 'adapters/codex', 'tools')]
 ORIGIN = 'https://github.com/goodname427/agent-brain-client'
 COMMANDS = {
     'documentation': [
@@ -26,34 +27,36 @@ COMMANDS = {
         ['python', '-B', 'tools/build_client.py', '--scan'],
         ['python', '-B', 'tools/check_source.py'],
         ['git', 'diff', '--check'],
-        ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', '--ignore', 'E402', 'tools/access_install.py', 'tools/access_windows.py', 'tests/test_access_install.py', 'tools/mac_first_install.py', 'tools/client_lifecycle.py', 'tools/prepare_install_runtime.py', 'tools/check_source.py', 'tests/test_mac_first_install.py', 'tests/test_client_uninstall.py', 'tests/test_install_contracts.py'],
-        ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'F821,F822,F823,F841', 'adapters/codex', 'scripts'],
-        ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', '--ignore', 'E402', 'tools/pending_install_recovery.py', 'tests/test_pending_install_recovery.py', 'tests/test_bootstrap_main.py'],
+        ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', '--ignore', 'E402', 'installer/access_install.py', 'installer/access_windows.py', 'tests/test_access_install.py', 'installer/first_install.py', 'installer/client_lifecycle.py', 'installer/prepare_install_runtime.py', 'tools/check_source.py', 'tests/test_mac_first_install.py', 'tests/test_client_uninstall.py', 'tests/test_install_contracts.py'],
+        ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'F821,F822,F823,F841', 'adapters/codex', 'scripts', 'installer'],
+        ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', '--ignore', 'E402', 'installer/pending_install_recovery.py', 'tests/test_pending_install_recovery.py', 'tests/test_bootstrap_main.py'],
         ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', 'tools/ci_scope.py', 'tools/run_ci_tests.py', 'tests/test_ci_scope.py'],
-        ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'F', 'tools/bootstrap_main.py', 'tests/test_windows_native.py'],
+        ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'F', 'installer/bootstrap_main.py', 'tests/test_windows_native.py'],
         ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', '--ignore', 'E402', 'tests/test_host_config.py', 'tests/test_host_inplace_recovery.py'],
         ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', '--ignore', 'E402', 'tests/test_platform_checkpoint.py', 'tests/fixtures/checkpoint_probe.py'],
         ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', '--ignore', 'E402', 'tests/test_content_local_durable.py', 'tests/test_receipt_transport.py', 'tests/test_memory_behavior.py', 'tests/test_memory_query.py', 'tools/memory_review.py'],
-        ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'tools/access_install.py', 'tools/access_windows.py', 'tools/mac_first_install.py', 'tools/client_lifecycle.py', 'tools/prepare_install_runtime.py', 'tools/check_source.py', 'tools/memory_review.py'],
-        ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'adapters/codex/content_cache.py', 'adapters/codex/remote_http.py', 'adapters/codex/content_contract.py'],
+        ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'installer/access_install.py', 'installer/access_windows.py', 'installer/first_install.py', 'installer/client_lifecycle.py', 'installer/prepare_install_runtime.py', 'tools/check_source.py', 'tools/memory_review.py'],
+        ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'adapters/codex/content_cache.py', 'scripts/brain_cache.py', 'scripts/brain_host_files.py'],
         ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'scripts/brain_content.py', 'scripts/brain_http.py', 'scripts/brain_memory.py'],
-        ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'tools/pending_install_recovery.py', 'tools/bootstrap_main.py'],
+        ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'installer/pending_install_recovery.py', 'installer/bootstrap_main.py'],
         ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', '--ignore', 'E402', 'adapters/codebuddy', 'tools/codebuddy.py', 'tests/test_codebuddy.py'],
         ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', 'tools/client_checks.py', 'tests/test_client_checks.py'],
         ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', '--ignore', 'E402', 'tools/content_manage.py', 'tests/test_content_activation.py'],
         ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'tools/content_manage.py'],
         ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'F', 'tools/release_client.py'],
+        ['python', '-m', 'ruff', 'check', '--no-cache', '--select', 'E4,E7,E9,F', '--ignore', 'E402', 'scripts/brain_cache.py', 'scripts/brain_host_files.py', 'installer/content_enrollment.py', 'tools/device.py', 'tests/test_runtime_boundaries.py'],
         ['python', '-m', 'mypy', '--check-untyped-defs', '--follow-imports', 'skip', '--ignore-missing-imports', 'tools/client_checks.py'],
     ],
     'macos': [
         ['python', '-B', '-m', 'unittest', 'discover', '-s', 'tests'],
         ['sh', '-n', 'tools/install-mac.sh'],
+        ['sh', '-n', 'tools/install-codebuddy.sh'],
         ['git', 'diff', '--check'],
         ['python', '-B', 'tools/build_credential_helper.py', '--output', '{temp}/credential-helper'],
         ['python', '-B', 'tools/build_credential_helper.py', '--access', '--output', '{temp}/access-helper'],
     ],
     'windows': [
-        ['python', '-B', '-m', 'unittest', 'test_harness_core'],
+        ['python', '-B', '-m', 'unittest', 'test_harness_core', 'test_runtime_boundaries'],
         ['python', '-B', '-m', 'unittest', 'test_startup_concurrency', 'test_global_memory_update', 'test_global_memory_activation'],
         ['python', '-B', '-m', 'unittest', 'test_install_contracts.Contracts', 'test_install_contracts.PlatformMainContracts', 'test_windows_native', 'test_source_paths', 'test_access_install', 'test_bootstrap_main', 'test_pending_install_recovery', 'test_platform_checkpoint'],
         ['python', '-B', '-m', 'unittest', 'test_mcp_wire_encoding', 'test_mcp_queue_deadlines', 'test_content_read_requests.HTTPRequests'],
@@ -105,7 +108,9 @@ def check_host(scope):
                 raise ValueError('Pinned check tool required: ' + package + '==' + expected)
 
 
-def run_checks(scope, output, record=False):
+def run_checks(scope, output, record=False, *, ci=False):
+    if ci and record:
+        raise ValueError('Focused CI runs cannot produce complete local release evidence')
     check_host(scope)
     before = identity() if record else None
     output = Path(output).resolve()
@@ -120,21 +125,27 @@ def run_checks(scope, output, record=False):
                    CODEX_HOME=str(temp / 'codex'), PYTHONDONTWRITEBYTECODE='1',
                    MYPY_CACHE_DIR=str(temp / 'mypy'),
                    PYTHONPATH=os.pathsep.join(str(ROOT / name) for name in
-                                              ('.', 'scripts', 'adapters/codex', 'tools', 'tests')))
+                                              ('.', 'scripts', 'adapters/codex', 'installer', 'tools', 'tests')))
         # No check subprocess receives a publication credential or user config.
         for name in ('GH_TOKEN', 'GITHUB_TOKEN', 'PYTHONHOME', 'PYTHONSTARTUP'):
             env.pop(name, None)
-        for index, command in enumerate(COMMANDS[scope]):
+        commands = COMMANDS[scope]
+        if ci and scope == 'macos':
+            commands = [['python', '-B', 'tools/run_ci_tests.py', '--workers', '2'], *commands[1:]]
+            if json.loads(env.get('CI_TESTS', '[]')):
+                commands = [command for command in commands if 'tools/build_credential_helper.py' not in command]
+        for index, command in enumerate(commands):
             actual = [sys.executable if item == 'python' and position == 0 else
                       item.replace('{temp}', str(temp)) for position, item in enumerate(command)]
             log_path = output / f'{index}.log'
-            print(f'{scope}: {index + 1}/{len(COMMANDS[scope])}', flush=True)
+            print(f'{scope}: {index + 1}/{len(commands)} ' + ' '.join(command[:6]), flush=True)
             with log_path.open('xb') as log:
                 result = subprocess.run(actual, cwd=ROOT, env=env, stdout=log,
                                         stderr=subprocess.STDOUT, timeout=1800)
             results.append({'command': command, 'exit_code': result.returncode,
                             'log': log_path.name, 'sha256': sha(log_path.read_bytes())})
             if result.returncode:
+                print(log_path.read_text(errors='replace'), file=sys.stderr)
                 raise ValueError(f'{scope} check failed; inspect {log_path.name}')
     if record:
         if identity() != before:
@@ -229,8 +240,9 @@ def main():
     parser.add_argument('scope', choices=COMMANDS)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--record', action='store_true', help='Bind private evidence to clean committed source')
+    parser.add_argument('--ci', action='store_true', help='Use focused test selection without complete local evidence')
     args = parser.parse_args()
-    result = run_checks(args.scope, args.output, args.record)
+    result = run_checks(args.scope, args.output, args.record, ci=args.ci)
     print(json.dumps({key: value for key, value in result.items() if key != 'checks'}, sort_keys=True))
 
 
