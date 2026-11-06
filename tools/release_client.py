@@ -251,7 +251,7 @@ def validate(output):
         home.mkdir()
         codex.mkdir()
         env = dict(os.environ, HOME=str(home), USERPROFILE=str(home), CODEX_HOME=str(codex),
-                   PYTHONPATH=os.pathsep.join(str(ROOT / p) for p in ('scripts', 'adapters/codex', 'tools', 'tests')))
+                   PYTHONPATH=os.pathsep.join(str(ROOT / p) for p in ('scripts', 'adapters/codex', 'installer', 'tools', 'tests')))
         commands = ([sys.executable, '-B', '-m', 'unittest', 'discover', '-s', 'tests'],
                     [sys.executable, '-B', 'tools/check_source.py'],
                     ['git', 'diff', '--check'])
