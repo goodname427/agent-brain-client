@@ -1,12 +1,6 @@
 """Thin JSON-line HTTP adapter. No Core, repository, Git or host discovery."""
 
-import sys
 from pathlib import Path
-
-if __package__ in (None, ""):
-    _ENTRY_ROOT = Path(__file__).resolve().parents[4]
-    sys.path[:0] = [str(_ENTRY_ROOT / "src"), str(_ENTRY_ROOT)]
-
 
 from agent_brain_client.application.control import (
     check_request,
@@ -16,7 +10,6 @@ from agent_brain_client.application.control import (
 #!/usr/bin/env python3
 
 
-import argparse
 import http.client
 import io
 import json
@@ -589,29 +582,3 @@ class RemoteClient:
         if self.token_file.stat().st_mode & 0o077:
             raise ValueError("Token file must have mode 0600.")
         return self.token_file.read_text(encoding="utf-8").strip()
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--endpoint", required=True)
-    parser.add_argument("--token-file", type=Path, required=True)
-    parser.add_argument(
-        "--data-mode", choices=("synthetic", "personal"), default="synthetic"
-    )
-    args = parser.parse_args()
-    client = RemoteClient(args.endpoint, args.token_file, args.data_mode)
-    for line in sys.stdin:
-        try:
-            if len(line.encode()) > 131072:
-                raise ValueError("Oversized request")
-            result = client.request(json.loads(line))
-        except Exception:
-            result = {
-                "error": {"code": "invalid_client_request", "retryable": False},
-                "persistence": {"durable": False},
-            }
-        print(json.dumps(result, ensure_ascii=False), flush=True)
-
-
-if __name__ == "__main__":
-    main()

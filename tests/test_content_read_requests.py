@@ -21,6 +21,7 @@ import test_content_outbox as fixtures
 import agent_brain_client.domain.contract as contract
 from agent_brain_client.interfaces.mcp.content import ContentServer
 from agent_brain_client.interfaces.mcp.server import serve
+import agent_brain_client.interfaces.mcp.server as mcp_scheduler
 from agent_brain_client.adapters.server.http import RemoteClient, NoRedirect, ReadHTTPHandler, ReadHTTPSHandler
 from agent_brain_client.adapters.platforms.processes import controlled_run
 from agent_brain_client.application.control import RequestControl, RequestStopped
@@ -336,6 +337,7 @@ class HTTPRequests(unittest.TestCase):
         self.started = threading.Event()
         self.release = threading.Event()
         self.seen = []
+        self.healthy_delay = 0
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -367,6 +369,8 @@ class HTTPRequests(unittest.TestCase):
                         fixture.release.wait(3)
                         self.wfile.write(raw[1:])
                     else:
+                        if identity == "synthetic-24" and fixture.healthy_delay:
+                            time.sleep(fixture.healthy_delay)
                         self.wfile.write(raw)
                 except OSError:
                     pass
@@ -423,6 +427,24 @@ class HTTPRequests(unittest.TestCase):
         self.addCleanup(close)
         return source, output
 
+    def start_deadline_then_recovery(self):
+        # Keep the stalled read's 150 ms deadline and 700 ms cancellation bound.
+        # Recovery uses its own ordinary budget. Delaying its healthy response
+        # past 150 ms verifies that it does not inherit the first control's budget.
+        count = 0
+
+        def control(timeout):
+            nonlocal count
+            count += 1
+            return RequestControl(timeout if count == 1 else 2)
+
+        factory = patch.object(mcp_scheduler, "RequestControl", side_effect=control)
+        factory.start()
+        self.addCleanup(factory.stop)
+        self.healthy_delay = 0.2
+        return self.start(request_timeout=0.15)
+
+
     def test_cancel_active_http_and_queued_reads_without_blocking_next_request(self):
         source, output = self.start()
         source.send(call(1))
@@ -455,7 +477,7 @@ class HTTPRequests(unittest.TestCase):
         self.assertEqual(self.seen, ["synthetic-1", "synthetic-24"])
 
     def test_total_deadline_interrupts_slow_body_and_eof_finishes_cleanly(self):
-        source, output = self.start(request_timeout=0.15)
+        source, output = self.start_deadline_then_recovery()
         source.send(call(2))
         self.assertTrue(self.started.wait(1))
         started = time.monotonic()
@@ -463,19 +485,27 @@ class HTTPRequests(unittest.TestCase):
         self.assertEqual(response["error"]["code"], -32001)
         self.assertEqual(response["error"]["data"]["stage"], "execution")
         self.assertLess(time.monotonic() - started, 0.7)
+        recovery_started = time.monotonic()
         source.send(call(24))
-        self.assertFalse(output.get()["result"]["isError"])
+        recovery = output.get()
+        self.assertIn("result", recovery, recovery)
+        self.assertFalse(recovery["result"]["isError"])
+        self.assertLess(time.monotonic() - recovery_started, 1)
         self.assertEqual(self.seen, ["synthetic-2", "synthetic-24"])
 
     def test_active_memory_query_server_delay_is_bounded_and_next_read_progresses(self):
-        source, output = self.start(request_timeout=0.15)
+        source, output = self.start_deadline_then_recovery()
         source.send(call(1, "memory_query", {"query": "synthetic"}))
         self.assertTrue(self.started.wait(1))
         response = output.get()
         self.assertEqual(response["error"]["code"], -32001)
         self.assertEqual(response["error"]["data"]["stage"], "execution")
+        recovery_started = time.monotonic()
         source.send(call(24))
-        self.assertFalse(output.get()["result"]["isError"])
+        recovery = output.get()
+        self.assertIn("result", recovery, recovery)
+        self.assertFalse(recovery["result"]["isError"])
+        self.assertLess(time.monotonic() - recovery_started, 1)
         self.assertEqual(self.seen, ["synthetic-1", "synthetic-24"])
 
     def test_cancel_does_not_require_shutdown_to_wake_native_receive(self):

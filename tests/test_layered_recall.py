@@ -1,3 +1,4 @@
+import agent_brain_client.interfaces.cli.collection as collection_cli
 import agent_brain_client.adapters.storage.recall_receipts as recall_receipts
 """Synthetic shared Mac/Windows recall, with no credentials or native sessions."""
 import copy
@@ -259,14 +260,14 @@ class LayeredRecall(unittest.TestCase):
     def test_cli_observes_stdout_and_redacts_failure(self):
         output, diagnostic = io.StringIO(), io.StringIO()
         with patch.object(sys, 'argv', ['global_memory', 'global-hook']), patch.object(gm, 'load', return_value=self.value), patch.object(gm, 'eligible', return_value=self.local), patch.object(gm, 'submit_hook', return_value={'status': 'staged'}), patch.object(sys, 'stdin', self.prompt()), patch.object(sys, 'stdout', output), patch.object(sys, 'stderr', diagnostic):
-            self.assertEqual(gm.main(), 0)
+            self.assertEqual(collection_cli.main(), 0)
         self.assertIn('additionalContext', output.getvalue())
         receipt = json.loads(diagnostic.getvalue())
         self.assertEqual(receipt['status'], 'hook-output-written'); self.assertEqual(receipt['recall_status'], 'context-prepared')
         self.assertTrue(recall_receipts.recall_observation(self.value, receipt['request_key'])['output_written'])
         self.assertNotIn('answer marker', diagnostic.getvalue()); self.assertEqual(receipt['model_used'], 'unknown')
         with patch.object(sys, 'argv', ['global_memory', 'global-hook']), patch.object(gm, 'load', side_effect=RuntimeError('SYNTHETIC_SECRET')), patch.object(sys, 'stdout', io.StringIO()), patch.object(sys, 'stderr', io.StringIO()) as errors:
-            self.assertEqual(gm.main(), 0)
+            self.assertEqual(collection_cli.main(), 0)
         self.assertNotIn('SYNTHETIC_SECRET', errors.getvalue()); self.assertNotIn('hook-output-written', errors.getvalue())
 
 

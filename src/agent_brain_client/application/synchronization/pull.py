@@ -2,22 +2,23 @@
 
 from agent_brain_client.domain.errors import CollectionCapacityExceeded
 from agent_brain_client.application.control import RequestStopped
+from agent_brain_client.application.synchronization.ports import ContentRefresh
 
 
 class ContentSynchronization:
-    def __init__(self, session):
+    def __init__(self, session: ContentRefresh):
         self.session = session
 
     def pull(self, *, replay=True):
-        self.session._require_storage()
+        self.session.ensure_refresh_available()
         progress = {"stage": "local-recovery"}
         try:
-            with self.session._outbox_locked(self.session.cache / "content.lock"):
-                self.session.mapping._recover()
-                self.session.sources._import_pending()
+            with self.session.refresh_transaction():
+                self.session.mapping.recover()
+                self.session.sources.reconcile_pending()
                 if replay:
-                    self.session._drain()
-                self.session.sources._import_pending()
+                    self.session.replay_writes()
+                self.session.sources.reconcile_pending()
                 queue = self.session.queue_status()
                 imports = self.session.sources.import_status()
                 if (
@@ -38,16 +39,12 @@ class ContentSynchronization:
                         "next_action": "Reconnect to replay exact saved requests; explicitly reconcile conflicts before mapping.",
                     }
                 progress["stage"] = "owned-files"
-                owned = self.session.mapping._owned()
+                owned = self.session.mapping.owned_snapshot()
                 progress["stage"] = "remote-snapshot"
-                snapshot = self.session._fetch()
+                snapshot = self.session.fetch_snapshot()
                 return self.session.mapping.apply_snapshot(snapshot, owned, progress)
         except Exception as error:
-            try:
-                journal = self.session._load("transaction.json")
-                uncertain = journal and journal["phase"] == "applying"
-            except Exception:
-                uncertain = True
+            uncertain = self.session.mapping.recovery_uncertain()
             reason = (
                 "collection-capacity-exceeded"
                 if isinstance(error, CollectionCapacityExceeded)

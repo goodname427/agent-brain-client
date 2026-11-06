@@ -8,6 +8,7 @@ if __package__ in (None, ""):
     sys.path[:0] = [str(_ENTRY_ROOT / "src"), str(_ENTRY_ROOT)]
 
 
+from agent_brain_client.application.installation.enrollment import DeviceEnrollment
 import argparse
 import hashlib
 import json
@@ -18,7 +19,6 @@ from agent_brain_client.adapters.server.https import (
     PinnedDeviceTask,
     HTTPSContentClient,
     native_store,
-    DeviceEnrollment,
     PairingHTTPS,
 )
 from agent_brain_client.adapters.platforms.credentials import owned, unique

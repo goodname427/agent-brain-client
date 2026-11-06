@@ -1,3 +1,6 @@
+from agent_brain_client.adapters.platforms.tree import is_link
+from agent_brain_client.adapters.platforms.posix.tree import PosixTree
+from agent_brain_client.adapters.platforms.windows.tree import WindowsTree
 import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
 import agent_brain_client.adapters.storage.install_state as adapters_storage_install_state
 import agent_brain_client.interfaces.cli.install as interfaces_cli_install
@@ -581,33 +584,33 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
         (group/'one.md').write_bytes(b'synthetic approved tree')
         row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
         outside=helper.home/'outside';outside.mkdir();(outside/'one.md').write_bytes(b'synthetic outside tree')
-        original=adapters_harnesses_codex_memory_inventory._WindowsMemoryTree.open_directory
+        original=WindowsTree.open_directory
         def replace(tree,directory,entry,info):
             group.rename(root/'retained')
             self.junction(group,outside)
             return original(tree,directory,entry,info)
         try:
-            with patch.object(adapters_harnesses_codex_memory_inventory._WindowsMemoryTree,'open_directory',replace):
+            with patch.object(WindowsTree,'open_directory',replace):
                 result=adapters_harnesses_codex_memory_inventory.inventory_codex_memories(helper.adapter.native_home)
             changed=next(item for item in result['sources'] if item['status']=='unavailable')
             self.assertIsNone(changed['source_fingerprint'])
             # Windows may reject the rename itself while the parent is pinned.
             # Once the scan releases its handles, also exercise an actual
             # junction substitution between inventory and explicit body read.
-            if not adapters_harnesses_codex_memory_inventory._memory_link(group.lstat()):
+            if not is_link(group.lstat()):
                 group.rename(root/'retained')
                 self.junction(group,outside)
-            self.assertTrue(adapters_harnesses_codex_memory_inventory._memory_link(group.lstat()))
+            self.assertTrue(is_link(group.lstat()))
             with self.assertRaises(cache.CacheBlocked):helper.adapter.sources.read_memory_source(row['source_id'],row['source_fingerprint'])
         finally:
-            if group.exists() and adapters_harnesses_codex_memory_inventory._memory_link(group.lstat()):group.rmdir()
+            if group.exists() and is_link(group.lstat()):group.rmdir()
 
     def test_pinned_directories_and_files_exclude_replacement_and_writers(self):
         import agent_brain_client.adapters.harnesses.codex.content as cache
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)/'memories';group=root/'group';group.mkdir(parents=True)
             target=group/'one.md';target.write_bytes(b'synthetic before')
-            tree=adapters_harnesses_codex_memory_inventory._WindowsMemoryTree(root)
+            tree=WindowsTree(root)
             try:
                 with tree.scan(root) as scan:entry=next(scan)
                 directory=tree.open_directory(root,entry,tree.info(root,entry))

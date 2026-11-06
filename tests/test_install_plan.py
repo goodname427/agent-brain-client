@@ -19,7 +19,11 @@ class Management(unittest.TestCase):
             (self.root / n).mkdir()
         env = patch.dict(
             os.environ,
-            {"HOME": str(self.root / "home"), "CODEX_HOME": str(self.root / "codex")},
+            {
+                "HOME": str(self.root / "home"),
+                "USERPROFILE": str(self.root / "home"),
+                "CODEX_HOME": str(self.root / "codex"),
+            },
             clear=True,
         )
         env.start()
@@ -29,6 +33,31 @@ class Management(unittest.TestCase):
         with patch("sys.stdout", new=io.StringIO()) as output:
             code = entry.main(args)
         return code, json.loads(output.getvalue())
+
+    def test_inspect_is_available_only_through_the_plan_interface(self):
+        with patch.object(
+            entry.installation,
+            "inspect",
+            return_value={"installed": True, "native_changed": False},
+        ) as inspect:
+            code, value = self.run_entry(
+                ["inspect", "--device-home", str(self.root / "home")]
+            )
+        self.assertEqual(code, 0)
+        inspect.assert_called_once_with(str(self.root / "home"))
+        self.assertFalse(hasattr(entry.installation, "main"))
+
+    def test_missing_action_arguments_fail_before_any_native_operation(self):
+        for action in ("plan", "apply"):
+            with (
+                self.subTest(action=action),
+                patch("sys.stderr", new=io.StringIO()),
+                patch.object(entry, "dispatch") as dispatch,
+                self.assertRaises(SystemExit) as error,
+            ):
+                entry.main([action])
+            self.assertEqual(error.exception.code, 2)
+            dispatch.assert_not_called()
 
     def test_apply_loads_pinned_plan_and_delegates_recovery_before_preimages(self):
         plan = {"schema": 1, "fixture": "synthetic"}

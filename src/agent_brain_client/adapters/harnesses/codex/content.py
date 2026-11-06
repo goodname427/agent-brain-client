@@ -88,6 +88,15 @@ class CodexContentSession(FileContentOutbox):
         self.mapping = CodexContentMapping(self)
         self.synchronization = ContentSynchronization(self)
 
+    def ensure_refresh_available(self):
+        self._require_storage()
+
+    def refresh_transaction(self):
+        return self._outbox_locked(self.cache / "content.lock")
+
+    def replay_writes(self):
+        self._drain()
+
     def _request(self, method, params):
         response = self.client.request(
             {"request_id": uuid.uuid4().hex, "method": method, "params": params}
@@ -134,7 +143,7 @@ class CodexContentSession(FileContentOutbox):
         ):
             raise CacheBlocked()
 
-    def _fetch(self):
+    def fetch_snapshot(self):
         kinds = self.policy["kinds"]
         catalog = self._catalog(kinds)
         # Reuse only a fully verified snapshot bound to this service and policy.
@@ -338,10 +347,9 @@ class CodexContentSession(FileContentOutbox):
                     or not 0 < pin["verified_at"] < float("inf")
                 ):
                     raise CacheBlocked()
-                journal = self._load("transaction.json")
-                if journal and journal.get("phase") not in ("complete", "rolled-back"):
+                if not self.mapping.transaction_settled():
                     raise CacheBlocked()
-                self.mapping._owned()
+                self.mapping.owned_snapshot()
                 queue = self.queue_status()
                 snapshot = self._load("snapshots/" + active["commit"] + ".json")
                 if (

@@ -76,7 +76,7 @@ class CodexContentMapping:
                     "rolled-back",
                 ):
                     raise CacheBlocked()
-                self._owned()
+                self.owned_snapshot()
                 active = self.session._load("active.json")
                 if active is None:
                     return {"status": "pull-required", "model_loaded": "unknown"}
@@ -126,7 +126,7 @@ class CodexContentMapping:
             raise CacheBlocked()
         return path.read_bytes()
 
-    def _owned(self):
+    def owned_snapshot(self):
         owned = self.session._load(
             "owned.json",
             {
@@ -310,7 +310,19 @@ class CodexContentMapping:
         self.session._save("transaction.json", dict(journal, phase="rolled-back"))
         self._prune_skill_directories(journal["owned"]["files"])
 
-    def _recover(self):
+    def transaction_settled(self):
+        """Read-only gate for offline reads/removal; never attempts recovery."""
+        journal = self.session._load("transaction.json")
+        return not journal or journal.get("phase") in ("complete", "rolled-back")
+
+    def recovery_uncertain(self):
+        try:
+            journal = self.session._load("transaction.json")
+            return bool(journal and journal["phase"] == "applying")
+        except Exception:
+            return True
+
+    def recover(self):
         journal = self.session._load("transaction.json")
         if journal and journal["phase"] not in ("applying", "complete", "rolled-back"):
             raise CacheBlocked()
@@ -490,7 +502,7 @@ class CodexContentMapping:
             )
             progress["stage"] = "verification"
             self.session.health()
-            self._owned()
+            self.owned_snapshot()
             self.session._pin_offline_snapshot(snapshot)
             self.session._save("transaction.json", dict(journal, phase="complete"))
         except Exception:

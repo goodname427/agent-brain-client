@@ -1,3 +1,4 @@
+import agent_brain_client.interfaces.mcp.launcher as launcher_cli
 """Fixed bootstrap refuses a legacy runtime while preserving local evidence."""
 import copy
 import io
@@ -83,7 +84,7 @@ class StartupGuard(unittest.TestCase):
         result,calls=self.call(check_only=True);self.assertEqual(calls,0)
         args=['startup','--policy-file','unused','--policy-sha256','a'*64,'--check-only']
         with patch.object(sys,'argv',args),patch.object(startup,'startup',return_value=result),patch.object(sys,'stdout',io.StringIO()) as output:
-            self.assertEqual(startup.main(),2);self.assertIn('content-outbox-runtime-incompatible',output.getvalue())
+            self.assertEqual(launcher_cli.main(),2);self.assertIn('content-outbox-runtime-incompatible',output.getvalue())
 
     def test_ledger_created_after_initial_check_is_rechecked_under_lease(self):
         original=startup.content_runtime_blocker;checks=[]

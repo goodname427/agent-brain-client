@@ -323,7 +323,7 @@ def block(value, *, root=None):
         + "); p="
         + repr(pins)
         + "; assert all(hashlib.sha256((r/n).read_bytes()).hexdigest()==h for n,h in p.items()); "
-        + 'sys.path.insert(0,str(r/"src")); sys.argv=[str(r/"src/agent_brain_client/runtime/collection.py"),"global-hook","--device-home",'
+        + 'sys.path.insert(0,str(r/"src")); sys.argv=[str(r/"src/agent_brain_client/interfaces/cli/collection.py"),"global-hook","--device-home",'
         + repr(value["device_home"])
         + ']; runpy.run_path(sys.argv[0],run_name="__main__")'
     )

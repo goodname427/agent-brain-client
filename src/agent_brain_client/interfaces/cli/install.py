@@ -12,9 +12,7 @@ import argparse
 import json
 import os
 from agent_brain_client.adapters.platforms.filesystem import require_platform
-from agent_brain_client.adapters.server.https import (
-    endpoint_check,
-)
+from agent_brain_client.domain.service import endpoint_check
 
 ROOT = Path(__file__).resolve().parents[4]
 SOURCE = ROOT

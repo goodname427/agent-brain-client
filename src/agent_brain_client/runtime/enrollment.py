@@ -1,12 +1,13 @@
 """Verified native enrollment and installation transaction."""
 
+from agent_brain_client.application.installation.enrollment import DeviceEnrollment
+
 import hashlib
 from pathlib import Path
 from agent_brain_client.adapters.platforms.filesystem import PlatformUnsupported
 from agent_brain_client.adapters.server.https import (
     profile_file,
     native_store,
-    DeviceEnrollment,
     PairingHTTPS,
 )
 

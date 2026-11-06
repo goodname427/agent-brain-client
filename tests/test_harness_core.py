@@ -53,9 +53,18 @@ class MemoryHost(DurableOutbox):
     def _allows(self, kind, identity):
         return kind == 'memory'
 
-    def _assert_sources_shareable(self, keys):
+    def assert_shareable(self, keys):
         if keys:
             raise AssertionError('No native-source reconciliation in this fixture')
+
+    def validate_reconciliation(self, source_keys, kind, identity, record):
+        self.assert_shareable(source_keys)
+
+    def confirm_reconciliation(self, source_keys, request_id):
+        self.assert_shareable(source_keys)
+
+    def block_reconciliation(self, source_keys, request_id):
+        self.assert_shareable(source_keys)
 
     def _queued(self):
         return [json.loads(raw) for name, raw in self.rows.items() if name.startswith('outbox/')]

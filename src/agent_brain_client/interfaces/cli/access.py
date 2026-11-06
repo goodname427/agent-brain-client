@@ -7,6 +7,7 @@ pin local state; they are not independent proof of a downloaded package.
 import agent_brain_client.adapters.storage.install_state as install_state
 import agent_brain_client.runtime.dependencies as dependencies
 
+from agent_brain_client.domain.authorization import valid_secret
 import hashlib
 import json
 import os
@@ -17,10 +18,9 @@ from urllib.error import HTTPError
 from urllib.request import Request
 
 import agent_brain_client.runtime.installation as wizard
+from agent_brain_client.domain.service import endpoint_check
 from agent_brain_client.adapters.server.https import (
     PairingHTTPS,
-    endpoint_check,
-    valid_secret,
 )
 from agent_brain_client.adapters.platforms.credentials import (
     CredentialStore,

@@ -7,6 +7,16 @@ import os
 from pathlib import Path
 import tempfile
 from agent_brain_client.adapters.platforms.filesystem import require_platform
+from agent_brain_client.adapters.platforms.host_files import (
+    inplace_host_updates,
+    open_host_file,
+    validate_host_path,
+    host_metadata,
+    prepare_host_mode,
+    publish_new_host_file,
+    prepare_atomic_mode,
+    finish_atomic_mode,
+)
 
 
 def sha(raw):
@@ -22,7 +32,6 @@ def atomic(path, raw, mode, *, cache=False):
     from agent_brain_client.adapters.platforms.filesystem import (
         private_directory,
         atomic_replace,
-        file_mode,
     )
     import agent_brain_client.adapters.platforms.filesystem as brain_lock
 
@@ -31,13 +40,11 @@ def atomic(path, raw, mode, *, cache=False):
     fd, name = tempfile.mkstemp(prefix=".client-native-", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as file:
-            if not cache or os.name != "nt":
-                file_mode(file.fileno(), mode)
+            prepare_atomic_mode(file, mode, cache=cache)
             file.write(raw)
             file.flush()
             os.fsync(file.fileno())
-        if os.name != "nt":
-            os.chmod(name, mode)
+        finish_atomic_mode(name, mode)
         atomic_replace(name, path)
     finally:
         if Path(name).exists():
@@ -53,67 +60,15 @@ def host_image(path):
         or any(p.is_symlink() for p in (path, *path.parents))
     ):
         raise ValueError("Canonical host path required")
-    if os.name == "nt":
-        from agent_brain_client.adapters.platforms.windows.native import canonical
-
-        canonical(path)
+    validate_host_path(path)
     try:
         st = path.stat()
     except FileNotFoundError:
         return None
     if not path.is_file() or st.st_nlink != 1 or st.st_size > 1048576:
         raise ValueError("Single bounded host file required")
-    metadata = (
-        getattr(st, "st_file_attributes", 0)
-        if os.name == "nt"
-        else (st.st_uid, st.st_gid, st.st_mode & 0o777)
-    )
+    metadata = host_metadata(st)
     return (path.read_bytes(), st.st_dev, st.st_ino, st.st_mtime_ns, metadata)
-
-
-@contextmanager
-def windows_host_file(path):
-    """Open the existing object for data I/O; allow readers, exclude writers.
-
-    OPEN_EXISTING never replaces the object or assigns a security descriptor.
-    No DELETE, WRITE_DAC, WRITE_OWNER or ACCESS_SYSTEM_SECURITY is requested.
-    """
-    import ctypes as C
-    from ctypes import wintypes as W
-    import msvcrt
-    from agent_brain_client.adapters.platforms.windows.native import (
-        canonical,
-        libraries,
-    )
-
-    path = canonical(path)
-    _, kernel = libraries()
-    kernel.CreateFileW.argtypes = [
-        W.LPCWSTR,
-        W.DWORD,
-        W.DWORD,
-        C.c_void_p,
-        W.DWORD,
-        W.DWORD,
-        W.HANDLE,
-    ]
-    kernel.CreateFileW.restype = W.HANDLE
-    kernel.CloseHandle.argtypes = [W.HANDLE]
-    handle = kernel.CreateFileW(str(path), 0xC0000000, 1, None, 3, 0x00200000, None)
-    if handle == W.HANDLE(-1).value:
-        raise ValueError("Host configuration is busy or not writable")
-    try:
-        fd = getattr(msvcrt, "open_osfhandle")(
-            handle, os.O_RDWR | getattr(os, "O_BINARY", 0)
-        )
-    except BaseException:
-        kernel.CloseHandle(handle)
-        raise
-    with os.fdopen(fd, "r+b", buffering=0) as file:
-        st = os.fstat(file.fileno())
-        if st.st_nlink != 1 or getattr(st, "st_file_attributes", 0) & 0x400:
-            raise ValueError("Single non-reparse host file required")
-        yield file
 
 
 def host_write(file, raw):
@@ -146,7 +101,6 @@ def host_stage(path, raw, mode, expected, *, private=False):
         atomic_replace,
         sync_directory,
         private_directory,
-        file_mode,
     )
 
     path = Path(path)
@@ -158,8 +112,8 @@ def host_stage(path, raw, mode, expected, *, private=False):
         private_directory(path.parent)
     if (image[0] if image is not None else None) != expected:
         raise HostConfigChanged("Host configuration concurrently changed")
-    if os.name == "nt" and image is not None and not private:
-        with windows_host_file(path) as file:
+    if inplace_host_updates() and image is not None and not private:
+        with open_host_file(path) as file:
             st = os.fstat(file.fileno())
             original = file.read(1048577)
             if original != expected or (st.st_dev, st.st_ino) != image[1:3]:
@@ -184,14 +138,7 @@ def host_stage(path, raw, mode, expected, *, private=False):
     pending = Path(name)
     try:
         with os.fdopen(fd, "wb") as file:
-            if private and os.name == "nt":
-                file_mode(file.fileno(), mode)
-            if os.name != "nt":
-                if image is not None:
-                    st = pending.stat()
-                    if (st.st_uid, st.st_gid) != image[4][:2]:
-                        os.fchown(file.fileno(), *image[4][:2])
-                os.fchmod(file.fileno(), mode)
+            prepare_host_mode(file, mode, image, private=private)
             file.write(raw)
             file.flush()
             os.fsync(file.fileno())
@@ -201,11 +148,7 @@ def host_stage(path, raw, mode, expected, *, private=False):
             if host_image(path) != image or host_image(pending) != staged:
                 raise HostConfigChanged("Host configuration concurrently changed")
             if image is None:
-                if os.name == "nt":
-                    os.rename(pending, path)
-                else:
-                    os.link(pending, path)
-                    pending.unlink()
+                publish_new_host_file(pending, path)
             else:
                 atomic_replace(pending, path)
             sync_directory(path.parent)

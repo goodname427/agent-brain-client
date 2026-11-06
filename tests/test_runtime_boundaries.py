@@ -174,4 +174,4 @@ assert not {'content_cache','content_mcp','codex_connect','project_memory','firs
             with self.assertRaises(CacheBlocked):
                 restarted.invoke(changed, event_gate=lambda: True)
             with self.assertRaises(CacheBlocked):
-                restarted.sources._assert_sources_shareable(["a" * 64])
+                restarted.sources.assert_shareable(["a" * 64])

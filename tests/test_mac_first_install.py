@@ -1,3 +1,4 @@
+import agent_brain_client.adapters.harnesses.codex.update_interpreter as update_interpreter
 import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
 import agent_brain_client.adapters.storage.install_state as adapters_storage_install_state
 import agent_brain_client.interfaces.cli.install as interfaces_cli_install
@@ -42,15 +43,15 @@ class FirstInstall(unittest.TestCase):
     input = fixtures.HTTPSContent.input
 
     def test_registered_runtime_handoff_preserves_interactive_update_only(self):
-        policy = {'runtime':{k:'synthetic' for k in runtime_updates.DEPENDENCY_RUNTIME}}
+        policy = {'runtime':{k:'synthetic' for k in update_interpreter.DEPENDENCY_RUNTIME}}
         mcp = {'command':str(self.home / 'synthetic-pinned-python')}
         for action, interactive, expected in (('update',True,None),('update',False,subprocess.DEVNULL),
                                                ('check-update',True,subprocess.DEVNULL)):
             with (self.subTest(action=action,interactive=interactive),
-                  patch.object(runtime_updates,'dependency_environment',return_value={}),
+                  patch.object(update_interpreter,'dependency_environment',return_value={}),
                   patch.object(sys.stdin,'isatty',return_value=interactive)):
                 runner = Mock(return_value=type('Reply',(),{'returncode':0})())
-                self.assertEqual(runtime_updates.pinned_update_runtime(self.home,action,policy,mcp,self.home,runner),0)
+                self.assertEqual(update_interpreter.pinned_update_runtime(self.home,action,policy,mcp,self.home,runner),0)
                 self.assertIs(runner.call_args.kwargs['stdin'],expected)
 
     def fixture(self):

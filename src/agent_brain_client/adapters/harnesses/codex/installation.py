@@ -7,10 +7,6 @@ the caller's deployment authorization. No secret creation, UI, hooks or daemon.
 import sys
 from pathlib import Path
 
-if __package__ in (None, ""):
-    _ENTRY_ROOT = Path(__file__).resolve().parents[5]
-    sys.path[:0] = [str(_ENTRY_ROOT / "src"), str(_ENTRY_ROOT)]
-
 from agent_brain_client.domain.errors import InstallBlocked
 from agent_brain_client.adapters.storage.private_files import (
     safe,
@@ -21,7 +17,6 @@ from agent_brain_client.adapters.storage.private_files import (
 )
 
 
-import argparse
 import base64
 import copy
 from contextlib import ExitStack
@@ -196,7 +191,7 @@ def context(home, package, policy_path, policy_sha, *, inspection=False):
     files = metadata.get("manifest", metadata)["files"]
     if sha(contract.encode(files)) != package_sha:
         raise InstallBlocked("Package membership changed during inspection")
-    launcher = "src/agent_brain_client/runtime/launcher.py"
+    launcher = "src/agent_brain_client/interfaces/mcp/launcher.py"
     mcp = {
         "command": str(Path(sys.executable).resolve()),
         "args": [
@@ -1186,69 +1181,3 @@ def inspect(home):
             "reason": reason,
             "next_action": action,
         }
-
-
-def main():
-    cli = argparse.ArgumentParser(description=__doc__)
-    cli.add_argument("action", choices=("plan", "apply", "inspect"))
-    for name in (
-        "device-home",
-        "package",
-        "release-policy",
-        "release-policy-sha256",
-        "plan-file",
-        "plan-sha256",
-        "output",
-    ):
-        cli.add_argument("--" + name)
-    cli.add_argument("--replace-existing", action="store_true")
-    args = cli.parse_args()
-    try:
-        if args.action == "plan":
-            value = prepare(
-                args.device_home,
-                args.package,
-                args.release_policy,
-                args.release_policy_sha256,
-                args.replace_existing,
-            )
-            output = safe(args.output)
-            if output.exists():
-                raise InstallBlocked("Existing plan preserved")
-            save(output, value)
-            result = {
-                "status": "content-install-plan-prepared",
-                "plan_sha256": sha(contract.encode(value)),
-                "native_changed": False,
-                "installed": False,
-            }
-        elif args.action == "apply":
-            result = apply(pinned(args.plan_file, args.plan_sha256), args.plan_sha256)
-        else:
-            result = inspect(args.device_home)
-        print(json.dumps(result))
-        return (
-            0
-            if result.get("installed")
-            or result["status"] == "content-install-plan-prepared"
-            else 2
-        )
-    except PlatformUnsupported as error:
-        print(json.dumps(error.result(installed=False, native_changed=False)))
-        return 2
-    except Exception:
-        print(
-            json.dumps(
-                {
-                    "status": "content-native-install-review-required",
-                    "installed": False,
-                    "native_changed": False,
-                    "next_action": "Preserve native files, private plan and recovery receipt; review exact source, binding, grant and ownership. No raw errors or credentials returned.",
-                }
-            )
-        )
-        return 2
-
-
-if __name__ == "__main__":
-    sys.exit(main())

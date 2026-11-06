@@ -2,8 +2,7 @@
 
 import hashlib
 import json
-import os
-from pathlib import Path
+from agent_brain_client.adapters.platforms.source_files import canonical
 
 
 def digest(raw):
@@ -17,18 +16,6 @@ def unique(pairs):
             raise ValueError("Duplicate configuration field")
         value[key] = item
     return value
-
-
-def canonical(path):
-    path = Path(path).absolute()
-    if any(p.is_symlink() for p in (path, *path.parents)):
-        raise ValueError("Linked Client path preserved")
-    if os.name == "nt" and any(
-        p.exists() and getattr(p.lstat(), "st_file_attributes", 0) & 0x400
-        for p in (path, *path.parents)
-    ):
-        raise ValueError("Reparse Client path preserved")
-    return path
 
 
 def read_json(path, expected=None):

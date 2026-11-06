@@ -93,7 +93,7 @@ def check_layer_boundary(name, source):
                 "http",
                 "fcntl",
                 "msvcrt",
-            }
+            } and not (target == "urllib.parse" or target.startswith("urllib.parse."))
         if forbidden:
             raise ValueError(
                 f"Client dependency boundary crossed: {name}:{node.lineno}: {target}"
@@ -124,6 +124,121 @@ def check_layer_boundary(name, source):
             ):
                 raise ValueError(
                     f"Client dependency boundary requires a storage port: {name}:{node.lineno}"
+                )
+
+
+def check_responsibility_boundary(name, source):
+    """Reject native mechanisms, secondary CLIs and foreign ledger access."""
+    if not name.startswith(SOURCE_PREFIX):
+        return
+    relative = name[len(SOURCE_PREFIX) :]
+    tree = ast.parse(source, filename=name)
+    is_platform = relative.startswith("adapters/platforms/")
+    module = PACKAGE + "." + relative.removesuffix(".py").replace("/", ".")
+    for node, target in import_targets(tree, module):
+        if not is_platform and target.split(".")[0] in {
+            "ctypes",
+            "fcntl",
+            "msvcrt",
+            "winreg",
+        }:
+            raise ValueError(
+                f"Native mechanism requires platform owner: {name}:{node.lineno}"
+            )
+        if (
+            is_platform
+            and target.startswith(PACKAGE + ".adapters.")
+            and not target.startswith(PACKAGE + ".adapters.platforms")
+        ):
+            raise ValueError(
+                f"Platform mechanism cannot depend on higher adapter: {name}:{node.lineno}"
+            )
+        if (
+            not relative.startswith("interfaces/")
+            and target.split(".")[0] == "argparse"
+        ):
+            raise ValueError(
+                f"CLI parser requires interface owner: {name}:{node.lineno}"
+            )
+    native_symbols = {
+        "O_NOFOLLOW",
+        "O_DIRECTORY",
+        "fchmod",
+        "fchown",
+        "open_osfhandle",
+        "WinDLL",
+        "CreateFileW",
+    }
+    ledger_owners = {
+        "imports.json": "adapters/harnesses/codex/sources.py",
+        "transaction.json": "adapters/harnesses/codex/mapping.py",
+    }
+    if relative.startswith("adapters/harnesses/codex/"):
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for arg in [*node.args, *(keyword.value for keyword in node.keywords)]:
+                if (
+                    isinstance(arg, ast.Constant)
+                    and isinstance(arg.value, str)
+                    and arg.value in ledger_owners
+                    and relative != ledger_owners[arg.value]
+                ):
+                    raise ValueError(
+                        f"Codex ledger access requires its state owner: {name}:{node.lineno}"
+                    )
+    for node in ast.walk(tree):
+        # Check attributes and string-based getattr alike, independent of aliases.
+        symbol = (
+            node.attr
+            if isinstance(node, ast.Attribute)
+            else node.value
+            if isinstance(node, ast.Constant)
+            else None
+        )
+        if not is_platform and isinstance(symbol, str) and symbol in native_symbols:
+            raise ValueError(
+                f"Native mechanism requires platform owner: {name}:{node.lineno}"
+            )
+        if (
+            not relative.startswith("interfaces/")
+            and isinstance(node, ast.FunctionDef)
+            and node.name == "main"
+        ):
+            raise ValueError(
+                f"CLI entry requires interface owner: {name}:{node.lineno}"
+            )
+        if relative.startswith("application/"):
+            if (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id in {"sources", "mapping", "session"}
+            ):
+                annotation = node.annotation
+                if (
+                    isinstance(annotation, ast.Name)
+                    and annotation.id == "Any"
+                    or isinstance(annotation, ast.Attribute)
+                    and annotation.attr == "Any"
+                ):
+                    raise ValueError(
+                        f"Application requires an explicit capability contract: {name}:{node.lineno}"
+                    )
+            if isinstance(node, ast.Constant) and node.value in (
+                "imports.json",
+                "transaction.json",
+            ):
+                raise ValueError(
+                    f"Foreign ledger requires its owner port: {name}:{node.lineno}"
+                )
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr.startswith("_")
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr in {"sources", "mapping", "session"}
+            ):
+                raise ValueError(
+                    f"Application requires public capability port: {name}:{node.lineno}"
                 )
 
 
@@ -179,6 +294,7 @@ def check():
         compile(source, name, "exec")
         check_platform_boundary(name, source)
         check_layer_boundary(name, source)
+        check_responsibility_boundary(name, source)
         count += 1
     return {
         "status": "source-syntax-and-boundaries-checked",

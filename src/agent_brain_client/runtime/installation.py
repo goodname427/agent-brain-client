@@ -4,6 +4,8 @@ Connection files carry no credential. Native files change only through the
 existing pinned installation transaction, after explicit server/scope review.
 """
 
+from agent_brain_client.application.installation.enrollment import DeviceEnrollment
+
 from agent_brain_client.runtime.dependencies import prepare_dependencies
 
 import sys
@@ -38,10 +40,9 @@ from agent_brain_client.adapters.harnesses.codex.installation import (
 )
 from agent_brain_client.adapters.storage.private_files import private_json, safe, save
 from agent_brain_client.runtime.enrollment import install_once
+from agent_brain_client.domain.service import endpoint_check
 from agent_brain_client.adapters.server.https import (
-    DeviceEnrollment,
     PairingHTTPS,
-    endpoint_check,
     grant_check,
     native_store,
     profile_file,
