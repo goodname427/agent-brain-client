@@ -127,7 +127,10 @@ class Installation(unittest.TestCase):
         self.assertEqual(self.settings.read_bytes(), self.original)
         config.unlink()
         self.install()
-        text = self.settings.read_text().replace('codebuddy.py', 'outside-edit.py')
+        original = self.settings.read_text()
+        text = cbhost.Document(original).patch(('hooks', 'Stop', 0, 'hooks', 0, 'command'),
+                                               'synthetic-outside-edit').decode()
+        self.assertNotEqual(text, original)
         self.settings.write_text(text)
         with self.assertRaises(ValueError):
             self.install()
