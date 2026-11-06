@@ -72,6 +72,14 @@ class Architecture(unittest.TestCase):
 
     def test_native_mechanisms_cli_and_foreign_ledgers_have_one_owner(self):
         vectors = [
+            ("runtime/collection.py", "import argparse; argparse.ArgumentParser()"),
+            ("runtime/launcher.py", "def main(): pass"),
+            ("adapters/harnesses/codex/content.py", "self._load('transaction.json')"),
+            ("adapters/harnesses/codex/lifecycle.py", "adapter.load('imports.json')"),
+            (
+                "adapters/harnesses/codex/lifecycle.py",
+                "inspect_ledger(name='transaction.json')",
+            ),
             ("application/queue/outbox.py", "sources: Any"),
             ("application/synchronization/pull.py", "session: typing.Any"),
             (

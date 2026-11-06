@@ -153,7 +153,10 @@ def check_responsibility_boundary(name, source):
             raise ValueError(
                 f"Platform mechanism cannot depend on higher adapter: {name}:{node.lineno}"
             )
-        if relative.startswith("adapters/") and target.split(".")[0] == "argparse":
+        if (
+            not relative.startswith("interfaces/")
+            and target.split(".")[0] == "argparse"
+        ):
             raise ValueError(
                 f"CLI parser requires interface owner: {name}:{node.lineno}"
             )
@@ -166,6 +169,24 @@ def check_responsibility_boundary(name, source):
         "WinDLL",
         "CreateFileW",
     }
+    ledger_owners = {
+        "imports.json": "adapters/harnesses/codex/sources.py",
+        "transaction.json": "adapters/harnesses/codex/mapping.py",
+    }
+    if relative.startswith("adapters/harnesses/codex/"):
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for arg in [*node.args, *(keyword.value for keyword in node.keywords)]:
+                if (
+                    isinstance(arg, ast.Constant)
+                    and isinstance(arg.value, str)
+                    and arg.value in ledger_owners
+                    and relative != ledger_owners[arg.value]
+                ):
+                    raise ValueError(
+                        f"Codex ledger access requires its state owner: {name}:{node.lineno}"
+                    )
     for node in ast.walk(tree):
         # Check attributes and string-based getattr alike, independent of aliases.
         symbol = (
@@ -180,7 +201,7 @@ def check_responsibility_boundary(name, source):
                 f"Native mechanism requires platform owner: {name}:{node.lineno}"
             )
         if (
-            relative.startswith("adapters/")
+            not relative.startswith("interfaces/")
             and isinstance(node, ast.FunctionDef)
             and node.name == "main"
         ):

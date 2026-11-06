@@ -1,3 +1,4 @@
+import agent_brain_client.interfaces.cli.collection as collection_cli
 import agent_brain_client.adapters.storage.collection as source_policy
 import agent_brain_client.adapters.storage.metadata as metadata
 """Both native host writers, fictional metadata, no server or credential IO."""
@@ -353,7 +354,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         with (patch.object(gm, 'CollectionClient', return_value=client),
               patch.object(sys, 'argv', ['global_memory', 'global-status', '--device-home', str(self.home), '--check-server']),
               patch.object(sys, 'stdout', output)):
-            self.assertEqual(gm.main(), 0)
+            self.assertEqual(collection_cli.main(), 0)
         result = json.loads(output.getvalue())
         self.assertFalse(result['checkout_code_matches_hook_pins'])
         self.assertIsNone(result['expanded_sources_enabled'])
@@ -364,7 +365,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
 
     def test_isolated_status_cli_loads_shared_toml_editor_without_pythonpath(self):
         environment = dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.native))
-        proc = subprocess.run([sys.executable, '-I', '-B', str(gm.ROOT / 'src/agent_brain_client/runtime/collection.py'),
+        proc = subprocess.run([sys.executable, '-I', '-B', str(gm.ROOT / 'src/agent_brain_client/interfaces/cli/collection.py'),
                                'global-status', '--device-home', str(self.home)],
                               cwd=self.home, env=environment, capture_output=True, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stdout.decode() + proc.stderr.decode())

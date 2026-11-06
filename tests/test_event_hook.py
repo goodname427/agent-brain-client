@@ -1,3 +1,4 @@
+import agent_brain_client.interfaces.mcp.launcher as launcher_cli
 """Synthetic native hooks through public Client classes; no host credentials."""
 import copy
 from contextlib import contextmanager
@@ -147,7 +148,7 @@ class EventHook(unittest.TestCase):
             with self.subTest(worker_exit=code):
                 output=io.StringIO();diagnostic=io.StringIO()
                 with patch.object(sys,'argv',argv),patch.object(sys,'stdout',output),patch.object(sys,'stderr',diagnostic),patch.object(client_startup,'startup',return_value={'status':'current','served':True,'exit_code':code}):
-                    self.assertEqual(client_startup.main(),0)
+                    self.assertEqual(launcher_cli.main(),0)
                 self.assertEqual(output.getvalue(),'')
                 if code:
                     self.assertEqual(json.loads(diagnostic.getvalue()),{'stage':'event-hook-worker','error_code':'hook_worker_failed'})
@@ -353,7 +354,7 @@ class EventHook(unittest.TestCase):
               '--event-hook','--event-hook-policy','synthetic-hook','--event-hook-policy-sha256','b'*64]
         output=io.StringIO()
         with patch.object(sys,'argv',argv),patch.object(sys,'stdout',output),patch.object(sys,'stderr',io.StringIO()),patch.object(client_startup,'startup',return_value={'status':'startup-review-required','served':False}):
-            self.assertEqual(client_startup.main(),0)
+            self.assertEqual(launcher_cli.main(),0)
         self.assertEqual(output.getvalue(),'{}\n')
 
 

@@ -104,7 +104,10 @@ def adapter_for(home, meta, config_image=None):
     from agent_brain_client.adapters.harnesses.codex.mapping import CodexContentMapping
 
     adapter = object.__new__(CodexContentSession)
+    from agent_brain_client.adapters.harnesses.codex.sources import CodexSourceImports
+
     adapter.mapping = CodexContentMapping(adapter)
+    adapter.sources = CodexSourceImports(adapter)
     adapter.home = Path(home)
     adapter.native_home = native
     adapter.cache = private_files.safe(runtime["content_cache"])
@@ -169,31 +172,9 @@ def queue_counts(adapter):
             raise install.InstallBlocked("Mixed queue identities retained")
         binding = row["policy_sha"]
         counts[row["state"]] += 1
-    imports = adapter._load("imports.json")
-    if imports is not None:
-        if (
-            not isinstance(imports, dict)
-            or set(imports) != {"schema", "policy_sha", "items", "coverage"}
-            or imports["schema"] != 1
-            or not isinstance(imports["items"], dict)
-        ):
-            raise install.InstallBlocked("Import inventory retained")
-        for item in imports["items"].values():
-            phase = item.get("status") if isinstance(item, dict) else None
-            if phase not in (
-                "inventoried",
-                "pending",
-                "imported",
-                "duplicate",
-                "conflict",
-                "blocked",
-                "reconciled",
-            ):
-                raise install.InstallBlocked("Unknown import retained")
-            if phase in ("inventoried", "pending", "conflict", "blocked"):
-                raise install.InstallBlocked(
-                    "Unfinished import retained; recover using the existing MCP"
-                )
+    blocker = adapter.sources.removal_blocker()
+    if blocker is not None:
+        raise install.InstallBlocked(blocker)
     return counts
 
 
@@ -237,8 +218,7 @@ def prepare_removal(home):
             "queue": counts,
             "next_action": "Keep the installation. Retry the original request IDs or resolve conflicts through MCP, then rerun uninstall.",
         }
-    transaction = adapter._load("transaction.json")
-    if transaction and transaction.get("phase") not in ("complete", "rolled-back"):
+    if not adapter.mapping.transaction_settled():
         raise install.InstallBlocked("Mapping transaction needs repair")
     owned = adapter.mapping.owned_snapshot()
     adapter.mapping._skill_dirs(owned["files"], owned["files"])

@@ -347,8 +347,7 @@ class CodexContentSession(FileContentOutbox):
                     or not 0 < pin["verified_at"] < float("inf")
                 ):
                     raise CacheBlocked()
-                journal = self._load("transaction.json")
-                if journal and journal.get("phase") not in ("complete", "rolled-back"):
+                if not self.mapping.transaction_settled():
                     raise CacheBlocked()
                 self.mapping.owned_snapshot()
                 queue = self.queue_status()

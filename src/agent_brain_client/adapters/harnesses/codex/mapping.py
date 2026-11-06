@@ -310,6 +310,11 @@ class CodexContentMapping:
         self.session._save("transaction.json", dict(journal, phase="rolled-back"))
         self._prune_skill_directories(journal["owned"]["files"])
 
+    def transaction_settled(self):
+        """Read-only gate for offline reads/removal; never attempts recovery."""
+        journal = self.session._load("transaction.json")
+        return not journal or journal.get("phase") in ("complete", "rolled-back")
+
     def recovery_uncertain(self):
         try:
             journal = self.session._load("transaction.json")

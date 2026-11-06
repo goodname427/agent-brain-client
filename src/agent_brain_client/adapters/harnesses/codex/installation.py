@@ -191,7 +191,7 @@ def context(home, package, policy_path, policy_sha, *, inspection=False):
     files = metadata.get("manifest", metadata)["files"]
     if sha(contract.encode(files)) != package_sha:
         raise InstallBlocked("Package membership changed during inspection")
-    launcher = "src/agent_brain_client/runtime/launcher.py"
+    launcher = "src/agent_brain_client/interfaces/mcp/launcher.py"
     mcp = {
         "command": str(Path(sys.executable).resolve()),
         "args": [

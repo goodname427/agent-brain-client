@@ -1,3 +1,4 @@
+import agent_brain_client.interfaces.cli.collection as collection_cli
 import agent_brain_client.adapters.storage.metadata as metadata
 import agent_brain_client.domain.privacy as privacy
 """Isolated global routing/ownership fixtures; no native session or service."""
@@ -113,7 +114,7 @@ class GlobalMemoryFixtures(unittest.TestCase):
             patch.object(sys, 'stdout', output),
             patch.object(sys, 'stderr', diagnostic),
         ):
-            self.assertEqual(gm.main(), 0)
+            self.assertEqual(collection_cli.main(), 0)
         self.assertEqual(output.getvalue(), '{}\n')
         result = json.loads(diagnostic.getvalue())
         self.assertEqual(result['operation_stage'], 'global-cache-open')

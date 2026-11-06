@@ -815,6 +815,39 @@ class CodexSourceImports:
         ):
             raise CacheBlocked()
 
+    def removal_blocker(self):
+        """Inventory retained sources without transport identity or recovery.
+
+        Removal must not activate a credential to derive queue_sha. Preserve its
+        existing metadata-only checks; normal imports use the stronger binding
+        and content validation in _imports(). Neither path changes the ledger.
+        """
+        state = self.session._load("imports.json")
+        if state is None:
+            return None
+        if (
+            not isinstance(state, dict)
+            or set(state) != {"schema", "policy_sha", "items", "coverage"}
+            or state["schema"] != 1
+            or not isinstance(state["items"], dict)
+        ):
+            return "Import inventory retained"
+        for item in state["items"].values():
+            phase = item.get("status") if isinstance(item, dict) else None
+            if phase not in (
+                "inventoried",
+                "pending",
+                "imported",
+                "duplicate",
+                "conflict",
+                "blocked",
+                "reconciled",
+            ):
+                return "Unknown import retained"
+            if phase in ("inventoried", "pending", "conflict", "blocked"):
+                return "Unfinished import retained; recover using the existing MCP"
+        return None
+
     def _imports(self):
         state = self.session._load(
             "imports.json",

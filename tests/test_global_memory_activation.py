@@ -1,3 +1,4 @@
+import agent_brain_client.interfaces.cli.collection as collection_cli
 import agent_brain_client.runtime.updates as runtime_updates
 import agent_brain_client.adapters.storage.collection as source_policy
 import agent_brain_client.adapters.storage.metadata as metadata
@@ -145,7 +146,7 @@ class GlobalMemoryActivation(unittest.TestCase):
               patch.object(sys, 'argv', ['global_memory', 'global-resume']),
               patch.object(sys, 'stdout', output),
               patch.object(gm, 'CollectionClient', side_effect=AssertionError('No credentials'))):
-            self.assertEqual(gm.main(), 2)
+            self.assertEqual(collection_cli.main(), 2)
         self.assertEqual(json.loads(output.getvalue())['status'], 'global-memory-activation-required')
 
     def test_migrated_legacy_sources_are_not_reenabled_while_global_admission_is_pending(self):
@@ -163,7 +164,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         with (patch.object(operator, 'configure', return_value=result),
               patch.object(sys, 'argv', ['global_memory', 'global-configure', '--activate-packet', 'synthetic-packet']),
               patch.object(sys, 'stdout', output)):
-            self.assertEqual(gm.main(), 2)
+            self.assertEqual(collection_cli.main(), 2)
         self.assertEqual(json.loads(output.getvalue()), result)
 
     def test_activation_does_not_clear_fence_on_missing_resume_confirmation(self):

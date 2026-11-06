@@ -1,3 +1,4 @@
+import agent_brain_client.interfaces.mcp.launcher as launcher_cli
 """One Mac checkpoint; disposable client-only Git/native state and fake auth."""
 import copy
 import hashlib
@@ -27,11 +28,11 @@ import dev.integration.checkpoint as remote_connect
 
 class Releases(unittest.TestCase):
     def test_check_only_offline_requires_a_verified_active_package(self):
-        args=['agent_brain_client.runtime.launcher.py','--policy-file','unused-policy','--policy-sha256','a'*64,'--check-only']
+        args=['src/agent_brain_client/interfaces/mcp/launcher.py','--policy-file','unused-policy','--policy-sha256','a'*64,'--check-only']
         for active,expected in ((None,2),({'commit':'a'*40,'version':'0.1.1'},0)):
             result={'status':'offline','active':active}
             with patch.object(sys,'argv',args),patch.object(client_startup,'startup',return_value=result),patch.object(sys,'stdout',io.StringIO()):
-                self.assertEqual(client_startup.main(),expected)
+                self.assertEqual(launcher_cli.main(),expected)
 
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.base=Path(self.temp.name)
