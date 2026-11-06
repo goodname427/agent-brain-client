@@ -1,4 +1,4 @@
-"""Opt-in HTTPS device content and native-only durable pairing coordinator.
+"""Opt-in HTTPS device content and native credential transport.
 
 Profiles contain reviewed metadata only. Codes and tokens remain inside the
 dedicated OS credential item, HTTP Authorization and private helper pipes.
@@ -8,16 +8,17 @@ import hashlib
 import json
 from pathlib import Path
 import re
-import secrets
 import time
 from urllib.error import HTTPError
-from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 BASE = Path(__file__).resolve().parent
 ROOT = BASE.parent
 from agent_brain_client.adapters.server.http import RemoteClient, NoRedirect
 from agent_brain_client.application.control import RequestStopped
+from agent_brain_client.domain.enrollment import enrollment_record
+from agent_brain_client.domain.authorization import valid_secret
+from agent_brain_client.domain.service import endpoint_check
 from agent_brain_client.application.installation.pairing import (
     EnrollmentTerminal,
     reviewed_ids,
@@ -37,10 +38,6 @@ from agent_brain_client.adapters.platforms.filesystem import (
     platform_paths,
     native_platform,
 )
-
-
-def valid_secret(value):
-    return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{32,128}", value)
 
 
 def grant_metadata_check(grant):
@@ -74,24 +71,6 @@ def grant_metadata_check(grant):
 def grant_check(grant):
     grant_metadata_check(grant)
     require_platform("credential-store", grant["platform"])
-
-
-def endpoint_check(endpoint):
-    if not isinstance(endpoint, str):
-        raise ValueError("HTTPS origin required")
-    value = urlsplit(endpoint)
-    if (
-        value.scheme != "https"
-        or not value.hostname
-        or value.username
-        or value.password
-        or value.query
-        or value.fragment
-        or value.path not in ("", "/")
-        or any(c.isspace() or ord(c) < 33 or ord(c) == 127 for c in endpoint)
-    ):
-        raise ValueError("Credential-free HTTPS origin required")
-    return endpoint.rstrip("/")
 
 
 def profile_metadata(endpoint, grant, descriptor, state_directory):
@@ -229,157 +208,6 @@ class PairingHTTPS:
 
     def confirm(self, credential, nonce):
         return self.call("confirm", {"nonce": nonce}, credential)
-
-
-class DeviceEnrollment:
-    def __init__(self, profile, profile_sha, store, transport, secure_input):
-        (
-            self.profile,
-            self.profile_sha,
-            self.store,
-            self.transport,
-            self.secure_input,
-        ) = profile, profile_sha, store, transport, secure_input
-
-    def check(self, saved):
-        basic = {"schema", "profile_sha256", "phase", "nonce"}
-        if (
-            not isinstance(saved, dict)
-            or type(saved.get("schema")) is not int
-            or saved["schema"] != 1
-            or saved.get("profile_sha256") != self.profile_sha
-            or not valid_secret(saved.get("nonce"))
-        ):
-            raise ValueError("Enrollment record binding changed")
-        if saved.get("phase") == "preparing":
-            if set(saved) != basic | {"code"} or not valid_secret(saved["code"]):
-                raise ValueError("Invalid prepare recovery")
-        elif saved.get("phase") in ("pending", "active"):
-            if (
-                set(saved) != basic | {"credential", "device_id", "grant"}
-                or not valid_secret(saved["credential"])
-                or not re.fullmatch(r"[a-f0-9]{32}", saved.get("device_id", ""))
-                or saved["grant"] != self.profile["grant"]
-            ):
-                raise ValueError("Invalid device recovery")
-        else:
-            raise ValueError("Unknown enrollment preserved")
-        return saved
-
-    def run(self):
-        try:
-            with self.store.lease():
-                saved = self.store.load()
-                if saved is None:
-                    code = self.secure_input()
-                    if code is None:
-                        return {"status": "pairing-cancelled", "installed": False}
-                    if not valid_secret(code):
-                        return {"status": "pairing-invalid-input", "installed": False}
-                    saved = {
-                        "schema": 1,
-                        "profile_sha256": self.profile_sha,
-                        "phase": "preparing",
-                        "code": code,
-                        "nonce": secrets.token_urlsafe(24),
-                    }
-                    # Persist before prepare. Lost replies/restarts reuse code+nonce.
-                    self.store.save(saved, None)
-                self.check(saved)
-                if saved["phase"] == "preparing":
-                    result = self.transport.prepare(
-                        saved["code"], saved["nonce"], self.profile
-                    )
-                    if (
-                        set(result)
-                        != {"credential", "nonce", "device_id", "grant", "phase"}
-                        or result["phase"] != "pending"
-                        or result["nonce"] != saved["nonce"]
-                        or result["grant"] != self.profile["grant"]
-                    ):
-                        raise ValueError("Unexpected prepare grant")
-                    pending = {
-                        "schema": 1,
-                        "profile_sha256": self.profile_sha,
-                        **result,
-                    }
-                    self.check(pending)
-                    self.store.save(pending, saved)
-                    saved = pending
-                result = self.transport.confirm(saved["credential"], saved["nonce"])
-                if result != {
-                    "device_id": saved["device_id"],
-                    "grant": self.profile["grant"],
-                    "phase": "active",
-                }:
-                    raise ValueError("Unexpected confirmation")
-                active = dict(saved, phase="active")
-                if saved != active:
-                    self.store.save(active, saved)
-                return {
-                    "status": "device-paired",
-                    "device_id": saved["device_id"],
-                    "grant": self.profile["grant"],
-                    "installed": False,
-                    "next_action": "Apply the separately approved exact owned content installation plan and read-only protocol check.",
-                }
-        except EnrollmentTerminal as error:
-            return {
-                "status": "pairing-reenrollment-review-required",
-                "reason": error.reason,
-                "installed": False,
-            }
-        except Exception:
-            return {
-                "status": "pairing-resume-required",
-                "installed": False,
-                "next_action": "Preserve the system credential record and retry the same pinned profile. No raw transport or credential details returned.",
-            }
-
-    def reset_terminal(self, confirm_reset):
-        try:
-            with self.store.lease():
-                saved = self.store.load()
-                if saved is None:
-                    return {"status": "pairing-not-enrolled", "installed": False}
-                self.check(saved)
-                if saved["phase"] == "preparing":
-                    try:
-                        # Recheck exact code+nonce, never assume a network failure
-                        # means rejection. A successful prepare stays recoverable.
-                        self.transport.prepare(
-                            saved["code"], saved["nonce"], self.profile
-                        )
-                        return {"status": "pairing-reset-blocked", "installed": False}
-                    except EnrollmentTerminal as error:
-                        if error.reason != "pairing_prepare_rejected":
-                            raise ValueError("Unexpected prepare terminal")
-                        if not confirm_reset(error.reason, "preparing"):
-                            return {
-                                "status": "pairing-reset-cancelled",
-                                "installed": False,
-                            }
-                        self.store.clear(saved)
-                        return {
-                            "status": "pairing-reenrollment-ready",
-                            "installed": False,
-                        }
-                try:
-                    result = self.transport.confirm(saved["credential"], saved["nonce"])
-                    if result != {
-                        "device_id": saved["device_id"],
-                        "grant": self.profile["grant"],
-                        "phase": "active",
-                    }:
-                        raise ValueError("Unknown confirmation")
-                    return {"status": "active-enrollment-preserved", "installed": False}
-                except EnrollmentTerminal as error:
-                    if not confirm_reset(error.reason, saved["device_id"]):
-                        return {"status": "pairing-reset-cancelled", "installed": False}
-                    self.store.clear(saved)
-                    return {"status": "pairing-reenrollment-ready", "installed": False}
-        except Exception:
-            return {"status": "pairing-reset-blocked", "installed": False}
 
 
 class PinnedDeviceTask:
@@ -714,7 +542,6 @@ class HTTPSContentClient:
         self.profile, self.profile_sha = profile_file(path, digest), digest
         self.grant, self.data_mode = self.profile["grant"], "personal"
         self.store = store if store is not None else native_store(self.profile, digest)
-        self.enrollment = DeviceEnrollment(self.profile, digest, self.store, None, None)
         self.device_task = (
             PinnedDeviceTask(*device_task, self.profile, digest)
             if device_task is not None
@@ -739,7 +566,7 @@ class HTTPSContentClient:
         )
 
     def activate_identity(self):
-        saved = self.enrollment.check(self.store.load())
+        saved = enrollment_record(self.store.load(), self.profile_sha, self.grant)
         if (
             saved["phase"] != "active"
             or self.device_id is not None
@@ -755,7 +582,7 @@ class HTTPSContentClient:
         }
 
     def _credential(self):
-        saved = self.enrollment.check(self.store.load())
+        saved = enrollment_record(self.store.load(), self.profile_sha, self.grant)
         if (
             saved["phase"] != "active"
             or self.device_id is None

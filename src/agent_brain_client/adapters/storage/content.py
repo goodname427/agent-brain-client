@@ -9,9 +9,18 @@ from agent_brain_client.domain.errors import CacheBlocked, CollectionCapacityExc
 
 
 class NoNativeSources:
-    def _assert_sources_shareable(self, keys):
+    def assert_shareable(self, keys):
         if keys:
             raise CacheBlocked()
+
+    def validate_reconciliation(self, source_keys, kind, identity, record):
+        self.assert_shareable(source_keys)
+
+    def confirm_reconciliation(self, source_keys, request_id):
+        self.assert_shareable(source_keys)
+
+    def block_reconciliation(self, source_keys, request_id):
+        self.assert_shareable(source_keys)
 
 
 import re
@@ -261,7 +270,7 @@ class FileEventQueue(FileContentOutbox):
     def methods(self):
         return super().methods() & {"memory_event_submit"}
 
-    def _assert_sources_shareable(self, source_keys):
+    def assert_shareable(self, source_keys):
         if source_keys:
             raise CacheBlocked()
 

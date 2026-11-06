@@ -1,3 +1,6 @@
+from agent_brain_client.adapters.platforms.tree import is_link
+from agent_brain_client.adapters.platforms.posix.tree import PosixTree
+from agent_brain_client.adapters.platforms.windows.tree import WindowsTree
 import stat
 import agent_brain_client.adapters.harnesses.codex.memory_inventory as adapters_harnesses_codex_memory_inventory
 """Synthetic persistent-memory inventory; never reads native session files."""
@@ -50,14 +53,14 @@ class CodexMemoryInventory(unittest.TestCase):
             with self.subTest(mode=mode),tempfile.TemporaryDirectory() as tmp:
                 memories=Path(tmp)/'memories';memories.mkdir();(memories/'placeholder').touch()
                 fake=SimpleNamespace(st_mode=mode,st_file_attributes=0x400)
-                backend=adapters_harnesses_codex_memory_inventory._WindowsMemoryTree if os.name=='nt' else adapters_harnesses_codex_memory_inventory._PosixMemoryTree
+                backend=WindowsTree if os.name=='nt' else PosixTree
                 with patch.object(backend,'info',return_value=fake),patch.object(backend,'open_file',side_effect=AssertionError('must not open')),patch.object(backend,'open_directory',side_effect=AssertionError('must not traverse')):
                     result=inventory_codex_memories(tmp)
                 self.assertEqual(result['counts'],{'excluded':1})
                 self.assertIsNone(result['sources'][0]['source_fingerprint'])
 
     def test_file_replaced_between_stat_and_open_is_unavailable(self):
-        backend=adapters_harnesses_codex_memory_inventory._WindowsMemoryTree if os.name=='nt' else adapters_harnesses_codex_memory_inventory._PosixMemoryTree
+        backend=WindowsTree if os.name=='nt' else PosixTree
         original=backend.open_file
         with tempfile.TemporaryDirectory() as tmp:
             home=Path(tmp);memories=home/'memories';memories.mkdir()
@@ -77,7 +80,7 @@ class CodexMemoryInventory(unittest.TestCase):
         source=root/'one.md';source.write_bytes(b'synthetic source')
         row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
         replacement=helper.home/'replacement';replacement.write_bytes(b'synthetic replacement')
-        backend=adapters_harnesses_codex_memory_inventory._WindowsMemoryTree if os.name=='nt' else adapters_harnesses_codex_memory_inventory._PosixMemoryTree
+        backend=WindowsTree if os.name=='nt' else PosixTree
         original=backend.open_file
         def replace(tree,directory,entry,info):
             os.replace(replacement,source)
@@ -432,7 +435,7 @@ class CodexMemoryInventory(unittest.TestCase):
         self.assertEqual(helper.cloud.records[('memory','synthetic-topic')],merged_without_source_key)
         # Resolving the old outbox request alone is not evidence that its native
         # source was included in the merged record.
-        helper.adapter.sources._import_pending()
+        helper.adapter.sources.reconcile_pending()
         self.assertEqual(helper.adapter.sources._imports()['items'][source_key]['status'],'conflict')
 
         current=server.invoke('content_read',{'kind':'memory','id':'synthetic-topic'})

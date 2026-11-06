@@ -4,7 +4,6 @@ from agent_brain_client.domain.content import same_record
 from agent_brain_client.domain.errors import CacheBlocked
 import itertools
 import json
-import os
 import re
 import stat
 from agent_brain_client.domain import contract
@@ -18,18 +17,17 @@ from agent_brain_client.adapters.harnesses.codex.content_limits import (
 )
 from agent_brain_client.adapters.harnesses.codex.memory_inventory import (
     inventory_codex_memories,
-    _memory_tree,
-    _memory_link,
-    _memory_same,
-    _memory_version,
 )
+
+
+from agent_brain_client.adapters.platforms.tree import open_tree, is_link
 
 
 class CodexSourceImports:
     def __init__(self, session):
         self.session = session
 
-    def _assert_sources_shareable(self, source_keys):
+    def assert_shareable(self, source_keys):
         if not source_keys:
             return
         imports = self._imports()
@@ -59,6 +57,43 @@ class CodexSourceImports:
                     or review.get("source_fingerprint") != source["source_fingerprint"]
                 ):
                     raise CacheBlocked()
+
+    def validate_reconciliation(self, source_keys, kind, identity, record):
+        if not source_keys:
+            return
+        state = self._imports()
+        for key in source_keys:
+            item = state["items"].get(key)
+            if (
+                item is None
+                or item["status"] not in ("conflict", "inventoried")
+                or (item["source"]["kind"], item["source"]["id"]) != (kind, identity)
+            ):
+                raise CacheBlocked()
+            if item["status"] == "inventoried" and not same_record(
+                kind, item["source"]["record"], record, preserve_enabled=False
+            ):
+                raise CacheBlocked()
+
+    def confirm_reconciliation(self, source_keys, request_id):
+        if not source_keys:
+            return
+        state = self._imports()
+        for key in source_keys:
+            item = state["items"][key]
+            if item["status"] in ("conflict", "inventoried"):
+                item.update(status="reconciled", request_id=request_id)
+        self.session._save("imports.json", state)
+
+    def block_reconciliation(self, source_keys, request_id):
+        state = self._imports()
+        for key in source_keys:
+            if key in state["items"] and state["items"][key]["status"] in (
+                "inventoried",
+                "pending",
+            ):
+                state["items"][key].update(status="blocked", request_id=request_id)
+        self.session._save("imports.json", state)
 
     def stage_import(self, plan):
         """Explicit reviewed normalized sources only; no native/file discovery."""
@@ -479,15 +514,15 @@ class CodexSourceImports:
                 raise CacheBlocked()
             root = self.session.native_memory_home / "memories"
             try:
-                tree = _memory_tree(root)
+                tree = open_tree(root)
             except OSError:
                 raise CacheBlocked() from None
             pending = [(tree.root, "", 0)]
             entries_seen = 0
             directories_seen = 0
-            file_fd = None
+            raw = None
             try:
-                while pending and file_fd is None:
+                while pending and raw is None:
                     directory_fd, prefix, depth = pending.pop()
                     directories_seen += 1
                     if directories_seen > 1024 or depth > 16:
@@ -513,7 +548,7 @@ class CodexSourceImports:
                                 info = tree.info(directory_fd, entry)
                             except OSError:
                                 raise CacheBlocked() from None
-                            if _memory_link(info):
+                            if is_link(info):
                                 continue
                             if stat.S_ISDIR(info.st_mode):
                                 try:
@@ -532,35 +567,20 @@ class CodexSourceImports:
                                 if info.st_size > 131072:
                                     raise CacheBlocked()
                                 try:
-                                    file_fd = tree.open_file(directory_fd, entry, info)
+                                    with tree.verified_file(
+                                        directory_fd, entry, info
+                                    ) as source:
+                                        raw = source.read(131073)
                                 except OSError:
                                     raise CacheBlocked() from None
-                                file_info = os.fstat(file_fd)
-                                if (
-                                    not stat.S_ISREG(file_info.st_mode)
-                                    or _memory_link(file_info)
-                                    or not _memory_same(info, file_info)
-                                ):
-                                    os.close(file_fd)
-                                    file_fd = None
-                                    raise CacheBlocked()
                                 break
                     finally:
                         tree.close_directory(directory_fd)
-                if file_fd is None:
+                if raw is None:
                     raise CacheBlocked()
-                with os.fdopen(file_fd, "rb") as source:
-                    file_fd = None
-                    raw = source.read(131073)
-                    if _memory_version(file_info) != _memory_version(
-                        os.fstat(source.fileno())
-                    ):
-                        raise CacheBlocked()
             except OSError:
                 raise CacheBlocked() from None
             finally:
-                if file_fd is not None:
-                    os.close(file_fd)
                 for directory_fd, _, _ in pending:
                     try:
                         tree.close_directory(directory_fd)
@@ -843,7 +863,7 @@ class CodexSourceImports:
                 raise CacheBlocked()
         return state
 
-    def _import_pending(self):
+    def reconcile_pending(self):
         state = self._imports()
         linked_writes = {}
         for queued in self.session._queued():

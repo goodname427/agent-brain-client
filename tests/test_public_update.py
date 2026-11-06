@@ -1,3 +1,4 @@
+import agent_brain_client.adapters.harnesses.codex.updates as codex_updates
 import agent_brain_client.interfaces.cli.install as interfaces_cli_install
 import agent_brain_client.runtime.updates as runtime_updates
 import agent_brain_client.adapters.storage.collection as source_policy
@@ -82,7 +83,7 @@ class PublicUpdate(unittest.TestCase):
         setup = patch.object(guide, 'source_setup', return_value={'collection_enabled':True})
         setup.start()
         self.addCleanup(setup.stop)
-        handover = patch.object(runtime_updates, 'refresh_launcher', return_value=False)
+        handover = patch.object(codex_updates, 'refresh_launcher', return_value=False)
         handover.start()
         self.addCleanup(handover.stop)
 
@@ -130,7 +131,7 @@ class PublicUpdate(unittest.TestCase):
                     return {'status': 'offline'}
                 return super().update()
 
-        with (patch.object(runtime_updates, 'ClientReleases', SlowChannel),
+        with (patch.object(codex_updates, 'ClientReleases', SlowChannel),
               patch.object(self.f.f.backend, 'load', side_effect=AssertionError('No credential access')),
               patch.object(hooks, 'install', return_value={'status':'global-hook-installed','native_changed':False})):
             checked = runtime_updates.manage_update(self.home, 'check-update')
@@ -254,7 +255,7 @@ class PublicUpdate(unittest.TestCase):
         output = io.StringIO()
         with (patch.object(Path, 'home', return_value=self.home),
               patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', '--action', 'update']),
-              patch.object(runtime_updates, 'ClientReleases', self.channel),
+              patch.object(codex_updates, 'ClientReleases', self.channel),
               patch.object(sys, 'stdout', output)):
             code = interfaces_cli_install.main()
         value = json.loads(output.getvalue())
@@ -271,7 +272,7 @@ class PublicUpdate(unittest.TestCase):
                 sys, "argv", ["agent_brain_client.runtime.installation.py", "--action", "check-update"]
             ),
             patch.object(sys, "stdout", output),
-            patch.object(runtime_updates, "ClientReleases", self.channel),
+            patch.object(codex_updates, "ClientReleases", self.channel),
             patch.object(
                 wizard,
                 "resolve_connection",
@@ -364,7 +365,7 @@ class PublicUpdate(unittest.TestCase):
 
     def test_repeating_install_points_to_public_update_without_updater(self):
         with patch.object(
-            runtime_updates.ClientReleases,
+            codex_updates.ClientReleases,
             "update",
             side_effect=AssertionError("Install is not update"),
         ):

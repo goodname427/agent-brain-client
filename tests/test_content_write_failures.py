@@ -415,7 +415,7 @@ class CollectionCapacity(unittest.TestCase):
         self.assertEqual(json.loads((self.f.cache / 'transaction.json').read_bytes())['phase'], 'applying')
         self.assertNotEqual(self.files(), before)
         adapter = self.restart()
-        with patch.object(adapter, '_fetch', side_effect=OSError('Synthetic disconnected after recovery')):
+        with patch.object(adapter, 'fetch_snapshot', side_effect=OSError('Synthetic disconnected after recovery')):
             result = adapter.refresh()
         self.assertEqual(result['stage'], 'remote-snapshot')
         self.assertEqual(json.loads((self.f.cache / 'transaction.json').read_bytes())['phase'], 'rolled-back')

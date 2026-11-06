@@ -1,3 +1,4 @@
+from agent_brain_client.application.installation.enrollment import DeviceEnrollment
 """Portable metadata and native platform separation; no real devices."""
 
 from contextlib import nullcontext
@@ -15,7 +16,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / n) for n in ("src", "src", "src")]
 from agent_brain_client.adapters.packages.client import runtime_environment, UpdateBlocked
-from agent_brain_client.adapters.server.https import DeviceEnrollment, grant_check, native_store
+from agent_brain_client.adapters.server.https import  grant_check, native_store
 import bootstrap.python_runtime as bootstrap
 
 

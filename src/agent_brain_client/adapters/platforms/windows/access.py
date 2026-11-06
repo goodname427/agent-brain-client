@@ -40,7 +40,7 @@ def dialog_api():
 
 
 def secure_input(endpoint, *, prompt=None):
-    from agent_brain_client.adapters.server.https import endpoint_check
+    from agent_brain_client.domain.service import endpoint_check
 
     endpoint = endpoint_check(endpoint)
     api = prompt or dialog_api()

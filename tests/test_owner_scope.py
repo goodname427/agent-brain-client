@@ -34,7 +34,7 @@ class OwnerScope(unittest.TestCase):
                 with self.assertRaises((CacheBlocked,ValueError)):adapter.mapping._path(name)
             foreign=home/'.agents/skills/future-skill';foreign.mkdir(parents=True);(foreign/'SKILL.md').write_text('Foreign file')
             snapshot={'records':[contract.envelope('skill','future-skill',{'description':'Future','enabled':True,'files':{'SKILL.md':'---\nname: future-skill\ndescription: Future\n---\nApproved.'},'dependencies':{'commands':[],'python_modules':[]}})]}
-            adapter._fetch=lambda:snapshot
+            adapter.fetch_snapshot=lambda:snapshot
             self.assertEqual(adapter.refresh()['status'],'content-refresh-blocked')
             self.assertEqual((foreign/'SKILL.md').read_text(),'Foreign file')
 

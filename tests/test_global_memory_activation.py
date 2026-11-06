@@ -243,10 +243,11 @@ class AutomaticCapture(unittest.TestCase):
             'project_root':None,'repository_root':None}))
 
     def test_noninteractive_update_runs_source_setup_and_status_does_not(self):
+        from agent_brain_client.application.installation.update import ClientUpdate
         import agent_brain_client.runtime.installation as wizard
         import agent_brain_client.runtime.installation_completion as guide
         result = {'status':'client-update-current','channel_checked':True}
-        with (patch.object(runtime_updates, '_manage_update', return_value=result),
+        with (patch.object(ClientUpdate, '_run', return_value=result),
               patch.object(guide, 'source_setup', return_value={'collection_enabled':True}) as setup):
             metadata.write(self.file, self.value)
             self.assertTrue(runtime_updates.manage_update(self.home, 'update')['source_setup']['collection_enabled'])

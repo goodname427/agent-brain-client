@@ -17,6 +17,8 @@ from agent_brain_client.domain.contract import encode
 
 
 def dispatch(args):
+    if args.action == "inspect":
+        return installation.inspect(args.device_home)
     if args.action == "plan":
         plan = installation.prepare(
             args.device_home,
@@ -43,7 +45,7 @@ def dispatch(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("plan", "apply"))
+    parser.add_argument("action", choices=("plan", "apply", "inspect"))
     parser.add_argument("--device-home", default=str(Path.home()))
     for name in (
         "package",
@@ -60,6 +62,8 @@ def main(argv=None):
         ("package", "release_policy", "release_policy_sha256", "output")
         if args.action == "plan"
         else ("plan_file", "plan_sha256")
+        if args.action == "apply"
+        else ()
     )
     for name in required:
         if not getattr(args, name):

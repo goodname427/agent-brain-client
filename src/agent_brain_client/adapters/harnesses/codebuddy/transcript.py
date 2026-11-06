@@ -11,10 +11,11 @@ import json
 import os
 from pathlib import Path
 import re
-import stat
 
 from agent_brain_client.adapters.harnesses.codebuddy.events import session_id
 from agent_brain_client.adapters.storage.bounded_json import canonical, digest, unique
+
+from agent_brain_client.adapters.platforms.source_files import open_native_source
 
 LIMIT = 4 * 1048576
 
@@ -38,17 +39,6 @@ def native_path(home, payload):
     elif path.suffix != ".jsonl" or path.stem != session:
         raise ValueError("Recognized current CodeBuddy session file required")
     return path
-
-
-def open_native(path):
-    path = canonical(path)
-    handle = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    stream = os.fdopen(handle, "rb")
-    info = os.fstat(handle)
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-        stream.close()
-        raise ValueError("Native transcript regular file required")
-    return stream, info
 
 
 def marker(home, payload):
@@ -93,7 +83,7 @@ def observe(home, payload, core):
         try:
             if path is None:
                 raise FileNotFoundError()
-            stream, info = open_native(path)
+            stream, info = open_native_source(path)
             stream.close()
             identity, offset = [info.st_dev, info.st_ino], info.st_size
         except FileNotFoundError:
@@ -151,7 +141,7 @@ def plain(message):
 
 
 def read_bound(path, *, offset=0, identity=None):
-    with open_native(path)[0] as stream:
+    with open_native_source(path)[0] as stream:
         info = os.fstat(stream.fileno())
         if (
             identity is not None

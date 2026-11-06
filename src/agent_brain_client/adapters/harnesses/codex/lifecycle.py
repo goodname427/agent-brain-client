@@ -240,7 +240,7 @@ def prepare_removal(home):
     transaction = adapter._load("transaction.json")
     if transaction and transaction.get("phase") not in ("complete", "rolled-back"):
         raise install.InstallBlocked("Mapping transaction needs repair")
-    owned = adapter.mapping._owned()
+    owned = adapter.mapping.owned_snapshot()
     adapter.mapping._skill_dirs(owned["files"], owned["files"])
     config_before = private_files.raw(native / "config.toml")
     config_after = remove_table(config_before)
@@ -739,7 +739,9 @@ def status(home):
         try:
             adapter, _, _ = adapter_for(home, private_files.private_json(registration))
             result["queue"] = queue_counts(adapter)
-            result["owned_mapping_files"] = len(adapter.mapping._owned()["files"])
+            result["owned_mapping_files"] = len(
+                adapter.mapping.owned_snapshot()["files"]
+            )
         except Exception:
             return dict(
                 result,

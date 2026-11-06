@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 
-from dev.checks.source import check_layer_boundary
+from dev.checks.source import check_layer_boundary, check_responsibility_boundary
 from agent_brain_client.adapters.packages.client import ClientPackage, UpdateBlocked
 from agent_brain_client.adapters.packages.layout import PYTHON_FILES
 
@@ -69,6 +69,66 @@ class Architecture(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "dependency boundary"),
             ):
                 check_layer_boundary(PREFIX + name, source)
+
+    def test_native_mechanisms_cli_and_foreign_ledgers_have_one_owner(self):
+        vectors = [
+            ("application/queue/outbox.py", "sources: Any"),
+            ("application/synchronization/pull.py", "session: typing.Any"),
+            (
+                "adapters/harnesses/codex/inventory.py",
+                "import ctypes as C; C.WinDLL('kernel32')",
+            ),
+            ("adapters/storage/host.py", "from ctypes import wintypes as W"),
+            ("adapters/storage/host.py", "import msvcrt as crt"),
+            (
+                "adapters/harnesses/codebuddy/transcript.py",
+                "import os as io; io.open(path, io.O_NOFOLLOW)",
+            ),
+            ("adapters/harnesses/codex/inventory.py", "getattr(io, 'O_DIRECTORY')"),
+            ("adapters/storage/host.py", "io.fchown(fd, uid, gid)"),
+            (
+                "adapters/harnesses/codex/install.py",
+                "import argparse; argparse.ArgumentParser()",
+            ),
+            ("adapters/harnesses/codex/install.py", "def main(): pass"),
+            (
+                "adapters/platforms/tree.py",
+                "from agent_brain_client.adapters.storage import bounded_json",
+            ),
+            ("application/synchronization/pull.py", "self.session.mapping._recover()"),
+            ("application/queue/outbox.py", "self.sources._imports()"),
+            ("application/queue/outbox.py", "self._save('imports.json', state)"),
+            (
+                "application/synchronization/pull.py",
+                "self.session.load('transaction.json')",
+            ),
+        ]
+        for name, source in vectors:
+            with self.subTest(name=name, source=source), self.assertRaises(ValueError):
+                check_responsibility_boundary(PREFIX + name, source)
+        for name, source in [
+            (
+                "adapters/platforms/windows/tree.py",
+                "import ctypes as C; C.WinDLL('kernel32')",
+            ),
+            (
+                "adapters/platforms/posix/tree.py",
+                "import os; os.open(path, os.O_NOFOLLOW)",
+            ),
+            (
+                "interfaces/cli/install_plan.py",
+                "import argparse; argparse.ArgumentParser()",
+            ),
+            (
+                "application/queue/outbox.py",
+                "self.sources.confirm_reconciliation(keys, request_id)",
+            ),
+            (
+                "application/synchronization/pull.py",
+                "self.session.mapping.recovery_uncertain()",
+            ),
+        ]:
+            check_responsibility_boundary(PREFIX + name, source)
 
     def test_layer_dependencies_are_allowed_in_their_actual_direction(self):
         for name, source in [

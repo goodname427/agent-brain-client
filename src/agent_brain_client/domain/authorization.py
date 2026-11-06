@@ -95,3 +95,7 @@ def allows(ids, kind, identity):
         or isinstance(values, list)
         and identity in values
     )
+
+
+def valid_secret(value):
+    return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{32,128}", value)

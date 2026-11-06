@@ -1,3 +1,4 @@
+from agent_brain_client.application.installation.enrollment import DeviceEnrollment
 import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
 """HTTPS content with fake Keychain/UI, synthetic ledger and isolated homes."""
 import copy
@@ -15,7 +16,7 @@ from urllib.error import HTTPError
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'));sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from fake_pairing import PairingAuthority
-from agent_brain_client.adapters.server.https import DeviceEnrollment,HTTPSContentClient,PairingHTTPS,profile_file
+from agent_brain_client.adapters.server.https import HTTPSContentClient,PairingHTTPS,profile_file
 from agent_brain_client.runtime.enrollment import install_once
 from agent_brain_client.adapters.platforms.credentials import CredentialStore,canonical
 from agent_brain_client.adapters.platforms.macos.keychain import NativeKeychain

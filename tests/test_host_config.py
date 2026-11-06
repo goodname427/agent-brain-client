@@ -100,7 +100,7 @@ class WindowsBoundary(unittest.TestCase):
     def test_existing_open_requests_only_data_io_and_excludes_writers(self):
         from types import SimpleNamespace
         from unittest.mock import Mock
-        from agent_brain_client.adapters.storage.host_files import windows_host_file
+        from agent_brain_client.adapters.platforms.windows.host_files import open_host_file
 
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -114,7 +114,7 @@ class WindowsBoundary(unittest.TestCase):
             patch("agent_brain_client.adapters.platforms.windows.native.libraries", return_value=(SimpleNamespace(), kernel)),
             patch.dict("sys.modules", msvcrt=crt),
         ):
-            with windows_host_file(path) as file:
+            with open_host_file(path) as file:
                 self.assertEqual(file.read(), b"synthetic")
         kernel.CreateFileW.assert_called_once_with(
             str(path), 0xC0000000, 1, None, 3, 0x00200000, None

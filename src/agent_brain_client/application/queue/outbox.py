@@ -12,6 +12,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Callable
+from agent_brain_client.application.queue.ports import SourceReconciliation
 
 import agent_brain_client.domain.contract as contract
 from agent_brain_client.application.control import check_request
@@ -28,7 +29,7 @@ class DurableOutbox:
     platform: str
     policy: dict[str, Any]
     queue_sha: str
-    sources: Any
+    sources: SourceReconciliation
     client: Any
     methods: Callable[..., Any]
     _allows: Callable[..., Any]
@@ -189,7 +190,7 @@ class DurableOutbox:
         # A prior idempotent outbox entry must not bypass a later review revocation.
         if request["method"] == "content_set_enabled" and reconciles["source_keys"]:
             raise CacheBlocked()
-        self.sources._assert_sources_shareable(reconciles["source_keys"])
+        self.sources.assert_shareable(reconciles["source_keys"])
         request = json.loads(contract.encode(request))
         digest = sha(contract.encode(request))
         name = "outbox/" + request["request_id"] + ".json"
@@ -226,21 +227,12 @@ class DurableOutbox:
                 and previous["request"]["method"] != "content_set_enabled"
             ):
                 raise CacheBlocked()
-        for key in reconciles["source_keys"]:
-            item = self.sources._imports()["items"].get(key)
-            if (
-                item is None
-                or item["status"] not in ("conflict", "inventoried")
-                or (item["source"]["kind"], item["source"]["id"]) != target
-            ):
-                raise CacheBlocked()
-            if item["status"] == "inventoried" and not same_record(
-                target[0],
-                item["source"]["record"],
-                request["params"]["record"],
-                preserve_enabled=False,
-            ):
-                raise CacheBlocked()
+        self.sources.validate_reconciliation(
+            reconciles["source_keys"],
+            target[0],
+            target[1],
+            request["params"].get("record"),
+        )
         row = {
             "schema": 1,
             "policy_sha": self.queue_sha,
@@ -269,15 +261,9 @@ class DurableOutbox:
                 )
                 self._save("outbox/" + rid + ".json", previous)
                 resolved = True
-        if row["reconciles"]["source_keys"]:
-            state = self.sources._imports()
-            for key in row["reconciles"]["source_keys"]:
-                item = state["items"][key]
-                if item["status"] in ("conflict", "inventoried"):
-                    item.update(
-                        status="reconciled", request_id=row["request"]["request_id"]
-                    )
-            self._save("imports.json", state)
+        self.sources.confirm_reconciliation(
+            row["reconciles"]["source_keys"], row["request"]["request_id"]
+        )
         return resolved
 
     @staticmethod
@@ -325,7 +311,7 @@ class DurableOutbox:
             if row["state"] != "pending":
                 continue
             try:
-                self.sources._assert_sources_shareable(row["reconciles"]["source_keys"])
+                self.sources.assert_shareable(row["reconciles"]["source_keys"])
             except CacheBlocked:
                 row.update(
                     state="blocked",
@@ -339,16 +325,9 @@ class DurableOutbox:
                     },
                 )
                 self._save("outbox/" + request["request_id"] + ".json", row)
-                state = self.sources._imports()
-                for key in row["reconciles"]["source_keys"]:
-                    if key in state["items"] and state["items"][key]["status"] in (
-                        "inventoried",
-                        "pending",
-                    ):
-                        state["items"][key].update(
-                            status="blocked", request_id=request["request_id"]
-                        )
-                self._save("imports.json", state)
+                self.sources.block_reconciliation(
+                    row["reconciles"]["source_keys"], request["request_id"]
+                )
                 continue
             if not self._event_allowed(request, event_gate):
                 return False

@@ -1,4 +1,5 @@
-import agent_brain_client.runtime.launcher_update as launcher_update
+import agent_brain_client.adapters.harnesses.codex.updates as codex_updates
+import agent_brain_client.adapters.harnesses.codex.launcher_update as launcher_update
 import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
 import agent_brain_client.adapters.storage.install_state as adapters_storage_install_state
 import agent_brain_client.interfaces.cli.install as interfaces_cli_install
@@ -318,7 +319,7 @@ class LauncherClosure(unittest.TestCase):
         # This portable fixture uses content-device capabilities. Substitute
         # only the public entry's HTTPS gate; package validation, policy pins,
         # native transaction, offline child probe and activation remain real.
-        with patch.object(runtime_updates, 'HTTPS_CONTENT_CAPABILITIES', self.channel.engine.policy['capabilities']):
+        with patch.object(codex_updates, 'HTTPS_CONTENT_CAPABILITIES', self.channel.engine.policy['capabilities']):
             value = runtime_updates.manage_update(self.f.home, 'update', channel_factory=lambda *a: self.channel)
         self.assertEqual(value['status'], 'client-update-updated', value)
         self.assertTrue(value['native_changed'])
