@@ -1,4 +1,4 @@
-"""CLI boundary for the pinned, approved MCP launcher and finite event Hook."""
+"""Start the approved MCP worker, run checks or dispatch a finite event Hook."""
 
 import sys
 from pathlib import Path

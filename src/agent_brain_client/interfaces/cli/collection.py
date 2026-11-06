@@ -1,4 +1,4 @@
-"""Global source commands and native Hook I/O; collection policy stays in use cases."""
+"""Manage approved global memory sources and native Hooks."""
 
 import sys
 from pathlib import Path
