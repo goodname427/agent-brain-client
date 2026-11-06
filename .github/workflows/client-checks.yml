@@ -40,15 +40,8 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
-      - name: Documentation links and checker regression tests
-        shell: bash
-        run: |
-          TEST_ROOT=$(mktemp -d)
-          mkdir -p "$TEST_ROOT/home" "$TEST_ROOT/codex"
-          export HOME="$TEST_ROOT/home" CODEX_HOME="$TEST_ROOT/codex"
-          python -B tools/check_docs.py
-          PYTHONPATH=tools:tests python -B -m unittest test_check_docs test_ci_scope
-          git diff --check
+      - name: Shared documentation checks
+        run: python -B tools/client_checks.py documentation --ci --output "${{ runner.temp }}/documentation"
   source-checks:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -61,32 +54,10 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
-      - name: Source syntax, public payload and CI regression checks
-        shell: bash
-        run: |
-          TEST_ROOT=$(mktemp -d)
-          mkdir -p "$TEST_ROOT/home" "$TEST_ROOT/codex"
-          export HOME="$TEST_ROOT/home" CODEX_HOME="$TEST_ROOT/codex"
-          export PYTHONPATH=scripts:adapters/codex:tools:tests
-          python -B -m unittest test_release_pipeline test_client_checks
-          python -B tools/build_client.py --scan
-          python -B tools/check_source.py
-          git diff --check
-      - name: Lint and type check new installer code
-        shell: bash
-        run: |
-          python -m pip install ruff==0.14.0 mypy==1.18.2
-          ruff check --no-cache --select E4,E7,E9,F --ignore E402 tools/access_install.py tools/access_windows.py tests/test_access_install.py tools/mac_first_install.py tools/client_lifecycle.py tools/prepare_install_runtime.py tools/check_source.py tests/test_mac_first_install.py tests/test_client_uninstall.py tests/test_install_contracts.py
-          ruff check --no-cache --select F821,F822,F823,F841 adapters/codex scripts
-          ruff check --no-cache --select E4,E7,E9,F --ignore E402 tools/pending_install_recovery.py tests/test_pending_install_recovery.py tests/test_bootstrap_main.py
-          ruff check --no-cache --select E4,E7,E9,F tools/ci_scope.py tools/run_ci_tests.py tests/test_ci_scope.py
-          ruff check --no-cache --select F tools/bootstrap_main.py tests/test_windows_native.py
-          ruff check --no-cache --select E4,E7,E9,F --ignore E402 tests/test_host_config.py tests/test_host_inplace_recovery.py
-          ruff check --no-cache --select E4,E7,E9,F --ignore E402 tests/test_platform_checkpoint.py tests/fixtures/checkpoint_probe.py
-          ruff check --no-cache --select E4,E7,E9,F --ignore E402 tests/test_content_local_durable.py tests/test_receipt_transport.py tests/test_memory_behavior.py tests/test_memory_query.py tools/memory_review.py
-          mypy --check-untyped-defs --follow-imports skip --ignore-missing-imports tools/access_install.py tools/access_windows.py tools/mac_first_install.py tools/client_lifecycle.py tools/prepare_install_runtime.py tools/check_source.py tools/memory_review.py
-          mypy --check-untyped-defs --follow-imports skip --ignore-missing-imports adapters/codex/content_cache.py adapters/codex/remote_http.py adapters/codex/content_contract.py
-          mypy --check-untyped-defs --follow-imports skip --ignore-missing-imports tools/pending_install_recovery.py tools/bootstrap_main.py
+      - name: Pinned lint and type tools
+        run: python -m pip install ruff==0.14.0 mypy==1.18.2
+      - name: Shared source checks including every host adapter
+        run: python -B tools/client_checks.py source --ci --output "${{ runner.temp }}/source"
   isolated-client:
     needs: changes
     if: needs.changes.outputs.mac == 'true'
@@ -99,26 +70,10 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
-      - name: Isolated selected or full standard-library tests
+      - name: Shared isolated tests and full-run Swift checks
         env:
           CI_TESTS: ${{ needs.changes.outputs.tests }}
-        shell: bash
-        run: |
-          TEST_ROOT=$(mktemp -d)
-          mkdir -p "$TEST_ROOT/home" "$TEST_ROOT/codex"
-          export HOME="$TEST_ROOT/home" CODEX_HOME="$TEST_ROOT/codex"
-          export PYTHONPATH=scripts:adapters/codex:tools:tests
-          python -B tools/run_ci_tests.py --workers 2
-          sh -n tools/install-mac.sh
-          git diff --check
-      - name: Keychain helper self-check only
-        if: needs.changes.outputs.tests == '[]'
-        shell: bash
-        run: |
-          TEST_ROOT=$(mktemp -d)
-          mkdir -p "$TEST_ROOT/home" "$TEST_ROOT/codex"
-          HOME="$TEST_ROOT/home" CODEX_HOME="$TEST_ROOT/codex" python -B tools/build_credential_helper.py --output "$TEST_ROOT/credential-helper"
-          HOME="$TEST_ROOT/home" CODEX_HOME="$TEST_ROOT/codex" python -B tools/build_credential_helper.py --access --output "$TEST_ROOT/access-helper"
+        run: python -B tools/client_checks.py macos --ci --output "${{ runner.temp }}/macos"
   windows-contracts:
     needs: changes
     if: needs.changes.outputs.windows == 'true'
@@ -135,34 +90,8 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: ${{ matrix.python }}
-      - name: Native credentials, DACL, lifecycle, installer, offline recovery and shared contracts
-        shell: pwsh
-        run: |
-          $testRoot = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
-          New-Item -ItemType Directory -Path "$testRoot/home", "$testRoot/codex" | Out-Null
-          $env:HOME = "$testRoot/home"
-          $env:USERPROFILE = "$testRoot/home"
-          $env:CODEX_HOME = "$testRoot/codex"
-          $env:PYTHONPATH = '.;scripts;adapters/codex;tools;tests'
-          python -B -m unittest test_startup_concurrency test_global_memory_update test_global_memory_activation
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -B -m unittest test_install_contracts.Contracts test_install_contracts.PlatformMainContracts test_windows_native test_source_paths test_access_install test_bootstrap_main test_pending_install_recovery test_platform_checkpoint
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -B -m unittest test_mcp_wire_encoding test_mcp_queue_deadlines test_content_read_requests.HTTPRequests
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -B tools/build_client.py --scan
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -B tools/check_source.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -B -m unittest test_content_write_failures test_content_activation test_content_incremental_refresh
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -B -m unittest test_layered_recall test_runtime_reload
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd 'tools/install-windows.ps1'), [ref]$null, [ref]$errors) | Out-Null
-          if ($errors.Count) { throw ($errors | Out-String) }
-          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd 'tools/memory-windows.ps1'), [ref]$null, [ref]$errors) | Out-Null
-          if ($errors.Count) { throw ($errors | Out-String) }
+      - name: Shared native Windows contracts and every host adapter
+        run: python -B tools/client_checks.py windows --ci --output "${{ runner.temp }}/windows"
   required:
     name: Client checks required
     if: always()
