@@ -316,7 +316,7 @@ class HTTPSContent(unittest.TestCase):
         policy_value,mcp,package_sha,validated_native=content_install.context(
             self.home,old_package.resolve(),path,policy_sha,inspection=True,allow_legacy_030_active=True)
         self.assertEqual(validated_native,native)
-        self.assertEqual(mcp['args'][2],str(old_package/'adapters/codex/client_startup.py'))
+        self.assertEqual(mcp['args'][2],str(old_package.resolve()/'adapters/codex/client_startup.py'))
         config.write_bytes(content_install.render(config.read_bytes(),mcp,False));config.chmod(0o600)
         state=self.home/'.config/agent-brain-client';registration=state/'codex-mcp.json';state.mkdir(parents=True,mode=0o700)
         metadata={'schema':1,'native_mcp_name':content_install.NAME,'content_candidate':True,'data_mode':'personal-explicit',

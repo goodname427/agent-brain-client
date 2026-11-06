@@ -145,7 +145,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.preserved()
         self.assertTrue(hooks.installation_status(gm.load(self.home)))
         root = next((self.file.parent / "code").iterdir())
-        code = 'import sys;sys.path.insert(0,sys.argv[1]);import global_memory as g;g.old.imports();import content_mcp,global_memory_install;g.load(sys.argv[2]);print("frozen-runtime-loaded")'
+        code = 'import sys;sys.path.insert(0,sys.argv[1]);import global_memory as g;g.old.imports();import content_mcp,brain_cache;assert "global_memory_install" not in sys.modules;g.load(sys.argv[2]);print("frozen-runtime-loaded")'
         environment = dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.native))
         proc = subprocess.run(
             [

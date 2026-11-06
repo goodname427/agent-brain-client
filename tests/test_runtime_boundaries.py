@@ -129,6 +129,7 @@ assert not {'content_cache','content_mcp','codex_connect','project_memory','firs
                 resolution_request_id=None,
             )
             directory = cache / "outbox"
+            cache_directory(cache)
             cache_directory(directory)
             file = directory / (request["request_id"] + ".json")
             raw = contract.encode(row)

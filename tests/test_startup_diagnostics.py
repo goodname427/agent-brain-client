@@ -1,5 +1,6 @@
 """Bounded startup diagnostics never expose exception values or credentials."""
 import io
+import hashlib
 import json
 import ssl
 from pathlib import Path
@@ -22,6 +23,15 @@ from content_mcp import emit_startup_failure
 
 
 class StartupDiagnostics(unittest.TestCase):
+    def active(self, version):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        package = Path(temporary.name)
+        manifest = {'files': {'scripts/remote_mcp.py': 'b' * 64}}
+        (package / 'verified.json').write_text(json.dumps({'manifest': manifest}))
+        return {'version': version, 'package': str(package),
+                'manifest_sha256': hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()}
+
     def test_candidate_failure_is_redacted_and_remains_closed(self):
         output = io.StringIO()
         code = emit_startup_failure(
@@ -122,10 +132,7 @@ class StartupDiagnostics(unittest.TestCase):
             "active": {"version": "0.2.13"},
             "diagnostic": diagnostic,
         }
-        releases.verified_active.return_value = {
-            "version": "0.2.13",
-            "package": "/synthetic/package",
-        }
+        releases.verified_active.return_value = self.active("0.2.13")
         releases.policy = {
             "platform": "synthetic-platform",
             "capabilities": ["codex-stdio-mcp", "personal-memory-explicit"],
@@ -154,7 +161,7 @@ class StartupDiagnostics(unittest.TestCase):
 
     def test_background_thread_failure_does_not_block_verified_worker(self):
         releases = mock.Mock()
-        releases.verified_active.return_value = {"version": "0.6.1", "package": "/synthetic/package"}
+        releases.verified_active.return_value = self.active("0.6.1")
         releases.policy = {"platform": "synthetic-platform", "capabilities": ["codex-stdio-mcp", "synthetic-only"],
                            "runtime": {"endpoint": "https://synthetic.invalid", "token_file": "/synthetic/unused"}}
         output = io.StringIO()
