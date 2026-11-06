@@ -131,6 +131,77 @@ def active(p):
     return True
 
 
+def retained_controls(home, references):
+    """Snapshot source stop metadata without executing old code or credentials."""
+    from agent_brain_client.domain.scopes import path as source_path
+
+    home = canonical(home)
+    base = canonical(home / ".config/agent-brain-client/project-memory")
+    files = (
+        {canonical(p): None for p in base.glob("*/settings.json")}
+        if base.exists()
+        else {}
+    )
+    ignored = set()
+    for row in references:
+        file = canonical(row["settings"])
+        source_path(row["root"])
+        if row["delegated"]:
+            files[file] = row["root"]
+        else:
+            # These project Hooks were intentionally handed over to global
+            # capture; their retired markers are not a user stop of that source.
+            ignored.add(file)
+    if len(files) > 256:
+        raise ValueError("Bounded original project controls required")
+    states, pins, blocked = [], {}, set()
+    for file, expected_root in sorted(files.items()):
+        if file in ignored:
+            continue
+        value = private_json(file)
+        if (
+            value.get("schema") != 1
+            or value.get("device_home") != str(home)
+            or type(value.get("enabled")) is not bool
+            or value.get("source_mode")
+            not in (
+                "shared-memory",
+                "codex-hooks",
+                "codex-project",
+                "operator-notes",
+                "recall-only",
+            )
+        ):
+            raise ValueError("Original project control scope required")
+        root = str(canonical(value["project_root"]))
+        source_path(root)
+        if expected_root is not None and source_path(root) != source_path(
+            expected_root
+        ):
+            raise ValueError("Original project routing changed")
+        off = canonical(value["off_file"])
+        stopped = off.exists()
+        pins[str(file)] = digest(file.read_bytes())
+        if stopped:
+            private_mode(off)
+            if not off.is_file() or off.stat().st_size > 1024:
+                raise ValueError("Bounded private project stop marker required")
+            pins[str(off)] = digest(off.read_bytes())
+        states.append(
+            {
+                "settings": str(file),
+                "root": root,
+                "enabled": value["enabled"],
+                "stopped": stopped,
+            }
+        )
+        if stopped or not value["enabled"]:
+            blocked.add(root)
+    if len(blocked) > 128:
+        raise ValueError("Retained project exclusions exceed source scope capacity")
+    return {"blocked_roots": sorted(blocked), "states": states, "source": pins}
+
+
 def project_settings(home, project):
     return (
         canonical(home)

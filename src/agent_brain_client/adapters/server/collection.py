@@ -29,10 +29,10 @@ class CollectionClient:
         _, registered = registration_store.registration(value["device_home"])
         r = registered["runtime"]
         from agent_brain_client.adapters.storage.reinstallation import (
-            require_memory_verified,
+            require_collection_ready,
         )
 
-        require_memory_verified(value["device_home"], r["https_profile_sha256"])
+        require_collection_ready(value["device_home"], r["https_profile_sha256"])
         self.base = HTTPSContentClient(r["https_profile"], r["https_profile_sha256"])
         self.grant, self.data_mode = self.base.grant, self.base.data_mode
         self.actor, self.device = self.grant["actor"], self.base.device_id

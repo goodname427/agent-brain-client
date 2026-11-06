@@ -27,7 +27,17 @@ def retained_installation(home, native):
         read_mapping=retained_mapping,
         restore_mapping=restore_mapping,
         read_registration=retained_registration,
+        read_project_controls=project_controls,
     )
+
+
+def project_controls(home):
+    from agent_brain_client.adapters.storage.collection import project_references
+    from agent_brain_client.adapters.harnesses.codex.project_configuration import (
+        retained_controls,
+    )
+
+    return retained_controls(home, project_references(home))
 
 
 def verify_memory(home):
@@ -63,7 +73,10 @@ def verify_memory(home):
 
 def restore_source_routing(home):
     from agent_brain_client.adapters.storage.reinstallation import read_journal
-    from agent_brain_client.adapters.storage.collection import seed_retained_routing
+    from agent_brain_client.adapters.storage.collection import (
+        seed_retained_routing,
+        seed_project_stops,
+    )
 
     record = read_journal(home)
     if (
@@ -74,5 +87,6 @@ def restore_source_routing(home):
         return
     if record.get("routing") is not None:
         seed_retained_routing(home, record["routing"])
+    seed_project_stops(home, record["project_controls"]["blocked_roots"])
     record["routing_restored"] = True
     retained_installation(home, Path(record["native"])).save(record)

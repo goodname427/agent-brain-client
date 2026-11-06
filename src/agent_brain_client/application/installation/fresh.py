@@ -19,6 +19,10 @@ class FreshMemoryVerificationRequired(ValueError):
         }
 
 
+class FreshSourceRoutingRequired(ValueError):
+    """Source controls must be durably restored before admitting collection."""
+
+
 def require_verified_memory(record: dict | None, profile_sha: str | None = None):
     """One persistent admission rule for CLI, workers and Hooks."""
     if record is None:

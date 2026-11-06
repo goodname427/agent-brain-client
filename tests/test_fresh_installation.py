@@ -459,7 +459,15 @@ class FreshInstallation(unittest.TestCase):
         settings = self.root / "project-memory/project/settings.json"
         private_directory(settings.parent)
         io.write(
-            settings, {"device_home": str(self.home), "project_root": str(project)}
+            settings,
+            {
+                "schema": 1,
+                "enabled": True,
+                "source_mode": "codex-project",
+                "device_home": str(self.home),
+                "project_root": str(project),
+                "off_file": str(settings.parent / "memory.off"),
+            },
         )
         io.write(
             settings.parent / "hooks-install-synthetic.json",

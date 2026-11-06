@@ -72,6 +72,22 @@ def require_memory_verified(home, profile_sha=None):
     require_verified_memory(read_journal(home), profile_sha)
 
 
+def require_collection_ready(home, profile_sha=None):
+    from agent_brain_client.application.installation.fresh import (
+        require_verified_memory,
+        FreshSourceRoutingRequired,
+    )
+
+    record = read_journal(home)
+    require_verified_memory(record, profile_sha)
+    if (
+        record is not None
+        and record["project_controls"]["blocked_roots"]
+        and record.get("routing_restored") is not True
+    ):
+        raise FreshSourceRoutingRequired("fresh-install-source-routing-required")
+
+
 class RetainedInstallation:
     def __init__(
         self,
@@ -82,10 +98,12 @@ class RetainedInstallation:
         read_mapping,
         restore_mapping,
         read_registration,
+        read_project_controls,
     ):
         self.home, self.native = io.canonical(home), io.canonical(native)
         self.root = self.home / ".config/agent-brain-client"
         self.read_registration = read_registration
+        self.read_project_controls = read_project_controls
         self.host_payload, self.read_mapping, self.write_mapping = (
             host_payload,
             read_mapping,
@@ -156,9 +174,17 @@ class RetainedInstallation:
         children = {
             p.name: item_identity(p) for p in self.root.iterdir() if p.name not in keep
         }
-        from agent_brain_client.adapters.storage.collection import retained_routing
+        from agent_brain_client.adapters.storage.collection import (
+            retained_routing,
+            combined_exclusions,
+        )
 
         routing = retained_routing(self.home)
+        project_controls = self.read_project_controls(self.home)
+        combined_exclusions(
+            routing["preferences"]["exclude_roots"] if routing is not None else [],
+            project_controls["blocked_roots"],
+        )
         identifier = secrets.token_hex(16)
         archive = self.home / ".config/agent-brain-retained" / identifier
         return {
@@ -178,7 +204,9 @@ class RetainedInstallation:
             "memory_ids": registration["memory_ids"],
             "service_enabled": registration["service_enabled"],
             "routing": routing["preferences"] if routing is not None else None,
+            "project_controls": project_controls,
             "preconditions": {
+                **project_controls["source"],
                 **(routing["source"] if routing is not None else {}),
                 **registration["source"],
                 str(policy_path): metadata["release_policy_sha256"],
@@ -196,6 +224,8 @@ class RetainedInstallation:
             from agent_brain_client.adapters.storage.collection import retained_routing
 
             routing = retained_routing(self.home)
+            if self.read_project_controls(self.home) != record["project_controls"]:
+                raise ValueError("Original project stop state changed before retention")
             if (routing["preferences"] if routing is not None else None) != record[
                 "routing"
             ]:
