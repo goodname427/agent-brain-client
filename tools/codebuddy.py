@@ -63,7 +63,7 @@ def main():
     # The repository Mac bootstrap can start under the system Python 3.9.
     # Reuse the interpreter already prepared by the normal Client installer.
     if sys.version_info < (3, 11):
-        sys.path.insert(0, str(ROOT / 'tools'))
+        sys.path.insert(0, str(ROOT / 'installer'))
         from prepare_install_runtime import runtime
         python = runtime(Path.home(), prepare=False)
         os.execv(str(python), [str(python), '-X', 'utf8', '-I', '-B', str(Path(__file__).resolve()), *sys.argv[1:]])

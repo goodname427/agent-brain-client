@@ -24,6 +24,34 @@ from test_event_hook import accepted
 
 
 class Configuration(unittest.TestCase):
+    def test_system_python_bootstrap_loads_installer_and_hands_off(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            (root / 'tools').mkdir()
+            (root / 'installer').mkdir()
+            script = root / 'tools/codebuddy.py'
+            script.write_bytes((ROOT / 'tools/codebuddy.py').read_bytes())
+            (root / 'installer/prepare_install_runtime.py').write_text(
+                'import sys\nfrom pathlib import Path\n'
+                'def runtime(home, prepare):\n'
+                '    assert prepare is False\n'
+                '    return Path(sys.executable)\n')
+            code = '''import json, os, runpy, sys
+entry = sys.argv[1]
+sys.argv = [entry, 'status']
+sys.version_info = (3, 9)
+def handoff(path, argv):
+    print(json.dumps({'path': path, 'argv': argv}))
+    raise SystemExit(0)
+os.execv = handoff
+runpy.run_path(entry, run_name='__main__')
+'''
+            result = subprocess.run([sys.executable, '-I', '-B', '-c', code, str(script)],
+                                    capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            argv = json.loads(result.stdout)['argv']
+            self.assertEqual(argv, [sys.executable, '-X', 'utf8', '-I', '-B', str(script), 'status'])
+
     def test_jsonc_narrow_edit_keeps_comments_urls_and_other_servers(self):
         text = '{\n// user settings\n"permissions":{"allow":["Read"],},\n"mcpServers":{ /* keep */ "other":{"url":"https://example.invalid/a//b"},},\n}\n'
         changed = cbhost.render_json(text, {'command': 'python', 'args': ['a b']}, None)
