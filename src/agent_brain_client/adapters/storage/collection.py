@@ -151,7 +151,10 @@ def retained_routing(home):
     off = metadata.canonical(file.parent / "global.off")
     source = {str(file): metadata.digest(file.read_bytes())}
     if off.exists():
-        private_mode(off, owner=True)
+        # Stop controls historically use touch: an elevated Windows token can
+        # give the marker an Administrators owner. It is not a credential item.
+        # Keep no-follow/single-link/private-ACL checks, and retain its presence.
+        private_mode(off)
         if not off.is_file() or off.stat().st_size > 1024:
             raise ValueError("Original bounded stop fence required")
         source[str(off)] = metadata.digest(off.read_bytes())
