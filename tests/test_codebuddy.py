@@ -129,7 +129,7 @@ class Installation(unittest.TestCase):
         self.install()
         original = self.settings.read_text()
         text = cbhost.Document(original).patch(('hooks', 'Stop', 0, 'hooks', 0, 'command'),
-                                               'synthetic-outside-edit').decode()
+                                               'synthetic-outside-edit')
         self.assertNotEqual(text, original)
         self.settings.write_text(text)
         with self.assertRaises(ValueError):
