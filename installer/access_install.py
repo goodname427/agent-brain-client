@@ -13,7 +13,7 @@ import sys
 from urllib.error import HTTPError
 from urllib.request import Request
 
-import mac_first_install as wizard
+import first_install as wizard
 from https_content import PairingHTTPS, endpoint_check, valid_secret
 from system_credentials import CredentialStore, NativeKeychain, canonical, owned, unique
 from brain_lock import private_directory, native_platform

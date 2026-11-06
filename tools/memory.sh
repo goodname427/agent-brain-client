@@ -5,13 +5,13 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 exec /usr/bin/python3 -I -B -c '
 import os,sys
 from pathlib import Path
-root=Path(sys.argv[1]);sys.path.insert(0,str(root/"tools"))
+root=Path(sys.argv[1]);sys.path.insert(0,str(root/"installer"))
 from prepare_install_runtime import runtime
 try:
     python=runtime(Path.home(),prepare=False)
 except Exception:
     print("{\"status\":\"existing-client-python-required\",\"installed\":false}")
     raise SystemExit(2)
-entry="content_manage.py" if len(sys.argv)>2 and sys.argv[2]=="content-manage" else "global_memory.py" if len(sys.argv)>2 and sys.argv[2].startswith("global-") else "memory_automation.py"
-os.execv(str(python),[str(python),"-I","-B",str(root/"tools"/entry),*sys.argv[2:]])
+entry="tools/content_manage.py" if len(sys.argv)>2 and sys.argv[2]=="content-manage" else "scripts/global_memory.py" if len(sys.argv)>2 and sys.argv[2].startswith("global-") else "adapters/codex/project_memory.py"
+os.execv(str(python),[str(python),"-I","-B",str(root/entry),*sys.argv[2:]])
 ' "$HERE" "$@"

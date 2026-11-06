@@ -9,7 +9,7 @@ sys.path.insert(0,str(ROOT))
 
 import content_install as ci
 import content_mcp
-import mac_first_install as wizard
+import first_install as wizard
 import test_content_install as fixture
 
 FROZEN=ROOT/'tests/fixtures/tool_contract_062/content_mcp.py.fixture'
@@ -19,6 +19,11 @@ def old_contract(manifest, output):
     raw=FROZEN.read_bytes()
     if ci.sha(raw)!='506fd93821989460b5243c0bb7a32821503630f5f8b9d582ec2cc218655cc530':
         raise ValueError('Frozen 0.6.2 contract fixture changed')
+    # Preserve the frozen tool semantics while routing its imports through the
+    # current layout; the checked fixture itself stays immutable.
+    raw=raw.replace(b'from remote_http import',b'from brain_http import')
+    raw=raw.replace(b'sys.path.insert(0,str(Path(__file__).resolve().parent))',
+                    b"sys.path[:0]=[str(Path(__file__).resolve().parents[2]/'scripts'),str(Path(__file__).resolve().parent)]")
     (output/'adapters/codex/content_mcp.py').write_bytes(raw)
     manifest['files']['adapters/codex/content_mcp.py']=ci.sha(raw)
     # Pin the matching published contract too: evolving source must not add
@@ -26,8 +31,8 @@ def old_contract(manifest, output):
     contract=(FROZEN.parent/'content_contract.py.fixture').read_bytes()
     if ci.sha(contract)!='d31b506060ffe5f19d97f59a59fbc00797e9df72600bc0f9ee1fa2ddbe1dc1af':
         raise ValueError('Frozen published 0.6.2 typed contract fixture changed')
-    (output/'adapters/codex/content_contract.py').write_bytes(contract)
-    manifest['files']['adapters/codex/content_contract.py']=ci.sha(contract)
+    (output/'scripts/brain_content.py').write_bytes(contract)
+    manifest['files']['scripts/brain_content.py']=ci.sha(contract)
 
 
 def retired_recall_contract(manifest,output):

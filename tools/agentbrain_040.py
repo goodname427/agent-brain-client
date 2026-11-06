@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sys
 ROOT=Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / name) for name in ('scripts', 'installer', 'adapters/codex', 'tools')]
 sys.path[:0]=[str(ROOT/'tools'),str(ROOT/'adapters/codex'),str(ROOT/'scripts')]
 
 
@@ -19,12 +20,12 @@ def dispatch(args):
                 'published':False,'installed':False,'output':str(Path(args.output).resolve())}
     if args.action=='plan':
         from content_install import prepare,save,safe
-        import content_contract
+        import brain_content
         value=prepare(args.device_home,args.package,args.release_policy,args.release_policy_sha256,args.replace_existing)
         path=safe(args.output)
         if path.exists():raise ValueError('Existing plan preserved')
         save(path,value)
-        return {'status':'install-plan-prepared','plan':str(path),'plan_sha256':hashlib.sha256(content_contract.encode(value)).hexdigest(),'installed':False,'native_changed':False}
+        return {'status':'install-plan-prepared','plan':str(path),'plan_sha256':hashlib.sha256(brain_content.encode(value)).hexdigest(),'installed':False,'native_changed':False}
     if args.action=='apply':
         from content_install import apply
         from content_mcp import pinned
@@ -33,11 +34,11 @@ def dispatch(args):
         from content_install import inspect
         return inspect(args.device_home)
     if args.action in ('check-update','update'):
-        from mac_first_install import manage_update
+        from first_install import manage_update
         return manage_update(Path(args.device_home).resolve(),args.action)
     # Preserve the finite policy/request pin checks and one-call transport path.
-    from https_content import main
-    forwarded=[str(ROOT/'adapters/codex/https_content.py'),args.action]
+    from device import main
+    forwarded=[str(ROOT/'tools/device.py'),args.action]
     for field in ('https_profile','https_profile_sha256','device_task_policy','device_task_policy_sha256','task_request_file','task_request_sha256'):
         value=getattr(args,field)
         if value is not None:forwarded+=['--'+field.replace('_','-'),value]
@@ -68,7 +69,7 @@ def main(argv=None):
         if isinstance(result,int):return result
         print(json.dumps(result,ensure_ascii=False))
         if args.action in ('check-update','update'):
-            from mac_first_install import lifecycle_exit
+            from first_install import lifecycle_exit
             return lifecycle_exit(args.action,result)
         if args.action=='apply':return 0 if result.get('installed') is True else 2
         return 0 if not result.get('error') and result.get('status') not in ('content-native-install-review-required','client-update-review-required','client-update-unavailable') else 2

@@ -46,6 +46,42 @@ class ContentOutbox:
     _outbox_stage: Callable[..., Any]
     _outbox_locked: Callable[..., Any]
 
+    def invoke_write(self, request, reconciles=None, *, event_gate=None):
+        """One write/replay implementation for native mapping and event hosts."""
+        check_request()
+        require_platform('cache-storage', self.platform)
+        method = request.get('method')
+        with self._outbox_stage('content-write'),self._outbox_lock(self.cache/'content.lock','content-lock'):
+            row=self._enqueue(request,reconciles)  # Precedes every transport/mapping operation.
+            if not self._event_allowed(request,event_gate):
+                return dict(self._queue_result(row),local_refresh={'status':'event-disabled','native_changed':False,'model_loaded':'unknown'})
+            if row['state']=='blocked':
+                # Only an explicit identical call retries a blocked request.
+                # Startup/refresh never discard or automatically replay it.
+                try:response=self.client.request(request) if self._event_allowed(request,event_gate) else None
+                except Exception:response=None
+                if self._server_saved(response,request):
+                    row.update(state='confirmed',response=response)
+                    self._save('outbox/'+request['request_id']+'.json',row)
+                elif isinstance(response,dict) and response.get('request_id')==request['request_id'] and isinstance(response.get('error'),dict) and response['error'].get('code')=='revision_conflict':
+                    row.update(state='conflict',response=response)
+                    try:row['remote']=self._read_target(request['params']['kind'],request['params']['id'])
+                    except Exception:pass
+                    self._save('outbox/'+request['request_id']+'.json',row)
+            # Only an explicit same-ID retry upgrades an old local receipt.
+            # No automatic loop over the backed-up journal or new scheduler.
+            elif row['state']=='confirmed' and (row['response'] or {}).get('persistence',{}).get('state')=='local-confirmed':
+                try:
+                    response=self.client.request(request)
+                    if self._server_saved(response,request):
+                        row['response']=response;self._save('outbox/'+request['request_id']+'.json',row)
+                except Exception:pass
+            with self._outbox_stage('outbox-drain'):
+                self._drain(request['request_id'] if method=='memory_event_submit' else None,event_gate=event_gate)
+            with self._outbox_stage('outbox-result'):
+                result=self._queue_result(self._load('outbox/'+request['request_id']+'.json'))
+        return result
+
     def _check_write(self,request):
         if not isinstance(request,dict) or set(request)!={'request_id','method','params'}:raise CacheBlocked()
         rid=request['request_id'];method=request['method'];params=request['params']

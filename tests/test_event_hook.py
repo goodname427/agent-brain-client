@@ -18,7 +18,7 @@ import content_mcp
 import content_cache
 from content_mcp import ContentServer,ProtocolError,run_event_hook,validate_hook_policy
 from content_cache import ContentAdapter,CacheBlocked
-from remote_http import RemoteClient
+from brain_http import RemoteClient
 import client_startup
 from client_release import HTTPS_CONTENT_CAPABILITIES
 import test_https_content as https_fixture
@@ -153,7 +153,8 @@ class EventHook(unittest.TestCase):
 
     def test_off_while_Stop_waits_for_content_lock_retains_pending_without_upload(self):
         self.prompt();waiting=threading.Event();results=[];errors=[]
-        actual_locked=content_cache.locked
+        import brain_cache
+        actual_locked=brain_cache.locked
         @contextmanager
         def observed(path,*args,**kwargs):
             if path==self.adapter.cache/'content.lock':waiting.set()
@@ -161,7 +162,7 @@ class EventHook(unittest.TestCase):
         def stop():
             try:results.append(self.stop())
             except Exception as error:errors.append(type(error).__name__)
-        with patch.object(content_cache,'locked',observed):
+        with patch.object(brain_cache,'locked',observed):
             with actual_locked(self.adapter.cache/'content.lock'):
                 worker=threading.Thread(target=stop);worker.start()
                 self.assertTrue(waiting.wait(3));Path(self.policy['off_file']).touch()

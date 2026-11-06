@@ -8,13 +8,14 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / name) for name in ('scripts', 'installer', 'adapters/codex', 'tools')]
 MAC = frozenset({
     'native/AccessCredentialStore.swift', 'native/CredentialStore.swift',
     'native/DeviceComponent.swift', 'tools/build_credential_helper.py',
     'tools/install-mac.sh', 'tools/memory.sh',
 })
 WINDOWS = frozenset({
-    'scripts/brain_windows.py', 'tools/access_windows.py',
+    'scripts/brain_windows.py', 'installer/access_windows.py',
     'tools/install-windows.ps1', 'tools/memory-windows.ps1',
     'tools/windows-python.ps1', 'tests/test_windows_native.py',
 })

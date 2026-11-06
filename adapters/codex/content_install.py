@@ -14,12 +14,14 @@ import platform
 import re
 import subprocess
 import sys
+sys.path[:0]=[str(Path(__file__).resolve().parents[2]/'scripts'),str(Path(__file__).resolve().parent)]
 import tomllib
 from client_release import legacy_file_sets,https_files,policy_file,CONTENT_CAPABILITIES,CONTENT_CLIENT_FILES,SSH_CONTENT_CAPABILITIES,SSH_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,HTTPS_CONTENT_CLIENT_FILES,LEGACY_030_HTTPS_CONTENT_CLIENT_FILES,ClientPackage,ClientReleases,dependency_environment
 from content_mcp import pinned,pairs,enabled_tools,TOOL_CONTRACT_VERSION
 from content_cache import validate_policy,sha,contract
 from client_pairing import ComponentClient
-from codex_connect import atomic,host_stage,host_atomic,host_image,NAME,BEGIN,END,BLOCK,toml_replace,migration_config_matches,toml_equal
+from brain_host_files import atomic,host_stage,host_atomic,host_image
+from codex_connect import NAME,BEGIN,END,BLOCK,toml_replace,migration_config_matches,toml_equal
 from brain_lock import locked,require_platform,platform_paths,private_mode,PlatformUnsupported,native_platform
 from brain_release import ReleaseEngine
 
@@ -98,7 +100,11 @@ def context(home,package,policy_path,policy_sha,*,inspection=False,allow_legacy_
     validate_policy(content,client.grant)
     package_sha=package_check(package,policy,allow_legacy_030_active=allow_legacy_030_active)
     methods=package_tools(package, content, client.grant)
-    mcp={'command':str(Path(sys.executable).resolve()),'args':['-I','-B',str(safe(package)/'adapters/codex/client_startup.py'),'--policy-file',str(policy_path),'--policy-sha256',policy_sha],
+    metadata=json.loads(raw(safe(package)/('verified.json' if (safe(package)/'verified.json').exists() else 'export-manifest.json')))
+    files=metadata.get('manifest',metadata)['files']
+    if sha(contract.encode(files))!=package_sha:raise InstallBlocked('Package membership changed during inspection')
+    launcher='scripts/client_startup.py' if 'scripts/client_startup.py' in files else 'adapters/codex/client_startup.py'
+    mcp={'command':str(Path(sys.executable).resolve()),'args':['-I','-B',str(safe(package)/launcher),'--policy-file',str(policy_path),'--policy-sha256',policy_sha],
          'startup_timeout_sec':60,'tool_timeout_sec':120,'enabled':True,'enabled_tools':methods,'default_tools_approval_mode':'writes'}
     environment=dependency_environment(policy,runtime_check=not inspection)
     if environment is not None:mcp['env']=environment
@@ -116,7 +122,7 @@ def package_tools(package, content, grant):
     source=Path(__file__).resolve().parents[2]
     # The usual same-source path also preserves the injectable contract used by
     # isolated installation checks. Historical packages use their frozen code.
-    names=('adapters/codex/content_mcp.py','adapters/codex/content_contract.py','adapters/codex/content_cache.py','scripts/brain_content.py','scripts/brain_memory.py')
+    names=('adapters/codex/content_mcp.py','adapters/codex/content_cache.py','scripts/brain_content.py','scripts/brain_memory.py','scripts/brain_cache.py')
     if all(raw(package/name,1048576)==raw(source/name,1048576) for name in names):
         return enabled_tools(content,grant)
     code='''import json,sys

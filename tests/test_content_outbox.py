@@ -12,7 +12,7 @@ from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'adapters/codex'));sys.path.insert(0,str(ROOT/'scripts'));sys.path.insert(0,str(ROOT/'tools'))
 from content_cache import ContentAdapter,CacheBlocked
-import content_contract as contract
+import brain_content as contract
 
 MEMORY={'title':'Synthetic','description':'Synthetic only','body':'Synthetic local content','type':'feedback'}
 RULE={'title':'Synthetic rule','body':'Synthetic rule body','enabled':False,'trigger':{'mode':'on-demand','patterns':[]}}

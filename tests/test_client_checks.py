@@ -2,7 +2,6 @@
 import copy
 import json
 import re
-import shlex
 from pathlib import Path
 import subprocess
 import tempfile
@@ -204,39 +203,37 @@ class LocalChecks(unittest.TestCase):
             self.assertEqual(remote.latest, plan['tags']['installer'])
             self.assertEqual(json.loads((root / 'ci.json').read_bytes())['mode'], 'hybrid')
 
-    def test_local_commands_cover_every_workflow_check_and_keep_native_matrix(self):
+    def test_ci_invokes_the_same_inventory_and_keeps_native_matrix(self):
         workflow = (cc.ROOT / '.github/workflows/client-checks.yml').read_text()
         parts = re.split(r'^  ([a-z-]+):\n', workflow.split('\njobs:\n', 1)[1], flags=re.M)
         jobs = dict(zip(parts[1::2], parts[2::2]))
         mapping = {'documentation': 'documentation', 'source': 'source-checks',
                    'macos': 'isolated-client', 'windows': 'windows-contracts'}
         for scope, job in mapping.items():
-            for line in jobs[job].splitlines():
-                words = shlex.split(line.strip())
-                if 'python' in words:
-                    words = words[words.index('python'):]
-                    if words[:4] == ['python', '-m', 'pip', 'install']:
-                        continue
-                elif words[:2] in (['ruff', 'check'], ['mypy', '--check-untyped-defs']):
-                    words = ['python', '-m', *words]
-                elif words[:2] not in (['git', 'diff'], ['sh', '-n']):
-                    continue
-                words = [word.replace('$TEST_ROOT/', '{temp}/') for word in words]
-                if words == ['python', '-B', 'tools/run_ci_tests.py', '--workers', '2']:
-                    self.assertIn(['python', '-B', '-m', 'unittest', 'discover', '-s', 'tests'], cc.COMMANDS[scope])
-                    continue
-                if words[:4] == ['python', '-B', '-m', 'unittest']:
-                    covered = {item for command in cc.COMMANDS[scope]
-                               if command[:4] == words[:4] for item in command[4:]}
-                    self.assertTrue(set(words[4:]) <= covered, (scope, words))
-                else:
-                    self.assertIn(words, cc.COMMANDS[scope], scope)
+            self.assertIn('tools/client_checks.py ' + scope + ' --ci --output', jobs[job])
+            self.assertNotIn('python -B -m unittest', jobs[job])
+            self.assertNotIn('ruff check', jobs[job])
         self.assertIn("python: ['3.11', '3.13']", workflow)
         self.assertIn('ruff==0.14.0 mypy==1.18.2', workflow)
-        parsed = re.findall(r"ParseFile\(\(Join-Path \$pwd '([^']+)'", jobs['windows-contracts'])
-        self.assertEqual(set(parsed), {'tools/install-windows.ps1', 'tools/memory-windows.ps1'})
-        for name in parsed:
+        self.assertIn('test_codebuddy', {item for command in cc.COMMANDS['windows'] for item in command})
+        for name in ('tools/install-windows.ps1', 'tools/memory-windows.ps1', 'tools/install-codebuddy.ps1'):
             self.assertIn(name, cc.COMMANDS['windows'][-1][-1])
+        self.assertTrue(any('adapters/codebuddy' in command for command in cc.COMMANDS['source']))
+
+    def test_focused_ci_cannot_be_recorded_as_complete_local_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, 'complete local'):
+                cc.run_checks('macos', Path(tmp) / 'checks', record=True, ci=True)
+
+    def test_focused_ci_uses_selected_tests_and_skips_only_full_run_helpers(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(cc, 'check_host'), \
+                patch.dict(cc.os.environ, {'CI_TESTS': '["test_codebuddy"]'}), \
+                patch.object(cc.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+            cc.run_checks('macos', Path(tmp) / 'checks', ci=True)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn('tools/run_ci_tests.py', commands[0])
+        self.assertFalse(any('tools/build_credential_helper.py' in command for command in commands))
+        self.assertTrue(any('tools/install-codebuddy.sh' in command for command in commands))
 
 
 if __name__ == '__main__':

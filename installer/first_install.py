@@ -17,6 +17,7 @@ import time
 import secrets
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / name) for name in ('scripts', 'installer', 'adapters/codex', 'tools')]
 SOURCE = ROOT
 sys.path[:0] = [str(SOURCE / name) for name in ("adapters/codex", "scripts", "tools")]
 from brain_lock import file_mode,locked,native_platform,require_platform,private_directory,WINDOWS_PLATFORMS
@@ -30,18 +31,18 @@ from client_release import (
     DEPENDENCY_RUNTIME,
 )
 from content_install import inspect_plan, prepare, private_json, safe, save
+from content_enrollment import install_once
 from https_content import (
     DeviceEnrollment,
     PairingHTTPS,
     endpoint_check,
     grant_check,
-    install_once,
     native_store,
     profile_file,
     profile_metadata,
 )
 from system_credentials import canonical, unique, owned
-from content_contract import encode as plan_bytes
+from brain_content import encode as plan_bytes
 from build_client import export
 from build_credential_helper import build as build_helper
 import shutil
@@ -780,7 +781,7 @@ def reexec_update_runtime(home, action, *, runner=subprocess.run):
             if executable.resolve() == Path(sys.executable).resolve():
                 return None
             environment = dict(environment,HOME=str(home),CODEX_HOME=plan['codex_home'],LANG='en_US.UTF-8')
-            return runner([python,'-I','-B',str(ROOT/'tools/mac_first_install.py'),
+            return runner([python,'-I','-B',str(ROOT/'installer/first_install.py'),
                            '--action',action],env=environment,
                           stdin=None if action == 'update' and sys.stdin.isatty() else subprocess.DEVNULL).returncode
         except Exception:
@@ -798,7 +799,7 @@ def pinned_update_runtime(home, action, policy, mcp, native, runner):
     if Path(mcp['command']).resolve() == Path(sys.executable).resolve():
         return None
     environment = dict(environment, HOME=str(home), CODEX_HOME=str(native), LANG='en_US.UTF-8')
-    return runner([mcp['command'], '-I', '-B', str(ROOT/'tools/mac_first_install.py'),
+    return runner([mcp['command'], '-I', '-B', str(ROOT/'installer/first_install.py'),
                    '--action', action], env=environment,
                   stdin=None if action == 'update' and sys.stdin.isatty() else subprocess.DEVNULL).returncode
 
@@ -859,7 +860,7 @@ def retire_completed_reinstall(home, meta):
 
 def windows_launcher_handover(home, *, channel_factory=None, channel=None, before=None, meta=None):
     import content_install as ci
-    from codex_connect import HostConfigChanged
+    from brain_host_files import HostConfigChanged
     for attempt in range(3):
         try:
             return launcher_handover_once(home, channel_factory=channel_factory, channel=channel, before=before, meta=meta)
@@ -1045,7 +1046,7 @@ def _manage_update(home, action, *, channel_factory=None):
     """
     import content_install
     import global_memory_install as hooks
-    from codex_connect import HostConfigChanged
+    from brain_host_files import HostConfigChanged
     from content_install import inspect, registered_context
     result = {
         'operation': action, 'status': 'client-update-review-required',
@@ -1389,14 +1390,14 @@ def main():
             from access_install import resume_applying_registration
             resumed = resume_applying_registration(home, native, args.server)
             if resumed is not None:
-                from content_contract import installation_follow_up
+                from brain_content import installation_follow_up
                 resumed = finish_install(home,installation_follow_up(resumed))
                 print(json.dumps(resumed))
                 return lifecycle_exit('install', resumed)
         if not registration.exists() and not removal.exists() and not args.connection and not args.expected_connection_sha256 and (args.server or access_state.parent.exists()):
             from access_install import run_address_install
             value = run_address_install(home, native, args.server)
-            from content_contract import installation_follow_up
+            from brain_content import installation_follow_up
             value = finish_install(home,installation_follow_up(value))
             print(json.dumps(value))
             return lifecycle_exit('install', value)
@@ -1407,7 +1408,7 @@ def main():
         except ConnectionRequired:
             from access_install import run_address_install
             value = run_address_install(home, native, args.server)
-            from content_contract import installation_follow_up
+            from brain_content import installation_follow_up
             value = finish_install(home,installation_follow_up(value))
             print(json.dumps(value))
             return lifecycle_exit('install', value)
@@ -1419,7 +1420,7 @@ def main():
         if args.server is not None and endpoint_check(args.server) != endpoint_check(connection['endpoint']):
             raise ValueError('Existing Server identity preserved')
         value = run(home, native, connection, connection_sha)
-        from content_contract import installation_follow_up
+        from brain_content import installation_follow_up
         value = finish_install(home,installation_follow_up(value))
         print(json.dumps(value))
         return lifecycle_exit('install',value)

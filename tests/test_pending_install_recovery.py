@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / n) for n in ('tools', 'scripts', 'adapters/codex')]
+sys.path[:0] = [str(ROOT / n) for n in ('installer', 'tools', 'scripts', 'adapters/codex')]
 import pending_install_recovery as recovery
 import brain_lock
 import test_windows_native as windows_fixtures
@@ -32,13 +32,13 @@ class RecoveryContracts(unittest.TestCase):
 
     def test_refresh_cannot_change_identity_authority_environment_or_native_preimage(self):
         old = {'package': '/synthetic/old', 'package_sha256': 'a' * 64,
-            'mcp': {'args': ['-I', '-B', '/synthetic/old/adapters/codex/client_startup.py'], 'env': {'PATH': '/synthetic/tools'}},
+            'mcp': {'args': ['-I', '-B', '/synthetic/old/scripts/client_startup.py'], 'env': {'PATH': '/synthetic/tools'}},
             'config_after_sha256': 'b' * 64, 'replace_existing': False, 'legacy_agents': None,
             'release_policy': '/synthetic/policy', 'release_policy_sha256': 'c' * 64,
             'before': {'/synthetic/config.toml': 'd' * 64}}
         new = copy.deepcopy(old)
         new.update(package='/synthetic/new', package_sha256='e' * 64, config_after_sha256='f' * 64)
-        new['mcp']['args'][2] = str(Path(new['package']) / 'adapters/codex/client_startup.py')
+        new['mcp']['args'][2] = str(Path(new['package']) / 'scripts/client_startup.py')
         recovery.validate_change(old, new)
         for field, value in (('release_policy_sha256', '0' * 64), ('before', {}), ('replace_existing', True)):
             altered = copy.deepcopy(new)

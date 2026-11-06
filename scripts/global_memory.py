@@ -15,17 +15,17 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'tools'))
-import memory_automation as old
+sys.path[:0] = [str(ROOT / name) for name in ('scripts', 'installer', 'adapters/codex', 'tools')]
+import project_memory as old
 from brain_lock import cache_directory
 from global_memory_scope import validate, select, source_id, namespace, digest, within, restricted, source_context
 
 MARKER = 'Agent Brain global memory'
-FILES = (*old.RUNTIME, 'tools/global_memory.py', 'tools/global_memory_scope.py',
-         'tools/global_memory_install.py', 'tools/global_memory_operator.py',
+FILES = (*old.RUNTIME, 'scripts/global_memory.py', 'scripts/global_memory_scope.py',
          *(('scripts/brain_windows.py',) if os.name == 'nt' else ()))
-LEGACY_FILES = tuple(name for name in FILES if name not in
-                     ('scripts/brain_content.py','scripts/brain_http.py','scripts/brain_memory.py'))
+from brain_layout import PRE_LAYOUT_HOOKS, PRE_SHARED_HOOKS
+LEGACY_FILES = (*PRE_SHARED_HOOKS, *(('scripts/brain_windows.py',) if os.name == 'nt' else ()))
+PREVIOUS_FILES = (*PRE_LAYOUT_HOOKS, *(('scripts/brain_windows.py',) if os.name == 'nt' else ()))
 
 
 def settings_path(home):
@@ -39,13 +39,13 @@ def validate_settings(value, home):
     if not isinstance(value, dict) or set(value) - {'recall'} != keys or value['schema'] != 1 or type(value['enabled']) is not bool or value['device_home'] != str(Path(home)):
         raise ValueError('Exact global memory settings required')
     old.imports()
-    from content_contract import recall_options
+    from brain_content import recall_options
     options=dict(value.get('recall', {})); limit=options.pop('maxResults',5)
     if type(limit) is not int or not 1<=limit<=2**31-1: raise ValueError('Native L1 count required')
     recall_options(options)
     validate(value['scope'])
     pins = value['code_sha256']
-    if not isinstance(pins, dict) or set(pins) not in (set(FILES),set(LEGACY_FILES)) or any(not isinstance(p, str) or not re.fullmatch('[a-f0-9]{64}', p) for p in pins.values()):
+    if not isinstance(pins, dict) or set(pins) not in (set(FILES),set(PREVIOUS_FILES),set(LEGACY_FILES)) or any(not isinstance(p, str) or not re.fullmatch('[a-f0-9]{64}', p) for p in pins.values()):
         raise ValueError('Complete global code pin required')
     return value
 
@@ -178,7 +178,7 @@ class GlobalClient:
         request = {'request_id': rid, 'method': method, 'params': params}
         raw = json.dumps(request, ensure_ascii=False).encode()
         if len(raw) > 131072: raise ValueError('Bounded global request required')
-        from remote_http import check_request
+        from brain_http import check_request
         check_request()
         token = self.base._credential()  # Existing configured secure reference; never returned.
         check_request()
@@ -221,7 +221,7 @@ class GlobalClient:
     def request(self, request):
         if request.get('method') != 'memory_event_submit':
             return {'request_id': request.get('request_id'), 'error': {'code': 'global_method_denied', 'retryable': False}, 'persistence': {'durable': False}}
-        from content_contract import validate as contract_validate, core_receipt
+        from brain_content import validate as contract_validate, core_receipt
         params = request['params']; contract_validate('memory_event_submit', params)
         event = params['event']; selected = select(self.value['scope'], self.local)
         sid = source_id(self.value['scope'], self.local, selected['sharing'])
@@ -292,7 +292,7 @@ def recall(value, local, session, query='personal preferences and task progress'
     # personal namespace for each of the 16 peers. Empty groups still count.
     if set(data) != {'schema', 'namespace_results'} or data['schema'] != 1 or not isinstance(data['namespace_results'], list) or len(data['namespace_results']) > 18:
         raise ValueError('Bounded global recall required')
-    from content_contract import core_recall, verified_memory_sources
+    from brain_content import core_recall, verified_memory_sources
     selected = select(value['scope'], local)
     ids = {namespace(client.actor, value['scope']['profile_id']), namespace(client.actor, source_id(value['scope'], local, selected['sharing']))}
     items = []; references = []
@@ -528,7 +528,7 @@ def main():
             # use that mismatch to suppress the authenticated status probe.
             value = load(a.device_home, verify_code=a.action != 'global-status')
             if a.action == 'global-recall-configure':
-                from content_contract import recall_options
+                from brain_content import recall_options
                 options=json.loads(a.recall_options) if a.recall_options is not None else {}
                 if not isinstance(options,dict): raise ValueError('Native recall options required')
                 settings=dict(options); limit=settings.pop('maxResults',5)
@@ -539,7 +539,7 @@ def main():
                 result={'status':'native-recall-configured','recall':options,'source_scope_changed':False,'model_calls':0}
             elif a.action == 'global-hook':
                 old.imports()
-                from remote_http import RequestControl
+                from brain_http import RequestControl
                 from content_cache import operation_diagnostics
                 control=RequestControl(110)
                 try:

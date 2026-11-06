@@ -15,38 +15,32 @@ import time
 from urllib.parse import urlsplit
 
 BASE = Path(__file__).resolve().parent
-ROOT = BASE.parent if (BASE.parent/'scripts').is_dir() else BASE.parents[1]
+ROOT = BASE.parent
 sys.path.insert(0, str(ROOT/'scripts'))
 from brain_release import GitReleaseSource, ReleaseEngine, UpdateBlocked, atomic_json, digest, version
 from brain_lock import locked,require_platform,platform_paths,WINDOWS_PLATFORMS,private_mode,PlatformUnsupported,LockTimeout
 
 CLIENT_FILES = ('README.md', 'BOOTSTRAP.md', 'PROTOCOL.md', 'ADAPTERS.md', '.gitignore',
-                'connect.py', 'adapters/codex/remote_http.py', 'adapters/codex/remote_mcp.py',
-                'adapters/codex/codex_connect.py', 'adapters/codex/client_release.py',
-                'adapters/codex/client_startup.py',
+                'connect.py', 'scripts/remote_mcp.py',
+                'adapters/codex/codex_connect.py', 'scripts/client_release.py',
+                'scripts/client_startup.py',
                 'scripts/brain_release.py', 'scripts/brain_lock.py')
 CAPABILITIES = ['codex-stdio-mcp', 'synthetic-only']
 PERSONAL_CAPABILITIES=['codex-stdio-mcp','personal-memory-explicit']
-CONTENT_CLIENT_FILES=CLIENT_FILES+('adapters/codex/client_pairing.py','native/DeviceComponent.swift',
-    'adapters/codex/content_cache.py','adapters/codex/content_mcp.py','adapters/codex/content_contract.py','adapters/codex/content_install.py')
+CONTENT_CLIENT_FILES=CLIENT_FILES+('scripts/client_pairing.py','native/DeviceComponent.swift',
+    'adapters/codex/content_cache.py','adapters/codex/content_mcp.py','adapters/codex/content_install.py')
 CONTENT_CAPABILITIES=['codex-stdio-mcp','personal-content-explicit','signed-device-proxy']
-SSH_CONTENT_CLIENT_FILES=tuple(n for n in CONTENT_CLIENT_FILES if n!='native/DeviceComponent.swift')+('adapters/codex/ssh_content.py',)
+SSH_CONTENT_CLIENT_FILES=tuple(n for n in CONTENT_CLIENT_FILES if n!='native/DeviceComponent.swift')+('scripts/ssh_content.py',)
 SSH_CONTENT_CAPABILITIES=['codex-stdio-mcp','personal-content-explicit','ssh-server-credential-proxy']
-HTTPS_CONTENT_CLIENT_FILES=tuple(n for n in CONTENT_CLIENT_FILES if n!='native/DeviceComponent.swift')+('adapters/codex/https_content.py','adapters/codex/system_credentials.py','native/CredentialStore.swift')
-# 0.3.0 shipped a frozen 22-file HTTPS policy that also included the deferred
-# notify mux. Recognize that exact historical policy for the explicit main
-# checkout update bridge; the current candidate remains the 21-file set above.
-LEGACY_030_HTTPS_CONTENT_CLIENT_FILES=tuple(
-    HTTPS_CONTENT_CLIENT_FILES[:11]+('adapters/codex/codex_notify_mux.py',)+HTTPS_CONTENT_CLIENT_FILES[11:]
-)
+HTTPS_CONTENT_CLIENT_FILES=tuple(n for n in CONTENT_CLIENT_FILES if n!='native/DeviceComponent.swift')+('scripts/https_content.py','scripts/system_credentials.py','native/CredentialStore.swift')
 WINDOWS_HTTPS_CONTENT_CLIENT_FILES=tuple(n for n in HTTPS_CONTENT_CLIENT_FILES if n!='native/CredentialStore.swift')+('scripts/brain_windows.py',)
-# Historical packages and on-disk policies stay valid, including their exact
-# order. Only these three source dependencies are added by the shared-core split.
-SHARED_CLIENT_FILES=('scripts/brain_content.py','scripts/brain_http.py','scripts/brain_memory.py')
-LEGACY_CLIENT_FILE_SETS=(CLIENT_FILES,CONTENT_CLIENT_FILES,SSH_CONTENT_CLIENT_FILES,
-                       HTTPS_CONTENT_CLIENT_FILES,WINDOWS_HTTPS_CONTENT_CLIENT_FILES)
-LEGACY_HTTPS_CONTENT_CLIENT_FILES=HTTPS_CONTENT_CLIENT_FILES
-CLIENT_FILES=CLIENT_FILES+SHARED_CLIENT_FILES[:2]
+from brain_layout import PRE_SHARED_FILE_SETS, PRE_LAYOUT_FILE_SETS, LEGACY_030_FILES
+LEGACY_CLIENT_FILE_SETS=PRE_SHARED_FILE_SETS
+LEGACY_030_HTTPS_CONTENT_CLIENT_FILES=LEGACY_030_FILES
+LEGACY_HTTPS_CONTENT_CLIENT_FILES=PRE_SHARED_FILE_SETS[3]
+SHARED_CLIENT_FILES=('scripts/brain_content.py','scripts/brain_http.py','scripts/brain_memory.py',
+                     'scripts/brain_cache.py','scripts/brain_host_files.py','scripts/brain_layout.py')
+CLIENT_FILES=CLIENT_FILES+tuple(n for n in SHARED_CLIENT_FILES if n not in ('scripts/brain_memory.py','scripts/brain_cache.py'))
 CONTENT_CLIENT_FILES=CONTENT_CLIENT_FILES+SHARED_CLIENT_FILES
 SSH_CONTENT_CLIENT_FILES=SSH_CONTENT_CLIENT_FILES+SHARED_CLIENT_FILES
 HTTPS_CONTENT_CLIENT_FILES=HTTPS_CONTENT_CLIENT_FILES+SHARED_CLIENT_FILES
@@ -55,8 +49,8 @@ WINDOWS_HTTPS_CONTENT_CLIENT_FILES=WINDOWS_HTTPS_CONTENT_CLIENT_FILES+SHARED_CLI
 
 def legacy_file_sets(policy):
     index=4 if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES and policy['platform'] in WINDOWS_PLATFORMS else 3 if policy['capabilities']==HTTPS_CONTENT_CAPABILITIES else 2 if policy['capabilities']==SSH_CONTENT_CAPABILITIES else 1 if policy['capabilities']==CONTENT_CAPABILITIES else 0
-    files=(LEGACY_CLIENT_FILE_SETS[index],)
-    if index==3:files+=(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES,)
+    files=(PRE_SHARED_FILE_SETS[index],PRE_LAYOUT_FILE_SETS[index])
+    if index==3:files+=(LEGACY_030_FILES,)
     return files
 
 
@@ -164,6 +158,7 @@ class ClientPackage:
         self.content=bool(policy and policy['capabilities'] in (CONTENT_CAPABILITIES,SSH_CONTENT_CAPABILITIES,HTTPS_CONTENT_CAPABILITIES))
         self.ssh=bool(policy and policy['capabilities']==SSH_CONTENT_CAPABILITIES)
         self.https=bool(policy and policy['capabilities']==HTTPS_CONTENT_CAPABILITIES)
+        self.policy_files=policy['file_prefixes'] if policy else []
         self.files=https_files(policy['platform']) if self.https else SSH_CONTENT_CLIENT_FILES if self.ssh else CONTENT_CLIENT_FILES if self.content else CLIENT_FILES
         self.legacy_030_https_policy=bool(self.https and policy and policy['file_prefixes']==list(LEGACY_030_HTTPS_CONTENT_CLIENT_FILES))
         self.legacy_files=legacy_file_sets(policy) if policy else (LEGACY_CLIENT_FILE_SETS[0],)
@@ -191,7 +186,7 @@ class ClientPackage:
     def allows_shared_file(self,path):
         # Called only by the already-installed release engine. Never grant a
         # directory prefix, change capabilities or accept arbitrary new files.
-        return path in SHARED_CLIENT_FILES and path in self.files
+        return path in self.files and any(self.policy_files == list(old) for old in self.legacy_files)
 
     def snapshot(self):return {}  # Only ReleaseEngine owns the active pointer.
     def refresh(self, package, manifest):pass

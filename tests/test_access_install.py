@@ -18,7 +18,7 @@ sys.path[:0] = [
     for p in ("tools", "adapters/codex", "scripts", "tests")
 ]
 import access_install as access
-import mac_first_install as wizard
+import first_install as wizard
 import test_mac_first_install as fixtures
 from test_https_content import Backend
 from system_credentials import canonical
@@ -201,7 +201,7 @@ class AccessTransport(unittest.TestCase):
 
     def test_no_redirect_tls_error_or_unknown_rejection_retires_key(self):
         peer = access.AccessHTTPS("https://synthetic.invalid")
-        from remote_http import NoRedirect
+        from brain_http import NoRedirect
 
         self.assertTrue(any(isinstance(h, NoRedirect) for h in peer.opener.handlers))
         for status, code, expected in (
@@ -399,7 +399,7 @@ class BootstrapCacheEntry(unittest.TestCase):
         with (
             patch.object(Path, "home", return_value=self.home),
             patch.dict(os.environ, CODEX_HOME=str(self.native)),
-            patch.object(sys, "argv", ["mac_first_install.py"]),
+            patch.object(sys, "argv", ["first_install.py"]),
             patch.object(sys, "stdout", io.StringIO()) as output,
             patch.object(access, "run_address_install", side_effect=install),
         ):
@@ -478,7 +478,7 @@ class ApplyingAccessEntry(unittest.TestCase):
         with (
             patch.object(Path, "home", return_value=f.home),
             patch.dict(os.environ, CODEX_HOME=str(f.native)),
-            patch.object(sys, "argv", ["mac_first_install.py"]),
+            patch.object(sys, "argv", ["first_install.py"]),
             patch.object(wizard, "run", side_effect=run),
             patch.object(sys, "stdout", io.StringIO()) as output,
         ):
@@ -508,7 +508,7 @@ class ApplyingAccessEntry(unittest.TestCase):
         with (
             patch.object(Path, "home", return_value=f.home),
             patch.dict(os.environ, CODEX_HOME=str(f.native)),
-            patch.object(sys, "argv", ["mac_first_install.py"]),
+            patch.object(sys, "argv", ["first_install.py"]),
             patch.object(
                 wizard,
                 "run",

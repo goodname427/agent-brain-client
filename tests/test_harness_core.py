@@ -68,15 +68,17 @@ assert not any(n in sys.modules for n in ('content_cache','content_mcp','codex_c
         run = subprocess.run([sys.executable, '-I', '-B', '-c', code, str(ROOT / 'scripts')], capture_output=True)
         self.assertEqual(run.returncode, 0, run.stderr.decode())
 
-    def test_codex_compatibility_imports_share_request_cancellation_and_contract(self):
-        import remote_http
-        import content_contract
-        self.assertIs(remote_http, brain_http)
-        self.assertIs(content_contract, contract)
-        control = brain_http.RequestControl(30)
+    def test_native_and_transport_consumers_share_contract_and_request_cancellation(self):
+        import content_cache
+        from content_mcp import RequestControl as MCPControl
+        from https_content import RequestStopped as TransportStopped
+        self.assertIs(content_cache.contract, contract)
+        self.assertIs(MCPControl, brain_http.RequestControl)
+        self.assertIs(TransportStopped, brain_http.RequestStopped)
+        control = MCPControl(30)
         try:
             with control.activate():
-                self.assertIs(remote_http.current_request(), control)
+                self.assertIs(brain_http.current_request(), control)
         finally:
             control.close()
 

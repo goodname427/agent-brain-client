@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from codex_connect import host_stage, host_atomic
+from brain_host_files import host_stage,host_atomic
 
 
 @unittest.skipUnless(
@@ -100,7 +100,7 @@ class WindowsBoundary(unittest.TestCase):
     def test_existing_open_requests_only_data_io_and_excludes_writers(self):
         from types import SimpleNamespace
         from unittest.mock import Mock
-        from codex_connect import windows_host_file
+        from brain_host_files import windows_host_file
 
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

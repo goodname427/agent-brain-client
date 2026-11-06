@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 from urllib.parse import urlsplit
 
-import memory_automation as old
+import project_memory as old
 from global_memory_scope import validate, digest
 
 

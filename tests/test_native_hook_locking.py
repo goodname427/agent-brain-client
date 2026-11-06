@@ -17,10 +17,11 @@ import json,sys
 from contextlib import contextmanager
 from pathlib import Path
 root,base,role=map(Path,sys.argv[1:4])
-sys.path[:0]=[str(root/'tests'),str(root/'adapters/codex'),str(root/'scripts')]
+sys.path[:0]=[str(root/'tests'),str(root/'adapters/codex'),str(root/'scripts'),str(root/'installer')]
 from test_content_outbox import Cloud,POLICY
 from test_event_hook import accepted
 import content_cache
+import brain_cache
 from content_cache import ContentAdapter
 from content_mcp import ContentServer,run_event_hook
 from brain_lock import locked
@@ -45,12 +46,13 @@ with locked(base/'cache'/'.content-runtime.lock',shared=True):
   emit({'phase':'worker-idle','initialized':bool(result)})
   assert sys.stdin.readline().strip()=='exit'
  else:
-  original=content_cache.locked
+  original=brain_cache.locked
   @contextmanager
   def bounded(path,*args,**kwargs):
    if path==base/'cache'/'content.lock':kwargs['timeout']=0.4
    with original(path,*args,**kwargs) as handle:yield handle
   content_cache.locked=bounded
+  brain_cache.locked=bounded
   policy={'schema':1,'enabled':True,'profile_sha256':'a'*64,'content_policy_sha256':'b'*64,'off_file':str(base/'capture.off'),'scopes':[{'cwd':str(base/'project'),'project_id':'synthetic-project','session_id':'synthetic-session'}]}
   prompt={'session_id':'synthetic-session','turn_id':'synthetic-turn','cwd':str(base/'project'),'hook_event_name':'UserPromptSubmit','prompt':'SYNTHETIC_NATIVE_HOOK_INPUT'}
   run_event_hook(adapter,policy,prompt)

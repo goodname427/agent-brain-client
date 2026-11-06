@@ -12,31 +12,32 @@ from pathlib import Path
 import sys
 import time
 import tempfile
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
+sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'scripts'))
 from brain_lock import cache_mode,private_mode,private_directory,file_mode,atomic_replace,sync_directory,locked,command_line
 import re
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 ENTRY = Path(__file__).resolve()
 MARKER = "Agent Brain project memory"
 RUNTIME = (
     "scripts/brain_content.py",
     "scripts/brain_http.py",
     "scripts/brain_memory.py",
-    "adapters/codex/https_content.py",
+    "scripts/brain_cache.py",
+    "scripts/brain_host_files.py",
+    "scripts/brain_layout.py",
+    "scripts/https_content.py",
     "adapters/codex/content_mcp.py",
     "adapters/codex/content_cache.py",
-    "adapters/codex/content_contract.py",
     "adapters/codex/content_install.py",
-    "adapters/codex/client_release.py",
-    "adapters/codex/client_pairing.py",
+    "scripts/client_release.py",
+    "scripts/client_pairing.py",
     "adapters/codex/codex_connect.py",
-    "adapters/codex/remote_http.py",
-    "adapters/codex/remote_mcp.py",
-    "adapters/codex/system_credentials.py",
+    "scripts/remote_mcp.py",
+    "scripts/system_credentials.py",
     "scripts/brain_lock.py",
     "scripts/brain_release.py",
-    "tools/memory_automation.py",
+    "adapters/codex/project_memory.py",
 )
 
 
@@ -106,7 +107,7 @@ def write(path, value, *, exclusive=False, mode=0o600, cache=False):
 
 
 def imports():
-    sys.path[:0] = [str(ROOT / n) for n in ("scripts", "adapters/codex")]
+    sys.path[:0] = [str(ROOT / n) for n in ("scripts", "adapters/codex", "installer")]
 
 
 def registration(home):
@@ -676,7 +677,7 @@ def recalled(p, session):
                     ).encode()
                 ):
                     raise ValueError("Derived snapshot changed")
-                from content_contract import core_recall
+                from brain_content import core_recall
 
                 body = saved["payload"]
                 core_recall(body, body["scope"])
@@ -926,7 +927,7 @@ def record(p, path):
     }:
         raise ValueError("Explicit note pair required")
     imports()
-    from content_contract import event_identifier, text
+    from brain_content import event_identifier, text
     from content_cache import ContentAdapter, validate_policy
     from https_content import HTTPSContentClient
 
@@ -1050,7 +1051,7 @@ def hook(p):
     if not active(p):
         return {}
     imports()
-    from remote_http import RequestControl
+    from brain_http import RequestControl
 
     control = RequestControl(25)
     try:
@@ -1162,7 +1163,7 @@ def record_daily(p, path):
         }
     policy = private_json(p["recall_policy"], p["recall_policy_sha256"])
     imports()
-    from content_contract import event_identifier, text as valid_text
+    from brain_content import event_identifier, text as valid_text
 
     try:
         note = json.loads(text, object_pairs_hook=unique)

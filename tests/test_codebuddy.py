@@ -127,16 +127,16 @@ class Installation(unittest.TestCase):
         self.assertEqual(self.settings.read_text(), text)
 
     def test_failure_and_interrupted_transaction_restore_all_images(self):
-        from codex_connect import host_apply as real_apply
+        from brain_host_files import host_apply as real_apply
         def interrupted(rows, persist):
             real_apply(rows, persist)
             raise OSError('Synthetic post-write failure')
-        with patch('codex_connect.host_apply', side_effect=interrupted), self.assertRaises(OSError):
+        with patch('brain_host_files.host_apply', side_effect=interrupted), self.assertRaises(OSError):
             self.install()
         self.assertEqual(self.settings.read_bytes(), self.original)
         self.assertFalse((self.native / '.mcp.json').exists())
         self.assertFalse((cbhost.state_directory(self.home) / 'registration.json').exists())
-        with patch('codex_connect.host_apply', side_effect=lambda rows, persist: (real_apply(rows, persist), (_ for _ in ()).throw(SystemExit(7)))):
+        with patch('brain_host_files.host_apply', side_effect=lambda rows, persist: (real_apply(rows, persist), (_ for _ in ()).throw(SystemExit(7)))):
             with self.assertRaises(SystemExit):
                 self.install()
         cbhost.recover(self.home, self.core)

@@ -8,8 +8,8 @@ import subprocess
 import time
 from types import SimpleNamespace
 from client_pairing import reviewed_ids,allowed_id
-import content_contract as contract
-from remote_http import check_request,current_request,request_timeout
+import brain_content as contract
+from brain_http import check_request,current_request,request_timeout
 from brain_lock import native_platform,MAC_PLATFORMS
 
 PREFIX='/usr/bin/sudo -n -u agent-brain /usr/bin/python3 -I -B '

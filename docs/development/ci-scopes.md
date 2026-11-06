@@ -16,7 +16,7 @@
 | 仅 CI 分类器／文档检查器及它们的测试，可带普通文档 | 是（含对应回归） | 是 | 跳过 | 跳过 |
 | 手动 Run workflow、merge queue、基准缺失／不可判定 | 是 | 是 | 是 | 是 |
 
-平台专用路径是短小的精确白名单，新增文件默认走全量，确认边界和测试覆盖后才加入白名单。`tools/mac_first_install.py` 虽然带 mac 名称，实际也承接 Windows 安装，因此归公共代码；`windows_install_complete.py` 及 POSIX 故障注入 fixture 同样保守覆盖两端。依赖和 CI 配置不按目录名猜测。docs 下的连接 JSON 是合同，仍跑全量。根目录 Markdown 的文件集合改变一律走全量，保护 README／BOOTSTRAP／PROTOCOL／ADAPTERS 等固定包文件；仅改标点不改变集合。Markdown 变成可执行文件、符号链接或子模块等特殊变更走全量。
+平台专用路径是短小的精确白名单，新增文件默认走全量，确认边界和测试覆盖后才加入白名单。`installer/first_install.py` 同时承接两平台安装，因此归公共代码；`windows_install_complete.py` 及 POSIX 故障注入 fixture 同样保守覆盖两端。依赖和 CI 配置不按目录名猜测。docs 下的连接 JSON 是合同，仍跑全量。根目录 Markdown 的文件集合改变一律走全量，保护 README／BOOTSTRAP／PROTOCOL／ADAPTERS 等固定包文件；仅改标点不改变集合。Markdown 变成可执行文件、符号链接或子模块等特殊变更走全量。
 
 ## 基准和结果
 
@@ -37,6 +37,8 @@
 合成 Git 历史、各类路径／改名／删除／混合、失败汇总与发布证据回归见 [test_ci_scope.py](../../tests/test_ci_scope.py) 和 [test_release_pipeline.py](../../tests/test_release_pipeline.py)。平台原生检查仍以 GitHub 对应 runner 的实际结果为准；合成测试不证明真实桌面、设备或生产验收。
 
 
+本地与 Actions 均直接执行 `tools/client_checks.py` 的同一份 `COMMANDS`；工作流不再复制测试／lint／类型清单。CodeBuddy 的静态检查、Windows 专项及安装入口解析都包含在共用清单中。
+
 ## 日常增量检查
 
 Mac 测试在同一个 runner 的两个独立进程执行，每个进程分别隔离 HOME／USERPROFILE／CODEX_HOME；模块按队列交给空闲进程，每个模块单独隔离并输出耗时；全部结果汇总后任一失败均失败。完整测试仍执行全部模块，helper 自检保留；本地正式发布的原串行全量入口继续可用。
@@ -50,7 +52,7 @@ python3 -B tools/ci_scope.py plan origin/main HEAD
 TEST_ROOT=$(mktemp -d)
 mkdir -p "$TEST_ROOT/home" "$TEST_ROOT/codex"
 export HOME="$TEST_ROOT/home" CODEX_HOME="$TEST_ROOT/codex"
-export PYTHONPATH=scripts:adapters/codex:tools:tests
+export PYTHONPATH=scripts:adapters/codex:installer:tools:tests
 export CI_TESTS="$(python3 -B tools/ci_scope.py tests origin/main HEAD)"
 python3 -B tools/run_ci_tests.py
 ```

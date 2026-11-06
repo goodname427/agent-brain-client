@@ -27,7 +27,7 @@ def main():
         if target.is_symlink() or target.resolve().is_relative_to(root) is False or hashlib.sha256(target.read_bytes()).hexdigest()!=digest:raise ValueError('Installed Client bytes changed')
     sys.path[:0]=[str(root/'adapters/codex'),str(root/'scripts')]
     from https_content import HTTPSContentClient,PinnedDeviceTask,profile_file,owned,unique
-    from content_contract import validate
+    from brain_content import validate
     request_raw=owned(plan['request']).read_bytes()
     if hashlib.sha256(request_raw).hexdigest()!=plan['request_sha256']:raise ValueError('Request pin changed')
     request=json.loads(request_raw,object_pairs_hook=unique);validate('memory_query',request['params'])

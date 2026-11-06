@@ -17,7 +17,7 @@ def resume_setup(home, native):
     """Dispatch owned pending transactions before original-install inspection."""
     import content_install as ci
     from global_memory_install import recover_pending
-    from mac_first_install import manage_update
+    from first_install import manage_update
 
     stage = "hook-recovery"
     try:

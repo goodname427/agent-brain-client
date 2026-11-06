@@ -1,12 +1,14 @@
 # CodeBuddy 适配边界
 
-> Client 0.7 开发说明；核对日期 2026-11-05。安装与实际能力见 [CodeBuddy 接入](../installation/codebuddy.md)。
+> Client 0.7 开发说明；核对日期 2026-11-06。安装与实际能力见 [CodeBuddy 接入](../installation/codebuddy.md)。
 
-适配复用 [共用核心](harness-core.md)，不增加记忆数据库、抽取器、Server 事务或凭据后端。查询／写入直接启动原验证后的 MCP 后端；采集通过原 GlobalClient 认证和来源门禁，使用继承共用 ContentOutbox 的既有存储包装。CodeBuddy 采集单独绑定 `host_adapter` 和缓存路径，不替换 Codex 队列。
+适配复用 [共用核心](harness-core.md)，不增加记忆数据库、抽取器、Server 事务或凭据后端。查询／写入直接启动原验证后的 MCP 后端；采集通过原 GlobalClient 认证和来源门禁，直接使用共用 `brain_cache.EventQueue`，不加载 Codex 内容映射。CodeBuddy 采集单独绑定 `host_adapter` 和缓存路径，不替换 Codex 队列。
+
+当前目录职责及进一步拆分见 [运行代码结构](runtime-layout.md)。以下行数保留首次实现时的审计记录。
 
 ## 厚度
 
-首次实现的物理源码为 **983 行**，不含测试与文档；行数包含注释、空行，不代表复杂度评分。
+首次实现时的物理源码为 **983 行**，不含测试与文档；行数包含注释、空行，不代表复杂度评分。
 
 | 文件 | 行数 | 宿主职责 |
 | --- | ---: | --- |
@@ -24,4 +26,4 @@
 
 ## 验证范围
 
-专项测试覆盖安装事务、配置冲突、共享 outbox、当前轮正文、敏感来源、长 Unicode 回复和断网重试。现有 Actions workflow 保持原样；`client_checks.py windows` 的本地等价检查额外包括 CodeBuddy 专项与新 PowerShell 入口解析。现有 Windows Actions 作业通过不能单独证明这些新增专项已经在原生 Windows 跑过。真实凭据 UI、IDE／CLI 模型加载与用户设备验收单列，不从合成测试推断。
+专项测试覆盖安装事务、配置冲突、共享 outbox、当前轮正文、敏感来源、长 Unicode 回复和断网重试。本地与 Actions 共用 `client_checks.py` 的清单，均包含 CodeBuddy 静态检查，Windows 清单也包含 CodeBuddy 专项和 PowerShell 入口解析。真实凭据 UI、IDE／CLI 模型加载与用户设备验收单列，不从合成测试推断。

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "adapters/codex"))
-from content_contract import MEMORY_GUIDANCE, ONBOARD_COVERAGE_GUIDANCE, installation_follow_up, review_memory_sources
+from brain_content import MEMORY_GUIDANCE, ONBOARD_COVERAGE_GUIDANCE, installation_follow_up, review_memory_sources
 import content_mcp
 
 

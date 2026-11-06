@@ -11,7 +11,7 @@ from unittest.mock import patch
 from brain_lock import cache_locked as locked
 from content_mcp import ContentParameterError, ContentServer, ContentToolUnavailable, enabled_tools
 from content_cache import CacheBlocked, ContentAdapter
-from remote_http import RequestStopped
+from brain_http import RequestStopped
 import test_content_outbox as fixture
 
 

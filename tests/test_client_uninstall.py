@@ -61,7 +61,7 @@ class ClientUninstall(unittest.TestCase):
                             installer=lambda p, d: install.apply(p, d, lambda value: None))
 
         output = io.StringIO()
-        with patch.object(sys, 'argv', ['mac_first_install.py', *args]), \
+        with patch.object(sys, 'argv', ['first_install.py', *args]), \
                 patch.object(Path, 'home', return_value=self.home), \
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
                 patch.object(sys, 'stdout', output), \
@@ -297,7 +297,7 @@ class ClientUninstall(unittest.TestCase):
 
     def uninstall_cli(self):
         output = io.StringIO()
-        with patch.object(sys, 'argv', ['mac_first_install.py', '--action', 'uninstall']), \
+        with patch.object(sys, 'argv', ['first_install.py', '--action', 'uninstall']), \
                 patch.object(Path, 'home', return_value=self.home), \
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
                 patch.object(sys, 'stdout', output), \
@@ -323,7 +323,7 @@ class ClientUninstall(unittest.TestCase):
 
     def status_cli(self, action='status'):
         output = io.StringIO()
-        with patch.object(sys, 'argv', ['mac_first_install.py', '--action', action]), \
+        with patch.object(sys, 'argv', ['first_install.py', '--action', action]), \
                 patch.object(Path, 'home', return_value=self.home), \
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
                 patch.object(sys, 'stdout', output), \

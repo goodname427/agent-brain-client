@@ -56,7 +56,7 @@ adapter=Adapter();adapter.refresh=lambda:{'status':'synthetic','model_loaded':'u
 version=sys.argv[sys.argv.index('--client-version')+1]
 serve(ContentServer(adapter,version),sys.stdin.buffer,sys.stdout)
 """.replace("ROOT", repr(str(ROOT)))
-        self.payload = {"adapters/codex/remote_mcp.py": worker.encode()}
+        self.payload = {"scripts/remote_mcp.py": worker.encode()}
         self.manifest = {
             "schema": 1,
             "version": "0.6.1",
@@ -264,7 +264,7 @@ else:
             )
             self.engine.set_active(candidate)
             self.assertEqual(self.engine.serving_active(), self.old)
-        Path(self.old["package"], "adapters/codex/remote_mcp.py").write_bytes(
+        Path(self.old["package"], "scripts/remote_mcp.py").write_bytes(
             b"corrupted"
         )
         with self.assertRaises(UpdateBlocked):
@@ -328,7 +328,7 @@ else:
             "package": str(package),
             "manifest_sha256": digest(json.dumps(target, sort_keys=True).encode()),
         }
-        (package / "adapters/codex/remote_mcp.py").write_bytes(b"damaged candidate")
+        (package / "scripts/remote_mcp.py").write_bytes(b"damaged candidate")
         atomic_json(
             self.engine.journal,
             {"phase": "activated", "before": self.old, "target": candidate},

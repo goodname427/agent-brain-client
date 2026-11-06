@@ -43,7 +43,7 @@ class NativeKeychain:
             if parent.stat().st_mode&0o022:raise ValueError('Credential helper ancestor writable')
         # No ambient injection, proxy, HOME override, debug flags or secret argv.
         env={'PATH':'/usr/bin:/bin','HOME':str(Path.home()),'LANG':'en_US.UTF-8'}
-        from remote_http import controlled_run
+        from brain_http import controlled_run
         result=controlled_run(self.runner,[str(helper)],input=canonical(dict(op=op,service=self.service,**fields)),capture_output=True,timeout=180,env=env)
         if result.returncode or len(result.stdout)>32768:raise ValueError('Credential store unavailable')
         value=json.loads(result.stdout,object_pairs_hook=unique)

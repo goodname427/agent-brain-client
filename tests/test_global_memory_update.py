@@ -15,9 +15,10 @@ from types import SimpleNamespace
 
 from brain_lock import private_directory
 import codex_connect as host
+import brain_host_files as host_files
 import global_memory as gm
 import global_memory_install as hooks
-import memory_automation as old
+import project_memory as old
 
 
 class GlobalMemoryUpdate(unittest.TestCase):
@@ -90,7 +91,13 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.addCleanup(self.no_client.stop)
 
     def test_refresh_adds_shared_runtime_pins_without_changing_source_or_queue(self):
-        legacy = dict(self.value, code_sha256={name: 'b' * 64 for name in gm.LEGACY_FILES})
+        self.assert_historical_hook_refresh(gm.LEGACY_FILES)
+
+    def test_refresh_relocates_070_hook_pins_without_changing_source_or_queue(self):
+        self.assert_historical_hook_refresh(gm.PREVIOUS_FILES)
+
+    def assert_historical_hook_refresh(self, files):
+        legacy = dict(self.value, code_sha256={name: 'b' * 64 for name in files})
         old.write(self.file, legacy)
         hooks.transact(self.native, self.file.parent, hooks.block(legacy))
         pending = self.file.parent / 'fictional-pending.json'
@@ -147,7 +154,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
                 "-B",
                 "-c",
                 code,
-                str(root / "tools"),
+                str(root / "scripts"),
                 str(self.home),
             ],
             cwd=self.home,
@@ -301,13 +308,13 @@ class GlobalMemoryUpdate(unittest.TestCase):
         before = self.config.read_bytes().replace(hooks.END.encode(), foreign + hooks.END.encode())
         self.config.write_bytes(before)
         target = hooks.block(dict(self.value, code_sha256={name: 'c' * 64 for name in gm.FILES}))
-        apply = host.host_apply
+        apply = host_files.host_apply
 
         def interrupt(rows, persist):
             apply(rows, persist)
             raise SystemExit('Synthetic interruption after Hook write')
 
-        with patch.object(host, 'host_apply', side_effect=interrupt), self.assertRaises(SystemExit):
+        with patch.object(host_files, 'host_apply', side_effect=interrupt), self.assertRaises(SystemExit):
             hooks.transact(self.native, self.file.parent, target)
         receipt = self.file.parent / 'hook-install.json'
         record = hooks.read_receipt(receipt)
@@ -333,8 +340,8 @@ class GlobalMemoryUpdate(unittest.TestCase):
         receipt = self.file.parent / 'hook-install.json'
         record = {'schema': 2, 'phase': 'applying', 'block': target,
                   'previous_block': previous, 'before_sha256': old.digest(before),
-                  'after_sha256': old.digest(after), 'host': host.host_plan({self.config: after})}
-        host.host_apply(record['host'], lambda: old.write(receipt, record))
+                  'after_sha256': old.digest(after), 'host': host_files.host_plan({self.config: after})}
+        host_files.host_apply(record['host'], lambda: old.write(receipt, record))
         hooks.recover_record(self.config, receipt, hooks.read_receipt(receipt))
         self.assertEqual(self.config.read_bytes(), before)
         self.assertEqual(hooks.read_receipt(receipt)['phase'], 'rolled-back')
@@ -373,7 +380,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
 
     def test_isolated_status_cli_loads_shared_toml_editor_without_pythonpath(self):
         environment = dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.native))
-        proc = subprocess.run([sys.executable, '-I', '-B', str(gm.ROOT / 'tools/global_memory.py'),
+        proc = subprocess.run([sys.executable, '-I', '-B', str(gm.ROOT / 'scripts/global_memory.py'),
                                'global-status', '--device-home', str(self.home)],
                               cwd=self.home, env=environment, capture_output=True, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stdout.decode() + proc.stderr.decode())
@@ -412,7 +419,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertEqual(old.private_json(self.file), self.value)
 
     def test_interrupted_settings_write_is_recovered_before_retry(self):
-        apply = host.host_apply
+        apply = host_files.host_apply
 
         def interrupt(rows, persist):
             apply(rows, persist)
@@ -420,7 +427,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
                 raise SystemExit("Synthetic interruption after settings write")
 
         with (
-            patch.object(host, "host_apply", side_effect=interrupt),
+            patch.object(host_files, "host_apply", side_effect=interrupt),
             self.assertRaises(SystemExit),
         ):
             hooks.refresh(self.home)
@@ -435,7 +442,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.preserved()
 
     def test_outside_settings_edit_after_interruption_is_preserved(self):
-        apply = host.host_apply
+        apply = host_files.host_apply
 
         def interrupt(rows, persist):
             apply(rows, persist)
@@ -443,7 +450,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
                 raise SystemExit("Synthetic interruption")
 
         with (
-            patch.object(host, "host_apply", side_effect=interrupt),
+            patch.object(host_files, "host_apply", side_effect=interrupt),
             self.assertRaises(SystemExit),
         ):
             hooks.refresh(self.home)
@@ -455,7 +462,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertEqual(old.private_json(self.file), value)
 
     def test_recognized_torn_settings_write_recovers_original_then_retries(self):
-        stage = host.host_stage
+        stage = host_files.host_stage
 
         @contextmanager
         def inplace(path, raw, mode, expected):
@@ -468,7 +475,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
                 st = os.fstat(stream.fileno())
 
                 def commit():
-                    host.host_write(stream, raw)
+                    host_files.host_write(stream, raw)
 
                 commit.inplace_identity = {"device": st.st_dev, "inode": st.st_ino}
                 yield commit
@@ -486,19 +493,19 @@ class GlobalMemoryUpdate(unittest.TestCase):
 
         # Only settings host_apply uses this tear; native Hook installation has
         # completed before it, using the regular native writer.
-        apply = host.host_apply
+        apply = host_files.host_apply
 
         def interrupt(rows, persist):
             if str(self.file) not in rows:
                 return apply(rows, persist)
             with (
-                patch.object(host, "host_stage", side_effect=inplace),
-                patch.object(host, "host_write", side_effect=tear),
+                patch.object(host_files, "host_stage", side_effect=inplace),
+                patch.object(host_files, "host_write", side_effect=tear),
             ):
                 return apply(rows, persist)
 
         with (
-            patch.object(host, "host_apply", side_effect=interrupt),
+            patch.object(host_files, "host_apply", side_effect=interrupt),
             self.assertRaises(SystemExit),
         ):
             hooks.refresh(self.home)
@@ -510,7 +517,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
     def test_frozen_code_tampering_is_rejected(self):
         hooks.refresh(self.home)
         root = next((self.file.parent / "code").iterdir())
-        (root / "tools/global_memory.py").write_bytes(b"Changed by outside actor")
+        (root / "scripts/global_memory.py").write_bytes(b"Changed by outside actor")
         with self.assertRaises(ValueError):
             hooks.refresh(self.home)
 
@@ -580,13 +587,13 @@ class GlobalMemoryUpdate(unittest.TestCase):
         before = self.inline_event_config(False)
         self.config.write_bytes(before)
         target = hooks.block(dict(self.value, code_sha256={name: 'c' * 64 for name in gm.FILES}))
-        apply = host.host_apply
+        apply = host_files.host_apply
 
         def interrupt(rows, persist):
             apply(rows, persist)
             raise SystemExit('synthetic interrupted inline event write')
 
-        with patch.object(host, 'host_apply', side_effect=interrupt), self.assertRaises(SystemExit):
+        with patch.object(host_files, 'host_apply', side_effect=interrupt), self.assertRaises(SystemExit):
             hooks.transact(self.native, self.file.parent, target)
         receipt = self.file.parent / 'hook-install.json'
         hooks.recover_record(self.config, receipt, hooks.read_receipt(receipt))
@@ -607,7 +614,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertTrue(hooks.typed_equal(hooks.tomllib.loads(self.config.read_text()), expected))
 
     def test_concurrent_unrelated_edit_reloads_and_merges_without_losing_pause(self):
-        stage = host.host_stage
+        stage = host_files.host_stage
         attempts = []
         off = self.file.parent / 'global.off'
         off.write_bytes(b'paused')
@@ -619,7 +626,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
                 self.config.write_bytes(b'new_tool_setting = true\n' + self.config.read_bytes())
             with stage(path, *args) as commit: yield commit
 
-        with patch.object(host, 'host_stage', side_effect=edit_once):
+        with patch.object(host_files, 'host_stage', side_effect=edit_once):
             hooks.refresh(self.home)
         self.assertIn(b'new_tool_setting = true\n', self.config.read_bytes())
         self.assertTrue(hooks.installation_status(gm.load(self.home)))
@@ -627,7 +634,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.preserved()
 
     def test_concurrent_managed_edit_is_preserved_and_names_exact_field(self):
-        stage = host.host_stage
+        stage = host_files.host_stage
         edits = []
 
         @contextmanager
@@ -637,7 +644,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
                 edits.append(self.config.read_bytes())
             with stage(path, *args) as commit: yield commit
 
-        with patch.object(host, 'host_stage', side_effect=edit_once):
+        with patch.object(host_files, 'host_stage', side_effect=edit_once):
             with self.assertRaisesRegex(ValueError, r'hooks.SessionStart\[0\].hooks\[0\].timeout'):
                 hooks.refresh(self.home)
         self.assertEqual(self.config.read_bytes(), edits[0])
@@ -645,7 +652,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'posix', 'Windows excludes competing writers while staged')
     def test_concurrent_edit_at_commit_discards_stale_journal_and_retries(self):
-        stage = host.host_stage
+        stage = host_files.host_stage
         edits = []
 
         @contextmanager
@@ -658,7 +665,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
                     return commit()
                 yield guarded
 
-        with patch.object(host, 'host_stage', side_effect=edit_at_commit):
+        with patch.object(host_files, 'host_stage', side_effect=edit_at_commit):
             hooks.refresh(self.home)
         self.assertIn(b'commit_time_setting = true', self.config.read_bytes())
         self.assertTrue(hooks.installation_status(gm.load(self.home)))

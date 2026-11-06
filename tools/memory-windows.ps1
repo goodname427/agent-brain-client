@@ -9,10 +9,10 @@ try {
     $OutputEncoding = [Console]::OutputEncoding
     if ($env:OS -ne 'Windows_NT') { throw 'Native Windows required.' }
     $root = Split-Path -Parent $PSScriptRoot
-    $entry = if ($MemoryArgs.Count -gt 0 -and $MemoryArgs[0] -eq 'content-manage') { 'content_manage.py' } elseif ($MemoryArgs.Count -gt 0 -and $MemoryArgs[0].StartsWith('global-')) { 'global_memory.py' } else { 'memory_automation.py' }
+    $entry = if ($MemoryArgs.Count -gt 0 -and $MemoryArgs[0] -eq 'content-manage') { 'tools/content_manage.py' } elseif ($MemoryArgs.Count -gt 0 -and $MemoryArgs[0].StartsWith('global-')) { 'scripts/global_memory.py' } else { 'adapters/codex/project_memory.py' }
     . (Join-Path $PSScriptRoot 'windows-python.ps1')
     $python = Resolve-AgentBrainPython
-    & $python -X utf8 -I -B (Join-Path (Join-Path $root 'tools') $entry) @MemoryArgs
+    & $python -X utf8 -I -B (Join-Path $root $entry) @MemoryArgs
     exit $LASTEXITCODE
 } finally {
     [Console]::OutputEncoding = $previousConsoleEncoding

@@ -6,6 +6,8 @@ CodeBuddy 的专属代码量、共用接口及验证边界见 [CodeBuddy 适配�
 
 先读根目录 [AGENTS](../../AGENTS.md) 和 [多平台开发](../reference/multiplatform-development.md)。测试只使用合成资料；不跨仓导入 Server/Core，不读取生产 Data、配置、凭据或聊天会话。
 
+代码目录职责、旧入口删除和升级边界见 [运行代码结构](runtime-layout.md)。
+
 ## 隔离检查
 
 二三级记忆的入口、跨设备合同与无正文回执见 [L2/L3 召回验收](layered-recall.md)。
@@ -22,7 +24,7 @@ CodeBuddy 的专属代码量、共用接口及验证边界见 [CodeBuddy 适配�
 TEST_ROOT=$(mktemp -d)
 mkdir -p "$TEST_ROOT/home" "$TEST_ROOT/codex"
 export HOME="$TEST_ROOT/home" CODEX_HOME="$TEST_ROOT/codex"
-export PYTHONPATH=.:scripts:adapters/codex:tools:tests
+export PYTHONPATH=.:scripts:adapters/codex:installer:tools:tests
 python3 -B -m unittest discover -s tests
 python3 -B tools/check_docs.py
 python3 -B tools/build_client.py --scan
@@ -31,7 +33,7 @@ sh -n tools/install-mac.sh
 git diff --check
 ```
 
-Windows CI 同时隔离 USERPROFILE；原生 API／凭据／DACL 测试必须在 Windows 执行。普通提交按 [CI 变更范围表](ci-scopes.md) 选择检查：纯 Markdown 不触发 Mac／Windows 全盘测试，公共／未知改动和手动运行全量。具体平台、lint、类型检查以 [Client checks](../../.github/workflows/client-checks.yml) 为准；平台跳过须分别报告，不作为通过的实测项。
+Windows CI 同时隔离 USERPROFILE；原生 API／凭据／DACL 测试必须在 Windows 执行。普通提交按 [CI 变更范围表](ci-scopes.md) 选择检查：纯 Markdown 不触发 Mac／Windows 全盘测试，公共／未知改动和手动运行全量。本地和 [Client checks](../../.github/workflows/client-checks.yml) 共用 [client_checks.py](../../tools/client_checks.py) 的检查清单；平台跳过须分别报告，不作为通过的实测项。
 
 ## 本地候选构建
 

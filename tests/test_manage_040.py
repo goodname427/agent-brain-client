@@ -34,16 +34,16 @@ class Management(unittest.TestCase):
    code,value=self.run_entry(['apply','--plan-file','synthetic-plan','--plan-sha256','a'*64])
   self.assertEqual(code,2);self.assertNotIn('native_state_preserved',value)
  def test_update_uses_existing_manager_and_original_failure_exit(self):
-  with patch('mac_first_install.manage_update',return_value={'status':'client-update-unavailable'}) as manager:
+  with patch('first_install.manage_update',return_value={'status':'client-update-unavailable'}) as manager:
    code,value=self.run_entry(['update','--device-home',str(self.root/'home')])
   manager.assert_called_once_with((self.root/'home').resolve(),'update');self.assertEqual(code,2)
  def test_update_rejects_replacement_profile_before_manager(self):
-  with patch('mac_first_install.manage_update') as manager,patch('sys.stderr',new=io.StringIO()):
+  with patch('first_install.manage_update') as manager,patch('sys.stderr',new=io.StringIO()):
    with self.assertRaises(SystemExit):entry.main(['update','--https-profile','unapproved'])
   manager.assert_not_called()
  def test_task_execution_delegates_once_and_restores_process_argv(self):
   previous=sys.argv
-  with patch('https_content.main',return_value=2) as task:
+  with patch('device.main',return_value=2) as task:
    code,value=None,None
    with patch('sys.stdout',new=io.StringIO()):code=entry.main(['task-execute','--task-request-file','synthetic-request'])
   self.assertEqual(code,2);task.assert_called_once_with();self.assertIs(sys.argv,previous)

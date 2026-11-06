@@ -3,7 +3,7 @@ import copy
 import tempfile
 from pathlib import Path
 import unittest
-import content_contract as contract
+import brain_content as contract
 from content_cache import ContentAdapter,CacheBlocked,validate_policy
 from https_content import grant_check
 from test_https_content import GRANT

@@ -240,7 +240,7 @@ class AutomaticCapture(unittest.TestCase):
             'project_root':None,'repository_root':None}))
 
     def test_noninteractive_update_runs_source_setup_and_status_does_not(self):
-        import mac_first_install as wizard
+        import first_install as wizard
         import windows_install_complete as guide
         result = {'status':'client-update-current','channel_checked':True}
         with (patch.object(wizard, '_manage_update', return_value=result),

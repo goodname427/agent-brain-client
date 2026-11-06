@@ -14,10 +14,11 @@ from urllib.error import HTTPError
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'));sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters/codex'))
 from fake_pairing import PairingAuthority
-from https_content import DeviceEnrollment,HTTPSContentClient,PairingHTTPS,profile_file,install_once
+from https_content import DeviceEnrollment,HTTPSContentClient,PairingHTTPS,profile_file
+from content_enrollment import install_once
 from system_credentials import CredentialStore,NativeKeychain,canonical
 from content_cache import ContentAdapter,CacheBlocked
-from remote_http import RemoteClient,NoRedirect
+from brain_http import RemoteClient,NoRedirect
 from build_client import export
 from client_release import HTTPS_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES,LEGACY_030_HTTPS_CONTENT_CLIENT_FILES
 
@@ -253,14 +254,14 @@ class HTTPSContent(unittest.TestCase):
         import test_client_lifecycle as fixtures
         import client_release as releases
         import content_install
-        import mac_first_install as installer
+        import first_install as installer
         import tomllib
         from build_client import release as build_release
         f=fixtures.Releases('test_orphan_allowlist_discovery_install_upgrade_and_current');f.setUp();self.addCleanup(f.doCleanups)
         legacy_files=list(releases.LEGACY_030_HTTPS_CONTENT_CLIENT_FILES)
         self.assertEqual(len(legacy_files),22)
         self.assertEqual(set(legacy_files),FROZEN_030_HTTPS_FILES)
-        self.assertEqual(set(legacy_files)-set(releases.HTTPS_CONTENT_CLIENT_FILES),{'adapters/codex/codex_notify_mux.py'})
+        self.assertIn('adapters/codex/codex_notify_mux.py',set(legacy_files)-set(releases.HTTPS_CONTENT_CLIENT_FILES))
         content=self.base/'legacy-030-policy-content.json';content.write_bytes(canonical({'schema':1,'adapter':'codex','kinds':GRANT['artifact_types'],'ids':GRANT['ids'],'dependencies':{'commands':[],'python_modules':[]}}));content.chmod(0o600)
         runtime={'https_profile':str(self.profile_path),'https_profile_sha256':self.digest,'credential_source_sha256':self.profile['credential_source_sha256'],'content_policy':str(content),'content_policy_sha256':hashlib.sha256(content.read_bytes()).hexdigest(),'device_home':str(self.home),'codex_home':str(self.home/'codex'),'content_cache':str(self.base/'legacy-030-content-cache')}
         old_policy=copy.deepcopy(f.policy);old_policy.update(capabilities=releases.HTTPS_CONTENT_CAPABILITIES,file_prefixes=legacy_files,runtime=runtime)
@@ -280,6 +281,13 @@ class HTTPSContent(unittest.TestCase):
         entry=old_out/'adapters/codex/content_mcp.py'
         entry.write_text('def enabled_tools(policy,grant):return '+repr(declared)+'\n')
         old_manifest['files']['adapters/codex/content_mcp.py']=hashlib.sha256(entry.read_bytes()).hexdigest()
+        # Removed paths still describe the old package, but no current source
+        # shim is retained. This fixture only inspects its metadata/tool list.
+        for name in legacy_files:
+            if name not in old_manifest['files']:
+                file=old_out/name;file.parent.mkdir(parents=True,exist_ok=True)
+                file.write_bytes(b'# Synthetic historical member; never executed.\n')
+                old_manifest['files'][name]=hashlib.sha256(file.read_bytes()).hexdigest()
         old_manifest['files']={name:pin for name,pin in old_manifest['files'].items() if name in legacy_files}
         old_commit='a'*40;old_package=Path(old_policy['cache'])/'packages'/('0.3.0-'+old_commit);old_package.mkdir(parents=True)
         for name in old_manifest['files']:
@@ -301,9 +309,14 @@ class HTTPSContent(unittest.TestCase):
         # without mocking inspect(), registered_context(), or package_check().
         native=self.home/'codex';native.mkdir(mode=0o700)
         config=native/'config.toml';config.write_text('model="synthetic"\n');config.chmod(0o600)
+        # An unmanifested current-path file must never become the old launcher.
+        unpinned=old_package/'scripts/client_startup.py'
+        unpinned.parent.mkdir(parents=True,exist_ok=True)
+        unpinned.write_text('raise RuntimeError("Synthetic unpinned launcher")\n')
         policy_value,mcp,package_sha,validated_native=content_install.context(
             self.home,old_package.resolve(),path,policy_sha,inspection=True,allow_legacy_030_active=True)
         self.assertEqual(validated_native,native)
+        self.assertEqual(mcp['args'][2],str(old_package/'adapters/codex/client_startup.py'))
         config.write_bytes(content_install.render(config.read_bytes(),mcp,False));config.chmod(0o600)
         state=self.home/'.config/agent-brain-client';registration=state/'codex-mcp.json';state.mkdir(parents=True,mode=0o700)
         metadata={'schema':1,'native_mcp_name':content_install.NAME,'content_candidate':True,'data_mode':'personal-explicit',
@@ -353,7 +366,7 @@ class HTTPSContent(unittest.TestCase):
                 def verify(value):
                     self.assertEqual(channel.verified_active()['version'],'0.3.0')
                     self.assertFalse(value['mcp']['enabled'])
-                    self.assertEqual(Path(value['mcp']['args'][2]),Path(value['package'])/'adapters/codex/client_startup.py')
+                    self.assertEqual(Path(value['mcp']['args'][2]),Path(value['package'])/'scripts/client_startup.py')
                     if len(bridge_checks)==1:
                         import client_startup
                         concurrent=client_startup.startup(path,policy_sha)
@@ -372,7 +385,7 @@ class HTTPSContent(unittest.TestCase):
         self.assertNotIn('adapters/codex/codex_notify_mux.py',new_manifest['files'])
         self.assertEqual(path.read_bytes(),policy_before)
         registered=tomllib.loads(config.read_text())['mcp_servers'][content_install.NAME]
-        self.assertEqual(registered['args'][2],str(Path(new_active['package'])/'adapters/codex/client_startup.py'))
+        self.assertEqual(registered['args'][2],str(Path(new_active['package'])/'scripts/client_startup.py'))
         self.assertFalse(registered['enabled'])
         self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
 
@@ -433,7 +446,7 @@ class HTTPSContent(unittest.TestCase):
         self.assertEqual(content_install.inspect(self.home)['installation_state'],'verified-disabled')
 
     def test_interrupted_handover_reexecs_the_registered_dependency_python(self):
-        import mac_first_install as installer
+        import first_install as installer
         import client_release
         import content_install
         state=self.home/'.config/agent-brain-client';state.mkdir(parents=True,mode=0o700)
@@ -497,7 +510,7 @@ class HTTPSContent(unittest.TestCase):
 
     def test_https_export_separate_allowlist_no_server_signed_component_or_stable_manifest(self):
         out=self.base/'export';manifest=export(ROOT,out,https_content_candidate=True)
-        self.assertEqual(set(manifest['files']),set(HTTPS_CONTENT_CLIENT_FILES));self.assertEqual(len(manifest['files']),24);self.assertFalse(manifest['keychain_accessed']);self.assertFalse((out/'releases').exists());self.assertFalse((out/'native/DeviceComponent.swift').exists());self.assertFalse(any('brain_server' in path for path in manifest['files']))
+        self.assertEqual(set(manifest['files']),set(HTTPS_CONTENT_CLIENT_FILES));self.assertEqual(len(manifest['files']),25);self.assertFalse(manifest['keychain_accessed']);self.assertFalse((out/'releases').exists());self.assertFalse((out/'native/DeviceComponent.swift').exists());self.assertFalse(any('brain_server' in path for path in manifest['files']))
         with self.assertRaises(ValueError):export(ROOT,self.base/'mixed',ssh_content_candidate=True,https_content_candidate=True)
 
     def install_fixture(self):

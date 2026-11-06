@@ -10,7 +10,7 @@ from brain_lock import command_line,private_directory,private_mode
 import tomllib
 import uuid
 
-import memory_automation as old
+import project_memory as old
 from global_memory_scope import validate
 
 # Status also runs from an isolated CLI without the test runner's PYTHONPATH.
@@ -101,7 +101,7 @@ def owned_groups(config):
 
 
 def render_groups(groups):
-    from codex_connect import toml_literal, toml_key
+    from codex_connect import toml_literal,toml_key
     result = ''
     for path, group in groups.items():
         header = '.'.join(toml_key(key) for key in path[:2])
@@ -115,7 +115,7 @@ def render_groups(groups):
 
 
 def split_owned(raw):
-    from codex_connect import toml_statements, toml_remove, toml_get
+    from codex_connect import toml_statements,toml_remove,toml_get
     text = raw.decode()
     markers = {BEGIN: [], END: []}
     for start, end, kind, _ in toml_statements(text):
@@ -142,7 +142,7 @@ def split_owned(raw):
 def render_owned(outside, owned):
     """Merge into existing inline event arrays, append ordinary array tables."""
     if owned is None: return (outside.rstrip() + '\n').encode()
-    from codex_connect import toml_statements, toml_replace
+    from codex_connect import toml_statements,toml_replace
     groups = owned_groups(tomllib.loads(owned))
     appended = {}
     for path, group in groups.items():
@@ -227,7 +227,7 @@ def block(value, *, root=None):
     pins = value['code_sha256']
     guard = ('import hashlib,pathlib,runpy,sys; r=pathlib.Path(' + repr(str(ROOT)) + '); p=' + repr(pins)
              + '; assert all(hashlib.sha256((r/n).read_bytes()).hexdigest()==h for n,h in p.items()); '
-             + 'sys.path.insert(0,str(r/"tools")); sys.argv=[str(r/"tools/global_memory.py"),"global-hook","--device-home",'
+             + 'sys.path.insert(0,str(r/"scripts")); sys.argv=[str(r/"scripts/global_memory.py"),"global-hook","--device-home",'
              + repr(value['device_home']) + ']; runpy.run_path(sys.argv[0],run_name="__main__")')
     command = command_line([os.path.realpath(os.sys.executable), '-I', '-B', '-c', guard])
     lines = [BEGIN]
@@ -244,7 +244,7 @@ def block(value, *, root=None):
 
 def recover_record(file, receipt, record):
     """Restore only this journal's exact host images, without parsing live TOML."""
-    from codex_connect import host_restore
+    from brain_host_files import host_restore
     if record.get('schema') not in (2,3) or set(record.get('host',{}))!={str(file)}:
         raise ValueError('Hook recovery scope changed')
     row=record['host'][str(file)]
@@ -303,7 +303,7 @@ def verified_removal(home, previous, record):
 
 
 def transact(native, directory, owned, *, remove=False):
-    from codex_connect import HostConfigChanged
+    from brain_host_files import HostConfigChanged
     for attempt in range(3):
         try: return transact_once(native, directory, owned, remove=remove)
         except HostConfigChanged:
@@ -314,7 +314,7 @@ def transact_once(native, directory, owned, *, remove=False):
     from brain_lock import locked
     file = old.canonical(native / 'config.toml', existing=True)
     receipt = directory / 'hook-install.json'
-    from codex_connect import host_plan,host_apply,host_restore,HostConfigChanged
+    from brain_host_files import host_plan,host_apply,host_restore,HostConfigChanged
     with locked(directory / 'hook-install.lock'):
         record = read_receipt(receipt) if receipt.exists() else None
         if record and record.get('phase')=='applying':
@@ -439,7 +439,7 @@ def installation_status(value):
 
 def recover_code(home):
     """Restore an interrupted code-pin write, preserving every approval field."""
-    from codex_connect import host_restore
+    from brain_host_files import host_restore
     from global_memory import settings_path, validate_settings
     file = settings_path(home)
     journal = file.parent / 'code-refresh.json'
@@ -479,7 +479,7 @@ def recover_update(home, *, check_only=False):
 
 def freeze_code(directory, pins):
     """Keep executable Hook code in a private immutable cache, never a checkout."""
-    from codex_connect import atomic
+    from brain_host_files import atomic
     from global_memory import ROOT
     root = directory / 'code' / old.digest(json.dumps(pins, sort_keys=True).encode())
     old.canonical(root)  # Reject linked ancestors before creating any cache.
@@ -506,7 +506,7 @@ def freeze_code(directory, pins):
 def refresh(home, *, check_only=False):
     """Refresh an already owned Hook; never choose, approve or resume sources."""
     from brain_lock import locked
-    from codex_connect import host_plan, host_apply, host_restore
+    from brain_host_files import host_plan,host_apply,host_restore
     from global_memory import settings_path, validate_settings, FILES, ROOT
     home = old.canonical(home, existing=True)
     file = settings_path(home)

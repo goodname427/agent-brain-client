@@ -66,7 +66,7 @@ def load_core(home):
         file = canonical(root / name)
         if not file.is_file() or file.stat().st_nlink != 1 or digest(file.read_bytes()) != pin:
             raise ValueError('Frozen Client code changed')
-    sys.path[:0] = [str(root / p) for p in ('tools', 'scripts', 'adapters/codex')]
+    sys.path[:0] = [str(root / p) for p in ('installer', 'tools', 'scripts', 'adapters/codex')]
     import global_memory as core
     core.old.private_mode(directory, directory=True, owner=True)
     for name in pins:
@@ -111,16 +111,23 @@ def admission(core, value, local, client, session):
 
 def open_queue(core, value, local):
     """Reuse the shared outbox with a distinct CodeBuddy binding and cache."""
-    from brain_memory import ContentOutbox
+    from brain_memory import ContentOutbox, CacheBlocked
     from global_memory_scope import digest as scope_digest
-    from content_cache import ContentAdapter
+    from brain_cache import EventQueue
     client = core.GlobalClient(value, local)
     client.queue_identity = dict(client.queue_identity, host_adapter='codebuddy')
     _, registered = core.old.registration(value['device_home'])
     runtime = registered['runtime']
     policy = core.old.private_json(runtime['content_policy'], runtime['content_policy_sha256'])
     cache = Path(value['device_home']) / '.config/agent-brain-client/codebuddy/outboxes' / scope_digest(local)
-    queue = ContentAdapter(value['device_home'], cache, policy, client, codex_home=runtime['codex_home'])
+    native=Path(runtime['codex_home']).expanduser()
+    if not native.is_absolute() or native.is_symlink():
+        raise CacheBlocked()
+    queue = EventQueue(value['device_home'], cache, policy, client,
+                       binding={'device_home':str(Path(value['device_home']).resolve()),
+                                'codex_home':str(native.resolve())},
+                       protected=[Path(value['device_home']) / name for name in
+                                  ('.codex', '.agents', '.config/agent-brain-client/content')])
     if not isinstance(queue, ContentOutbox):
         raise ValueError('Shared Client 0.7 outbox required')
     return client, queue

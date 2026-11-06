@@ -86,7 +86,7 @@ class CatalogPages(unittest.TestCase):
 
     def test_offline_automation_finds_later_page_matches_and_stops_when_full(self):
         from unittest.mock import patch
-        import memory_automation
+        import project_memory
         self.assertEqual(self.f.adapter.refresh()['status'],'content-refreshed')
         self.f.cloud.offline=True
         settings={'profile':'fictional-profile','profile_sha256':'a'*64,'content_policy':'fictional-content',
@@ -97,13 +97,13 @@ class CatalogPages(unittest.TestCase):
         def invoke(request):
             if request['method']=='memory_query':return {'error':{'code':'transport_unconfirmed','retryable':True}}
             return original(request)
-        with patch.object(memory_automation,'private_json',side_effect=private), \
+        with patch.object(project_memory,'private_json',side_effect=private), \
                 patch('https_content.HTTPSContentClient',return_value=self.f.cloud), \
                 patch('content_cache.ContentAdapter',return_value=self.f.adapter), \
                 patch.object(self.f.adapter,'invoke',side_effect=invoke):
             for query,pages in (('0',1),('599',3)):
                 with self.subTest(query=query),patch.object(self.f.adapter,'_offline_read',wraps=self.f.adapter._offline_read) as read:
-                    result=memory_automation.recalled(dict(settings,query=query),'fictional-session')
+                    result=project_memory.recalled(dict(settings,query=query),'fictional-session')
                     self.assertEqual(len(result),1);self.assertEqual(result[0]['id'],'synthetic-'+query.zfill(4))
                     self.assertTrue(result[0]['cached_snapshot'])
                     self.assertEqual(sum(c.args[0]['method']=='content_catalog' for c in read.call_args_list),pages)
