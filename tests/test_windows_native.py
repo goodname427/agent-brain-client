@@ -1,6 +1,7 @@
 """Real Windows API/transaction tests with only synthetic private state."""
 import copy
 import ctypes
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,26 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / n) for n in ('scripts', 'adapters/codex', 'tools', 'tests')]
 from brain_lock import private_directory, private_mode, locked, LockTimeout, command_line, native_platform, cache_mode
+
+
+def historical_launcher(package, manifest):
+    """Keep frozen validator semantics, adapting only source layout in this fixture."""
+    fixture=ROOT/'tests/fixtures/windows_launcher_053'
+    pins=json.loads((fixture/'manifest.json').read_bytes())['files']
+    for name,pin in pins.items():
+        raw=(fixture/name).read_bytes()
+        if hashlib.sha256(raw).hexdigest()!=pin:raise ValueError('Frozen launcher fixture changed')
+        startup=name.startswith('client_startup.')
+        destination='scripts/client_startup.py' if startup else 'adapters/codex/content_install.py'
+        depth=1 if startup else 2
+        imports=("import sys\nsys.path[:0]=[str(Path(__file__).resolve().parents["+str(depth)+"]/'scripts'),"
+                 "str(Path(__file__).resolve().parents["+str(depth)+"]/'adapters/codex')]\n").encode()
+        raw=raw.replace(b'import sys\n',imports,1)
+        raw=raw.replace(b'adapters/codex/client_startup.py',b'scripts/client_startup.py')
+        (Path(package)/destination).write_bytes(raw)
+        manifest['files'][destination]=hashlib.sha256(raw).hexdigest()
+    (Path(package)/'export-manifest.json').write_text(json.dumps(manifest),encoding='utf-8')
+    return manifest
 
 
 def host_security(path, information=7):
@@ -591,7 +612,7 @@ class WindowsNative(unittest.TestCase):
             self.assertEqual(value['legacy_projects'], [])
             self.assertFalse(global_memory.approved(value))
             checkout = self.home / 'Public 工具 checkout'
-            for name in ('adapters', 'scripts', 'tools'):
+            for name in ('adapters', 'scripts', 'installer', 'tools'):
                 shutil.copytree(ROOT / name, checkout / name)
             environment = dict(os.environ, HOME=str(self.home), USERPROFILE=str(self.home), CODEX_HOME=str(native))
             for shell in ('powershell.exe', 'pwsh.exe'):
@@ -660,15 +681,7 @@ class WindowsNative(unittest.TestCase):
             policy=self.home/'.config/agent-brain-client/first-install/release-policy.json'
             return channel(policy,wizard.sha(policy.read_bytes())).update()
         def old_export(source,output,**options):
-            result=export(source,output,**options)
-            fixture=ROOT/'tests/fixtures/windows_launcher_053'
-            pins=json.loads((fixture/'manifest.json').read_bytes())['files']
-            for name,pin in pins.items():
-                raw=(fixture/name).read_bytes();self.assertEqual(wizard.sha(raw),pin)
-                destination='adapters/codex/'+name.removesuffix('.fixture')
-                (Path(output)/destination).write_bytes(raw);result['files'][destination]=pin
-            (Path(output)/'export-manifest.json').write_text(json.dumps(result),encoding='utf-8')
-            return result
+            return historical_launcher(output,export(source,output,**options))
         backend=Backend();store=SimpleNamespace(load=backend.load,save=backend.save,lease=nullcontext)
         grant=connection['grant']
         peer=SimpleNamespace(prepare=lambda code,nonce,profile:{'phase':'pending','nonce':nonce,'credential':'t'*40,'device_id':'d'*32,'grant':grant},confirm=lambda token,nonce:{'phase':'active','device_id':'d'*32,'grant':grant})
