@@ -1070,13 +1070,10 @@ def daily(p):
 
 
 def private_content(text):
+    """Honor explicit local-only instructions without guessing from body shape."""
     return bool(
         re.search(
             r"(?im)^\s*(?:\[local[-_ ]?only\]|\[no-memory\]|\[private\]|localonly:|不要记忆[:：])",
-            text,
-        )
-        or re.search(
-            r'-----BEGIN [A-Z ]*PRIVATE KEY-----|(?i:bearer)\s+[A-Za-z0-9_-]{24,}|(?i:api[_-]?key|password|secret[_-]?key)\s*[:=]\s*["\']?[^\s"\']{4,}|\bsk-[A-Za-z0-9_-]{20,}',
             text,
         )
     )

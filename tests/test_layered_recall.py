@@ -69,6 +69,27 @@ class LayeredRecall(unittest.TestCase):
     def read(self):
         return gm.recall(self.value, self.local, 'synthetic-reader', 'synthetic question')
 
+    def test_body_shape_preserves_query_and_verified_recall_text(self):
+        from brain_content import global_recall_params, global_recall_result
+        text = 'Synthetic documentation password=example-only; Bearer ' + 'synthetic' * 4
+        group = self.response['result']['namespace_results'][0]
+        for row in [*group['recall']['L1'], *group['recall']['L2'], group['recall']['L3']]:
+            row['content'] = text
+        params = {'origin': self.local, 'session_id': 'synthetic-reader', 'query': text, 'limit': 3}
+        global_recall_params(params)
+        rows = gm.recall(self.value, self.local, params['session_id'], text)
+        self.assertEqual([row['content'] for row in rows], [text] * 3)
+        self.assertEqual(self.sent[0][1]['query'], text)
+        for marker in ('[no-memory]', '[project-only]', '不要记忆：'):
+            with self.subTest(marker=marker):
+                with self.assertRaises(ValueError):
+                    global_recall_params(dict(params, query=marker + text))
+                group['recall']['L3']['content'] = marker + text
+                with self.assertRaises(ValueError):
+                    global_recall_result(self.response['result'], params, self.device)
+                self.assertEqual([row['layer'] for row in self.read()], ['L1', 'L2'])
+                group['recall']['L3']['content'] = text
+
     def test_mcp_contract_matches_shared_nfc_source_relation_on_both_platforms(self):
         from brain_content import global_recall_result, recall_origin
         for root in ('/synthetic/projects/caf\u00e9', 'C:\\Synthetic\\Projects\\caf\u00e9'):

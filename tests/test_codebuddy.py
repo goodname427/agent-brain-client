@@ -260,7 +260,7 @@ class Hooks(unittest.TestCase):
         self.hook()
         self.assertEqual(self.sent[0], json.loads(pending)['request'])
 
-    def test_stop_gate_sensitive_payload_and_capture_failure_keep_recall_independent(self):
+    def test_stop_gate_explicit_private_payload_and_capture_failure_keep_recall_independent(self):
         self.value['enabled'] = False
         stream = Mock()
         stream.read.side_effect = AssertionError('Disabled source cannot consume a prompt')
@@ -504,7 +504,7 @@ class Transcript(Hooks):
         with self.assertRaises(ValueError):
             native_transcript.native_path(self.fixture.home, self.payload)
 
-    def test_sensitive_prompt_excludes_both_sides_of_the_turn(self):
+    def test_explicit_private_prompt_excludes_both_sides_of_the_turn(self):
         path = self.native_file()
         path.write_text('')
         self.payload['prompt'] = 'LocalOnly: synthetic private question'
@@ -512,6 +512,28 @@ class Transcript(Hooks):
         path.write_text('{"type":"assistant","message":{"content":"private answer"}}\n')
         self.stop()
         self.assertEqual(self.sent, [])
+
+    def test_body_shape_keeps_prompt_and_native_assistant_capture(self):
+        path = self.native_file()
+        path.write_text('')
+        prompt = 'Synthetic configuration example password=example-only'
+        self.payload['prompt'] = prompt
+        output, result = self.hook()
+        self.assertTrue(output)
+        self.assertEqual(result['local_queue']['state'], 'confirmed')
+        answer = 'Synthetic documentation: Bearer ' + 'synthetic' * 4
+        path.write_text(json.dumps({'type': 'assistant', 'message': {'content': answer}}) + '\n')
+        _, result = self.stop()
+        self.assertEqual(result['local_queue']['state'], 'confirmed')
+        self.assertEqual([request['params']['event']['messages'] for request in self.sent],
+                         [[{'role': 'user', 'content': prompt}], [{'role': 'assistant', 'content': answer}]])
+
+    def test_explicit_private_assistant_still_stops_before_queueing(self):
+        self.hook()
+        _, result = self.hook(hook_event_name='Stop', stop_hook_active=False,
+                              last_assistant_message='[no-memory] synthetic private answer')
+        self.assertEqual(result['status'], 'excluded-local-only-or-sensitive')
+        self.assertEqual(len(self.sent), 1)
 
 
 if __name__ == '__main__':
