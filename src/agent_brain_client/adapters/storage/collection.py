@@ -129,3 +129,37 @@ def admission_state(value):
         "historical_import": False,
         "permissions_changed": False,
     }
+
+
+def retained_routing(home):
+    """Read routing choices independently of old code pins or device approvals."""
+    file = settings_path(home)
+    if not file.exists():
+        return None
+    value = metadata.private_json(file)
+    if value.get("schema") != 1 or value.get("device_home") != str(Path(home)):
+        raise ValueError("Original source-routing home required")
+    scope = validate(value["scope"])
+    keys = ("include_roots", "exclude_roots", "non_project_roots", "recall_personal")
+    return {
+        "preferences": {key: scope[key] for key in keys},
+        "source": {str(file): metadata.digest(file.read_bytes())},
+    }
+
+
+def seed_retained_routing(home, preferences):
+    """Retain exclusions/isolation; approvals and pool ID come from the new device."""
+    value = load(home, verify_code=False)
+    if value["server_scope_sha256"] is not None:
+        return  # Never replace a later authenticated source policy.
+    if set(preferences) != {
+        "include_roots",
+        "exclude_roots",
+        "non_project_roots",
+        "recall_personal",
+    }:
+        raise ValueError("Exact retained source preferences required")
+    scope = dict(value["scope"], **preferences, all_projects=True)
+    validate(scope)
+    value["scope"] = scope
+    metadata.write(settings_path(home), value)

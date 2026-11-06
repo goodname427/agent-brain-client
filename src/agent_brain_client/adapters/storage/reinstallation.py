@@ -147,6 +147,9 @@ class RetainedInstallation:
         children = {
             p.name: item_identity(p) for p in self.root.iterdir() if p.name not in keep
         }
+        from agent_brain_client.adapters.storage.collection import retained_routing
+
+        routing = retained_routing(self.home)
         identifier = secrets.token_hex(16)
         archive = self.home / ".config/agent-brain-retained" / identifier
         return {
@@ -164,7 +167,9 @@ class RetainedInstallation:
             "content": content,
             "mapping": snapshot,
             "memory_ids": registration["memory_ids"],
+            "routing": routing["preferences"] if routing is not None else None,
             "preconditions": {
+                **(routing["source"] if routing is not None else {}),
                 **registration["source"],
                 str(policy_path): metadata["release_policy_sha256"],
                 runtime["https_profile"]: runtime["https_profile_sha256"],

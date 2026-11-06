@@ -29,7 +29,7 @@ def prepare_fresh_installation(
         if (
             confirm(
                 "Close Codex and CodeBuddy first. Retain old files and unsent queues in the reported archive; "
-                "connect a NEW device to the SAME Server/account. Old queues will NOT resume. Type FRESH to continue."
+                "connect a NEW device to the SAME Server/account. Future collection uses the normal all-projects default and retains global exclusions/isolation. Old queues will NOT resume. Type FRESH to continue."
             )
             != "FRESH"
         ):

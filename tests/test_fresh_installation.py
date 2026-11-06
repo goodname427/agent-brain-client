@@ -864,6 +864,158 @@ class FreshInstallation(unittest.TestCase):
         self.assertEqual(io.private_json(self.profile)["old_pin"], "b" * 64)
         self.assertTrue(self.old_queue.exists())
 
+    def test_source_exclusions_and_isolation_survive_without_old_identity_or_approval(
+        self,
+    ):
+        from agent_brain_client.adapters.storage.collection import (
+            settings_path,
+            seed_retained_routing,
+        )
+        from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+
+        old_scope = {
+            "schema": 1,
+            "profile_id": "1" * 32,
+            "include_roots": [
+                {"root": str(self.home / "isolated"), "sharing": "project"}
+            ],
+            "exclude_roots": [str(self.home / "private")],
+            "non_project_roots": [str(self.home / "notes")],
+            "recall_personal": False,
+            "all_projects": True,
+        }
+        private_directory(settings_path(self.home).parent)
+        io.write(
+            settings_path(self.home),
+            {
+                "schema": 1,
+                "device_home": str(self.home),
+                "scope": old_scope,
+                "old_code_pin": "preserved-but-not-executed",
+            },
+        )
+        result = self.prepare()
+        record = read_journal(self.home)
+        self.assertNotIn("profile_id", record["routing"])
+        new_scope = dict(
+            old_scope,
+            profile_id="2" * 32,
+            include_roots=[],
+            exclude_roots=[],
+            non_project_roots=[],
+            recall_personal=True,
+        )
+        new_settings = {
+            "schema": 1,
+            "enabled": False,
+            "device_home": str(self.home),
+            "scope": new_scope,
+            "approved_scope_sha256": None,
+            "server_scope_sha256": None,
+            "legacy_projects": [],
+            "code_sha256": {name: "a" * 64 for name in PYTHON_FILES},
+            "operator": None,
+            "operator_sha256": None,
+        }
+        private_directory(settings_path(self.home).parent)
+        io.write(settings_path(self.home), new_settings)
+        # Model the new, privately prepared registration that exists before
+        # the source setup stage; do not reuse the archived registration.
+        private_directory(self.profile.parent)
+        fresh_profile = profile_metadata(
+            "https://synthetic.invalid",
+            self.grant,
+            self.descriptor(),
+            str(self.root / "https"),
+            instance_id=record["id"],
+        )
+        io.write(self.profile, fresh_profile)
+        io.write(self.root / "first-install/content-policy.json", self.content)
+        policy = copy.deepcopy(self.policy)
+        policy["runtime"]["https_profile_sha256"] = io.digest(self.profile.read_bytes())
+        io.write(self.root / "first-install/release-policy.json", policy)
+        io.write(
+            self.root / "codex-mcp.json",
+            dict(
+                self.metadata,
+                release_policy_sha256=io.digest(
+                    (self.root / "first-install/release-policy.json").read_bytes()
+                ),
+            ),
+        )
+        from agent_brain_client.application.installation.fresh import (
+            finish_fresh_installation,
+        )
+        from agent_brain_client.runtime.fresh_installation import restore_source_routing
+
+        class MemoryReader:
+            def request(self, request):
+                return {
+                    "request_id": request["request_id"],
+                    "result": contract.envelope("memory", "personal-owner", MEMORY),
+                }
+
+        finish_fresh_installation(
+            self.port,
+            MemoryReader(),
+            io.digest(self.profile.read_bytes()),
+            ["personal-owner"],
+        )
+        restore_source_routing(self.home)
+        self.assertTrue(read_journal(self.home)["routing_restored"])
+        restored = io.private_json(settings_path(self.home))
+        self.assertEqual(restored["scope"]["profile_id"], "2" * 32)
+        self.assertEqual(restored["scope"]["exclude_roots"], old_scope["exclude_roots"])
+        self.assertEqual(restored["scope"]["include_roots"], old_scope["include_roots"])
+        self.assertFalse(restored["scope"]["recall_personal"])
+        self.assertIsNone(restored["approved_scope_sha256"])
+        self.assertIsNone(restored["server_scope_sha256"])
+        archived = Path(result["archive"]) / "global-memory/settings.json"
+        self.assertEqual(io.private_json(archived)["scope"]["profile_id"], "1" * 32)
+        current = copy.deepcopy(restored)
+        current.update(approved_scope_sha256="b" * 64, server_scope_sha256="b" * 64)
+        current["scope"]["exclude_roots"].append(str(self.home / "new-private"))
+        io.write(settings_path(self.home), current)
+        seed_retained_routing(self.home, record["routing"])
+        self.assertEqual(io.private_json(settings_path(self.home)), current)
+
+    def test_codebuddy_bootstrap_recovers_when_policy_moved_before_registration(self):
+        from agent_brain_client.interfaces.cli.codebuddy import backend_home
+        from agent_brain_client.adapters.storage import reinstallation as storage
+
+        plan = self.port.plan
+
+        def first_policy():
+            value = plan()
+            children = value["children"]
+            value["children"] = {
+                "first-install": children["first-install"],
+                **{
+                    name: identity
+                    for name, identity in children.items()
+                    if name != "first-install"
+                },
+            }
+            return value
+
+        move = storage.retain_item
+
+        def interrupted(source, target, identity):
+            move(source, target, identity)
+            if source.name == "first-install":
+                raise SystemExit("synthetic interruption before registration retention")
+
+        with (
+            patch.object(self.port, "plan", side_effect=first_policy),
+            patch.object(storage, "retain_item", side_effect=interrupted),
+            self.assertRaises(SystemExit),
+        ):
+            self.prepare()
+        self.assertTrue((self.root / "codex-mcp.json").exists())
+        self.assertFalse((self.root / "first-install/release-policy.json").exists())
+        self.assertEqual(backend_home(self.home), self.native)
+        self.assertEqual(self.prepare()["status"], "fresh-install-ready")
+
     def test_memory_probe_rejects_missing_record_and_catalog_protocol_error(self):
         class Client:
             def request(self, request):

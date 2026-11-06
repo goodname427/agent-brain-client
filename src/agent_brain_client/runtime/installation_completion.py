@@ -181,6 +181,10 @@ def complete(home, result, *, choose=input, refresh=mapping_refresh):
             )
         )
         stages["hook_trust"] = "normal-codex-review-required"
+        stage = "source-routing"
+        from agent_brain_client.runtime.fresh_installation import restore_source_routing
+
+        restore_source_routing(home)
         stage = "sources"
         stages["sources"] = source_setup(home, choose=choose)
         value["local_setup_complete"] = (

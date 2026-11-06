@@ -59,3 +59,20 @@ def verify_memory(home):
         runtime["https_profile_sha256"],
         identities,
     )
+
+
+def restore_source_routing(home):
+    from agent_brain_client.adapters.storage.reinstallation import read_journal
+    from agent_brain_client.adapters.storage.collection import seed_retained_routing
+
+    record = read_journal(home)
+    if (
+        record is None
+        or record["phase"] != "complete"
+        or record.get("routing_restored")
+    ):
+        return
+    if record.get("routing") is not None:
+        seed_retained_routing(home, record["routing"])
+    record["routing_restored"] = True
+    retained_installation(home, Path(record["native"])).save(record)
