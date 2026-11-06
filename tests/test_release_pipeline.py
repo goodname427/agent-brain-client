@@ -650,5 +650,80 @@ class PlatformRelease(unittest.TestCase):
                 self.assertEqual(remote.events, [])
 
 
-if __name__ == '__main__':
+
+
+class ReinstallationRelease(unittest.TestCase):
+    def manifests(self, group='windows'):
+        prior = {'windows': 'scripts/brain_windows.py',
+                 'macos': 'native/CredentialStore.swift'}[group]
+        current = rc.GROUPS[group]['credential']
+        old = b'from system_credentials import unique\n# synthetic credential mechanism\n' if group == 'windows' else b'// synthetic unchanged Swift\n'
+        new = old.replace(b'from system_credentials import unique\n', b'from agent_brain_client.adapters.platforms.credentials import unique\n')
+        before = {'schema': 1, 'version': '0.7.1', 'channel': 'stable', 'core_api': 1,
+                  'state_schema': 1, 'python_min': '3.11', 'capabilities': ['fixture'],
+                  'migrations': [], 'files': {prior: rc.sha(old), 'scripts/old.py': 'a' * 64}}
+        after = dict(before, version='0.8.0', files={current: rc.sha(new), 'src/new.py': 'b' * 64})
+        return before, after, old, {current: new}
+
+    def test_old_layout_requires_explicit_reinstall_and_audits_exact_credential_change(self):
+        for group in rc.GROUPS:
+            with self.subTest(group=group):
+                before, after, old, payload = self.manifests(group)
+                with self.assertRaisesRegex(ValueError, 'file scope'):
+                    rc.compatible(before, after, rc.GROUPS[group]['credential'])
+                with patch.object(rc, 'run', return_value=old):
+                    audit = rc.review_reinstallation(before, after, '3' * 40, payload, group)
+                self.assertEqual(audit['added_files'], sorted(after['files']))
+                self.assertEqual(audit['removed_files'], sorted(before['files']))
+                self.assertEqual(audit['credential']['change'], 'qualified-import-only' if group == 'windows' else 'identical-bytes')
+                self.assertEqual(audit['credential']['before']['sha256'], rc.sha(old))
+                self.assertEqual(before['files'][audit['credential']['before']['path']], rc.sha(old))
+
+    def test_reinstall_does_not_authorize_data_contract_or_arbitrary_credential_changes(self):
+        for key in ('schema', 'channel', 'core_api', 'state_schema', 'python_min', 'capabilities', 'migrations'):
+            before, after, old, payload = self.manifests()
+            after[key] = 'changed'
+            with self.subTest(key=key), patch.object(rc, 'run', return_value=old), self.assertRaisesRegex(ValueError, 'contract change'):
+                rc.review_reinstallation(before, after, '3' * 40, payload, 'windows')
+        for group in rc.GROUPS:
+            before, after, old, payload = self.manifests(group)
+            current = rc.GROUPS[group]['credential']
+            payload[current] += b'changed credential algorithm\n'
+            after['files'][current] = rc.sha(payload[current])
+            with self.subTest(group=group), patch.object(rc, 'run', return_value=old), self.assertRaisesRegex(ValueError, 'separate policy review'):
+                rc.review_reinstallation(before, after, '3' * 40, payload, group)
+            with patch.object(rc, 'run', return_value=b'tampered baseline'), self.assertRaisesRegex(ValueError, 'source integrity'):
+                rc.review_reinstallation(before, after, '3' * 40, payload, group)
+
+    def test_partial_reinstall_is_rejected_before_building(self):
+        with patch.object(rc, 'source_payload') as source:
+            for groups in (['macos'], ['windows']):
+                with self.assertRaisesRegex(ValueError, 'all four platforms'):
+                    rc.build_platforms('1' * 40, {}, '0.8.0', groups, installation_mode='reinstall')
+            source.assert_not_called()
+
+    def test_reinstall_mode_is_frozen_on_resume_and_rebuilt_on_load(self):
+        plan, assets = platform_fixture()
+        plan['installation'] = {'mode': 'reinstall', 'audits': {'synthetic': 'frozen'}}
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            with patch.object(rc, 'commit', return_value='3' * 40), \
+                    patch.object(rc, 'git', return_value=json.dumps({'version': '1.2.3'})), \
+                    patch.object(rc, 'build_platforms', return_value=(plan, assets)) as build, \
+                    patch.object(rc, 'validate'), patch.object(rc, 'source_payload'):
+                rc.prepare_platforms(output, plan['source'], plan['version'], 'all', installation_mode='reinstall')
+                self.assertIn('REINSTALLATION REQUIRED', (output / 'release-notes.md').read_text())
+                with self.assertRaises(ValueError):
+                    rc.prepare_platforms(output, plan['source'], 'auto', 'all')
+                rc.prepare_platforms(output, plan['source'], 'auto', 'all', installation_mode='reinstall')
+                self.assertEqual(rc.load_bundle(output), plan)
+                self.assertEqual(build.call_args.kwargs, {'installation_mode': 'reinstall'})
+                saved = copy.deepcopy(plan)
+                saved['installation']['audits']['synthetic'] = 'tampered'
+                (output / 'plan.json').write_text(json.dumps(saved))
+                with self.assertRaisesRegex(ValueError, 'differs from rebuilt'):
+                    rc.load_bundle(output)
+
+
+if __name__ == "__main__":
     unittest.main()

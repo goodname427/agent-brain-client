@@ -1,13 +1,14 @@
 # Native Windows entry. Uses normal per-user Python/Git and Codex hook review.
 [CmdletBinding()]
 param(
-    [ValidateSet('install','status','repair','uninstall','check-update','update')]
+    [ValidateSet('install','reinstall','status','repair','uninstall','check-update','update')]
     [string]$Action = 'install',
     [string]$Server,
     [string]$Connection,
     [string]$ExpectedConnectionSha256
 )
 $ErrorActionPreference = 'Stop'
+$Action = $Action.ToLowerInvariant()
 $previousConsoleEncoding = [Console]::OutputEncoding
 $previousPipeEncoding = $OutputEncoding
 try {
@@ -21,7 +22,7 @@ try {
     if ($Server) { $arguments += @('--server', $Server) }
     if ($Connection) { $arguments += @('--connection', $Connection) }
     if ($ExpectedConnectionSha256) { $arguments += @('--expected-connection-sha256', $ExpectedConnectionSha256) }
-    if ($Action -eq 'install') {
+    if ($Action -in @('install', 'reinstall')) {
         $checkout = & $python -X utf8 -I -B (Join-Path $root 'bootstrap/source_checkout.py') --ensure
         if ($LASTEXITCODE -ne 0) { throw 'Fresh official checkout could not be verified; preserve existing installation.' }
         if ($checkout -ne $root) {

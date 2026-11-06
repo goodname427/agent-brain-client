@@ -19,7 +19,7 @@ from agent_brain_client.adapters.packages.client import SSH_CONTENT_CAPABILITIES
 
 class StartupGuard(unittest.TestCase):
     def setUp(self):
-        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);self.base=Path(tmp.name)
+        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);self.base=Path(tmp.name).resolve()
         self.cache=self.base/'content-cache';self.cache.mkdir(mode=0o700)
         self.policy={'capabilities':SSH_CONTENT_CAPABILITIES,'runtime':{'content_cache':str(self.cache),'device_home':str(self.base/'home')}}
         self.active={'version':'0.2.0','commit':'a'*40,'package':str(self.base/'old-package')}

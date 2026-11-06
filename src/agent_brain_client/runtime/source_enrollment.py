@@ -249,8 +249,10 @@ def configure(args):
         scope = copy.deepcopy(validate(metadata_io.private_json(pending)))
     else:
         scope = copy.deepcopy(value["scope"])
-    if getattr(args, "all_projects", False) or not (
-        explicit or packet_path or pending.exists()
+    if (
+        getattr(args, "all_projects", False)
+        or not getattr(args, "preserve_scope", False)
+        and not (explicit or packet_path or pending.exists())
     ):
         scope["all_projects"] = True
     validate(scope)

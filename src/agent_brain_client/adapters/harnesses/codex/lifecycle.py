@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import re
-from types import SimpleNamespace
 
 import agent_brain_client.adapters.harnesses.codex.installation as install
 from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
@@ -100,25 +99,12 @@ def adapter_for(home, meta, config_image=None):
         )
     runtime = policy["runtime"]
     content = pinned(runtime["content_policy"], runtime["content_policy_sha256"])
-    # Read-only filesystem view: no credential access, transport or constructor writes.
-    from agent_brain_client.adapters.harnesses.codex.mapping import CodexContentMapping
-
-    adapter = object.__new__(CodexContentSession)
-    from agent_brain_client.adapters.harnesses.codex.sources import CodexSourceImports
-
-    adapter.mapping = CodexContentMapping(adapter)
-    adapter.sources = CodexSourceImports(adapter)
-    adapter.home = Path(home)
-    adapter.native_home = native
-    adapter.cache = private_files.safe(runtime["content_cache"])
-    adapter.platform = policy["platform"]
-    adapter.policy = content
-    adapter.binding = {"device_home": str(home), "codex_home": str(native)}
-    adapter.policy_sha = install.sha(
-        install.contract.encode({"policy": content, "binding": adapter.binding})
-    )
-    adapter.client = SimpleNamespace(
-        grant={"scopes": ["read", "put"], "artifact_types": content["kinds"]}
+    adapter = CodexContentSession.metadata_view(
+        home,
+        native,
+        private_files.safe(runtime["content_cache"]),
+        content,
+        platform=policy["platform"],
     )
     return adapter, mcp, native
 
@@ -759,3 +745,40 @@ def repair(home):
     if path.exists() and read_removal(home)["phase"] == "applying":
         return uninstall(home, lambda message: "Continue")
     return status(home)
+
+
+def retained_mcp_enabled(journal, home):
+    """Return the removed host's pause state from this owner's preimage."""
+    if journal.get("phase") != "complete" or journal.get("device_home") != str(home):
+        raise install.InstallBlocked("Completed removal scope required")
+    metadata = journal["registration"]
+    policy = install.pinned(
+        metadata["release_policy"], metadata["release_policy_sha256"]
+    )
+    config_file = Path(policy["runtime"]["codex_home"]) / "config.toml"
+    original = decode(journal["before"][str(config_file)]["data"])
+    mcp = install.tomllib.loads(original.decode())["mcp_servers"][install.NAME]
+    if (
+        type(mcp.get("enabled")) is not bool
+        or install.registered_mcp_digest(mcp) != metadata["mcp_sha256"]
+    ):
+        raise install.InstallBlocked("Removed MCP pause state changed")
+    return mcp["enabled"]
+
+
+def retained_memory_ids(journal, home):
+    """Known Memory identities from this owner's completed removal preimages."""
+    if journal is None:
+        return []
+    if journal.get("phase") != "complete" or journal.get("device_home") != str(home):
+        raise install.InstallBlocked("Completed removal scope required")
+    prefix = str(Path(home) / ".config/agent-brain-client/content/memory")
+    identities = []
+    for name in journal["before"]:
+        path = Path(name)
+        if str(path.parent) == prefix and path.suffix == ".md":
+            install.contract.validate(
+                "content_read", {"kind": "memory", "id": path.stem}
+            )
+            identities.append(path.stem)
+    return sorted(set(identities))

@@ -24,6 +24,11 @@ def lifecycle_exit(action, value):
     """Exit success denotes the requested action, never merely an old installation."""
     status = value.get("status")
     if (
+        value.get("memory_accessibility", {}).get("status")
+        == "review-or-resume-required"
+    ):
+        return 2
+    if (
         action == "check-update"
         and status in ("client-update-available", "client-update-current")
         and value.get("channel_checked") is True
@@ -68,7 +73,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--action",
-        choices=("install", "status", "repair", "uninstall", "check-update", "update"),
+        choices=(
+            "install",
+            "reinstall",
+            "status",
+            "repair",
+            "uninstall",
+            "check-update",
+            "update",
+        ),
         default="install",
     )
     parser.add_argument(
@@ -78,6 +91,40 @@ def main():
     parser.add_argument("--connection", type=Path)
     parser.add_argument("--expected-connection-sha256")
     args = parser.parse_args()
+    fresh_requested = args.action == "reinstall"
+    fresh_stage = "retention"
+
+    def finish_result(value):
+        from agent_brain_client.adapters.storage.reinstallation import read_journal
+
+        fresh = read_journal(Path.home().resolve())
+        if fresh is not None:
+            value = dict(
+                value,
+                retained_archive=fresh["archive"],
+                old_identity_reused=False,
+                old_queue_replayed=False,
+            )
+        if (
+            value.get("installed") is True
+            or fresh is not None
+            and value.get("registration_verified") is True
+        ):
+            from agent_brain_client.runtime.fresh_installation import verify_memory
+
+            try:
+                accessibility = verify_memory(Path.home().resolve())
+                if accessibility is not None:
+                    value = dict(value, memory_accessibility=accessibility)
+            except Exception:
+                return dict(
+                    value,
+                    installation_complete=False,
+                    memory_accessibility={"status": "review-or-resume-required"},
+                    next_action="Rerun reinstall with the same Server/account; preserve the retained archive. Mapping and Hook setup wait for readable retained memories. Old queues are never replayed.",
+                )
+        return finish_install(Path.home().resolve(), value)
+
     try:
         require_platform("first-install")
         home = Path.home().resolve()
@@ -112,6 +159,33 @@ def main():
                     }
             print(json.dumps(value))
             return lifecycle_exit(args.action, value)
+        if fresh_requested:
+            if args.connection or args.expected_connection_sha256:
+                raise ValueError(
+                    "Fresh reconnection uses the Server address and hidden access key only"
+                )
+            from agent_brain_client.runtime.fresh_installation import (
+                retained_installation,
+            )
+            from agent_brain_client.application.installation.fresh import (
+                prepare_fresh_installation,
+            )
+            from agent_brain_client.adapters.storage.reinstallation import read_journal
+
+            native = Path(os.environ.get("CODEX_HOME", str(home / ".codex"))).absolute()
+            port = retained_installation(home, native)
+            with port.lease():
+                prepared = prepare_fresh_installation(
+                    port, lambda message: input(message + "\n"), server=args.server
+                )
+            if prepared["status"] != "fresh-install-ready":
+                print(json.dumps(prepared))
+                return 2
+            saved = read_journal(home)
+            if args.server is None:
+                args.server = saved["endpoint"]
+            args.action = "install"
+            fresh_stage = "reconnection"
         if args.action != "install":
             from agent_brain_client.adapters.harnesses.codex.lifecycle import (
                 status,
@@ -188,7 +262,7 @@ def main():
                     installation_follow_up,
                 )
 
-                resumed = finish_install(home, installation_follow_up(resumed))
+                resumed = finish_result(installation_follow_up(resumed))
                 print(json.dumps(resumed))
                 return lifecycle_exit("install", resumed)
         if (
@@ -205,7 +279,7 @@ def main():
                 installation_follow_up,
             )
 
-            value = finish_install(home, installation_follow_up(value))
+            value = finish_result(installation_follow_up(value))
             print(json.dumps(value))
             return lifecycle_exit("install", value)
         try:
@@ -220,7 +294,7 @@ def main():
                 installation_follow_up,
             )
 
-            value = finish_install(home, installation_follow_up(value))
+            value = finish_result(installation_follow_up(value))
             print(json.dumps(value))
             return lifecycle_exit("install", value)
         except Exception:
@@ -247,16 +321,27 @@ def main():
             installation_follow_up,
         )
 
-        value = finish_install(home, installation_follow_up(value))
+        value = finish_result(installation_follow_up(value))
         print(json.dumps(value))
         return lifecycle_exit("install", value)
-    except Exception:
+    except Exception as error:
         print(
             json.dumps(
                 {
-                    "status": "first-install-review-or-resume-required",
+                    "status": "fresh-install-review-or-resume-required"
+                    if fresh_requested
+                    else "first-install-review-or-resume-required",
                     "installed": False,
-                    "native_changed": False,
+                    "native_changed": None if fresh_requested else False,
+                    **(
+                        {
+                            "next_action": "Close all old host workers, preserve the retained files and rerun the SAME reinstall command. Review any configuration drift; do not delete state or edit pins.",
+                            "stage": fresh_stage,
+                            "reason": type(error).__name__,
+                        }
+                        if fresh_requested
+                        else {}
+                    ),
                 }
             )
         )

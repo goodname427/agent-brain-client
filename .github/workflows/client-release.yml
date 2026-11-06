@@ -15,6 +15,11 @@ on:
         default: all
         type: choice
         options: [all, macos, windows]
+      installation_mode:
+        description: Reinstall audits a new layout for all four platforms; existing profile pins stay unchanged
+        default: upgrade
+        type: choice
+        options: [upgrade, reinstall]
       publish:
         description: Publish immutable releases and advance selected existing platform channels
         default: false
@@ -49,7 +54,8 @@ jobs:
           RELEASE_SOURCE: ${{ inputs.source }}
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_TARGETS: ${{ inputs.targets }}
-        run: python -B .local/release-tools/dev/release/client.py prepare --source-root "$GITHUB_WORKSPACE" --source "$RELEASE_SOURCE" --version "$RELEASE_VERSION" --targets "$RELEASE_TARGETS" --output .local/release
+          RELEASE_INSTALLATION_MODE: ${{ inputs.installation_mode }}
+        run: python -B .local/release-tools/dev/release/client.py prepare --source-root "$GITHUB_WORKSPACE" --source "$RELEASE_SOURCE" --version "$RELEASE_VERSION" --targets "$RELEASE_TARGETS" --installation-mode "$RELEASE_INSTALLATION_MODE" --output .local/release
       - name: Preserve bundle and diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

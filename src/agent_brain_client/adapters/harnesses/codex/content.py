@@ -32,6 +32,7 @@ cache_mode = brain_lock.cache_mode
 cache_directory = brain_lock.cache_directory
 locked = brain_lock.cache_locked
 from agent_brain_client.application.control import check_request, RequestStopped
+from agent_brain_client.adapters.storage.reinstallation import require_memory_verified
 
 # independent of the number of records or pages, with 64 KiB per record.
 # Per-record envelopes fit in 512 bytes. Aggregate persistence must accommodate
@@ -57,10 +58,31 @@ class CodexContentSession(FileContentOutbox):
     def _outbox_locked(*args, **kwargs):
         return locked(*args, **kwargs)
 
+    @classmethod
+    def metadata_view(cls, home, native, cache, policy, *, platform):
+        """Read native ownership without a transport, credential access or writes."""
+        from types import SimpleNamespace
+
+        require_platform("cache-storage", platform)
+        view = object.__new__(cls)
+        view.home, view.native_home, view.cache = Path(home), Path(native), Path(cache)
+        view.platform, view.policy = platform, policy
+        view.binding = {"device_home": str(home), "codex_home": str(native)}
+        view.policy_sha = sha(
+            contract.encode({"policy": policy, "binding": view.binding})
+        )
+        view.client = SimpleNamespace(
+            grant={"scopes": ["read", "put"], "artifact_types": policy["kinds"]}
+        )
+        view.sources = CodexSourceImports(view)
+        view.mapping = CodexContentMapping(view)
+        return view
+
     def __init__(self, home, cache, policy, client, health=None, codex_home=None):
         require_platform(
             "cache-storage", (getattr(client, "grant", None) or {}).get("platform")
         )
+        require_memory_verified(home, getattr(client, "profile_sha", None))
         native = Path(
             codex_home or os.environ.get("CODEX_HOME", str(Path(home) / ".codex"))
         ).expanduser()
@@ -90,6 +112,7 @@ class CodexContentSession(FileContentOutbox):
 
     def ensure_refresh_available(self):
         self._require_storage()
+        require_memory_verified(self.home, getattr(self.client, "profile_sha", None))
 
     def refresh_transaction(self):
         return self._outbox_locked(self.cache / "content.lock")
@@ -516,6 +539,7 @@ class CodexContentSession(FileContentOutbox):
     def invoke(self, request, reconciles=None, *, event_gate=None):
         check_request()
         require_platform("cache-storage", self.platform)
+        require_memory_verified(self.home, getattr(self.client, "profile_sha", None))
         method = request.get("method")
         params = request.get("params")
         contract.validate(method, params)

@@ -188,11 +188,7 @@ def archive(payload, prefix, modes=None):
     return result.getvalue()
 
 
-def compatible(
-    before,
-    after,
-    credential="src/agent_brain_client/adapters/platforms/windows/native.py",
-):
+def require_contract(before, after):
     for key in (
         "schema",
         "channel",
@@ -204,12 +200,66 @@ def compatible(
     ):
         if before[key] != after[key]:
             raise ValueError("Release contract change requires review: " + key)
+
+
+def compatible(
+    before,
+    after,
+    credential="src/agent_brain_client/adapters/platforms/windows/native.py",
+):
+    require_contract(before, after)
     if set(before["files"]) != set(after["files"]):
         raise ValueError(
             "Release file scope change requires review; use a new installation for the current layout"
         )
     if before["files"][credential] != after["files"][credential]:
         raise ValueError("Credential component change requires policy review")
+
+
+def review_reinstallation(before, after, baseline, payload, group):
+    """Audit a fresh-install layout change without altering any installed pin."""
+    require_contract(before, after)
+    credential = GROUPS[group]["credential"]
+    prior = {
+        "windows": "scripts/brain_windows.py",
+        "macos": "native/CredentialStore.swift",
+    }[group]
+    if credential in before["files"]:
+        prior = credential
+    if prior not in before["files"] or credential not in after["files"]:
+        raise ValueError("Recognized credential component required for reinstallation")
+    old = run(["git", "show", baseline + ":" + prior])
+    new = payload[credential]
+    if sha(old) != before["files"][prior] or sha(new) != after["files"][credential]:
+        raise ValueError("Credential audit source integrity failed")
+    change = "identical-bytes"
+    if old != new:
+        old_import = b"from system_credentials import unique\n"
+        new_import = (
+            b"from agent_brain_client.adapters.platforms.credentials import unique\n"
+        )
+        if (
+            group != "windows"
+            or prior != "scripts/brain_windows.py"
+            or old.count(old_import) != 1
+            or old.replace(old_import, new_import) != new
+        ):
+            raise ValueError(
+                "Credential implementation change requires separate policy review"
+            )
+        change = "qualified-import-only"
+    return {
+        "baseline": baseline,
+        "prior_version": before["version"],
+        "added_files": sorted(set(after["files"]) - set(before["files"])),
+        "removed_files": sorted(set(before["files"]) - set(after["files"])),
+        "credential": {
+            "before": {"path": prior, "sha256": sha(old)},
+            "after": {"path": credential, "sha256": sha(new)},
+            "change": change,
+            "installed_profiles": "preserved-without-repinning",
+        },
+    }
 
 
 def runtime_commit(payload, baseline, source, selected, label="Windows"):
@@ -243,8 +293,10 @@ def runtime_commit(payload, baseline, source, selected, label="Windows"):
     )
 
 
-def runtime_artifacts(payload, baselines, source, selected, group, *, advance=True):
-    """The same build/integrity path with each platform's existing credential pin."""
+def runtime_artifacts(
+    payload, baselines, source, selected, group, *, advance=True, reinstall=False
+):
+    """Build both native architectures under an explicit upgrade/reinstall policy."""
     definition = GROUPS[group]
     before = [
         json.loads(git("show", parent + ":releases/manifest.json"))
@@ -277,8 +329,11 @@ def runtime_artifacts(payload, baselines, source, selected, group, *, advance=Tr
                     ]
                 )
             )
-            for previous in before:
-                compatible(previous, manifest, definition["credential"])
+            for parent, previous in zip(baselines, before):
+                if reinstall:
+                    review_reinstallation(previous, manifest, parent, payload, group)
+                else:
+                    compatible(previous, manifest, definition["credential"])
             package = {
                 p.relative_to(target).as_posix(): p.read_bytes()
                 for p in target.rglob("*")
@@ -315,7 +370,16 @@ def runtime_artifacts(payload, baselines, source, selected, group, *, advance=Tr
         if advance
         else None
     )
-    return artifacts, runtime, sha(json.dumps(manifests[0], sort_keys=True).encode())
+    result = artifacts, runtime, sha(json.dumps(manifests[0], sort_keys=True).encode())
+    if reinstall:
+        return (
+            *result,
+            [
+                review_reinstallation(previous, manifests[0], parent, payload, group)
+                for parent, previous in zip(baselines, before)
+            ],
+        )
+    return result
 
 
 def build(source, baseline, selected):
@@ -388,7 +452,7 @@ def validate(output):
                     cwd=ROOT,
                     stdout=log,
                     stderr=subprocess.STDOUT,
-                    timeout=600,
+                    timeout=1800,
                 )
             if result.returncode:
                 raise ValueError(
@@ -458,7 +522,20 @@ def executor_identity():
         return source, git("rev-parse", source + "^{tree}")
 
 
-def build_platforms(source, baselines, selected, groups, installer_tag=None):
+def build_platforms(
+    source,
+    baselines,
+    selected,
+    groups,
+    installer_tag=None,
+    *,
+    installation_mode="upgrade",
+):
+    if installation_mode not in ("upgrade", "reinstall"):
+        raise ValueError("Explicit supported installation mode required")
+    reinstall = installation_mode == "reinstall"
+    if reinstall and set(groups) != set(GROUPS):
+        raise ValueError("Reinstallation release requires all four platforms")
     payload, modes = source_payload(source)
     executor, executor_tree = executor_identity()
     highest = max(
@@ -495,11 +572,22 @@ def build_platforms(source, baselines, selected, groups, installer_tag=None):
         {},
         {},
     )
+    installation_audits = {}
     for group, definition in GROUPS.items():
         parents = tuple(baselines[ref] for ref in definition["channels"])
-        packages, runtime, manifest_sha = runtime_artifacts(
-            payload, parents, source, selected, group, advance=group in groups
+        options = {"reinstall": True} if reinstall else {}
+        built = runtime_artifacts(
+            payload,
+            parents,
+            source,
+            selected,
+            group,
+            advance=group in groups,
+            **options,
         )
+        packages, runtime, manifest_sha = built[:3]
+        if reinstall:
+            installation_audits[group] = built[3]
         checks[group] = {
             "platforms": list(definition["platforms"]),
             "manifest_sha256": manifest_sha,
@@ -551,7 +639,7 @@ def build_platforms(source, baselines, selected, groups, installer_tag=None):
                 "Existing installer version has another source; never replace it"
             )
     tags["installer"] = installer_tag
-    return {
+    plan = {
         "schema": 2,
         "repository": REPOSITORY,
         "source": source,
@@ -571,7 +659,15 @@ def build_platforms(source, baselines, selected, groups, installer_tag=None):
             name: {"sha256": sha(raw), "size": len(raw)}
             for name, raw in sorted(artifacts.items())
         },
-    }, artifacts
+    }
+    if reinstall:
+        plan["installation"] = {
+            "mode": "reinstall",
+            "automatic_upgrade": False,
+            "data_policy": "retain-old-files-and-queues; fresh-device; preserve-memory-access; never-repin",
+            "audits": installation_audits,
+        }
+    return plan, artifacts
 
 
 def git_tag_exists(tag):
@@ -586,7 +682,15 @@ def git_tag_exists(tag):
     )
 
 
-def prepare_platforms(output, source, selected, target, *, validate_source=True):
+def prepare_platforms(
+    output,
+    source,
+    selected,
+    target,
+    *,
+    validate_source=True,
+    installation_mode="upgrade",
+):
     existing = output / "plan.json"
     groups = list(GROUPS) if target == "all" else [target]
     if existing.exists():
@@ -595,6 +699,7 @@ def prepare_platforms(output, source, selected, target, *, validate_source=True)
             old.get("schema") != 2
             or old["source"] != source
             or old["groups"] != groups
+            or old.get("installation", {}).get("mode", "upgrade") != installation_mode
             or selected not in ("auto", old["version"])
         ):
             raise ValueError("Output belongs to another source/platform/version")
@@ -620,8 +725,13 @@ def prepare_platforms(output, source, selected, target, *, validate_source=True)
             selected = f"{major}.{minor}.{patch + 1}"
         installer_tag = None
     report(output, "building", source=source, version=selected, groups=groups)
+    options = (
+        {"installation_mode": installation_mode}
+        if installation_mode != "upgrade"
+        else {}
+    )
     plan, artifacts = build_platforms(
-        source, baselines, selected, groups, installer_tag
+        source, baselines, selected, groups, installer_tag, **options
     )
     immutable(existing, encoded(plan))
     for name, raw in artifacts.items():
@@ -634,7 +744,14 @@ def prepare_platforms(output, source, selected, target, *, validate_source=True)
             for group, runtime in plan["runtimes"].items()
         )
         + "\n\nBoth platform manifests built and checked at the same component version. "
-        + "Only selected existing channels are advanced; their ancestry, file scope and credential pins are retained. "
+        + (
+            "REINSTALLATION REQUIRED: this version cannot update an old layout in place. "
+            "Use the new installer with --action reinstall to archive old state and connect a NEW device to the SAME Server/account. "
+            "Do not delete state, reset credentials or rewrite profile pins. "
+            "Old unsent queues remain in the archive and are NOT replayed; verify retained Memory access after connecting. "
+            if installation_mode == "reinstall"
+            else "Only selected existing channels are advanced; their ancestry, file scope and credential pins are retained. "
+        )
         + "Desktop and worker/model reload acceptance are separate.\n"
     )
     immutable(output / "release-notes.md", notes.encode())
@@ -653,7 +770,7 @@ def prepare_platforms(output, source, selected, target, *, validate_source=True)
     )
 
 
-def prepare_local(output, source, selected, target):
+def prepare_local(output, source, selected, target, *, installation_mode="upgrade"):
     from dev.checks.client import run_checks
 
     if sys.platform != "darwin" or sys.version_info[:2] != (3, 12):
@@ -681,7 +798,14 @@ def prepare_local(output, source, selected, target):
         directory = output / "local-checks" / scope
         run_checks(scope, directory, record=True)
         receipts.append(str(directory / "checks.json"))
-    prepare_platforms(output, source, selected, target, validate_source=False)
+    prepare_platforms(
+        output,
+        source,
+        selected,
+        target,
+        validate_source=False,
+        installation_mode=installation_mode,
+    )
     immutable(
         output / "local-preparation.json",
         encoded(
@@ -926,6 +1050,11 @@ def load_bundle(output):
             saved["version"],
             saved["groups"],
             saved["tags"]["installer"],
+            **(
+                {"installation_mode": saved["installation"]["mode"]}
+                if "installation" in saved
+                else {}
+            ),
         )
     else:
         plan, artifacts = build(saved["source"], saved["baseline"], saved["version"])
@@ -1160,6 +1289,12 @@ def main():
         default="auto",
         help="auto increments the highest frozen platform patch",
     )
+    parser.add_argument(
+        "--installation-mode",
+        choices=("upgrade", "reinstall"),
+        default="upgrade",
+        help="prepare only: reinstall explicitly audits a new layout for all four platforms; existing pins remain untouched",
+    )
     parser.add_argument("--allow-publish", action="store_true")
     parser.add_argument(
         "--local-check",
@@ -1174,6 +1309,11 @@ def main():
         help="Explicitly combine local documentation/source/macOS receipts with official same-tree Windows CI jobs",
     )
     args = parser.parse_args()
+    if args.installation_mode != "upgrade" and args.action not in (
+        "prepare",
+        "prepare-local",
+    ):
+        parser.error("installation mode is frozen in the prepared bundle")
     if args.source_root:
         ROOT = args.source_root.resolve()
     if sys.version_info < (3, 11):
@@ -1207,7 +1347,13 @@ def main():
                     if args.action == "prepare-local"
                     else prepare_platforms
                 )
-                prepare_fn(output, args.source, args.version, args.targets)
+                prepare_fn(
+                    output,
+                    args.source,
+                    args.version,
+                    args.targets,
+                    installation_mode=args.installation_mode,
+                )
             else:
                 plan = load_bundle(output)
                 if args.action == "publish":

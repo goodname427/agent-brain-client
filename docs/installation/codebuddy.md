@@ -1,5 +1,6 @@
 # CodeBuddy 接入
 
+0.8 旧布局请使用[保留记忆并重新连接的重装入口](reinstall.md)，普通 install 不会自动覆盖旧安装；旧未同步队列不会自动接续。
 > Client 0.7 适配源码。源码合入不等于已发布；真实 IDE/CLI 的模型加载与用户验收另行核对。
 
 CodeBuddy IDE 和 CodeBuddy Code（CLI）共用现有 Agent Brain Client 与 Server。支持原生 Mac、Windows；首次只需 HTTPS Server 地址和本机隐藏输入的接入密钥，**不要求安装 Codex 应用**。已有 Client 则复用其原策略、设备身份、系统凭据与来源范围。

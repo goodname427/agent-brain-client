@@ -150,6 +150,59 @@ class CodexContentMapping:
         self._skill_dirs(owned["files"])
         return owned
 
+    def retention_snapshot(self):
+        """Keep native memory projections without replaying any old queue."""
+        owned = self.owned_snapshot()
+        documents = {
+            name: base64.b64encode(self._raw(name)).decode()
+            for name in owned["files"]
+            if name.startswith(".config/agent-brain-client/content/")
+        }
+        return {
+            "owned": owned,
+            "documents": documents,
+            "directories": self._directory_ownership(),
+        }
+
+    def restore_retention(self, snapshot):
+        """Adopt only byte-identical projections under the same content grant/home."""
+        owned = snapshot["owned"]
+        if (
+            owned["policy_sha"] != self.session.policy_sha
+            or owned["binding"] != self.session.binding
+        ):
+            raise CacheBlocked()
+        from agent_brain_client.adapters.storage.host_files import atomic
+
+        for name, encoded in snapshot["documents"].items():
+            if (
+                not name.startswith(".config/agent-brain-client/content/")
+                or name not in owned["files"]
+            ):
+                raise CacheBlocked()
+            raw = base64.b64decode(encoded, validate=True)
+            if sha(raw) != owned["files"][name]:
+                raise CacheBlocked()
+            path = self._path(name)
+            if path.exists():
+                if self._raw(name) != raw:
+                    raise CacheBlocked()
+            else:
+                atomic(path, raw, 0o600)
+        for name, digest in owned["files"].items():
+            if self._raw(name) is None or sha(self._raw(name)) != digest:
+                raise CacheBlocked()
+        for name, value in (
+            ("owned.json", owned),
+            ("skill-directories.json", snapshot["directories"]),
+        ):
+            old = self.session._load(name)
+            if old is not None and old != value:
+                raise CacheBlocked()
+            self.session._save(name, value)
+        self.owned_snapshot()
+        self._directory_ownership()
+
     def _skill_dirs(self, names, owned=None):
         managed = {
             name.split("/")[2] for name in names if name.startswith(".agents/skills/")

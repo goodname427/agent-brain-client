@@ -1,8 +1,9 @@
-# Mac arm64：安装、使用、卸载、再次安装
+# Mac（Apple Silicon / Intel）：安装、使用、卸载、再次安装
 
-> 状态：当前维护。适用：Mac arm64 当前安装入口；运行版本由原渠道固定。文档核对日期：2026-11-03；验收范围见 [0.5 交付状态](../releases/0.5-status.md)。
+0.8 旧布局请使用[保留记忆并重新连接的重装入口](reinstall.md)，普通 install 不会自动覆盖旧安装；旧未同步队列不会自动接续。
+> 状态：当前维护。适用：Mac arm64 / x86_64 当前安装入口；运行版本由原渠道固定。文档核对日期：2026-11-06；验收范围见 [0.5 交付状态](../releases/0.5-status.md)。
 
-支持 Apple Silicon Mac、Codex 和既有 HTTPS 个人 Memory/Rule/Skill 服务。普通客户端无管理 SSH、sudo、发码或 Server/Data 凭据。Windows 使用同一接入协议，见 [Windows 步骤](windows.md)。其他 Harness 与 Intel Mac 不在本入口范围。
+支持 Apple Silicon / Intel Mac、Codex 和既有 HTTPS 个人 Memory/Rule/Skill 服务。普通客户端无管理 SSH、sudo、发码或 Server/Data 凭据。Windows 使用同一接入协议，见 [Windows 步骤](windows.md)。CodeBuddy 使用[共享安装入口](codebuddy.md)。
 
 ## 取得源码并连接 Server
 
@@ -30,7 +31,7 @@ sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --server 'https://your-server.exa
 
 正常首次安装不要求 connection 文件、SHA-256、ready 回执或邀请码。地址必须准确且证书正常；安装器不追随认证重定向。密钥只进入本机隐藏输入和专用 login Keychain，不能粘贴到聊天、命令行或环境变量。Server 返回当前平台配置与已授权内容范围后，自动完成发行链验证、设备身份确认、MCP 配置事务和只读协议检查。服务未启用新协议、证书失败或范围漂移时停止并保留现场，不能借示例配置绕过。
 
-缺少命令行工具时完成 macOS 标准工具安装后重跑。Git HTTPS、Python 3.11+、系统 TLS 根和 Swift helper 按既有准备流程检查；工具链 Python 不足时获取固定 SHA 校验的 Python 归档到用户私有目录。接入密钥使用独立 helper，原有设备 helper 与旧身份保持兼容。网络失败、丢回复或中断时重跑同一命令，复用保存的密钥、nonce 与原安装事务。详细协议与恢复见 [地址与密钥安装](address-key-install.md)。
+缺少命令行工具时完成 macOS 标准工具安装后重跑。Git HTTPS、Python 3.11+、系统 TLS 根和 Swift helper 按既有准备流程检查；工具链 Python 不足时按 arm64 / x86_64 获取各自固定 SHA 校验的 Python 归档到用户私有目录。接入密钥使用独立 helper，原有设备 helper 与旧身份保持兼容。网络失败、丢回复或中断时重跑同一命令，复用保存的密钥、nonce 与原安装事务。详细协议与恢复见 [地址与密钥安装](address-key-install.md)。
 
 `installed:true` 表示 HTTPS 协议/认证及一个 MCP 表登记完成；打开/重载 Codex，正常新 MCP 进程加载。它不会强杀旧 worker，也不意味着已运行模型自动重读了指令。`model_loaded:"unknown"` 表示此接口无法观测模型是否采用了指令；不能解释为已加载或未加载。旧回执的历史字段同样不是当前模型加载探针。再次运行安装命令会检查已装身份/范围，不再输入邀请。profile、policy、helper、scope 或配置漂移时停止并保留现场，不自动扩权。
 

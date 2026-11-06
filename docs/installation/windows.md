@@ -1,5 +1,6 @@
 # Windows Codex 安装、升级与未来记忆
 
+0.8 旧布局请使用[保留记忆并重新连接的重装入口](reinstall.md)，普通 install 不会自动覆盖旧安装；旧未同步队列不会自动接续。
 > 状态：当前维护。适用：Windows 当前安装入口；0.5.9 基线。文档核对日期：2026-11-03；验收范围见 [0.5 交付状态](../releases/0.5-status.md)。
 
 可以只把本仓库链接发给 Windows 上的本地 Codex；入口约定见 [统一引导](../../BOOTSTRAP.md)。执行 Agent 先从干净官方 main 运行 `& ./bootstrap/windows/install.ps1 -Action status`。已有核验安装时使用 `-Action check-update`、`-Action update`，保留现有身份与策略；明确未安装时才继续下述首次安装。状态异常或事务未完成时保留材料并按 status／repair 恢复，不重新发码或重置。

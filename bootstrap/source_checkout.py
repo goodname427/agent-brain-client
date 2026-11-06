@@ -72,7 +72,7 @@ def should_bootstrap(argv):
         if arg.startswith("--action="):
             action = arg.split("=", 1)[1]
         index += 1
-    return action in (None, "install")
+    return action in (None, "install", "reinstall")
 
 
 def verified_one_shot(root, *, runner=subprocess.run, git="git"):

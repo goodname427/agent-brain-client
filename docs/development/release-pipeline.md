@@ -92,3 +92,15 @@ python3.12 -B dev/release/client.py publish --output "$RELEASE_OUTPUT" --allow-p
 Actions 重跑 publish job 复用同次 prepare artifact。重跑整个 prepare 若渠道已提升，须恢复原 bundle，不能用 auto 新版本冒充同次重试。执行工具也必须恢复 plan 固定的原提交。14 天后 artifact 可能过期，维护者应保留长期交付证据。进程强杀留下 release.lock 时先核实原进程已退出，再移除锁。
 
 `published-and-verified` 证明 GitHub 发布、选中 Git 渠道、latest 和公开下载。生产 Server catalog/cache 由管理侧消费 plan.json 的 runtimes/manifests，沿既有受限 catalog 流程另行核验。真实设备、ARM64/x86_64 硬件、凭据 UI、Hook trust 及 worker/model 重载分别报告；没有实测不会阻止获授权的源码和包交付，也不能宣称设备验收通过。发布工具不引入 SSH 主机、部署路径、新密钥或 Server 管理入口。
+
+## 需要重新安装的结构发布
+
+`prepare --installation-mode reinstall --targets all --version 0.8.0` 用于已审核的目录结构切换。默认 `upgrade` 仍要求完全相同的文件集合和凭据组件摘要；不会因为新结构而放宽旧客户端的升级校验。重装模式必须同时准备 Mac arm64、Mac x86_64、Windows amd64、Windows arm64，保留现有三个渠道及其祖先，不另建信任渠道。
+
+重装模式仍逐项核对协议、状态 schema、Python 最低版本、能力与 migrations。`plan.json` 冻结 `installation.mode`、每个原渠道的新增／删除路径、凭据前后路径和摘要。Mac 凭据 Swift 源必须逐字节相同；旧 Windows `scripts/brain_windows.py` 只允许已审核的 `unique` 导入变为完整包名，其余字节必须相同。任意其他凭据实现变化、来源字节不符、部分平台发布或重跑时切换模式都会拒绝。发布／核验从原始源码重建整个审计，不接受手改计划。此项审计**不修改设备上的 profile、凭据 pin 或队列绑定**。
+
+工作流对应 `installation_mode: reinstall`；`publish` 仍默认关闭。Release 正文明确标注 `REINSTALLATION REQUIRED`。旧布局无法原地更新，旧客户端应保留原活动包并报告 review-required。新安装使用当前入口。已有安装必须保留本地 Memory、Server 数据、身份、凭据、待发送队列和安装回执；不得删除配置目录、清空队列、重置设备身份或改写 pin 来获得安装成功。
+
+旧 Windows profile 的摘要绑定旧凭据源；新版继续拒绝旧 pin。结构切换使用显式 `reinstall` action：在正常关闭旧 Codex/CodeBuddy 后，仅移除回执核验一致的 Agent Brain 入口，将旧 Client 状态移动到独立保留目录，再由用户通过隐藏输入重新连接同一 Server/账号。新 profile 有独立 instance_id，原系统凭据项与旧 pin 不改写、不清理；旧身份和旧队列不接续。已确认的本地记忆投影由 mapping 所有者验证并复制，原生持久记忆保持原位置；新连接读取已知原记忆进行核验。具体命令和恢复步骤见[0.8 重装](../installation/reinstall.md)。
+
+Mac 安装器按原生架构选择 Python 3.12.15 的固定归档，ARM 与 Intel 分别独立校验 SHA256。摘要来自 [上游 20261009 正式发布](https://github.com/astral-sh/python-build-standalone/releases/tag/20261009) 的 asset digest；已具备 Python 3.11+ 时复用现有解释器。Windows 继续使用已验证的本机 Python，不引入下载或系统 Python 替换。

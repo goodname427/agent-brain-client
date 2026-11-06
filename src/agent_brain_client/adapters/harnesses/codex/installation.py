@@ -411,6 +411,14 @@ def prepare(home, package, policy_path, policy_sha, replace_existing=False):
     registration = Path(home) / ".config/agent-brain-client/codex-mcp.json"
     before = raw(config)
     old = tomllib.loads((before or b"").decode()).get("mcp_servers", {}).get(NAME)
+    if old is None:
+        from agent_brain_client.adapters.storage.reinstallation import read_journal
+
+        fresh = read_journal(home)
+        if fresh is not None and fresh["phase"] == "ready":
+            if type(fresh.get("service_enabled")) is not bool:
+                raise InstallBlocked("Retained MCP pause state required")
+            mcp["enabled"] = fresh["service_enabled"]
     registered = raw(registration)
     legacy_agents = None
     if old:

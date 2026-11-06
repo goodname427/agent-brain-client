@@ -23,8 +23,18 @@ ROOT = Path(__file__).resolve().parents[4]
 
 def backend_home(home):
     """Metadata-only bootstrap path; works before a Python runtime is prepared."""
+    from agent_brain_client.adapters.storage.reinstallation import read_journal
+
+    fresh = read_journal(home)
+    if fresh is not None and fresh["phase"] != "complete":
+        native = Path(fresh["native"])
+        if not native.is_absolute() or native.is_symlink():
+            raise ValueError("Original fresh-install native home required")
+        return native
     registration = Path(home) / ".config/agent-brain-client/codex-mcp.json"
     if not registration.exists():
+        if fresh is not None:
+            return Path(fresh["native"])
         return Path(home) / ".config/agent-brain-client/shared-native"
     if registration.is_symlink():
         raise ValueError("Existing Client registration changed")

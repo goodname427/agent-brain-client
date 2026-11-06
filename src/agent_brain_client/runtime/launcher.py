@@ -28,6 +28,10 @@ from agent_brain_client.adapters.platforms.filesystem import (
     PlatformUnsupported,
 )
 import agent_brain_client.adapters.platforms.filesystem as brain_lock
+from agent_brain_client.adapters.storage.reinstallation import require_memory_verified
+from agent_brain_client.application.installation.fresh import (
+    FreshMemoryVerificationRequired,
+)
 
 cache_directory = brain_lock.cache_directory
 cache_mode = brain_lock.cache_mode
@@ -109,6 +113,13 @@ def serve_content(command, active, policy, status):
         cache_mode(path, owner=True)
         modern = version(active["version"]) >= version(OUTBOX_MIN_VERSION)
         with cache_locked(path, timeout=0, shared=modern) as lease:
+            try:
+                require_memory_verified(
+                    policy["runtime"]["device_home"],
+                    policy["runtime"].get("https_profile_sha256"),
+                )
+            except FreshMemoryVerificationRequired as error:
+                return error.result()
             from agent_brain_client.adapters.harnesses.codex.installation import inspect
 
             if not inspect(policy["runtime"]["device_home"]).get("installed"):
@@ -175,6 +186,11 @@ def startup(
         releases.policy.get("runtime") if isinstance(releases.policy, dict) else None
     )
     device_home = runtime.get("device_home") if isinstance(runtime, dict) else None
+    if isinstance(device_home, str) and not (check_only or installation_check):
+        try:
+            require_memory_verified(device_home, runtime.get("https_profile_sha256"))
+        except FreshMemoryVerificationRequired as error:
+            return error.result()
     if isinstance(device_home, str):
         handover = (
             Path(device_home) / ".config/agent-brain-client/launcher-handover.json"
