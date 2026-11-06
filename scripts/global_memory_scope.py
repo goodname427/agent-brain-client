@@ -95,9 +95,9 @@ def namespace(actor, source):
 
 
 def restricted(text):
-    """Explicit sharing restrictions; callers also run existing secret guards."""
-    return isinstance(text, str) and bool(re.search(
-        r"(?im)(?:^\s*\[(?:no[-_ ]?share|project[-_ ]?only|do[-_ ]?not[-_ ]?share)\]|禁止(?:跨项目)?共享|不要(?:跨项目)?共享|仅限(?:当前|本)项目|do not share (?:this|across projects)|keep (?:this )?project[- ]only)", text))
+    """Use the same explicit-intent boundary for capture and recall."""
+    from brain_content import explicit_sharing_restriction
+    return explicit_sharing_restriction(text)
 
 
 def source_context(origins, current):
