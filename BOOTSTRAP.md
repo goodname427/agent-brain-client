@@ -8,7 +8,7 @@ CodeBuddy IDE／CLI 接入使用 [CodeBuddy 安装入口](docs/installation/code
 
 1. 识别实际执行环境。原生 Windows 读 [Windows 固定步骤](docs/installation/windows.md)，Mac 读 [Mac 安装、使用、卸载与再次安装](docs/installation/mac.md)。WSL 和云端编排不能按原生 Windows 本地 Hook 流程处理。
 2. 依照平台文档取得独立、干净的官方 `main` checkout，并记录源码 SHA；不从用户旧目录执行入口。正常准备 Python 3.11+ 和 Git。先执行平台入口的 `status`，它只检查本地安装，不发邀请或读取设备凭据。
-3. 已有经过核验的安装时，执行 `check-update`，成功检查后执行 `update`；不把重复 `install` 当作升级。复用现有策略、凭据、信任锚和队列，保留原有启用／关闭状态，不重新配对。Windows 命令如下；Mac 使用文档中的同名 action。
+3. 目录结构切换版本明确要求重新安装，不能对旧布局直接 update。先保留所有本地记忆、身份、凭据和待发送队列；旧登记或凭据 pin 不匹配时停止并报告，不能删除状态或改写 pin。详见[重装发布限制](docs/development/release-pipeline.md#需要重新安装的结构发布)。普通同布局版本已有经过核验的安装时，执行 `check-update`，成功检查后执行 `update`；不把重复 `install` 当作升级。复用现有策略、凭据、信任锚和队列，保留原有启用／关闭状态，不重新配对。Windows 命令如下；Mac 使用文档中的同名 action。
 
    ```powershell
    & ./bootstrap/windows/install.ps1 -Action status

@@ -408,6 +408,9 @@ class PlatformMainContracts(unittest.TestCase):
 )
 class Bootstrap(unittest.TestCase):
     def setUp(self):
+        self.native = patch('agent_brain_client.adapters.platforms.filesystem.native_platform', return_value='darwin-arm64')
+        self.native.start()
+        self.addCleanup(self.native.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name).resolve()
@@ -447,7 +450,7 @@ class Bootstrap(unittest.TestCase):
 
         with (
             patch.object(bootstrap.sys, "version_info", (3, 9)),
-            patch.object(bootstrap, "DIGEST", digest),
+            patch.dict(bootstrap.RUNTIMES, {target: (url, digest) for target, (url, _) in bootstrap.RUNTIMES.items()}),
         ):
             first = bootstrap.runtime(self.home, fetch=fetch)
             self.assertEqual(first.read_bytes(), b"SYNTHETIC_UNEXECUTED_RUNTIME")
@@ -470,16 +473,68 @@ class Bootstrap(unittest.TestCase):
             with self.assertRaises(OSError):
                 bootstrap.runtime(self.home, fetch=unavailable)
         directory = self.home / ".config/agent-brain-client/install-runtime"
-        self.assertFalse((directory / bootstrap.DIGEST).exists())
+        self.assertFalse((directory / bootstrap.dependency()[1]).exists())
         self.assertTrue(list(directory.glob("preparing-*/python.tar.gz")))
 
     def test_verified_but_escaping_archive_is_rejected(self):
         archive = self.home / "synthetic.tar.gz"
         digest = self.archive(archive, malicious=True)
-        with patch.object(bootstrap, "DIGEST", digest):
+        with patch.dict(bootstrap.RUNTIMES, {target: (url, digest) for target, (url, _) in bootstrap.RUNTIMES.items()}):
             with self.assertRaises(ValueError):
-                bootstrap.extract(archive, self.home / "out")
+                bootstrap.extract(archive, self.home / "out", digest)
         self.assertFalse((self.home / "out").exists())
+
+
+
+
+class InstallationArchitectureContracts(unittest.TestCase):
+    def test_native_architectures_use_separate_verified_dependency_pins(self):
+        self.assertEqual(set(bootstrap.RUNTIMES), {'darwin-arm64', 'darwin-x86_64'})
+        arm, intel = bootstrap.dependency('darwin-arm64'), bootstrap.dependency('darwin-x86_64')
+        self.assertIn('aarch64-apple-darwin', arm[0])
+        self.assertIn('x86_64-apple-darwin', intel[0])
+        self.assertNotEqual(arm[1], intel[1])
+        for target, expected in bootstrap.RUNTIMES.items():
+            with self.subTest(target=target), patch('agent_brain_client.adapters.platforms.filesystem.native_platform', return_value=target):
+                self.assertEqual(bootstrap.dependency(), expected)
+        with self.assertRaises(ValueError):
+            bootstrap.dependency('win32-amd64')
+
+    @unittest.skipIf(sys.platform == 'win32', 'Private POSIX bootstrap directories')
+    def test_each_architecture_prepares_and_reuses_only_its_own_synthetic_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            archive = home / 'synthetic.tar.gz'
+            with tarfile.open(archive, 'w:gz') as out:
+                entry = tarfile.TarInfo('python/bin/python3')
+                raw = b'SYNTHETIC_UNEXECUTED_INTERPRETER'
+                entry.size = len(raw)
+                out.addfile(entry, io.BytesIO(raw))
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            for target in bootstrap.RUNTIMES:
+                isolated = home / target
+                with self.subTest(target=target), patch.object(bootstrap.sys, 'version_info', (3, 9)), patch.dict(bootstrap.RUNTIMES, {target: ('https://synthetic.invalid/python.tar.gz', digest)}):
+                    python = bootstrap.runtime(isolated, target=target, fetch=lambda path: path.write_bytes(archive.read_bytes()))
+                    self.assertEqual(python.read_bytes(), raw)
+                    self.assertEqual(bootstrap.runtime(isolated, target=target, prepare=False), python)
+                    self.assertEqual(json.loads((python.parents[2] / 'archive.sha256').read_bytes())['archive'], digest)
+
+    def test_existing_windows_pin_and_pending_data_are_preserved_on_refusal(self):
+        from agent_brain_client.adapters.platforms import credentials
+        from agent_brain_client.adapters.platforms.windows import native
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = {'schema': 2, 'platform': 'win32-amd64', 'state_directory': str(root),
+                       'credential_backend': {'kind': 'windows-credential-manager', 'source_sha256': 'a' * 64}}
+            records = {'profile.json': json.dumps(profile).encode(), 'memory.md': b'synthetic retained memory',
+                       'outbox.json': b'{"pending":"synthetic original identity"}'}
+            for name, raw in records.items():
+                (root / name).write_bytes(raw)
+            with patch.object(credentials, 'require_platform'), patch.object(native, 'WindowsCredentials') as backend:
+                with self.assertRaisesRegex(ValueError, 'profile review required'):
+                    credentials.store_for_profile(profile, 'b' * 64)
+                backend.assert_not_called()
+            self.assertEqual({p.name: p.read_bytes() for p in root.iterdir()}, records)
 
 
 if __name__ == "__main__":

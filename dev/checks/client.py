@@ -136,6 +136,7 @@ COMMANDS = {
             "unittest",
             "test_install_contracts.Contracts",
             "test_install_contracts.PlatformMainContracts",
+            "test_install_contracts.InstallationArchitectureContracts",
             "test_windows_native",
             "test_windows_private_metadata",
             "test_host_config.WindowsBoundary",

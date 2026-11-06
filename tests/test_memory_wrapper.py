@@ -9,7 +9,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from bootstrap.python_runtime import DIGEST
+from bootstrap.python_runtime import RUNTIMES, dependency
+
+DIGEST = dependency()[1] if sys.platform == "darwin" else RUNTIMES["darwin-arm64"][1]
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,6 +27,7 @@ class MemoryWrapper(unittest.TestCase):
                 "bin/memory.sh",
                 "bootstrap/__init__.py",
                 "bootstrap/python_runtime.py",
+                "src/agent_brain_client/adapters/platforms/filesystem.py",
             ):
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
