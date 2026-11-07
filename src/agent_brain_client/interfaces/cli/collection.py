@@ -48,6 +48,14 @@ def main(argv=None):
         "--request-key",
         help="Read a specific private recall receipt with global-status",
     )
+    p.add_argument(
+        "--event-id",
+        help="Read one event diagnostic with global-status; requires --session-id",
+    )
+    p.add_argument(
+        "--session-id",
+        help="Original capture SOURCE session ID, never a recall/reader session",
+    )
     p.add_argument("--operator")
     p.add_argument("--operator-sha256")
     p.add_argument(
@@ -56,6 +64,13 @@ def main(argv=None):
     )
     p.add_argument("--query", default="personal preferences and task progress")
     a = p.parse_args(argv)
+    if a.event_id is not None or a.session_id is not None:
+        if a.action != "global-status" or a.event_id is None or a.session_id is None:
+            p.error(
+                "--event-id and --session-id must be used together with global-status"
+            )
+        if a.request_key is not None:
+            p.error("Event diagnostics cannot be combined with a recall --request-key")
     observation = {}
     diagnostic = {"stage": "global-settings"}
     try:
@@ -104,7 +119,11 @@ def main(argv=None):
                     control.close()
             elif a.action == "global-status":
                 result = core.status(
-                    value, check_server=a.check_server, request_key=a.request_key
+                    value,
+                    check_server=a.check_server,
+                    request_key=a.request_key,
+                    event_id=a.event_id,
+                    session_id=a.session_id,
                 )
             elif a.action == "global-resume":
                 result = core.resume(value)
@@ -150,6 +169,22 @@ def main(argv=None):
             else 0
         )
     except Exception as error:
+        if a.event_id is not None:
+            from agent_brain_client.domain.errors import EventDiagnosticsUnavailable
+
+            print(
+                json.dumps(
+                    {
+                        "status": "event-diagnostics-unavailable",
+                        "reason": "server-diagnostics-unsupported"
+                        if isinstance(error, EventDiagnosticsUnavailable)
+                        else "diagnostics-unconfirmed",
+                        "credentials_returned": False,
+                        "preserve_existing_state": True,
+                    }
+                )
+            )
+            return 2
         if a.action == "global-hook":
             print("{}")
             print(

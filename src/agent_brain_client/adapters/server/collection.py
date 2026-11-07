@@ -140,11 +140,26 @@ class CollectionClient:
             raise ValueError("Origin no longer approved")
         return {"origin": self.local, "session_id": session}
 
-    def status(self, session):
-        result = self.wire("memory_global_status", self.params(session))
+    def status(self, session, *, event_id=None):
+        params = self.params(session)
+        if event_id is not None:
+            from agent_brain_client.domain.events import event_identifier
+
+            event_identifier(session)
+            event_identifier(event_id)
+            params["event_id"] = event_id
+        result = self.wire("memory_global_status", params)
         if "error" in result:
             raise ValueError("Global admission unavailable")
         state = result["result"]
+        if event_id is not None and not isinstance(
+            state.get("capture_extraction"), dict
+        ):
+            from agent_brain_client.domain.errors import EventDiagnosticsUnavailable
+
+            raise EventDiagnosticsUnavailable(
+                "Event diagnostics unavailable on this Server"
+            )
         if (
             state.get("global_profile_id") != self.value["scope"]["profile_id"]
             or state.get("scope_sha256") != self.scope_sha

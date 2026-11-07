@@ -273,7 +273,32 @@ def flush(value, *, services):
     }
 
 
-def status(value, *, check_server=False, request_key=None, services):
+def status(
+    value,
+    *,
+    check_server=False,
+    request_key=None,
+    event_id=None,
+    session_id=None,
+    services,
+):
+    if event_id is not None or session_id is not None:
+        from agent_brain_client.domain.events import event_identifier
+
+        event_identifier(event_id)
+        event_identifier(session_id)
+        local = services.eligible(value, os.getcwd())
+        if local is None:
+            raise ValueError("Current source origin not approved")
+        # Exact event diagnostics must not first call the admission-only status.
+        return {
+            "event_id": event_id,
+            "session_id": session_id,
+            "server_event_status": services.CollectionClient(value, local).status(
+                session_id, event_id=event_id
+            ),
+            "credentials_accessed": True,
+        }
     from agent_brain_client.adapters.harnesses.codex.collection_installation import (
         installation_status,
     )

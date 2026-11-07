@@ -103,11 +103,15 @@ def flush(value):
     return native_collection.flush(value, services=native_services())
 
 
-def status(value, *, check_server=False, request_key=None):
+def status(
+    value, *, check_server=False, request_key=None, event_id=None, session_id=None
+):
     return native_collection.status(
         value,
         check_server=check_server,
         request_key=request_key,
+        event_id=event_id,
+        session_id=session_id,
         services=native_services(),
     )
 
