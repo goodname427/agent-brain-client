@@ -54,3 +54,5 @@ Swift helper 构建仅适用 Mac 工具链。SSH 历史兼容候选可使用 `--
 Windows 私有文件元数据误报、同 ID 并发补传与 synthetic 服务选择边界见 [并发重试与服务选择](windows-retry-service-routing.md)。
 
 - [Client 分层架构](architecture.md)：协议、HTTP、事件与 CAS outbox 的复用接口及职责边界。
+
+- [Capture event diagnostics](event-diagnostics.md): read one original source event through existing CLI status commands.
