@@ -68,9 +68,26 @@ def main():
     parser.add_argument("--server-bundle-sha256")
     parser.add_argument("--settings")
     parser.add_argument("--settings-sha256")
-    parser.add_argument("--session-id")
+    parser.add_argument(
+        "--session-id",
+        help="For event diagnostics, the original capture SOURCE session ID",
+    )
+    parser.add_argument(
+        "--event-id",
+        help="Read one event diagnostic with server-status; requires --session-id",
+    )
     parser.add_argument("--input")
     args = parser.parse_args()
+    if args.event_id is not None and (
+        args.action != "server-status" or args.session_id is None
+    ):
+        parser.error("--event-id requires server-status and the original --session-id")
+    if (
+        args.action == "server-status"
+        and args.session_id is not None
+        and args.event_id is None
+    ):
+        parser.error("server-status --session-id requires --event-id")
     try:
         if args.action == "connect-project":
             result = connect_project(args)
@@ -149,7 +166,12 @@ def main():
                     raise ValueError("Explicit private --output required")
                 result = project_link(p, args.output)
             elif args.action in ("server-status", "resume", "flush", "sync"):
-                result = daily_command(p, args.action)
+                result = daily_command(
+                    p,
+                    args.action,
+                    event_id=args.event_id,
+                    session_id=args.session_id if args.event_id is not None else None,
+                )
             elif args.action == "hook":
                 result = hook(p)
             elif args.action == "record":
@@ -165,7 +187,23 @@ def main():
                 }
         print(json.dumps(result, ensure_ascii=False))
         return 0
-    except Exception:
+    except Exception as error:
+        if args.event_id is not None:
+            from agent_brain_client.domain.errors import EventDiagnosticsUnavailable
+
+            print(
+                json.dumps(
+                    {
+                        "status": "event-diagnostics-unavailable",
+                        "reason": "server-diagnostics-unsupported"
+                        if isinstance(error, EventDiagnosticsUnavailable)
+                        else "diagnostics-unconfirmed",
+                        "credentials_returned": False,
+                        "preserve_existing_state": True,
+                    }
+                )
+            )
+            return 2
         if args.action == "hook":
             print("{}")
             print(
