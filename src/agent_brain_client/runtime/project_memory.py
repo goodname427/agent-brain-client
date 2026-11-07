@@ -697,7 +697,17 @@ def daily(p):
     )
 
 
-def daily_status(p, client, *, resume=False, action=None):
+def daily_status(
+    p, client, *, resume=False, action=None, event_id=None, session_id=None
+):
+    diagnostic = event_id is not None or session_id is not None
+    if diagnostic:
+        from agent_brain_client.domain.events import event_identifier
+
+        event_identifier(event_id)
+        event_identifier(session_id)
+        if resume or action is not None:
+            raise ValueError("Event diagnostics require read-only status")
     policy = private_json(p["recall_policy"], p["recall_policy_sha256"])
     request = {
         "request_id": "daily_status_" + os.urandom(16).hex(),
@@ -709,10 +719,22 @@ def daily_status(p, client, *, resume=False, action=None):
             "session_id": policy["recall_session_id"],
         },
     }
+    if diagnostic:
+        request["params"].update(event_id=event_id, session_id=session_id)
     result = client.request(request)
     if "error" in result:
         raise ValueError("Persistent memory admission unavailable")
     value = result["result"]
+    if diagnostic:
+        if not isinstance(value, dict) or not isinstance(
+            value.get("capture_extraction"), dict
+        ):
+            from agent_brain_client.domain.errors import EventDiagnosticsUnavailable
+
+            raise EventDiagnosticsUnavailable(
+                "Event diagnostics unavailable on this Server"
+            )
+        return value
     if (
         not isinstance(value, dict)
         or value.get("schema") != 2
@@ -860,16 +882,28 @@ def record_daily(p, path):
     }
 
 
-def daily_command(p, action):
+def daily_command(p, action, *, event_id=None, session_id=None):
+    if event_id is not None or session_id is not None:
+        from agent_brain_client.domain.events import event_identifier
+
+        event_identifier(event_id)
+        event_identifier(session_id)
+        if action != "server-status":
+            raise ValueError("Event diagnostics require server-status")
     if not daily(p):
         raise ValueError("Persistent source configuration required")
     if action == "flush" and not active(p):
         raise ValueError("Source is stopped; explicitly enable before resuming")
+    if event_id is not None:
+        from agent_brain_client.adapters.server.https import HTTPSContentClient
+
+        client = HTTPSContentClient(p["profile"], p["profile_sha256"])
+        return daily_status(p, client, event_id=event_id, session_id=session_id)
     client, adapter = adapter_for(p)
     if action in ("stop", "revoke"):
         return daily_status(p, client, action=action)
     if action == "server-status":
-        return daily_status(p, client)
+        return daily_status(p, client, event_id=event_id, session_id=session_id)
     if action == "sync":
         return daily_status(p, client, action="sync")
     if action == "resume":

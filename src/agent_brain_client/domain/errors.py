@@ -11,3 +11,7 @@ class CollectionCapacityExceeded(CacheBlocked):
 
 class InstallBlocked(ValueError):
     pass
+
+
+class EventDiagnosticsUnavailable(ValueError):
+    """The authenticated response does not implement event diagnostics."""

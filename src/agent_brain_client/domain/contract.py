@@ -42,6 +42,9 @@ from agent_brain_client.domain.recall import verified_memory_sources
 
 
 def validate(method, params):
+    if method == "memory_status" and isinstance(params, dict) and "event_id" in params:
+        event_identifier(params["event_id"])
+        params = {k: v for k, v in params.items() if k != "event_id"}
     if method == "memory_query" and isinstance(params, dict) and "recall" in params:
         recall_options(params["recall"])
         params = {k: v for k, v in params.items() if k != "recall"}
