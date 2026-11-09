@@ -64,7 +64,7 @@ class CollectionClient:
         raw = json.dumps(request, ensure_ascii=False).encode()
         if len(raw) > 131072:
             raise ValueError("Bounded global request required")
-        from agent_brain_client.application.control import check_request
+        from agent_brain_client.application.control import check_request, request_timeout
 
         check_request()
         token = (
@@ -99,7 +99,7 @@ class CollectionClient:
             )
 
         try:
-            with self.base.transport.opener.open(req, timeout=90) as response:
+            with self.base.transport.opener.open(req, timeout=request_timeout(90)) as response:
                 result = decode(response.read(262145))
         except HTTPError as error:
             try:

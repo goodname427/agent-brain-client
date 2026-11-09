@@ -85,7 +85,11 @@ def operation_stage(stage):
 def operation_lock(path, stage):
     with ExitStack() as stack:
         with operation_stage(stage):
-            handle = stack.enter_context(locked(path))
+            from agent_brain_client.application.control import check_request, request_timeout
+
+            handle = stack.enter_context(locked(
+                path, timeout=request_timeout(20), cancel_check=check_request
+            ))
         yield handle
 
 
