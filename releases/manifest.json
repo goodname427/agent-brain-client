@@ -123,7 +123,7 @@
     "src/agent_brain_client/domain/operations.py": "a9bded058aec58d8e63979973b01fbff00980533772bc5cf79eaa07d87c52e7d",
     "src/agent_brain_client/domain/privacy.py": "3be32c7f730d607cd7907b0b0f58af9cd864194f03bfcd9b52c6796fd033c9a1",
     "src/agent_brain_client/domain/recall.py": "473a92e76efc947e8b062dc8e4a34532bc7e428a17d8d67b546dd16474d89547",
-    "src/agent_brain_client/domain/receipts.py": "bff96fa946b5f0e150c0837c8006c528e1f46abeecb5f8874999122265eac6ce",
+    "src/agent_brain_client/domain/receipts.py": "709de60fd6d838d96ce1fbc8d1017e204abbe287efafc3eb0694f1456b78bcea",
     "src/agent_brain_client/domain/scopes.py": "1d377ce4ac1dee9f644b1c7b25d6019b094d1471c2952a3893edbbbb06cc463d",
     "src/agent_brain_client/domain/service.py": "a5840df0ca217982261cc1e286756bbb9e1e56bb0dbee1a065117cccdd7c1108",
     "src/agent_brain_client/domain/sources.py": "53fdbe64227593146a52e453f8f95f43ff3057198fee77a4291d134d587aa796",
@@ -166,5 +166,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.8.1"
+  "version": "0.8.2"
 }
