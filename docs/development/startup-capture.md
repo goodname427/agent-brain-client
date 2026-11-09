@@ -42,3 +42,9 @@ Windows 内容缓存现在交由系统决定实际读写权限，不再用主体
 原生 Windows 回归从已有普通目录和额外 ACL 出发，通过正式全局 Hook 暂存提示、生成离线 pending 事件、重启并重试原请求，核对原目录／锁 ACL 和已有资料保留。全局 Hook 错误的 stderr 增加 `operation_stage` 和 `error_type`，只报告阶段／类型，不输出正文或原始异常文本。
 
 统一版本交付后最少实测：沿原入口更新一次；完成一个带唯一标记的新会话；检查这轮 `hook-turns` 和 outbox 的原请求及回执。若仍为空，保留现有状态并读取对应 Hook stderr 的阶段／类型；无需手改 ACL、重装、清空队列或补传历史。事件接收与模型提炼／召回分别核验；默认 Memory Query 的 `-32700` 属于独立问题，本修复不宣称解决。
+
+## Codex 旧采集队列自动恢复
+
+正常 Stop Hook 先处理本轮采集，再机会式重试同来源的一条旧 pending 事件。每次保留原 request_id、event_id、时间和正文，经原队列身份绑定、当前 scope／停止开关、隐私标记与 Server admission 核验后提交；复用服务端幂等回执，不生成替代事件。轮转游标只控制下次候选，不修改事件队列内容。失败保留 pending，blocked／conflict／confirmed 不自动重试，本轮失败事件也不会立即重复发送。
+
+恢复设置五秒尝试预算，不超过外层请求剩余预算；队列锁和网络超时使用剩余预算，当前采集优先。网络栈的 DNS 等系统阻塞不承诺硬实时截止。此处没有后台常驻任务，长期闲置来源需后续正常 Hook 或显式 `global-sync` 才继续；MCP 重载、普通刷新和 `global-status` 不会补传。confirmed 仅证明接收回执，不证明提炼正确、GitHub 备份或自动召回。隔离回归见 `tests/test_codex_capture_recovery.py`。
