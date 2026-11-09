@@ -102,7 +102,7 @@ def submit_hook(value, local, payload, *, services):
         return {"status": "excluded-local-only-or-sensitive", "data_transferred": False}
     client, queue = services.adapter(value, local)
     metadata_io.write(queue.cache / "origin.json", local, cache=True)
-    return run_event_hook(
+    result = run_event_hook(
         queue,
         cap,
         payload,
@@ -110,6 +110,63 @@ def submit_hook(value, local, payload, *, services):
         and select(value["scope"], local) is not None
         and client.status(payload["session_id"]).get("source_admitted") is True,
     )
+
+
+    if kind == "Stop" and result.get("request_id"):
+        # Current capture has priority. Recovery never resends this turn twice.
+        try:
+            recover_pending(value, local, client, queue, result["request_id"], services=services)
+        except Exception:
+            pass  # Recovery must not replace the current capture result.
+    return result
+
+
+def recover_pending(value, local, client, queue, current_id, *, services):
+    """Opportunistically retry one retained event, with its original identity.
+
+    Only a normal capture Hook enters here. Reads, startup and refresh stay
+    read-only. A separate cursor prevents a permanently unavailable oldest
+    event from starving later events, without rewriting any queue record.
+    """
+    from agent_brain_client.application.control import RequestControl, request_timeout
+
+    if not services.approved(value) or select(value["scope"], local) is None:
+        return
+    control = RequestControl(request_timeout(5))
+    try:
+        with control.activate(), queue._outbox_lock(
+            queue.cache / "capture-recovery.lock", "capture-recovery-lock"
+        ):
+            cursor = queue._load("capture-recovery.json") or {}
+            after = cursor.get("request_id", "")
+            rows = [row for row in queue._queued()
+                    if row["state"] == "pending"
+                    and row["request"]["method"] == "memory_event_submit"
+                    and row["request"]["request_id"] != current_id]
+            rows.sort(key=lambda row: (
+                row["request"]["request_id"] <= after,
+                row["request"]["request_id"],
+            ))
+            for row in rows:
+                request = row["request"]
+                event = request["params"]["event"]
+                if any(privacy.private_content(m["content"]) or restricted(m["content"])
+                       for m in event["messages"]):
+                    continue
+                queue._save("capture-recovery.json", {"request_id": request["request_id"]})
+                queue.invoke(
+                    request,
+                    event_gate=lambda: services.approved(value)
+                    and select(value["scope"], local) is not None
+                    and client.status(event["session_id"]).get("source_admitted") is True,
+                )
+                return
+    except Exception:
+        # Best effort only. The immutable pending entry remains authoritative.
+        # Never undo, mask or retry the current turn's capture on this failure.
+        return
+    finally:
+        control.close()
 
 
 def hook(value, *, services, observe=None):
