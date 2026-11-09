@@ -38,7 +38,19 @@ def core_receipt(response, request):
         "pipeline_state",
         "model_extraction_verified",
     }
-    if not isinstance(value, dict) or set(value) not in (fields, fields | {"replayed"}):
+    optional = {"replayed", "capture_extraction"}
+    if (
+        not isinstance(value, dict)
+        or not fields <= set(value)
+        or set(value) - fields - optional
+    ):
+        return False
+    # Capture diagnosis is additive metadata, not event acceptance or durability
+    # proof. Preserve it without coupling the receipt to extraction states: a
+    # pending/no-facts/review-required extraction can still have a committed L0.
+    if "capture_extraction" in value and not isinstance(
+        value["capture_extraction"], dict
+    ):
         return False
     if "replayed" in value and type(value["replayed"]) is not bool:
         return False
