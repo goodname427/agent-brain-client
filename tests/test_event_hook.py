@@ -79,6 +79,30 @@ class EventHook(unittest.TestCase):
         self.assertNotIn('transcript',raw);self.assertNotIn('/forbidden',raw)
         self.assertFalse((self.fixture.home/'.codex/AGENTS.md').exists())
 
+    def test_capture_diagnosis_confirms_receipt_without_promoting_durability(self):
+        for state in ('pending', 'succeeded', 'no-facts', 'review-required', 'continued'):
+            with self.subTest(state=state):
+                turn = 'synthetic-diagnosis-' + state
+                self.prompt(dict(self.payload, turn_id=turn))
+                diagnostic = {'state': state, 'reason': 'synthetic_' + state,
+                              'model_output_truth_verified': False}
+                def diagnosed(request):
+                    response = self.send(request)
+                    response['result']['capture_extraction'] = diagnostic
+                    return response
+                self.fixture.cloud.request = diagnosed
+                result = self.stop(turn_id=turn)
+                self.assertEqual(result['local_queue']['state'], 'confirmed')
+                self.assertEqual(result['result']['capture_extraction'], diagnostic)
+                self.assertFalse(result['persistence']['durable'])
+                self.assertFalse(result['local_queue']['github_confirmed'])
+                self.assertFalse(result['result']['model_extraction_verified'])
+                before = len(self.sent)
+                self.stop(turn_id=turn)
+                self.assertEqual(len(self.sent), before)
+                row = self.adapter._load('outbox/' + self.sent[-1]['request_id'] + '.json')
+                self.assertEqual(row['response']['result']['capture_extraction'], diagnostic)
+
     def test_wrong_scope_recursive_stop_missing_prompt_and_changed_turn(self):
         for changes in ({'session_id':'synthetic-other'},{'cwd':str(self.fixture.home)}):
             with self.assertRaises(ValueError):self.prompt(dict(self.payload,**changes))
