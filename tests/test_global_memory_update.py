@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import unittest
@@ -22,6 +23,7 @@ import agent_brain_client.adapters.storage.host_files as host_files
 import agent_brain_client.runtime.collection as gm
 import agent_brain_client.adapters.harnesses.codex.collection_installation as hooks
 import agent_brain_client.adapters.harnesses.codex.project_configuration as project_sources
+from agent_brain_client.adapters.harnesses.codex.updates import CodexUpdateInstallation
 
 
 class GlobalMemoryUpdate(unittest.TestCase):
@@ -95,6 +97,119 @@ class GlobalMemoryUpdate(unittest.TestCase):
 
 
 
+
+    def old_installer(self):
+        root = self.home / "synthetic-old-installer"
+        for name in hooks.FILES:
+            target = root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(hooks.ROOT / name, target)
+        source = root / "src/agent_brain_client/adapters/harnesses/codex/collection.py"
+        source.write_bytes(source.read_bytes() + b"\n# Synthetic prior Hook source.\n")
+        with patch.object(hooks, "ROOT", root):
+            hooks.refresh(self.home)
+            self.assertEqual(hooks.refresh(self.home)["status"], "global-hook-current")
+        return root
+
+    def update_installation(self):
+        active = {"version": "0.8.4", "commit": "c" * 40, "package": str(hooks.ROOT)}
+        installation = CodexUpdateInstallation(self.home, setup_sources=lambda: None)
+        installation.channel = SimpleNamespace(verified_active=lambda: active)
+        return installation
+
+    def test_update_refresh_uses_verified_package_not_old_installer(self):
+        installation = self.update_installation()
+        old = self.old_installer()
+        before_settings = metadata.private_json(self.file)
+        pending = self.file.parent / "synthetic-pending.json"
+        metadata.write(pending, {"state": "pending", "request_id": "synthetic-old"})
+        off = self.file.parent / "global.off"
+        off.write_bytes(b"Synthetic paused capture")
+        before = {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()}
+        with patch.object(hooks, "ROOT", old):
+            checked = installation.refresh_hooks(check_only=True)
+            self.assertTrue(checked["update_available"], checked)
+            self.assertEqual(before, {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()})
+            updated = installation.refresh_hooks()
+            self.assertEqual(updated["status"], "global-hook-updated", updated)
+            self.assertEqual(installation.refresh_hooks()["status"], "global-hook-current")
+        after = source_policy.load(self.home)
+        self.assertNotEqual(after["code_sha256"], before_settings["code_sha256"])
+        self.assertEqual({k: v for k, v in after.items() if k != "code_sha256"},
+                         {k: v for k, v in before_settings.items() if k != "code_sha256"})
+        self.assertEqual(pending.read_bytes(), before[pending])
+        self.assertEqual(off.read_bytes(), before[off])
+        self.assertTrue(hooks.installation_status(after))
+
+    def test_update_refresh_uses_target_renderer_and_reports_its_conflicts(self):
+        installation = self.update_installation()
+        target = self.old_installer()
+        renderer = target / "src/agent_brain_client/adapters/harnesses/codex/collection_installation.py"
+        renderer.write_text(renderer.read_text().replace(
+            '"timeout = " + "120"',
+            '"timeout = " + "121"',
+        ))
+        active = {"version": "0.8.4", "commit": "d" * 40, "package": str(target)}
+        installation.channel = SimpleNamespace(verified_active=lambda: active)
+        result = installation.refresh_hooks()
+        self.assertEqual(result["source_package_commit"], active["commit"])
+        self.assertIn("timeout = 121", self.config.read_text())
+        self.assertEqual(installation.refresh_hooks()["status"], "global-hook-current")
+        self.config.write_bytes(self.config.read_bytes().replace(b"timeout = 121", b"timeout = 119"))
+        before = self.config.read_bytes()
+        from agent_brain_client.application.installation.update_ports import ManagedConfigurationConflict
+        with self.assertRaises(ManagedConfigurationConflict) as error:
+            installation.refresh_hooks()
+        self.assertEqual(error.exception.field, "config.hooks.SessionStart[0].hooks[0].timeout")
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_update_refresh_identical_package_avoids_subprocess(self):
+        installation = self.update_installation()
+        hooks.refresh(self.home)
+        with patch.object(subprocess, "run", side_effect=AssertionError("No child needed")):
+            result = installation.refresh_hooks(check_only=True)
+        self.assertEqual(result["status"], "global-hook-current")
+        self.assertEqual(result["source_package_version"], "0.8.4")
+        self.assertEqual(result["source_package_commit"], "c" * 40)
+
+    def test_update_refresh_translates_target_host_edit_in_progress(self):
+        from agent_brain_client.application.installation.update_ports import HostEditInProgress
+        installation = self.update_installation()
+        old = self.old_installer()
+        before = self.config.read_bytes()
+        response = subprocess.CompletedProcess([], 0, b'{"host_edit_in_progress": true}', b"")
+        with patch.object(hooks, "ROOT", old), patch.object(subprocess, "run", return_value=response):
+            with self.assertRaises(HostEditInProgress):
+                installation.refresh_hooks()
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_update_refresh_rejects_unverified_package_without_local_fallback(self):
+        installation = self.update_installation()
+        installation.channel = SimpleNamespace(verified_active=lambda: None)
+        before = self.config.read_bytes()
+        with patch.object(hooks, "refresh", side_effect=AssertionError("No stale fallback")):
+            with self.assertRaises(ValueError):
+                installation.refresh_hooks()
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_update_refresh_rejects_failed_child_and_changed_active_pointer(self):
+        from unittest.mock import Mock
+        installation = self.update_installation()
+        active = installation.channel.verified_active()
+        old = self.old_installer()
+        before = self.config.read_bytes()
+        with patch.object(hooks, "ROOT", old):
+            for response in (subprocess.CompletedProcess([], 2, b"", b"synthetic"),
+                             subprocess.CompletedProcess([], 0, b'{"result": {}}', b"")):
+                with self.subTest(response=response), patch.object(subprocess, "run", return_value=response):
+                    with self.assertRaises(ValueError):
+                        installation.refresh_hooks()
+            self.assertEqual(self.config.read_bytes(), before)
+            changed = dict(active, commit="e" * 40)
+            installation.channel.verified_active = Mock(side_effect=[active, changed])
+            with self.assertRaises(ValueError):
+                installation.refresh_hooks(check_only=True)
+            self.assertEqual(self.config.read_bytes(), before)
 
     def test_refresh_migrates_owned_async_stop_without_removing_pending_data(self):
         previous = hooks.block(self.value).replace('async = false', 'async = true')
