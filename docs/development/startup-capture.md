@@ -48,3 +48,11 @@ Windows 内容缓存现在交由系统决定实际读写权限，不再用主体
 正常 Stop Hook 先处理本轮采集，再机会式重试同来源的一条旧 pending 事件。每次保留原 request_id、event_id、时间和正文，经原队列身份绑定、当前 scope／停止开关、隐私标记与 Server admission 核验后提交；复用服务端幂等回执，不生成替代事件。轮转游标只控制下次候选，不修改事件队列内容。失败保留 pending，blocked／conflict／confirmed 不自动重试，本轮失败事件也不会立即重复发送。
 
 恢复设置五秒尝试预算，不超过外层请求剩余预算；队列锁和网络超时使用剩余预算，当前采集优先。网络栈的 DNS 等系统阻塞不承诺硬实时截止。此处没有后台常驻任务，长期闲置来源需后续正常 Hook 或显式 `global-sync` 才继续；MCP 重载、普通刷新和 `global-status` 不会补传。confirmed 仅证明接收回执，不证明提炼正确、GitHub 备份或自动召回。隔离回归见 `tests/test_codex_capture_recovery.py`。
+
+## Hook 更新代码来源
+
+正常维护入口可以来自早先安装器 checkout，而 MCP 活动包已经前进。Hook 检查与刷新现在取本次核验的活动包；仅当安装器全部 Python 文件与活动包逐字节相同时复用当前进程，否则以原解释器隔离执行活动包原有的 `refresh`。代码清单、命令渲染、冻结代码与校验保持同源，不从未激活候选或旧固定启动登记选择 Hook 代码。输出的 `global_hook.source_package_version` 和 `source_package_commit` 标明本次来源；失败或活动包再次变化时不宣称同步完成。
+
+修复前的旧安装器本身不会自动获得新判定逻辑。首次使用此修复须从干净官方最新 main 或对应新版安装器运行正常 `check-update`／`update`；不需要重装、改信任锚、手改 Hook pin、重放 pending 或清理队列。更新后的 Hook 如触发宿主审核，使用正常审核入口。MCP worker 与 Hook 是两份独立证据，worker 版本一致并不能证明 Hook 已刷新，重复重载 MCP 也不会替代 Hook 更新。
+
+`tests/test_global_memory_update.py` 使用两份合成代码树，覆盖旧安装器误报 current、目标渲染器、只读检查、重复更新、冲突、失败与活动包变化。原来源批准、暂停标记及 pending 字节保留。真实 Windows Hook 执行及历史 pending 回执恢复仍需在更新后的原设备通过正常对话另行验证，合成测试不替代真实验收。
