@@ -36,7 +36,7 @@
     "src/agent_brain_client/adapters/harnesses/codex/project_configuration.py": "33914e7d3eb0620d31f2254b29cb98f5d195dab9a3e8d2d0f14f6f7bfbbb0865",
     "src/agent_brain_client/adapters/harnesses/codex/sources.py": "9697415ba671a4dc98d337339be5c8d65ca89ba51bdd6d27f0bc3d8ade1fae85",
     "src/agent_brain_client/adapters/harnesses/codex/update_interpreter.py": "9c966c726e8f9db8952a3e1b474d31f1a53b7a9449c9115f77308250bc0dba4c",
-    "src/agent_brain_client/adapters/harnesses/codex/updates.py": "a56092fdc718fe4734d8ab76a687bf20e19d72793c6b2f8e32acf42618cbf226",
+    "src/agent_brain_client/adapters/harnesses/codex/updates.py": "df40f63ddaaa7e7c0aa9c04cd589ac8ad9eaa06e5cdf3a83a7f27d6d72cd4f47",
     "src/agent_brain_client/adapters/harnesses/hook_output.py": "ed486bd2f5cad440e5d20d3fdbf9ee31295547f26912829e6c9bac3ebe6022e2",
     "src/agent_brain_client/adapters/packages/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/adapters/packages/build.py": "2e562caefb48b8fbbe89174d05ed746efc16f95160c44c08fbff1802d12d02f9",
@@ -167,5 +167,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.8.3"
+  "version": "0.8.4"
 }

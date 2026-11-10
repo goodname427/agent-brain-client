@@ -3,6 +3,8 @@
 from contextlib import contextmanager
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -128,11 +130,83 @@ class CodexUpdateInstallation:
         )
 
     def refresh_hooks(self, *, check_only=False):
+        active = self.channel.verified_active()
+        if active is None:
+            raise ValueError("Verified Hook package required")
+        package = safe(active["package"])
         with self.config_operation():
-            return (
-                hooks.refresh(self.home, check_only=True)
-                if check_only
-                else hooks.refresh(self.home)
+            # Maintenance can run from an older installer checkout. Only reuse
+            # its renderer when every executable byte matches the active bundle.
+            if all(
+                private_files.raw(package / name, 1048576)
+                == (hooks.ROOT / name).read_bytes()
+                for name in hooks.FILES
+            ):
+                result = (
+                    hooks.refresh(self.home, check_only=True)
+                    if check_only
+                    else hooks.refresh(self.home)
+                )
+            else:
+                code = """
+import json, pathlib, sys
+sys.path.insert(0, str(pathlib.Path(sys.argv[1]) / "src"))
+from agent_brain_client.adapters.harnesses.codex.collection_installation import refresh, ManagedHookConflict
+from agent_brain_client.adapters.storage.host_files import HostConfigChanged
+try:
+    value = {"result": refresh(sys.argv[2], check_only=sys.argv[3] == "check")}
+except ManagedHookConflict as error:
+    value = {"conflict_field": error.field}
+except HostConfigChanged:
+    value = {"host_edit_in_progress": True}
+print(json.dumps(value))
+"""
+                run = subprocess.run(
+                    [
+                        sys.executable,
+                        "-I",
+                        "-B",
+                        "-c",
+                        code,
+                        str(package),
+                        str(self.home),
+                        "check" if check_only else "update",
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    timeout=60,
+                )
+                if run.returncode or len(run.stdout) > 16384:
+                    raise ValueError("Verified package Hook refresh unconfirmed")
+                value = json.loads(run.stdout)
+                if set(value) == {"conflict_field"} and isinstance(
+                    value["conflict_field"], str
+                ):
+                    raise hooks.ManagedHookConflict(value["conflict_field"])
+                if value == {"host_edit_in_progress": True}:
+                    raise HostConfigChanged(
+                        "Verified package Hook configuration is busy"
+                    )
+                if set(value) != {"result"} or not isinstance(value["result"], dict):
+                    raise ValueError("Invalid package Hook refresh response")
+                result = value["result"]
+            if (
+                result.get("status")
+                not in (
+                    "global-hook-not-installed",
+                    "global-hook-current",
+                    "global-hook-update-available",
+                    "global-hook-updated",
+                )
+                or type(result.get("native_changed")) is not bool
+                or type(result.get("update_available")) is not bool
+                or self.channel.verified_active() != active
+            ):
+                raise ValueError("Active package Hook refresh unconfirmed")
+            return dict(
+                result,
+                source_package_version=active["version"],
+                source_package_commit=active["commit"],
             )
 
     def collection_installed(self):
