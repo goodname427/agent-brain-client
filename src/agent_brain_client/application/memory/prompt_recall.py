@@ -91,7 +91,8 @@ def recall_prompt(value, local, payload, query, *, services, observe=None):
             }
         )
         services.save_observation(value, receipt)
-        services.write(stamp, {"at": time.time()})
+        # Preparation is not output acknowledgement. Only the stdout boundary
+        # may commit the deduplication stamp; a crash here must permit replay.
     if observe is not None:
         observe(receipt)
     return result

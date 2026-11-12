@@ -14,6 +14,9 @@ def deliverable(row):
 
 def deliver_pending(queue, *, allowed, limit=16, after="", attempted=lambda key: None, allowed_event=lambda event: True):
     """A bounded fair pass; an unknown response keeps its original request ID."""
+    from agent_brain_client.application.memory.observations import resume_staging
+
+    staging = resume_staging(queue)
     rows = [row for row in queue._queued() if deliverable(row)]
     rows.sort(key=lambda row: (row["request"]["request_id"] <= after,
                                row["request"]["request_id"]))
@@ -25,4 +28,4 @@ def deliver_pending(queue, *, allowed, limit=16, after="", attempted=lambda key:
         if not allowed(session) or not allowed_event(event):
             break
         queue.invoke(request, event_gate=lambda: allowed(session) and allowed_event(event))
-    return any(deliverable(row) for row in queue._queued())
+    return staging or any(deliverable(row) for row in queue._queued())

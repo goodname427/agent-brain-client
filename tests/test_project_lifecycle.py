@@ -3,7 +3,7 @@ import io
 import json
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, call
 
 from agent_brain_client.runtime import project_memory as project
 from agent_brain_client.adapters.harnesses.codex import hooks
@@ -45,10 +45,11 @@ class ProjectLifecycle(unittest.TestCase):
         schedule.assert_called_once_with('/synthetic/home', '/synthetic/settings', 'e' * 64)
         order = []
         stage.side_effect = lambda *args: order.append('stage') or {'status': 'staged'}
-        schedule.side_effect = lambda *args: order.append('schedule')
+        schedule.side_effect = lambda *args, **kwargs: order.append(
+            'register' if kwargs.get('wake_worker') is False else 'schedule')
         recall.side_effect = lambda *args: order.append('recall') or [{'content': 'Synthetic'}]
         output = self.hook('UserPromptSubmit', stage=stage, recall=recall, schedule=schedule)
-        self.assertEqual(order, ['stage', 'schedule', 'recall'])
+        self.assertEqual(order, ['register', 'stage', 'schedule', 'recall'])
         recall.assert_called_once_with(self.p, 'session', 'Current question')
         self.assertEqual(output['hookSpecificOutput']['hookEventName'], 'UserPromptSubmit')
 
@@ -57,7 +58,10 @@ class ProjectLifecycle(unittest.TestCase):
         self.assertEqual(self.hook('Stop', stage=stage, recall=recall, schedule=schedule), {})
         stage.assert_called_once()
         recall.assert_not_called()
-        schedule.assert_called_once()
+        self.assertEqual(schedule.call_args_list, [
+            call('/synthetic/home', '/synthetic/settings', 'e' * 64, wake_worker=False),
+            call('/synthetic/home', '/synthetic/settings', 'e' * 64),
+        ])
 
     def test_project_recall_preserves_policy_identity_limit_and_all_layers(self):
         policy = {'schema': 1, 'project_id': 'project-bound', 'recall_sessions': ['session'],
@@ -81,7 +85,8 @@ class ProjectLifecycle(unittest.TestCase):
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         queue = fixture.adapter
-        p = dict(self.p, cache=str(queue.cache), codex_home=str(fixture.home))
+        p = dict(self.p, cache=str(queue.cache), codex_home=str(fixture.home),
+                 off_file=str(fixture.home / 'memory.off'))
         scope = {'project_id': 'bound-project', 'session_id': 'bound-session'}
         with (patch('agent_brain_client.adapters.storage.pinned.pinned', return_value={}),
               patch.object(hooks, 'validate_hook_policy', return_value={'schema': 1}),

@@ -18,14 +18,14 @@ def directory(home):
     return Path(home) / '.config/agent-brain-client/global-memory/delivery'
 
 
-def register_task(home, key, task):
+def register_task(home, key, task, *, wake_worker=True):
     root = directory(home)
     cache_directory(root)
     # The worker holds this same short lock through its idle decision and lease
     # release. A new durable task can therefore never disappear into that gap.
     with cache_locked(root / 'spawn.lock', timeout=20):
         metadata.write(root / (key + '.json'), task, cache=True)
-    return wake(home)
+    return wake(home) if wake_worker else False
 
 
 def schedule_delivery(home, host_adapter, origin):
@@ -39,7 +39,7 @@ def schedule_delivery(home, host_adapter, origin):
     })
 
 
-def schedule_project(home, settings_path, settings_sha256):
+def schedule_project(home, settings_path, settings_sha256, *, wake_worker=True):
     from agent_brain_client.adapters.harnesses.codex.project_configuration import load
 
     value = load(settings_path, settings_sha256)
@@ -49,7 +49,7 @@ def schedule_project(home, settings_path, settings_sha256):
     cache_directory(root)
     task = {'schema': 1, 'harness': 'codex-project', 'settings': str(settings_path),
             'settings_sha256': settings_sha256}
-    return register_task(home, digest(task), task)
+    return register_task(home, digest(task), task, wake_worker=wake_worker)
 
 
 def schedule_assistant_completion(home, turn_id):
@@ -231,6 +231,20 @@ def run(home, *, max_seconds=600, pause=time.sleep):
         return
 
 
+def _has_work(cache):
+    """Inspect only owned durable observations; never host transcripts."""
+    cache = Path(cache)
+    for parent in (cache, cache / 'observed-staging', cache / 'outbox'):
+        if parent.is_symlink():
+            raise ValueError('Owned observation directory required')
+    if any((cache / 'observed-staging').glob('*.json')):
+        return True
+    for path in (cache / 'outbox').glob('*.json'):
+        if metadata.private_json(path, cache=True).get('state') == 'pending':
+            return True
+    return False
+
+
 def discover_existing(home):
     """Recover observed origin registrations, not host history or arbitrary files."""
     base = Path(home) / '.config/agent-brain-client'
@@ -246,11 +260,28 @@ def discover_existing(home):
                     raise ValueError('Registered outbox origin changed')
                 cache_directory(root)
                 task_file = root / (digest([harness, local]) + '.json')
-                if not task_file.exists():
+                if not task_file.exists() or _has_work(origin_file.parent):
                     metadata.write(task_file, {'schema': 1, 'harness': harness,
                                                'origin': local}, cache=True)
             except Exception:
                 continue  # One invalid registration must not starve other observed sources.
+
+    # A project task is pinned before staging. Refresh it from actual queue
+    # state even if the hook died before its normal post-stage wake.
+    for task_file in root.glob('*.json'):
+        if task_file.name in ('status.json', 'spawn.json'):
+            continue
+        try:
+            task = metadata.private_json(task_file, cache=True)
+            if task.get('harness') != 'codex-project':
+                continue
+            from agent_brain_client.adapters.harnesses.codex.project_configuration import load
+
+            project = load(task['settings'], task['settings_sha256'])
+            if Path(project['device_home']) == Path(home) and _has_work(project['cache']):
+                metadata.write(task_file, task, cache=True)
+        except Exception:
+            continue
 
     turns = base / 'codebuddy/turns'
     if turns.exists():
