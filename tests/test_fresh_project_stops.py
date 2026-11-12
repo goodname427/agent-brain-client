@@ -227,7 +227,10 @@ class ProjectStops(unittest.TestCase):
             result = self.hook(root, event)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout), {})
-            self.assertEqual(result.stderr, "")
+            for line in result.stderr.splitlines():
+                diagnostic = json.loads(line)
+                self.assertEqual(diagnostic["operation"], "global-hook-timing")
+                self.assertEqual(set(diagnostic), {"operation", "timing_ms"})
 
     def assert_preserved(self):
         f = self.f
@@ -270,8 +273,8 @@ class ProjectStops(unittest.TestCase):
         # Positive control: an allowed project reaches the credential boundary,
         # so stopped hooks were excluded, not globally disabled or stubbed out.
         result = self.hook(self.allowed)
-        self.assertIn('"operation_stage": "global-capture"', result.stderr)
-        self.assertIn('"status": "review-required"', result.stderr)
+        self.assertIn('"status": "capture-unconfirmed"', result.stderr)
+        self.assertIn('"error_type": "ValueError"', result.stderr)
 
     def test_narrow_scope_does_not_expand_while_project_stop_is_added(self):
         self.original(narrow=True)
@@ -283,7 +286,7 @@ class ProjectStops(unittest.TestCase):
         self.assert_quiet_hook(self.project)
         self.assert_quiet_hook(self.outside)
         self.assertIn(
-            '"operation_stage": "global-capture"', self.hook(self.allowed).stderr
+            '"status": "capture-unconfirmed"', self.hook(self.allowed).stderr
         )
 
     def test_disabled_project_and_external_reference_keep_stop_without_old_identity(
@@ -414,7 +417,7 @@ class ProjectStops(unittest.TestCase):
         self.admit()
         self.assert_quiet_hook(self.project)
         self.assertIn(
-            '"operation_stage": "global-capture"', self.hook(self.allowed).stderr
+            '"status": "capture-unconfirmed"', self.hook(self.allowed).stderr
         )
 
     def test_unrepresentable_exclusion_scope_refuses_before_archiving(self):

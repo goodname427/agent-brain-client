@@ -150,7 +150,7 @@ def main(argv=None):
                 "initialization_ms": round((initialized - started) * 1000, 3),
                 "total_ms": round((time.monotonic() - started) * 1000, 3),
             }}), file=sys.stderr)
-        if a.action == "global-hook" and observation:
+        if a.action == "global-hook" and observation and observation["status"] != "failed":
             observation["output_written"] = True
             try:
                 core.save_recall_observation(value, observation)
