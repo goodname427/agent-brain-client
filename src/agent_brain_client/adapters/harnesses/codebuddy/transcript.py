@@ -15,22 +15,46 @@ import re
 from agent_brain_client.adapters.harnesses.codebuddy.events import session_id
 from agent_brain_client.adapters.storage.bounded_json import canonical, digest, unique
 
-from agent_brain_client.adapters.platforms.source_files import open_native_source
+from agent_brain_client.adapters.platforms.source_files import open_native_source, native_source_stat
 
 LIMIT = 4 * 1048576
+
+
+def ide_history_path(home, path):
+    """Recognize modern IDE storage, not arbitrary files below its data root."""
+    roots = (
+        Path(home) / "Library/Application Support/CodeBuddyExtension/Data",
+        Path(home) / "AppData/Local/CodeBuddyExtension/Data",
+    )
+    for root in roots:
+        try:
+            parts = path.relative_to(root).parts
+        except ValueError:
+            continue
+        # user / IDE / [uid] / history / workspace MD5 / session / index.json.
+        # The native service omits uid when unauthenticated. No discovery or
+        # history enumeration is performed; session/generation checks follow.
+        if (len(parts) in (6, 7) and parts[-4] == "history"
+                and re.fullmatch(r"[a-fA-F0-9]{32}", parts[-3])
+                and parts[-1] == "index.json"
+                and all(part not in (".", "..") for part in parts)):
+            return True
+    return False
 
 
 def native_path(home, payload):
     raw = payload.get("transcript_path")
     if not isinstance(raw, str) or not raw or not Path(raw).is_absolute():
         raise ValueError("Native CodeBuddy transcript path unavailable")
+    if ".." in Path(raw).parts:
+        raise ValueError("Native transcript traversal refused")
     path = canonical(raw)
     roots = (
         Path(home) / ".codebuddy",
         Path(home) / "Library/Caches/genie-cache",
         Path(home) / "AppData/Local/genie-cache",
     )
-    if not any(root in path.parents for root in roots):
+    if not any(root in path.parents for root in roots) and not ide_history_path(home, path):
         raise ValueError("Transcript outside CodeBuddy native storage")
     session = payload["session_id"]
     if path.name == "index.json":
@@ -79,7 +103,7 @@ def observe(home, payload, core):
         if existing and payload.get("generation_id"):
             if existing["binding"] != binding:
                 raise ValueError("Native turn binding changed")
-            return
+            return "current-turn-observed" if path else "transcript-unavailable-direct-stop-only"
         try:
             if path is None:
                 raise FileNotFoundError()
@@ -89,7 +113,7 @@ def observe(home, payload, core):
         except FileNotFoundError:
             identity, offset = None, 0
         historical = False
-        if path is not None and path.name == "index.json" and path.exists():
+        if path is not None and path.name == "index.json" and identity is not None:
             index = json.loads(read_bound(path), object_pairs_hook=unique)
             historical = any(
                 r.get("id") == payload.get("generation_id")
@@ -115,6 +139,7 @@ def observe(home, payload, core):
             "stopped": False,
         }
         metadata_io.write(file, row, cache=True)
+    return "current-turn-observed" if path else "transcript-unavailable-direct-stop-only"
 
 
 def plain(message):
@@ -155,7 +180,7 @@ def read_bound(path, *, offset=0, identity=None):
         raw = stream.read(LIMIT + 1)
         if len(raw) > LIMIT:
             raise ValueError("Native transcript exceeds bound")
-        if canonical(path).stat().st_ino != info.st_ino:
+        if native_source_stat(path).st_ino != info.st_ino:
             raise ValueError("Native transcript replaced during read")
         return raw
 
