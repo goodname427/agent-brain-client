@@ -53,6 +53,7 @@ PYTHON_FILES = (
     "src/agent_brain_client/adapters/platforms/windows/filesystem.py",
     "src/agent_brain_client/adapters/platforms/windows/host_files.py",
     "src/agent_brain_client/adapters/platforms/windows/native.py",
+    "src/agent_brain_client/adapters/platforms/windows/source_files.py",
     "src/agent_brain_client/adapters/platforms/windows/tree.py",
     "src/agent_brain_client/adapters/server/__init__.py",
     "src/agent_brain_client/adapters/server/collection.py",
