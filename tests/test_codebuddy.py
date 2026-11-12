@@ -207,7 +207,7 @@ class Installation(unittest.TestCase):
         user_rule = self.native / 'rules/agent-brain.md'
         user_rule.write_text('---\nenabled: false\n---\nKeep my personal rule unchanged.\n')
         legacy = self.native / 'CODEBUDDY.md'
-        legacy.write_text('Personal instruction\n\n' + cbhost.GUIDANCE + '\n')
+        legacy.write_bytes(('Personal instruction\n\n' + cbhost.GUIDANCE + '\n').encode('utf-8'))
         rule.unlink()
         receipt_file = cbhost.state_directory(self.home) / 'registration.json'
         receipt = metadata.private_json(receipt_file)
@@ -230,15 +230,28 @@ class Installation(unittest.TestCase):
         rule = self.native / 'rules/agent-brain-client.md'
         self.assertTrue(rule.read_text().startswith('---\nalwaysApply: true\nenabled: true\n---\n'))
         self.assertFalse((self.native / 'CODEBUDDY.md').read_text().startswith('---'))
-        disabled = rule.read_text().replace('enabled: true', 'enabled: false').replace(
-            'alwaysApply: true', 'alwaysApply: false\ndescription: User controlled')
-        rule.write_text(disabled)
+        original_rule = rule.read_bytes()
+        disabled_rule = original_rule.replace(b'enabled: true', b'enabled: false').replace(
+            b'alwaysApply: true', b'alwaysApply: false\ndescription: User controlled')
+        rule.write_bytes(disabled_rule)
+        self.assertEqual(rule.read_bytes().split(cbhost.BEGIN.encode(), 1)[1],
+                         original_rule.split(cbhost.BEGIN.encode(), 1)[1])
+        disabled = disabled_rule.decode('utf-8')
         cbhost.refresh(self.home, ROOT)
         self.assertEqual(rule.read_text(), disabled)
         self.install(remove=True)
         self.assertIn('enabled: false', rule.read_text())
         self.assertIn('alwaysApply: false', rule.read_text())
         self.assertNotIn(cbhost.BEGIN, rule.read_text())
+
+    def test_outside_line_ending_change_to_managed_rule_is_preserved_for_review(self):
+        self.install(surface='ide')
+        rule = self.native / 'rules/agent-brain-client.md'
+        changed = rule.read_bytes().replace(b'\n', b'\r\n')
+        rule.write_bytes(changed)
+        with self.assertRaisesRegex(ValueError, 'instruction block preserved'):
+            cbhost.refresh(self.home, ROOT)
+        self.assertEqual(rule.read_bytes(), changed)
 
     def test_upgrade_refreshes_existing_surface_without_installing_absent_hosts(self):
         from agent_brain_client.adapters.harnesses.codex import updates

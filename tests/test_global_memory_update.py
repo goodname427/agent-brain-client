@@ -169,8 +169,12 @@ class GlobalMemoryUpdate(unittest.TestCase):
 
         configuration.install(self.home, hooks.ROOT, None, surface="both")
         rule = self.home / ".codebuddy/rules/agent-brain-client.md"
-        disabled = rule.read_text().replace("enabled: true", "enabled: false")
-        rule.write_text(disabled)
+        original_rule = rule.read_bytes()
+        disabled_rule = original_rule.replace(b"enabled: true", b"enabled: false")
+        rule.write_bytes(disabled_rule)
+        self.assertEqual(rule.read_bytes().split(configuration.BEGIN.encode(), 1)[1],
+                         original_rule.split(configuration.BEGIN.encode(), 1)[1])
+        disabled = disabled_rule.decode("utf-8")
         off = self.file.parent / "global.off"
         off.write_bytes(b"Synthetic paused capture")
         original_settings = metadata.private_json(self.file)
