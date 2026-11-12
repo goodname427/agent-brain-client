@@ -81,7 +81,7 @@ def check_layer_boundary(name, source):
                 forbidden |= target.startswith(PACKAGE + ".adapters.platforms.windows")
             if relative.startswith("adapters/platforms/windows/"):
                 forbidden |= target.startswith(PACKAGE + ".adapters.platforms.macos")
-            if relative.startswith("adapters/storage/"):
+            if relative.startswith(("adapters/storage/", "adapters/installation/")):
                 forbidden |= target.startswith(PACKAGE + ".adapters.harnesses")
         if layer in {"domain", "application"}:
             forbidden |= parts[0] in {
@@ -170,8 +170,8 @@ def check_responsibility_boundary(name, source):
         "CreateFileW",
     }
     ledger_owners = {
-        "imports.json": "adapters/harnesses/codex/sources.py",
-        "transaction.json": "adapters/harnesses/codex/mapping.py",
+        "imports.json": "adapters/storage/source_imports.py",
+        "transaction.json": "adapters/storage/native_mapping.py",
     }
     if relative.startswith("adapters/harnesses/codex/"):
         for node in ast.walk(tree):

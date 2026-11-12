@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from agent_brain_client.domain.contract import validate
 from agent_brain_client.adapters.server.collection import CollectionClient
-from agent_brain_client.adapters.harnesses.codex.collection import status
+from agent_brain_client.runtime.collection_management import status
 from agent_brain_client.runtime import project_memory as project
 from agent_brain_client.interfaces.cli import collection as cli
 
@@ -145,7 +145,7 @@ class EventDiagnostics(unittest.TestCase):
         local = {"kind": "non-project", "cwd": "synthetic"}
         client = Mock()
         client.status.return_value = {"capture_extraction": DIAGNOSTIC}
-        services = SimpleNamespace(
+        services = SimpleNamespace(harness="codex",
             eligible=Mock(return_value=local),
             CollectionClient=Mock(return_value=client),
         )
@@ -164,7 +164,7 @@ class EventDiagnostics(unittest.TestCase):
         )
 
     def test_global_rejects_unapproved_origin_and_incomplete_identity(self):
-        services = SimpleNamespace(
+        services = SimpleNamespace(harness="codex",
             eligible=Mock(return_value=None), CollectionClient=Mock()
         )
         for args in (
@@ -284,6 +284,8 @@ class DiagnosticCliFailures(unittest.TestCase):
                     [
                         "project",
                         "server-status",
+                        "--harness",
+                        "codex",
                         "--settings",
                         "fixture",
                         "--settings-sha256",
@@ -294,7 +296,7 @@ class DiagnosticCliFailures(unittest.TestCase):
                         "s",
                     ],
                 ),
-                patch.object(cli_project, "load", return_value={}),
+                patch.object(cli_project, "load", return_value={"harness": "codex"}),
                 patch.object(cli_project, "daily_command", side_effect=error),
                 patch("sys.stdout", output),
             ):

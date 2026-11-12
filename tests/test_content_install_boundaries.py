@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 import test_content_install as fixtures
 import agent_brain_client.runtime.launcher as client_startup
-import agent_brain_client.adapters.harnesses.codex.installation as install
+import agent_brain_client.adapters.installation.installation as install
 
 class InstallBoundaries(unittest.TestCase):
     def setUp(self):
@@ -27,7 +27,7 @@ class InstallBoundaries(unittest.TestCase):
     def startup(self):
         fixed=SimpleNamespace(policy=self.f.policy,verified_active=lambda **kwargs:self.f.active,startup_check=lambda:None,update=lambda:{'status':'current','active':self.f.active})
         with patch.object(client_startup,'ClientReleases',return_value=fixed),patch.object(client_startup.subprocess,'run',return_value=SimpleNamespace(returncode=0)) as launch:
-            result=client_startup.startup(self.f.policy_path,self.f.policy_sha)
+            result=client_startup.startup(self.f.policy_path,self.f.policy_sha, harness="codex")
         return result,launch.call_count
 
     def test_json_roundtrip_has_identical_rendered_postimage_and_receipt(self):
@@ -65,7 +65,7 @@ class InstallBoundaries(unittest.TestCase):
 
     def test_update_plan_rebases_unrelated_changes_and_preserves_new_pause(self):
         self.apply()
-        plan = install.prepare(self.f.home, self.f.package, self.f.policy_path, self.f.policy_sha, True)
+        plan = install.prepare(self.f.home, self.f.package, self.f.policy_path, self.f.policy_sha, True, harness="codex")
         original = self.f.config.read_bytes()
         self.f.config.write_bytes(b'new_unrelated_tool = true\n' + original.replace(b'enabled = true', b'enabled = false'))
         rebased = install.rebase_update_plan(plan)
@@ -76,7 +76,7 @@ class InstallBoundaries(unittest.TestCase):
 
     def test_update_plan_refuses_changed_owned_binding_without_writing(self):
         self.apply()
-        plan = install.prepare(self.f.home, self.f.package, self.f.policy_path, self.f.policy_sha, True)
+        plan = install.prepare(self.f.home, self.f.package, self.f.policy_path, self.f.policy_sha, True, harness="codex")
         changed = dict(plan['mcp'], command='synthetic-unapproved')
         self.f.config.write_bytes(install.render(self.f.config.read_bytes(), changed, True))
         before = self.f.native_files()
@@ -106,7 +106,7 @@ class InstallBoundaries(unittest.TestCase):
                 journal, pointer = engine.journal.read_bytes(), engine.pointer.read_bytes()
                 inspected = install.inspect(self.f.home)
                 self.assertTrue(inspected['installed'], inspected)
-                result = client_startup.startup(self.f.policy_path, self.f.policy_sha)
+                result = client_startup.startup(self.f.policy_path, self.f.policy_sha, harness="codex")
                 self.assertTrue(result['served'], result)
                 self.assertIn(str(self.f.package / 'src/agent_brain_client/interfaces/mcp/content.py'), launch.call_args.args[0])
                 self.assertEqual(engine.journal.read_bytes(), journal)
@@ -182,7 +182,7 @@ class InstallBoundaries(unittest.TestCase):
         self.apply();self.f.config.write_text(self.f.config.read_text().replace('synthetic-fixture','synthetic-model-changed'))
         fixed=self.f.base/'synthetic-fixed-bootstrap';shutil.copytree(self.f.package,fixed)
         payload={'fixed':str(fixed),'home':str(self.f.home),'active':self.f.active,'policy':self.f.policy,'policy_file':str(self.f.policy_path),'policy_sha':self.f.policy_sha}
-        code="""import json,platform,sys\nfrom pathlib import Path\nfrom types import SimpleNamespace\np=json.loads(sys.stdin.read());sys.path.insert(0,str(Path(p['fixed'])/'src'));sys.path.insert(0,str(Path(p['fixed'])/'src'));sys.platform='darwin';platform.machine=lambda:'arm64'\nimport agent_brain_client.runtime.launcher as client_startup; import agent_brain_client.adapters.harnesses.codex.installation as content_install\ncommands=[]\nclient_startup.ClientReleases=lambda *a:SimpleNamespace(policy=p['policy'],verified_active=lambda **kwargs:p['active'],startup_check=lambda:None,update=lambda:{'status':'current','active':p['active']})\nclient_startup.subprocess.run=lambda command,**kw:commands.append(command) or SimpleNamespace(returncode=0)\nresult=client_startup.startup(p['policy_file'],p['policy_sha'])\nprint(json.dumps({'served':result.get('served',False),'dependency_is_fixed_package':Path(content_install.__file__).resolve()==Path(p['fixed'])/'src/agent_brain_client/adapters/harnesses/codex/installation.py','launch_count':len(commands),'model_preserved':'synthetic-model-changed' in (Path(p['home'])/'.codex/config.toml').read_text()}))\n"""
+        code="""import json,platform,sys\nfrom pathlib import Path\nfrom types import SimpleNamespace\np=json.loads(sys.stdin.read());sys.path.insert(0,str(Path(p['fixed'])/'src'));sys.path.insert(0,str(Path(p['fixed'])/'src'));sys.platform='darwin';platform.machine=lambda:'arm64'\nimport agent_brain_client.runtime.launcher as client_startup; import agent_brain_client.adapters.installation.installation as content_install\ncommands=[]\nclient_startup.ClientReleases=lambda *a:SimpleNamespace(policy=p['policy'],verified_active=lambda **kwargs:p['active'],startup_check=lambda:None,update=lambda:{'status':'current','active':p['active']})\nclient_startup.subprocess.run=lambda command,**kw:commands.append(command) or SimpleNamespace(returncode=0)\nresult=client_startup.startup(p['policy_file'],p['policy_sha'],harness='codex')\nprint(json.dumps({'served':result.get('served',False),'dependency_is_fixed_package':Path(content_install.__file__).resolve()==Path(p['fixed'])/'src/agent_brain_client/adapters/installation/installation.py','launch_count':len(commands),'model_preserved':'synthetic-model-changed' in (Path(p['home'])/'.codex/config.toml').read_text()}))\n"""
         run=subprocess.run([sys.executable,'-I','-B','-c',code],input=json.dumps(payload),capture_output=True,text=True,timeout=15)
         self.assertEqual(run.returncode,0,run.stderr)
         self.assertEqual(json.loads(run.stdout),{'served':True,'dependency_is_fixed_package':True,'launch_count':1,'model_preserved':True})

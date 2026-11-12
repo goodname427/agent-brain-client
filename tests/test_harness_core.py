@@ -88,7 +88,7 @@ assert not any(n in sys.modules for n in ('content_cache','content_mcp','codex_c
         self.assertEqual(run.returncode, 0, run.stderr.decode())
 
     def test_native_and_transport_consumers_share_contract_and_request_cancellation(self):
-        import agent_brain_client.adapters.harnesses.codex.content as content_cache
+        import agent_brain_client.adapters.storage.content_session as content_cache
         from agent_brain_client.application.control import RequestControl as MCPControl
         from agent_brain_client.adapters.server.https import RequestStopped as TransportStopped
         self.assertIs(content_cache.contract, contract)

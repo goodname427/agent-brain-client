@@ -1,11 +1,13 @@
 """Client acknowledges Server local durability without claiming GitHub backup."""
 
+
 import copy
 import json
 import unittest
 
 import test_content_outbox as fixture
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
+from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.interfaces.mcp.content import ContentServer
 
 
@@ -83,12 +85,12 @@ class LocalDurable(unittest.TestCase):
         one = self.f.adapter.invoke(request)
         before = self.f.cloud.puts
         calls = len(self.f.cloud.calls)
-        restarted = CodexContentSession(
+        restarted = ContentSession(
             self.f.home,
             self.f.cache,
             fixture.POLICY,
             self.f.cloud,
-            codex_home=self.f.home / ".codex",
+            host=CodexContentPorts, native_home=self.f.home / ".codex",
         )
         restarted.refresh()
         self.assertEqual(self.f.cloud.puts, before)

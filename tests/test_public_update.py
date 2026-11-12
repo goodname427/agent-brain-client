@@ -1,4 +1,4 @@
-import agent_brain_client.adapters.harnesses.codex.updates as codex_updates
+import agent_brain_client.adapters.installation.updates as codex_updates
 import agent_brain_client.interfaces.cli.install as interfaces_cli_install
 import agent_brain_client.runtime.updates as runtime_updates
 import agent_brain_client.adapters.storage.collection as source_policy
@@ -203,6 +203,7 @@ class PublicUpdate(unittest.TestCase):
         self.assertEqual(source_policy.load(self.home), original)
 
     def test_hook_failure_reports_partial_update_and_nonzero_exit(self):
+        hooks.install(SimpleNamespace(device_home=str(self.home), profile_id=None, operator=None, operator_sha256=None))
         with patch.object(hooks, 'refresh', side_effect=ValueError('Synthetic Hook drift')):
             result = runtime_updates.manage_update(self.home, 'update', channel_factory=self.channel)
         self.assertEqual(result['reason'], 'global-hook-refresh-required', result)
@@ -237,6 +238,7 @@ class PublicUpdate(unittest.TestCase):
 
     def test_busy_editor_receipt_gives_retry_action_without_claiming_conflict(self):
         from agent_brain_client.adapters.storage.host_files import HostConfigChanged
+        hooks.install(SimpleNamespace(device_home=str(self.home), profile_id=None, operator=None, operator_sha256=None))
         for action in ('check-update', 'update'):
             with self.subTest(action=action), patch.object(hooks, 'refresh', side_effect=HostConfigChanged('synthetic-private-detail')):
                 result = runtime_updates.manage_update(self.home, action, channel_factory=self.channel)
@@ -263,7 +265,7 @@ class PublicUpdate(unittest.TestCase):
         self.assertEqual(checked['reason'], 'global-hook-recovery-required', checked)
         output = io.StringIO()
         with (patch.object(Path, 'home', return_value=self.home),
-              patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', '--action', 'update']),
+              patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', "--harness", "codex", '--action', 'update']),
               patch.object(codex_updates, 'ClientReleases', self.channel),
               patch.object(sys, 'stdout', output)):
             code = interfaces_cli_install.main()
@@ -278,7 +280,7 @@ class PublicUpdate(unittest.TestCase):
         with (
             patch.object(Path, "home", return_value=self.home),
             patch.object(
-                sys, "argv", ["agent_brain_client.runtime.installation.py", "--action", "check-update"]
+                sys, "argv", ["agent_brain_client.runtime.installation.py", "--harness", "codex", "--action", "check-update"]
             ),
             patch.object(sys, "stdout", output),
             patch.object(codex_updates, "ClientReleases", self.channel),
@@ -301,7 +303,7 @@ class PublicUpdate(unittest.TestCase):
                 sys,
                 "argv",
                 [
-                    "agent_brain_client.runtime.installation.py",
+                    "agent_brain_client.runtime.installation.py", "--harness", "codex",
                     "--action",
                     "update",
                     "--connection",
@@ -340,7 +342,7 @@ class PublicUpdate(unittest.TestCase):
     def test_runtime_failure_reports_update_review_without_install_fallback(self):
         output = io.StringIO()
         with (
-            patch.object(sys, "argv", ["agent_brain_client.runtime.installation.py", "--action", "update"]),
+            patch.object(sys, "argv", ["agent_brain_client.runtime.installation.py", "--harness", "codex", "--action", "update"]),
             patch.object(sys, "stdout", output),
             patch.object(
                 runtime_updates,

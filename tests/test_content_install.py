@@ -16,7 +16,7 @@ ROOT=fixtures.ROOT
 from dev.build.package import release as build
 import agent_brain_client.adapters.packages.client as releases
 import agent_brain_client.runtime.launcher as client_startup
-import agent_brain_client.adapters.harnesses.codex.installation as install
+import agent_brain_client.adapters.installation.installation as install
 from agent_brain_client.interfaces.mcp.content import installation_check
 import agent_brain_client.interfaces.mcp.content as content_mcp
 import dev.integration.checkpoint as remote_connect
@@ -47,7 +47,7 @@ class ContentInstall(unittest.TestCase):
             destination=f.publisher/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(out/name,destination)
         f.git(f.publisher,'add','--',*releases.CONTENT_CLIENT_FILES,'releases/manifest.json');f.git(f.publisher,'commit','-m','synthetic content '+version);f.git(f.publisher,'push','origin','releases/stable')
 
-    def plan(self,replace=False):return install.prepare(self.home,self.package,self.policy_path,self.policy_sha,replace)
+    def plan(self,replace=False):return install.prepare(self.home,self.package,self.policy_path,self.policy_sha,replace, harness="codex")
     def digest(self,plan):return install.sha(install.contract.encode(plan))
     def native_files(self):return {p.relative_to(self.home).as_posix():p.read_bytes() for p in self.home.rglob('*') if p.is_file() and p.suffix!='.lock'}
 
@@ -67,7 +67,7 @@ class ContentInstall(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())['status'],'content-native-install-ready')
         fixed=SimpleNamespace(policy=self.policy,verified_active=lambda **kwargs:self.active,startup_check=lambda:None,update=lambda:{'status':'current','active':self.active})
         with patch.object(client_startup,'ClientReleases',return_value=fixed),patch.object(client_startup.subprocess,'run') as launch:
-            self.assertEqual(client_startup.startup(self.policy_path,self.policy_sha)['status'],'content-native-install-pending');launch.assert_not_called()
+            self.assertEqual(client_startup.startup(self.policy_path,self.policy_sha, harness="codex")['status'],'content-native-install-pending');launch.assert_not_called()
 
     def test_failed_postcheck_restores_exact_native_config_and_no_registration(self):
         before=self.config.read_bytes();mode=self.config.stat().st_mode&0o777;calls=[]
@@ -232,7 +232,7 @@ class ContentInstall(unittest.TestCase):
             self.assertEqual(self.channel.update()['status'],'offline');self.assertEqual(self.channel.engine.active(),previous)
         commands=[];fixed=SimpleNamespace(policy=self.policy,verified_active=lambda:previous,update=lambda:{'status':'offline','active':previous})
         with patch.object(client_startup,'ClientReleases',return_value=fixed),patch.object(client_startup.subprocess,'run',side_effect=lambda argv,**kw:commands.append(argv) or SimpleNamespace(returncode=0)):
-            result=client_startup.startup(self.policy_path,self.policy_sha,installation_check=True)
+            result=client_startup.startup(self.policy_path,self.policy_sha,installation_check=True, harness="codex")
         self.assertTrue(result['served']);self.assertIn('--installation-check',commands[-1]);self.assertIn('--device-plan-sha256',commands[-1]);self.assertNotIn('--token-file',commands[-1]);self.assertEqual(commands[-1][commands[-1].index('--client-version')+1],previous['version'])
 
     def test_old_policy_does_not_accept_expanded_scope(self):
@@ -269,7 +269,7 @@ class ContentInstall(unittest.TestCase):
 
     def test_package_drift_reports_safe_checkpoint_without_repair(self):
         plan=self.plan();install.apply(plan,self.digest(plan),lambda p:None)
-        target=self.package/'src/agent_brain_client/adapters/harnesses/codex/content.py';target.write_bytes(target.read_bytes()+b'\n# SYNTHETIC_UNAPPROVED_EDIT\n')
+        target=self.package/'src/agent_brain_client/adapters/storage/content_session.py';target.write_bytes(target.read_bytes()+b'\n# SYNTHETIC_UNAPPROVED_EDIT\n')
         result=install.inspect(self.home)
         self.assertFalse(result['installed']);self.assertTrue(result['installation_present']);self.assertEqual(result['reason'],'bootstrap-package-changed')
         self.assertNotIn('SYNTHETIC_UNAPPROVED_EDIT',json.dumps(result));self.assertTrue(target.read_bytes().endswith(b'UNAPPROVED_EDIT\n'))

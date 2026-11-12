@@ -32,9 +32,9 @@ class StartupGuard(unittest.TestCase):
     def call(self,**options):
         result={'status':self.status,'active':copy.deepcopy(self.active)}
         fixed=SimpleNamespace(policy=self.policy,update=lambda:result,verified_active=lambda **kwargs:self.active,startup_check=lambda:None)
-        with patch.object(startup,'ClientReleases',return_value=fixed),patch.object(startup.subprocess,'run') as serve,patch('agent_brain_client.adapters.harnesses.codex.installation.inspect',return_value={'installed':True}):
+        with patch.object(startup,'ClientReleases',return_value=fixed),patch.object(startup.subprocess,'run') as serve,patch('agent_brain_client.adapters.installation.installation.inspect',return_value={'installed':True}):
             serve.return_value=SimpleNamespace(returncode=0)
-            value=startup.startup('unused-policy','a'*64,**options)
+            value=startup.startup('unused-policy','a'*64,**options, harness="codex")
             return value,serve.call_count
 
     def test_offline_or_failed_health_fallback_never_serves_legacy_with_pending(self):
@@ -82,7 +82,7 @@ class StartupGuard(unittest.TestCase):
     def test_check_only_cli_reports_explicit_block_and_exits_nonzero(self):
         (self.cache/'imports.json').write_bytes(b'Synthetic inventory')
         result,calls=self.call(check_only=True);self.assertEqual(calls,0)
-        args=['startup','--policy-file','unused','--policy-sha256','a'*64,'--check-only']
+        args=['startup','--harness', 'codex', '--policy-file','unused','--policy-sha256','a'*64,'--check-only']
         with patch.object(sys,'argv',args),patch.object(startup,'startup',return_value=result),patch.object(sys,'stdout',io.StringIO()) as output:
             self.assertEqual(launcher_cli.main(),2);self.assertIn('content-outbox-runtime-incompatible',output.getvalue())
 
@@ -109,7 +109,7 @@ class StartupGuard(unittest.TestCase):
         self.assertEqual(calls,0);self.assertTrue(lease.is_symlink());self.assertFalse(lease.resolve().exists())
 
     def test_launch_failure_releases_kernel_lease_for_next_start(self):
-        with patch.object(startup.subprocess,'run',side_effect=OSError('Synthetic launch failed')), patch('agent_brain_client.adapters.harnesses.codex.installation.inspect',return_value={'installed':True}):
+        with patch.object(startup.subprocess,'run',side_effect=OSError('Synthetic launch failed')), patch('agent_brain_client.adapters.installation.installation.inspect',return_value={'installed':True}):
             result=startup.serve_content(['synthetic-unused'],self.active,self.policy,'offline')
         self.assertEqual(result['status'],'content-runtime-lifecycle-review-required')
         result,calls=self.call();self.assertTrue(result['served']);self.assertEqual(calls,1)
@@ -117,8 +117,8 @@ class StartupGuard(unittest.TestCase):
     def test_removed_registration_after_initial_inspect_cannot_launch_worker(self):
         self.active['version']='0.2.5'
         fixed=SimpleNamespace(policy=self.policy,update=lambda:{'status':'current','active':self.active},verified_active=lambda **kwargs:self.active,startup_check=lambda:None)
-        with patch.object(startup,'ClientReleases',return_value=fixed),patch.object(startup.subprocess,'run') as serve,patch('agent_brain_client.adapters.harnesses.codex.installation.inspect',side_effect=[{'installed':True},{'installed':False}]):
-            result=startup.startup('unused-policy','a'*64)
+        with patch.object(startup,'ClientReleases',return_value=fixed),patch.object(startup.subprocess,'run') as serve,patch('agent_brain_client.adapters.installation.installation.inspect',side_effect=[{'installed':True},{'installed':False}]):
+            result=startup.startup('unused-policy','a'*64, harness="codex")
         self.assertEqual(result['status'],'content-native-install-pending');self.assertFalse(result['served']);serve.assert_not_called()
 
 if __name__=='__main__':unittest.main()

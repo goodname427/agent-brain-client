@@ -24,7 +24,7 @@ class RuntimeReload(TestCase):
         with patch('agent_brain_client.interfaces.mcp.content.worker_commit', return_value='a'*40):
             server = ContentServer(adapter, '0.6.6')
         with (patch('agent_brain_client.adapters.storage.private_files.private_json', return_value={'release_policy':'synthetic-policy', 'release_policy_sha256':'b'*64}),
-              patch('agent_brain_client.adapters.harnesses.codex.installation.registered_context', side_effect=AssertionError('No installer or subprocess probe')) as registration,
+              patch('agent_brain_client.adapters.installation.installation.registered_context', side_effect=AssertionError('No installer or subprocess probe')) as registration,
               patch('agent_brain_client.adapters.packages.client.ClientReleases') as releases):
             releases.return_value.policy = {'runtime': {'device_home': str(adapter.home)}}
             active = releases.return_value.verified_active
@@ -58,7 +58,7 @@ class RuntimeReload(TestCase):
         with patch('agent_brain_client.interfaces.mcp.content.worker_commit', return_value=None):
             server = ContentServer(adapter, '0.6.6')
         with (patch('agent_brain_client.adapters.storage.private_files.private_json', return_value={'release_policy':'synthetic-policy', 'release_policy_sha256':'b'*64}),
-              patch('agent_brain_client.adapters.harnesses.codex.installation.registered_context'),
+              patch('agent_brain_client.adapters.installation.installation.registered_context'),
               patch('agent_brain_client.adapters.packages.client.ClientReleases') as releases):
             releases.return_value.policy = {'runtime': {'device_home': str(adapter.home)}}
             active = releases.return_value.verified_active

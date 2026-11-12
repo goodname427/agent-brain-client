@@ -1,4 +1,4 @@
-"""Project memory commands over the enrolled Client and Codex project adapter."""
+"""Project memory commands over the enrolled Client and an explicit native host."""
 
 import sys
 from pathlib import Path
@@ -12,13 +12,8 @@ import json
 import os
 from agent_brain_client.adapters.storage.metadata import canonical, digest, private_json
 from agent_brain_client.adapters.platforms.filesystem import file_mode
-from agent_brain_client.adapters.harnesses.codex.project_configuration import (
-    load,
-    active,
-    project_settings,
-    install,
-    context,
-)
+from agent_brain_client.adapters.storage.project_settings import active, project_settings, project_harness
+from agent_brain_client.runtime.project_memory import load, install, context
 from agent_brain_client.runtime.project_memory import (
     setup,
     enable,
@@ -58,6 +53,7 @@ def main():
             "stop",
         ),
     )
+    parser.add_argument("--harness", choices=("codex", "codebuddy"))
     parser.add_argument("--device-home", default=str(Path.home()))
     parser.add_argument("--project-root")
     parser.add_argument("--output")
@@ -89,6 +85,15 @@ def main():
     ):
         parser.error("server-status --session-id requires --event-id")
     try:
+        if args.harness is None:
+            if args.settings and args.settings_sha256:
+                args.harness = project_harness(private_json(args.settings, args.settings_sha256))
+            else:
+                from agent_brain_client.runtime.client_lifecycle import registered_host
+                port = registered_host(args.device_home)
+                if port is None:
+                    raise ValueError("Registered host or explicit --harness required")
+                args.harness = port.name
         if args.action == "connect-project":
             result = connect_project(args)
         elif args.action == "activate-bundle":
@@ -108,13 +113,15 @@ def main():
         else:
             if not args.settings and args.project_root:
                 args.settings = str(
-                    project_settings(args.device_home, args.project_root)
+                    project_settings(args.device_home, args.project_root, harness=args.harness)
                 )
                 private_json(args.settings)
                 args.settings_sha256 = digest(Path(args.settings).read_bytes())
             if not args.settings or not args.settings_sha256:
                 parser.error("exact --settings and --settings-sha256 are required")
             p = load(args.settings, args.settings_sha256)
+            if p["harness"] != args.harness:
+                raise ValueError("Project Harness binding changed")
             if args.action == "install":
                 result = install(p, args.settings, args.settings_sha256)
             elif args.action in ("stop", "revoke"):

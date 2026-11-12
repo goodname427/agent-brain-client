@@ -1,4 +1,5 @@
 """User activation, pull and loopback UI on isolated homes and fictional transport."""
+
 import copy
 import http.client
 import json
@@ -10,7 +11,8 @@ from unittest.mock import patch
 import uuid
 
 import test_content_outbox as fixture
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
+from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.interfaces.mcp.content import ContentServer
 from agent_brain_client.application.tools.catalog import enabled_tools
@@ -63,8 +65,8 @@ class Activation(unittest.TestCase):
         self.assertEqual(self.adapter.refresh()['status'], 'content-refreshed')
 
     def restart(self, home=None, cache=None):
-        return CodexContentSession(home or self.home, cache or self.cache, fixture.POLICY,
-                              self.cloud, codex_home=(home or self.home) / '.codex')
+        return ContentSession(home or self.home, cache or self.cache, fixture.POLICY,
+                              self.cloud, host=CodexContentPorts, native_home=(home or self.home) / '.codex')
 
     def action(self, kind, enabled, revision=None, rid=None, reconciles=None):
         return {'request_id': rid or uuid.uuid4().hex, 'kind': kind, 'id': 'synthetic-' + kind,
@@ -150,7 +152,7 @@ class Activation(unittest.TestCase):
 
     def test_failed_apply_rolls_back_new_directories(self):
         self.cloud.records['skill','synthetic-skill']['files']['scripts/helper.py']='# synthetic'
-        with patch('agent_brain_client.adapters.harnesses.codex.mapping.host_apply',side_effect=PermissionError('Synthetic busy file')):
+        with patch('agent_brain_client.adapters.storage.native_mapping.host_apply',side_effect=PermissionError('Synthetic busy file')):
             reply=self.manager.change(self.action('skill',True))
         self.assertEqual(reply['local_refresh']['status'],'content-refresh-blocked')
         self.assertFalse((self.home/'.agents/skills/synthetic-skill').exists())
@@ -239,7 +241,7 @@ class Activation(unittest.TestCase):
 
     def test_failed_local_write_keeps_receipt_then_pull_recovers_without_second_save(self):
         before = (self.home / '.codex/AGENTS.md').read_bytes()
-        with patch('agent_brain_client.adapters.harnesses.codex.mapping.host_apply', side_effect=PermissionError('Fictional Windows sharing violation')):
+        with patch('agent_brain_client.adapters.storage.native_mapping.host_apply', side_effect=PermissionError('Fictional Windows sharing violation')):
             reply = self.manager.change(self.action('rule', True))
         self.assertTrue(reply['local_queue']['server_saved'])
         self.assertEqual(reply['local_refresh']['status'], 'content-refresh-blocked')

@@ -117,6 +117,7 @@ COMMANDS = {
             "test_ledger_ownership.OwnerGates.test_source_removal_inventory_is_read_only_without_transport_identity",
             "test_ledger_ownership.OwnerGates.test_mapping_gate_preserves_read_only_settlement_semantics",
             "test_harness_core",
+            "test_harness_parity",
             "test_runtime_boundaries",
             "test_rule_fallback",
         ],

@@ -1,4 +1,4 @@
-"""Opt-in Codex content cache/native mapping; no Core, Git or secret discovery.
+"""Shared authorized content cache with injected native mapping/source ports; no Core, Git or secret discovery.
 
 The embedding approved transport owns authentication. Refresh at startup/tool
 boundaries is automatic when this candidate is wired; no new daemon is created.
@@ -6,9 +6,9 @@ boundaries is automatic when this candidate is wired; no new daemon is created.
 
 from agent_brain_client.domain.errors import CacheBlocked, CollectionCapacityExceeded
 from agent_brain_client.application.synchronization.pull import ContentSynchronization
-from agent_brain_client.adapters.harnesses.codex.sources import CodexSourceImports
-from agent_brain_client.adapters.harnesses.codex.mapping import CodexContentMapping
-from agent_brain_client.adapters.harnesses.codex.content_limits import (
+from agent_brain_client.application.synchronization.ports import NativeContentHost
+from agent_brain_client.adapters.storage.source_imports import SourceImports
+from agent_brain_client.adapters.storage.content_limits import (
     OFFLINE_TRANSPORT_ERRORS,
     SNAPSHOT_BYTES,
     sha,
@@ -21,7 +21,7 @@ import time
 import uuid
 
 BASE = Path(__file__).resolve().parent
-ROOT = Path(__file__).resolve().parents[5]
+ROOT = Path(__file__).resolve().parents[4]
 import agent_brain_client.domain.contract as contract
 from agent_brain_client.adapters.platforms.filesystem import (
     require_platform,
@@ -49,7 +49,7 @@ from agent_brain_client.adapters.storage.content import (
 )
 
 
-class CodexContentSession(FileContentOutbox):
+class ContentSession(FileContentOutbox):
     _cache_bytes = staticmethod(cache_bytes)
     _outbox_lock = staticmethod(operation_lock)
     _outbox_stage = staticmethod(operation_stage)
@@ -59,7 +59,7 @@ class CodexContentSession(FileContentOutbox):
         return locked(*args, **kwargs)
 
     @classmethod
-    def metadata_view(cls, home, native, cache, policy, *, platform):
+    def metadata_view(cls, home, native, cache, policy, *, platform, host: NativeContentHost):
         """Read native ownership without a transport, credential access or writes."""
         from types import SimpleNamespace
 
@@ -67,24 +67,27 @@ class CodexContentSession(FileContentOutbox):
         view = object.__new__(cls)
         view.home, view.native_home, view.cache = Path(home), Path(native), Path(cache)
         view.platform, view.policy = platform, policy
-        view.binding = {"device_home": str(home), "codex_home": str(native)}
+        view.binding = host.binding(home, native)
+        view.host = host
+        view.native_memory_home = Path(native)
         view.policy_sha = sha(
             contract.encode({"policy": policy, "binding": view.binding})
         )
         view.client = SimpleNamespace(
             grant={"scopes": ["read", "put"], "artifact_types": policy["kinds"]}
         )
-        view.sources = CodexSourceImports(view)
-        view.mapping = CodexContentMapping(view)
+        view.sources = SourceImports(view, host.sources(view))
+        view.mapping = host.mapping(view)
         return view
 
-    def __init__(self, home, cache, policy, client, health=None, codex_home=None):
+    def __init__(self, home, cache, policy, client, health=None, native_home=None, *, host: NativeContentHost):
+        self.host = host
         require_platform(
             "cache-storage", (getattr(client, "grant", None) or {}).get("platform")
         )
         require_memory_verified(home, getattr(client, "profile_sha", None))
         native = Path(
-            codex_home or os.environ.get("CODEX_HOME", str(Path(home) / ".codex"))
+            native_home or host.default_home(home)
         ).expanduser()
         if not native.is_absolute() or native.is_symlink():
             raise CacheBlocked()
@@ -95,19 +98,16 @@ class CodexContentSession(FileContentOutbox):
             cache,
             policy,
             client,
-            binding={
-                "device_home": str(Path(home).resolve()),
-                "codex_home": str(self.native_home),
-            },
+            binding=host.binding(Path(home).resolve(), self.native_home),
             protected=[
                 Path(home).resolve() / name
-                for name in (".codex", ".agents", ".config/agent-brain-client/content")
+                for name in host.protected
             ],
         )
         self.health = health or (lambda: None)
         self.offline_denied = False
-        self.sources = CodexSourceImports(self)
-        self.mapping = CodexContentMapping(self)
+        self.sources = SourceImports(self, host.sources(self))
+        self.mapping = host.mapping(self)
         self.synchronization = ContentSynchronization(self)
 
     def ensure_refresh_available(self):

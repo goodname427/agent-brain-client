@@ -1,5 +1,6 @@
 """Real registered launcher/worker restarts with synthetic native transport only."""
 
+
 import copy
 import json
 import os
@@ -10,8 +11,9 @@ import unittest
 
 import test_content_install as installation_fixture
 from test_content_outbox import Cloud, MEMORY
-from agent_brain_client.adapters.harnesses.codex import installation
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
+from agent_brain_client.adapters.installation import installation
+from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.adapters.platforms.filesystem import private_directory
 from agent_brain_client.adapters.storage import metadata
 from agent_brain_client.adapters.storage.reinstallation import (
@@ -66,12 +68,12 @@ ComponentClient.request = _restart_test_request
         cloud = Cloud()
         cloud.grant = copy.deepcopy(self.f.grant)
         cloud.records[("memory", "synthetic-topic")] = copy.deepcopy(MEMORY)
-        adapter = CodexContentSession(
+        adapter = ContentSession(
             self.f.home,
             self.f.policy["runtime"]["content_cache"],
             self.f.content_value,
             cloud,
-            codex_home=self.f.native,
+            host=CodexContentPorts, native_home=self.f.native,
         )
         self.adapter = adapter
         self.assertEqual(adapter.refresh()["status"], "content-refreshed")
@@ -152,6 +154,8 @@ ComponentClient.request = _restart_test_request
             "-I",
             "-B",
             str(self.f.package / "src/agent_brain_client/interfaces/mcp/content.py"),
+            "--harness",
+            "codex",
             "--client-version",
             "0.8.0",
         ]
@@ -208,7 +212,7 @@ ComponentClient.request = _restart_test_request
         self.assertTrue((self.archive / "old-queue.json").exists())
 
     def test_fresh_install_plan_preserves_disabled_mcp(self):
-        from agent_brain_client.adapters.harnesses.codex.lifecycle import remove_table
+        from agent_brain_client.runtime.client_lifecycle import remove_table
 
         record = read_journal(self.f.home)
         record["service_enabled"] = False

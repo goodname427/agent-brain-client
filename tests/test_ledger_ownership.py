@@ -4,7 +4,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 import unittest
-from agent_brain_client.adapters.harnesses.codex.sources import CodexSourceImports
+from agent_brain_client.adapters.storage.source_imports import SourceImports
 from agent_brain_client.adapters.harnesses.codex.mapping import CodexContentMapping
 import test_content_offline_reads as offline_fixture
 import test_client_uninstall as lifecycle_fixture
@@ -30,7 +30,7 @@ class OwnerGates(unittest.TestCase):
             }
             before = deepcopy(state)
             session = SimpleNamespace(_load=Mock(return_value=state))
-            owner = CodexSourceImports(session)  # No queue_sha, credential or writer.
+            owner = SourceImports(session, SimpleNamespace(prefix="codex-memory:"))  # No queue_sha, credential or writer.
             result = owner.removal_blocker()
             self.assertEqual(
                 result is None, phase in ("imported", "duplicate", "reconciled")
@@ -45,8 +45,8 @@ class OwnerGates(unittest.TestCase):
             ),
         ):
             self.assertEqual(
-                CodexSourceImports(
-                    SimpleNamespace(_load=lambda *a: state)
+                SourceImports(
+                    SimpleNamespace(_load=lambda *a: state), SimpleNamespace(prefix="codex-memory:")
                 ).removal_blocker(),
                 expected,
             )
@@ -93,7 +93,7 @@ class OwnerGates(unittest.TestCase):
         )
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
-        from agent_brain_client.adapters.harnesses.codex import lifecycle
+        from agent_brain_client.runtime import client_lifecycle as lifecycle
 
         with (
             patch.object(
@@ -102,28 +102,28 @@ class OwnerGates(unittest.TestCase):
                 side_effect=AssertionError("No credential access"),
             ),
             patch.object(
-                CodexSourceImports,
+                SourceImports,
                 "removal_blocker",
                 return_value="Import inventory retained",
             ) as source,
             patch.object(CodexContentMapping, "transaction_settled") as mapping,
         ):
             with self.assertRaisesRegex(
-                lifecycle.install.InstallBlocked, "Import inventory retained"
+                lifecycle_fixture.install.InstallBlocked, "Import inventory retained"
             ):
                 lifecycle.prepare_removal(fixture.home)
             source.assert_called_once_with()
             mapping.assert_not_called()
         with (
             patch.object(
-                CodexSourceImports, "removal_blocker", return_value=None
+                SourceImports, "removal_blocker", return_value=None
             ) as source,
             patch.object(
                 CodexContentMapping, "transaction_settled", return_value=False
             ) as mapping,
         ):
             with self.assertRaisesRegex(
-                lifecycle.install.InstallBlocked, "Mapping transaction needs repair"
+                lifecycle_fixture.install.InstallBlocked, "Mapping transaction needs repair"
             ):
                 lifecycle.prepare_removal(fixture.home)
             source.assert_called_once_with()

@@ -1,4 +1,6 @@
 """Two real worker processes, historical adapter and synthetic cache only."""
+
+
 import json
 import hashlib
 import os
@@ -35,17 +37,18 @@ from pathlib import Path
 ROOT=Path(ROOT_LITERAL)
 sys.path[:0]=[str(ROOT/'tests'),str(ROOT/'src'),str(ROOT/'src')]
 from test_content_outbox import Cloud as FakeCloud,POLICY,MEMORY
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 import agent_brain_client.domain.contract as contract
 def arg(name):return sys.argv[sys.argv.index(name)+1]
 base=Path(arg('--cache')).parent
 version=arg('--client-version')
-import agent_brain_client.adapters.harnesses.codex.content as module
+import agent_brain_client.adapters.storage.content_session as module
 class Cloud(FakeCloud):
  def request(self,request):
   state=json.loads((base/'synthetic-remote.json').read_bytes());self.offline=state['offline']
   self.records={('memory','synthetic-topic'):dict(MEMORY,body=state['body'])}
   return super().request(request)
-cloud=Cloud();adapter=module.CodexContentSession(arg('--device-home'),arg('--cache'),POLICY,cloud,codex_home=arg('--codex-home'))
+cloud=Cloud();adapter=module.ContentSession(arg('--device-home'),arg('--cache'),POLICY,cloud,host=CodexContentPorts, native_home=arg('--codex-home'))
 lock=base/'cache'/'.content-runtime.lock';inherited=False
 if lock.exists():
  for fd in range(3,64):
@@ -72,13 +75,13 @@ ROOT=Path(ROOT_LITERAL)
 sys.path[:0]=[str(ROOT/'src'),str(ROOT/'src')]
 base=Path(sys.argv[1]);version=sys.argv[2]
 import agent_brain_client.runtime.launcher as startup
-import agent_brain_client.adapters.harnesses.codex.installation as content_install
+import agent_brain_client.adapters.installation.installation as content_install
 content_install.inspect=lambda home:{'installed':True}
 active={'version':version,'commit':'a'*40,'package':str(base/'modern-package')}
 policy={'capabilities':startup.SSH_CONTENT_CAPABILITIES,'runtime':{'device_home':str(base/'home'),'codex_home':str(base/'native'),'content_cache':str(base/'cache')}}
 fixed=SimpleNamespace(policy=policy,update=lambda:{'status':'offline','active':active},verified_active=lambda **kwargs:active,startup_check=lambda:None)
 startup.ClientReleases=lambda *args:fixed
-result=startup.startup('synthetic-unused-policy','b'*64)
+result=startup.startup('synthetic-unused-policy','b'*64,harness='codex')
 print(json.dumps(result),flush=True)
 '''.replace('ROOT_LITERAL', repr(str(ROOT)))
         self.driver = self.base/'driver.py';self.driver.write_text(driver)

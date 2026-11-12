@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import agent_brain_client.interfaces.cli.install_plan as entry
-import agent_brain_client.adapters.harnesses.codex.installation as install
+import agent_brain_client.adapters.installation.installation as install
 import test_content_install as install_fixtures
 import test_device_task as task_fixtures
 from agent_brain_client.adapters.server.https import HTTPSContentClient

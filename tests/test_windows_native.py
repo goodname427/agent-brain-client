@@ -1,3 +1,6 @@
+
+
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 from agent_brain_client.adapters.platforms.tree import is_link
 from agent_brain_client.adapters.platforms.posix.tree import PosixTree
 from agent_brain_client.adapters.platforms.windows.tree import WindowsTree
@@ -49,11 +52,11 @@ def host_security(path, information=7):
 def check_install_contract(test, plan):
     """Real pinned launcher plus real probe; substitute only credential/transport I/O.
 
-    The child executes the built runtime's Server, CodexContentSession and read-only
+    The child executes the built runtime's Server, ContentSession and read-only
     protocol check. Its tool list is never copied from the expected plan.
     """
     from unittest.mock import patch
-    import agent_brain_client.adapters.harnesses.codex.installation as content_install
+    import agent_brain_client.adapters.installation.installation as content_install
     real_run = subprocess.run
     environment = dict(plan['mcp']['env'], HOME=plan['device_home'])
     run = real_run([plan['mcp']['command'], *plan['mcp']['args'], '--bootstrap-check'],
@@ -66,7 +69,7 @@ def check_install_contract(test, plan):
         runtime = adapters_storage_private_files.private_json(plan['release_policy'])['runtime']
         return real_run([plan['mcp']['command'], '-I', '-B',
             str(ROOT / 'tests/fixtures/checkpoint_probe.py'), active['package'], '--installation-result',
-            '--content-policy', runtime['content_policy'], '--content-policy-sha256', runtime['content_policy_sha256'],
+            "--harness", "codex", '--content-policy', runtime['content_policy'], '--content-policy-sha256', runtime['content_policy_sha256'],
             '--https-profile', runtime['https_profile'], '--https-profile-sha256', runtime['https_profile_sha256']], **options)
     with patch.object(content_install.subprocess, 'run', side_effect=protocol_command):
         content_install.probe(plan)
@@ -119,7 +122,7 @@ class WindowsNative(unittest.TestCase):
         import agent_brain_client.runtime.collection as gm
         from agent_brain_client.domain.scopes import digest
         from agent_brain_client.adapters.storage.host_files import atomic
-        from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+        from agent_brain_client.adapters.storage.content_session import ContentSession
         from test_content_outbox import Cloud, POLICY
         from test_event_hook import accepted
         home = self.home
@@ -164,7 +167,7 @@ class WindowsNative(unittest.TestCase):
             self.assertEqual(pending['local_queue']['state'], 'pending')
             self.assertEqual(sent, [])  # Foreground staging never waits on the server.
             from agent_brain_client.application.queue.delivery import deliver_pending
-            queued = CodexContentSession(home, cache, POLICY, cloud, codex_home=r['codex_home'])
+            queued = ContentSession(home, cache, POLICY, cloud, host=CodexContentPorts, native_home=r['codex_home'])
             self.assertTrue(deliver_pending(queued, allowed=lambda session: True))
             requests = copy.deepcopy(sent)
             self.assertEqual(len(requests), 2)
@@ -174,10 +177,10 @@ class WindowsNative(unittest.TestCase):
             for item in cache.rglob('*'):
                 security[item] = self.host_acl(item)
             with self.assertRaises(ValueError): private_mode(cache, directory=True)
-            restarted = CodexContentSession(home, cache, POLICY, cloud, codex_home=r['codex_home'])
+            restarted = ContentSession(home, cache, POLICY, cloud, host=CodexContentPorts, native_home=r['codex_home'])
             self.assertEqual({row['request']['request_id']: row['request'] for row in restarted._queued()},
                              {request['request_id']: request for request in requests})
-            from agent_brain_client.adapters.harnesses.codex.lifecycle import queue_counts
+            from agent_brain_client.runtime.client_lifecycle import queue_counts
             self.assertEqual(queue_counts(restarted)['pending'], 2)
             cloud.request = lambda req: (sent.append(copy.deepcopy(req)), accepted(req))[1]
             self.assertFalse(deliver_pending(restarted, allowed=lambda session: True))
@@ -362,13 +365,13 @@ class WindowsNative(unittest.TestCase):
     def test_same_id_concurrent_retry_returns_both_callers_and_uploads_once(self):
         from concurrent.futures import ThreadPoolExecutor
         import threading
-        from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+        from agent_brain_client.adapters.storage.content_session import ContentSession
         from test_content_outbox import Cloud, POLICY, MEMORY
         for index in range(10):
             with self.subTest(iteration=index):
                 cache = self.home / ('concurrent-cache-' + str(index))
                 cloud = Cloud()
-                def adapter(): return CodexContentSession(self.home, cache, POLICY, cloud, codex_home=self.home / '.codex')
+                def adapter(): return ContentSession(self.home, cache, POLICY, cloud, host=CodexContentPorts, native_home=self.home / '.codex')
                 adapter()  # Exercise fresh lock creation, as in the reported test.
                 request = {'request_id': 'synthetic_concurrent_retry_' + str(index), 'method': 'content_put',
                     'params': {'kind': 'memory', 'id': 'synthetic-topic', 'record': MEMORY, 'expected_revision': 'missing'}}
@@ -393,7 +396,7 @@ class WindowsNative(unittest.TestCase):
 
     def test_real_shared_installer_and_owned_global_hook_transaction(self):
         import agent_brain_client.runtime.installation as installer
-        import agent_brain_client.adapters.harnesses.codex.installation as content_install
+        import agent_brain_client.adapters.installation.installation as content_install
         import agent_brain_client.adapters.harnesses.codex.collection_installation as hooks
         import agent_brain_client.runtime.collection as global_memory
         from types import SimpleNamespace
@@ -425,7 +428,7 @@ class WindowsNative(unittest.TestCase):
             return result
         with patch.dict(os.environ, CODEX_HOME=str(native)):
             plan, pin, _ = installer.prepare_materials(materials, self.home, native, connection,
-                adapters_storage_install_state.sha(installer.canonical(connection)), updater=update)
+                adapters_storage_install_state.sha(installer.canonical(connection)), harness="codex", updater=update)
             calls = []
             before_config = config.read_bytes()
             before_identity = config.stat().st_ino
@@ -459,7 +462,7 @@ class WindowsNative(unittest.TestCase):
                     updater=lambda: self.fail('No replacement release'),
                     installer=lambda p, d: content_install.apply(p, d, lambda value: None))
             import io
-            with patch.object(Path, 'home', return_value=self.home), patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py']), patch.object(installer, 'run', side_effect=resume), patch.object(sys, 'stdout', io.StringIO()) as output:
+            with patch.object(Path, 'home', return_value=self.home), patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', "--harness", "codex"]), patch.object(installer, 'run', side_effect=resume), patch.object(sys, 'stdout', io.StringIO()) as output:
                 self.assertEqual(interfaces_cli_install.main(), 0, output.getvalue())
             self.assertTrue(json.loads(output.getvalue())['installed'])
             self.assertTrue(content_install.inspect(self.home).get('registration_verified'))
@@ -472,7 +475,7 @@ class WindowsNative(unittest.TestCase):
             from test_windows_install_closure import torn_hook
             before_hook=torn_hook(self,self.home,native)
             self.assertFalse(content_install.inspect(self.home).get('registration_verified'))
-            with patch.object(Path,'home',return_value=self.home),patch.object(sys,'argv',['agent_brain_client.runtime.installation.py']),patch.object(installer,'run',side_effect=lambda *a,**k:content_install.inspect(self.home)),patch.object(installer,'finish_install',side_effect=lambda home,value:value),patch.object(sys,'stdout',io.StringIO()) as output:
+            with patch.object(Path,'home',return_value=self.home),patch.object(sys,'argv',['agent_brain_client.runtime.installation.py', "--harness", "codex"]),patch.object(installer,'run',side_effect=lambda *a,**k:content_install.inspect(self.home)),patch.object(installer,'finish_install',side_effect=lambda home,value,**kwargs:value),patch.object(sys,'stdout',io.StringIO()) as output:
                 self.assertEqual(interfaces_cli_install.main(),0,output.getvalue())
             self.assertEqual(config.read_bytes(),before_hook)
             hooks.install(args)
@@ -505,7 +508,7 @@ class WindowsNative(unittest.TestCase):
             self.assertTrue(content_install.inspect(self.home)['registration_verified'])
 
     def test_uninstall_new_private_lease_keeps_existing_host_security_separate(self):
-        from agent_brain_client.adapters.harnesses.codex.lifecycle import lease
+        from agent_brain_client.runtime.client_lifecycle import lease
         directory=private_directory(self.home/'private-lease-state')
         path=directory/'new-runtime.lock'
         with lease(path):
@@ -521,10 +524,10 @@ class WindowsNative(unittest.TestCase):
 
     def test_offline_outbox_reconnect_and_rule_skill_mapping_share_same_core(self):
         from test_content_outbox import Cloud, POLICY, MEMORY, RULE, SKILL
-        from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+        from agent_brain_client.adapters.storage.content_session import ContentSession
         cloud = Cloud(); cloud.grant.update(platform=native_platform())
         cache = self.home / 'cache'
-        def adapter(): return CodexContentSession(self.home, cache, copy.deepcopy(POLICY), cloud, codex_home=self.home / 'codex')
+        def adapter(): return ContentSession(self.home, cache, copy.deepcopy(POLICY), cloud, host=CodexContentPorts, native_home=self.home / 'codex')
         first = adapter(); cloud.offline = True
         request = {'request_id':'synthetic_windows_write_001','method':'content_put',
                    'params':{'kind':'memory','id':'synthetic-topic','record':MEMORY,'expected_revision':'missing'}}
@@ -540,10 +543,10 @@ class WindowsNative(unittest.TestCase):
     def test_refresh_skips_unchanged_agents_held_by_read_only_host(self):
         from ctypes import wintypes as W
         from agent_brain_client.adapters.platforms.windows.native import libraries
-        from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+        from agent_brain_client.adapters.storage.content_session import ContentSession
         from test_content_outbox import Cloud, POLICY, MEMORY
         cloud=Cloud();cloud.grant.update(platform=native_platform())
-        adapter=CodexContentSession(self.home,self.home/'cache',copy.deepcopy(POLICY),cloud,codex_home=self.home/'codex')
+        adapter=ContentSession(self.home,self.home/'cache',copy.deepcopy(POLICY),cloud,host=CodexContentPorts, native_home=self.home/'codex')
         self.assertEqual(adapter.refresh()['status'],'content-refreshed')
         agents=self.home/'codex/AGENTS.md';before=agents.read_bytes()
         _,kernel=libraries()
@@ -596,7 +599,7 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
             finally:ancestor.rmdir()
 
     def test_configured_codex_home_junction_cannot_be_hidden_by_binding_resolution(self):
-        from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+        from agent_brain_client.adapters.storage.content_session import ContentSession
         from agent_brain_client.domain.errors import CacheBlocked
         from agent_brain_client.adapters.harnesses.codex.memory_inventory import inventory_codex_memories
         helper=memory_inventory.base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
@@ -604,7 +607,7 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
         physical=helper.home/'physical';root=physical/'memories';root.mkdir(parents=True)
         (root/'one.md').write_bytes(b'synthetic physical source')
         alias=helper.home/'configured-codex';self.junction(alias,physical)
-        adapter=CodexContentSession(helper.home,helper.cache,memory_inventory.base.POLICY,helper.cloud,codex_home=alias)
+        adapter=ContentSession(helper.home,helper.cache,memory_inventory.base.POLICY,helper.cloud,host=CodexContentPorts, native_home=alias)
         self.assertEqual(adapter.native_home,physical.resolve())
         self.assertEqual(adapter.binding['codex_home'],str(physical.resolve()))
         self.assertEqual(adapter.sources.inventory_memory_sources()['status'],'unavailable')
@@ -612,7 +615,7 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
         # Even an existing ledger bound to the same canonical path must not
         # bypass the original configured-path reparse check on body reads.
         key=memory_inventory.contract.encode([row['source_id'],row['source_fingerprint']])
-        from agent_brain_client.adapters.harnesses.codex.content import sha
+        from agent_brain_client.adapters.storage.content_session import sha
         adapter._save('memory-inventory.json',{'schema':1,'binding':adapter.binding,'cursor':'synthetic',
             'status':'complete','sources':{sha(key):row}})
         with self.assertRaises(CacheBlocked):adapter.sources.read_memory_source(row['source_id'],row['source_fingerprint'])
@@ -620,7 +623,7 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
 
     def test_directory_swap_attempt_fails_closed_and_later_junction_read_is_blocked(self):
         from unittest.mock import patch
-        import agent_brain_client.adapters.harnesses.codex.content as cache
+        import agent_brain_client.adapters.storage.content_session as cache
         helper=memory_inventory.base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
         helper.setUp();self.addCleanup(helper.doCleanups)
         root=helper.home/'.codex/memories';group=root/'group';group.mkdir(parents=True)
@@ -649,7 +652,7 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
             if group.exists() and is_link(group.lstat()):group.rmdir()
 
     def test_pinned_directories_and_files_exclude_replacement_and_writers(self):
-        import agent_brain_client.adapters.harnesses.codex.content as cache
+        import agent_brain_client.adapters.storage.content_session as cache
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)/'memories';group=root/'group';group.mkdir(parents=True)
             target=group/'one.md';target.write_bytes(b'synthetic before')
@@ -678,13 +681,13 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
             root.rename(Path(tmp)/'released-root')
 
     def test_unicode_codex_home_full_review_and_offline_restart_use_existing_outbox(self):
-        from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+        from agent_brain_client.adapters.storage.content_session import ContentSession
         from agent_brain_client.interfaces.mcp.content import ContentServer
         helper=memory_inventory.base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
         helper.setUp();self.addCleanup(helper.doCleanups)
         native=helper.home/'中文 Codex 目录';root=native/'memories'/'中文目录';root.mkdir(parents=True)
         (root/'经历.md').write_bytes('合成事实：本周更正了指示牌。'.encode('utf-8'))
-        def restart():return CodexContentSession(helper.home,helper.cache,memory_inventory.base.POLICY,helper.cloud,codex_home=native)
+        def restart():return ContentSession(helper.home,helper.cache,memory_inventory.base.POLICY,helper.cloud,host=CodexContentPorts, native_home=native)
         adapter=restart();server=ContentServer(adapter)
         row=server.invoke('content_sources_inventory',{})['structuredContent']['sources'][0]
         params={'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint']}

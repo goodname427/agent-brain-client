@@ -6,11 +6,9 @@ from types import SimpleNamespace
 from agent_brain_client.application.collection.control import CollectionControl
 from agent_brain_client.application.collection import routing
 from agent_brain_client.application.memory.recall import recall as recall_memory
-from agent_brain_client.adapters.harnesses.codex import collection as native_collection
-from agent_brain_client.adapters.harnesses.codex import (
-    project_configuration as project_sources,
-)
-from agent_brain_client.adapters.harnesses.codex.collection_control import (
+
+
+from agent_brain_client.adapters.storage.collection_control import (
     CollectionControlIO,
 )
 from agent_brain_client.adapters.server.collection import CollectionClient
@@ -25,12 +23,14 @@ from agent_brain_client.adapters.storage.recall_receipts import (
     save_recall_observation as save_recall_observation,
 )
 from agent_brain_client.adapters.storage import metadata as metadata_io
-from agent_brain_client.runtime import project_memory
+
 
 ROOT = Path(__file__).resolve().parents[3]
 
 
 def control():
+    from agent_brain_client.adapters.storage import project_settings as project_sources
+    from agent_brain_client.runtime import project_memory
     return CollectionControl(
         CollectionControlIO(
             settings_path=lambda home: settings_path(home),
@@ -68,6 +68,8 @@ def native_services():
         recall=lambda *args, **kwargs: recall(*args, **kwargs),
         recall_prompt=lambda *args, **kwargs: recall_prompt(*args, **kwargs),
         schedule_delivery=lambda *args: schedule_delivery(*args),
+        build_delivery_queue=lambda *args: build_delivery_queue(*args),
+        host_status=lambda value: host_status(value),
     )
 
 
@@ -88,27 +90,31 @@ def legacy(value, local):
 
 
 def adapter(value, local):
-    return native_collection.adapter(value, local, services=native_services())
+    return build_delivery_queue(value, local, "codex")
 
 
 def submit_hook(value, local, payload):
+    from agent_brain_client.adapters.harnesses.codex import collection as native_collection
     return native_collection.submit_hook(
         value, local, payload, services=native_services()
     )
 
 
 def hook(value, *, observe=None):
+    from agent_brain_client.adapters.harnesses.codex import collection as native_collection
     return native_collection.hook(value, observe=observe, services=native_services())
 
 
 def flush(value):
-    return native_collection.flush(value, services=native_services())
+    from agent_brain_client.runtime import collection_management
+    return collection_management.flush(value, services=native_services())
 
 
 def status(
     value, *, check_server=False, request_key=None, event_id=None, session_id=None
 ):
-    return native_collection.status(
+    from agent_brain_client.runtime import collection_management
+    return collection_management.status(
         value,
         check_server=check_server,
         request_key=request_key,
@@ -132,13 +138,8 @@ recall = partial(
 
 
 def build_delivery_queue(value, local, harness):
-    if harness == "codex":
-        return adapter(value, local)
-    if harness == "codebuddy":
-        from agent_brain_client.adapters.harnesses.codebuddy.events import open_queue
-        import sys
-        return open_queue(sys.modules[__name__], value, local)
-    raise ValueError("Supported Harness required")
+    from agent_brain_client.runtime.capture_queues import open_queue
+    return open_queue(value, local, harness, services=native_services())
 
 
 def schedule_delivery(home, harness, local):
@@ -156,3 +157,30 @@ def recall_prompt(value, local, payload, query, *, observe=None):
         locked=locked, operation_stage=operation_stage, cache_exists=lambda path: path.exists(),
         write=metadata_io.write, save_observation=save_recall_observation,
     ))
+
+
+def host_status(value):
+    home = Path(value["device_home"])
+    hosts = {}
+    codex_receipt = settings_path(home).parent / "hook-install.json"
+    if codex_receipt.exists() or (home / ".config/agent-brain-client/codex/registration.json").exists():
+        from agent_brain_client.adapters.harnesses.codex.collection_installation import installation_status
+        try:
+            from agent_brain_client.adapters.harnesses.codex import binding
+            from agent_brain_client.adapters.storage.registration import registration
+            _, policy = registration(home)
+            native = binding.status(home, policy["runtime"])
+            hosts["codex"] = dict(native, mcp_installed=native["installed"], installed=installation_status(value))
+        except Exception as error:
+            hosts["codex"] = {"installed": False, "status": "review-required", "error_type": type(error).__name__}
+    buddy = home / ".config/agent-brain-client/codebuddy/registration.json"
+    if buddy.exists():
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration
+        from agent_brain_client.runtime.host_binding import inspect_backend
+        try:
+            hosts["codebuddy"] = configuration.status(home, None, backend_check=inspect_backend)
+            hosts["codebuddy"]["mcp_installed"] = hosts["codebuddy"]["installed"]
+            hosts["codebuddy"]["installed"] = hosts["codebuddy"].get("collection_hooks_installed", False) and hosts["codebuddy"]["installed"]
+        except Exception as error:
+            hosts["codebuddy"] = {"installed": False, "status": "review-required", "error_type": type(error).__name__}
+    return hosts

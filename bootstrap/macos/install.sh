@@ -28,7 +28,7 @@ if /usr/bin/python3 -I -B "$HERE/bootstrap/source_checkout.py" --should-bootstra
     if [ "$CHECKOUT" != "$HERE" ]; then
         exec /bin/sh "$CHECKOUT/bootstrap/macos/install.sh" "$@"
     fi
-    exec "$PYTHON" -I -B "$HERE/bootstrap/python_runtime.py" "$@"
+    exec "$PYTHON" -I -B "$HERE/bootstrap/python_runtime.py" --harness codex "$@"
 fi
 # No Git/network checkout and no dependency preparation for local maintenance.
-exec /usr/bin/python3 -I -B "$HERE/bootstrap/python_runtime.py" "$@"
+exec /usr/bin/python3 -I -B "$HERE/bootstrap/python_runtime.py" --harness codex "$@"

@@ -1,4 +1,5 @@
 """Offline/restart/import failure tests with synthetic sources and fake homes."""
+
 import copy
 import json
 from pathlib import Path
@@ -11,7 +12,8 @@ from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'));sys.path.insert(0,str(ROOT/'src'));sys.path.insert(0,str(ROOT/'src'))
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
+from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.domain.errors import CacheBlocked
 import agent_brain_client.domain.contract as contract
 
@@ -47,7 +49,7 @@ class Cloud:
 class Outbox(unittest.TestCase):
     def setUp(self):
         tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);self.base=Path(tmp.name).resolve();self.home=self.base/'home';self.home.mkdir();self.cache=self.base/'cache';self.cloud=Cloud();self.adapter=self.restart()
-    def restart(self):return CodexContentSession(self.home,self.cache,POLICY,self.cloud,codex_home=self.home/'.codex')
+    def restart(self):return ContentSession(self.home,self.cache,POLICY,self.cloud,host=CodexContentPorts, native_home=self.home/'.codex')
     def request(self,rid='synthetic_write_0001',body=None,revision='missing'):
         return {'request_id':rid,'method':'content_put','params':{'kind':'memory','id':'synthetic-topic','record':dict(MEMORY,body=body or MEMORY['body']),'expected_revision':revision}}
     def plan(self,records=None,fingerprint='a'*64):
@@ -59,7 +61,7 @@ class Outbox(unittest.TestCase):
         def inspect(value):
             self.assertTrue((self.cache/'outbox'/(request['request_id']+'.json')).is_file());return original(value)
         self.cloud.request=inspect
-        with patch('agent_brain_client.adapters.harnesses.codex.content.os.fsync',wraps=__import__('os').fsync) as fsync:
+        with patch('agent_brain_client.adapters.storage.content_session.os.fsync',wraps=__import__('os').fsync) as fsync:
             reply=self.adapter.invoke(request);self.assertGreaterEqual(fsync.call_count,3)
         self.assertEqual(reply['error']['code'],'content_upload_queued');self.assertFalse(reply['persistence']['durable']);self.assertTrue(reply['local_queue']['saved'])
         self.assertEqual(json.loads((self.cache/'outbox'/(request['request_id']+'.json')).read_bytes())['request'],request)
@@ -76,7 +78,7 @@ class Outbox(unittest.TestCase):
                 self.cloud.crash=False;before=self.cloud.puts;self.adapter=self.restart();self.adapter.refresh();self.assertEqual(self.cloud.puts,before);self.assertEqual(self.adapter.invoke(request)['local_queue']['state'],'confirmed')
 
     def test_actual_subprocess_exit_keeps_request_for_next_process(self):
-        code="import sys;sys.path.insert(0,sys.argv[1]);from test_content_outbox import *;c=Cloud();c.offline=True;a=CodexContentSession(sys.argv[2],sys.argv[3],POLICY,c,codex_home=Path(sys.argv[2])/'.codex');a.invoke("+repr(self.request())+");raise SystemExit(23)"
+        code="import sys;sys.path.insert(0,sys.argv[1]);from test_content_outbox import *;c=Cloud();c.offline=True;a=ContentSession(sys.argv[2],sys.argv[3],POLICY,c,host=CodexContentPorts, native_home=Path(sys.argv[2])/'.codex');a.invoke("+repr(self.request())+");raise SystemExit(23)"
         run=subprocess.run([sys.executable,'-I','-B','-c',code,str(ROOT/'tests'),str(self.home),str(self.cache)],capture_output=True,text=True);self.assertEqual(run.returncode,23,run.stderr)
         self.assertEqual(self.restart().queue_status()['pending'],1);self.restart().refresh();self.assertEqual(self.cloud.puts,1)
 
@@ -88,7 +90,7 @@ class Outbox(unittest.TestCase):
 
     def test_process_killed_before_confirmation_rename_keeps_original_replayable(self):
         self.cloud.offline=True;self.adapter.invoke(self.request())
-        code=("import os,sys\nsys.path.insert(0,sys.argv[1])\nfrom test_content_outbox import *\nc=Cloud();a=CodexContentSession(sys.argv[2],sys.argv[3],POLICY,c,codex_home=Path(sys.argv[2])/'.codex')\noriginal=os.replace\ndef killed(source,target):\n if str(target).endswith('/outbox/synthetic_write_0001.json'):os._exit(37)\n return original(source,target)\nos.replace=killed\na.refresh()\n")
+        code=("import os,sys\nsys.path.insert(0,sys.argv[1])\nfrom test_content_outbox import *\nc=Cloud();a=ContentSession(sys.argv[2],sys.argv[3],POLICY,c,host=CodexContentPorts, native_home=Path(sys.argv[2])/'.codex')\noriginal=os.replace\ndef killed(source,target):\n if str(target).endswith('/outbox/synthetic_write_0001.json'):os._exit(37)\n return original(source,target)\nos.replace=killed\na.refresh()\n")
         run=subprocess.run([sys.executable,'-I','-B','-c',code,str(ROOT/'tests'),str(self.home),str(self.cache)],capture_output=True,text=True);self.assertEqual(run.returncode,37,run.stderr)
         orphans=list((self.cache/'outbox').glob('.client-native-*'));self.assertTrue(orphans)
         self.assertEqual(self.restart().queue_status()['pending'],1);self.cloud.offline=False;self.assertEqual(self.restart().refresh()['status'],'content-refreshed');self.assertEqual(self.cloud.puts,1);self.assertTrue(all(p.exists() for p in orphans))
@@ -97,7 +99,7 @@ class Outbox(unittest.TestCase):
         self.adapter.sources.stage_import(self.plan());before=(self.cache/'imports.json').read_bytes()
         with self.assertRaises(CacheBlocked):self.adapter._save('imports.json',{'oversized':'x'*1048576})
         self.assertEqual((self.cache/'imports.json').read_bytes(),before)
-        with patch('agent_brain_client.adapters.harnesses.codex.content.os.fsync',side_effect=OSError('Synthetic durable save failure')):
+        with patch('agent_brain_client.adapters.storage.content_session.os.fsync',side_effect=OSError('Synthetic durable save failure')):
             with self.assertRaises(OSError):self.adapter.invoke(self.request())
         self.assertEqual(self.cloud.calls,[])
 

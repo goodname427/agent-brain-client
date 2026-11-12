@@ -1,3 +1,5 @@
+
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
 """Synthetic install/use/remove/reinstall; no real Keychain, server or Codex."""
 import copy
@@ -12,12 +14,12 @@ from unittest.mock import patch
 
 import test_mac_first_install as fixture
 from test_content_outbox import Cloud, MEMORY, RULE, SKILL
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.adapters.harnesses.codex.content_limits import BEGIN
 from agent_brain_client.adapters.server.https import HTTPSContentClient
 from agent_brain_client.adapters.platforms.filesystem import cache_locked as locked, PlatformUnsupported
-import agent_brain_client.adapters.harnesses.codex.installation as install
-import agent_brain_client.adapters.harnesses.codex.lifecycle as lifecycle
+import agent_brain_client.adapters.installation.installation as install
+import agent_brain_client.runtime.client_lifecycle as lifecycle
 
 
 class ClientUninstall(unittest.TestCase):
@@ -39,7 +41,7 @@ class ClientUninstall(unittest.TestCase):
         runtime = policy['runtime']
         client = HTTPSContentClient(runtime['https_profile'], runtime['https_profile_sha256'], store=self.f.store)
         self.cloud.queue_identity = client.queue_identity
-        self.adapter = CodexContentSession(self.home, runtime['content_cache'], adapters_storage_private_files.private_json(self.preparation / 'content-policy.json'), self.cloud, codex_home=self.native)
+        self.adapter = ContentSession(self.home, runtime['content_cache'], adapters_storage_private_files.private_json(self.preparation / 'content-policy.json'), self.cloud, host=CodexContentPorts, native_home=self.native)
         (self.native / 'AGENTS.md').write_text('User instruction preserved.\n')
         (self.native / 'AGENTS.md').chmod(0o600)
         self.cloud.records = {('memory', 'synthetic-memory'): copy.deepcopy(MEMORY), ('rule', 'synthetic-rule'): dict(RULE, enabled=True), ('skill', 'synthetic-skill'): dict(SKILL, enabled=True)}
@@ -54,8 +56,8 @@ class ClientUninstall(unittest.TestCase):
         wizard = fixture.wizard
         original = wizard.run
 
-        def run(home, native, connection, digest):
-            return original(home, native, connection, digest,
+        def run(home, native, connection, digest, *, harness):
+            return original(home, native, connection, digest, harness=harness,
                             confirm=lambda *a: 'Continue', store=self.f.store,
                             transport=self.f.transport,
                             secure_input=lambda: self.fail('Reinstall must not request an invitation'),
@@ -63,7 +65,7 @@ class ClientUninstall(unittest.TestCase):
                             installer=lambda p, d: install.apply(p, d, lambda value: None))
 
         output = io.StringIO()
-        with patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', *args]), \
+        with patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', '--harness', 'codex', *args]), \
                 patch.object(Path, 'home', return_value=self.home), \
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
                 patch.object(sys, 'stdout', output), \
@@ -156,8 +158,9 @@ class ClientUninstall(unittest.TestCase):
                 path.write_bytes(before + b'\nSYNTHETIC_DRIFT')
                 with patch.object(self.f.backend, 'load', side_effect=AssertionError('Credential access forbidden')):
                     code, result = self.connection_cli(execute=False)
-                self.assertEqual((code, result['status']), (2, 'connection-recovery-review-required'))
-                self.assertFalse(result['credential_accessed'])
+                expected = 'first-install-review-or-resume-required' if path in (policy_path, lifecycle.journal_path(self.home)) else 'connection-recovery-review-required'
+                self.assertEqual((code, result['status']), (2, expected))
+                self.assertFalse(result.get('credential_accessed', False))
                 self.assertEqual(path.read_bytes(), before + b'\nSYNTHETIC_DRIFT')
             path.write_bytes(before)
 
@@ -299,7 +302,7 @@ class ClientUninstall(unittest.TestCase):
 
     def uninstall_cli(self):
         output = io.StringIO()
-        with patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', '--action', 'uninstall']), \
+        with patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', "--harness", "codex", '--action', 'uninstall']), \
                 patch.object(Path, 'home', return_value=self.home), \
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
                 patch.object(sys, 'stdout', output), \
@@ -325,7 +328,7 @@ class ClientUninstall(unittest.TestCase):
 
     def status_cli(self, action='status'):
         output = io.StringIO()
-        with patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', '--action', action]), \
+        with patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', "--harness", "codex", '--action', action]), \
                 patch.object(Path, 'home', return_value=self.home), \
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
                 patch.object(sys, 'stdout', output), \

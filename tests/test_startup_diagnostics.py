@@ -150,7 +150,7 @@ class StartupDiagnostics(unittest.TestCase):
             ),
             mock.patch("sys.stderr", output),
         ):
-            result = client_startup.startup("synthetic-policy", "synthetic-digest")
+            result = client_startup.startup("synthetic-policy", "synthetic-digest", harness="codex")
 
         self.assertTrue(result["served"])
         self.assertEqual(result["status"], "current")
@@ -171,7 +171,7 @@ class StartupDiagnostics(unittest.TestCase):
             mock.patch.object(client_startup.subprocess, "run", return_value=mock.Mock(returncode=0)),
             mock.patch("sys.stderr", output),
         ):
-            result = client_startup.startup("synthetic-policy", "synthetic-digest")
+            result = client_startup.startup("synthetic-policy", "synthetic-digest", harness="codex")
         self.assertTrue(result["served"])
         self.assertEqual(json.loads(output.getvalue())["error_code"], "background-check-not-started")
         self.assertNotIn("SYNTHETIC_SECRET", output.getvalue())
@@ -230,7 +230,7 @@ class StartupDiagnostics(unittest.TestCase):
             mock.patch.object(client_startup, "ClientReleases", return_value=releases_for_startup),
             mock.patch("sys.stderr", output),
         ):
-            startup_result = client_startup.startup("synthetic-policy", "synthetic-digest", installation_check=True)
+            startup_result = client_startup.startup("synthetic-policy", "synthetic-digest", installation_check=True, harness="codex")
         self.assertFalse(startup_result["served"])
         self.assertEqual(startup_result["status"], "release-review-required")
 

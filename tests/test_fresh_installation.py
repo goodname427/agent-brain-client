@@ -20,7 +20,7 @@ from agent_brain_client.adapters.platforms.filesystem import (
     locked,
 )
 from agent_brain_client.adapters.packages.client import HTTPS_CONTENT_CAPABILITIES
-from agent_brain_client.adapters.harnesses.codex.installation import (
+from agent_brain_client.adapters.installation.installation import (
     registered_mcp_digest,
 )
 from agent_brain_client.adapters.server.https import profile_metadata
@@ -299,7 +299,7 @@ class FreshInstallation(unittest.TestCase):
                     "result": contract.envelope("memory", "personal-owner", MEMORY),
                 }
 
-        def connect(home, native, endpoint):
+        def connect(home, native, endpoint, *, harness):
             self.port.validate_connection({"endpoint": endpoint, "grant": self.grant})
             fresh = read_journal(home)
             # The real material preparer creates private first-install metadata
@@ -341,7 +341,7 @@ class FreshInstallation(unittest.TestCase):
                 sys,
                 "argv",
                 [
-                    "install.py",
+                    "install.py", "--harness", "codex",
                     "--action",
                     "reinstall",
                     "--server",
@@ -355,7 +355,7 @@ class FreshInstallation(unittest.TestCase):
             ),
             patch(
                 "agent_brain_client.runtime.installation.finish_install",
-                side_effect=lambda home, value: value,
+                side_effect=lambda home, value, **kwargs: value,
             ),
             patch(
                 "agent_brain_client.adapters.server.https.HTTPSContentClient", NewDevice
@@ -582,6 +582,9 @@ class FreshInstallation(unittest.TestCase):
         )
         io.write(self.root / "codex-mcp.json", self.metadata)
         self.owned["binding"]["codex_home"] = str(shared)
+        old_guidance = shared / "AGENTS.md"
+        atomic(old_guidance, b"Retained old backend guidance.\n", 0o600)
+        self.owned["files"][".codex/AGENTS.md"] = io.digest(old_guidance.read_bytes())
         self.owned["policy_sha"] = io.digest(
             contract.encode({"policy": self.content, "binding": self.owned["binding"]})
         )
@@ -593,6 +596,22 @@ class FreshInstallation(unittest.TestCase):
         self.assertNotIn("agent_brain_server", self.config.read_text())
         self.port.restore_mapping(self.cache, self.content)
         self.assertEqual(self.memory_path.read_text(), MEMORY["body"])
+        from agent_brain_client.runtime.harness_content import content_host
+        actual = self.home / "selected-native-profile"
+        private_directory(actual)
+        agents = actual / "AGENTS.md"
+        atomic(agents, b"Preserve the native user's instructions.\n", 0o600)
+        destination = self.root / "codex/content-cache"
+        with patch.dict(os.environ, CODEX_HOME=str(actual)):
+            selected = retained_installation(self.home, shared, target_host=content_host("codex"))
+            selected.restore_mapping(destination, self.content)
+        restored = io.private_json(destination / "owned.json", cache=True)
+        self.assertEqual(restored["binding"], {"device_home": str(self.home), "codex_home": str(actual)})
+        self.assertNotIn(".codex/AGENTS.md", restored["files"])
+        self.assertEqual(agents.read_bytes(), b"Preserve the native user's instructions.\n")
+        self.assertEqual(old_guidance.read_bytes(), b"Retained old backend guidance.\n")
+        self.assertEqual(self.memory_path.read_text(), MEMORY["body"])
+        self.assertFalse((destination / "outbox").exists())
 
     def test_public_entry_advertises_explicit_reinstall_and_bootstrap_refresh(self):
         import subprocess
@@ -701,7 +720,7 @@ class FreshInstallation(unittest.TestCase):
             transport=SimpleNamespace(bootstrap=lambda *args: connection),
             key_input=lambda *args: "SYNTHETIC_ACCESS_KEY_" + "x" * 40,
             install=install,
-        )
+         harness="codex", )
         self.assertEqual(result["status"], "fresh-install-account-mismatch")
         install.assert_not_called()
         self.assertIsNone(backend["record"])
@@ -710,7 +729,7 @@ class FreshInstallation(unittest.TestCase):
     def test_old_completed_uninstall_can_archive_and_reconnect_without_native_entry(
         self,
     ):
-        from agent_brain_client.adapters.harnesses.codex.lifecycle import remove_table
+        from agent_brain_client.runtime.client_lifecycle import remove_table
         import base64
 
         journal = {
@@ -809,7 +828,7 @@ class FreshInstallation(unittest.TestCase):
                 runner=lambda *a, **k: (_ for _ in ()).throw(
                     StopBeforeNativeOrNetwork()
                 ),
-            )
+             harness="codex", )
         profile = io.private_json(self.profile)
         self.assertEqual(profile["instance_id"], read_journal(self.home)["id"])
         self.assertEqual(
@@ -827,7 +846,7 @@ class FreshInstallation(unittest.TestCase):
         import agent_brain_client.interfaces.cli.install as cli
         from unittest.mock import Mock
 
-        def connect(*args):
+        def connect(*args, **kwargs):
             self.port.restore_mapping(self.cache, self.content)
             return {"status": "content-native-client-installed", "installed": True}
 
@@ -840,7 +859,7 @@ class FreshInstallation(unittest.TestCase):
         with (
             patch.dict(os.environ, {"CODEX_HOME": str(self.native)}),
             patch.object(cli.Path, "home", return_value=self.home),
-            patch.object(sys, "argv", ["install.py", "--action", "reinstall"]),
+            patch.object(sys, "argv", ["install.py", "--harness", "codex", "--action", "reinstall"]),
             patch("builtins.input", return_value="FRESH"),
             patch(
                 "agent_brain_client.interfaces.cli.access.run_address_install",

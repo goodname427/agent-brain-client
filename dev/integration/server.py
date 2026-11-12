@@ -5,6 +5,7 @@ checkout with its test fixtures; all Server state, credentials, and source
 files are synthetic and created in temporary directories.
 """
 
+
 import sys
 from pathlib import Path
 
@@ -55,7 +56,7 @@ def run(server_root):
 
     sys.path.insert(0, str(CLIENT_ROOT / "src"))
     sys.modules.pop("brain_lock", None)
-    from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+    from agent_brain_client.adapters.storage.content_session import ContentSession
 
     fixture = json.loads(
         (CLIENT_ROOT / "tests/fixtures/agentbrain_030_acceptance.json").read_text()
@@ -105,8 +106,8 @@ def run(server_root):
                         raise AssertionError((request["method"], status, response))
                     return response
 
-            adapter = CodexContentSession(
-                home, cache, policy, IsolatedServerBridge(), codex_home=home / ".codex"
+            adapter = ContentSession(
+                home, cache, policy, IsolatedServerBridge(), host=__import__("agent_brain_client.adapters.harnesses.codex.content_ports", fromlist=["CodexContentPorts"]).CodexContentPorts, native_home=home / ".codex"
             )
             rows = adapter.sources.inventory_memory_sources()["sources"]
             indexed = {row["source_id"]: row for row in rows}

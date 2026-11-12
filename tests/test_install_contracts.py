@@ -208,7 +208,7 @@ class PlatformMainContracts(unittest.TestCase):
     ):
         from agent_brain_client.adapters.server.https import validate_profile_metadata
         from agent_brain_client.adapters.packages.client import validate_release_policy
-        from agent_brain_client.adapters.harnesses.codex.installation import render, validate_install_scope
+        from agent_brain_client.adapters.installation.installation import render, validate_install_scope
         import tomllib
 
         profile, policy, plan = self.config()
@@ -332,14 +332,14 @@ class PlatformMainContracts(unittest.TestCase):
     @unittest.skipIf(sys.platform == "win32", "Foreign-platform rejection; native Windows has separate integration coverage")
     def test_windows_install_and_recovery_never_mutate_existing_images(self):
         from agent_brain_client.adapters.platforms.filesystem import PlatformUnsupported
-        from agent_brain_client.adapters.harnesses.codex.installation import apply, restore, inspect
+        from agent_brain_client.adapters.installation.installation import apply, restore, inspect
         from unittest.mock import Mock
 
         _, _, plan = self.config()
         check = Mock()
         with (
             patch(
-                "agent_brain_client.adapters.harnesses.codex.installation.atomic",
+                "agent_brain_client.adapters.installation.installation.atomic",
                 side_effect=AssertionError("No platform write"),
             ),
             patch("agent_brain_client.adapters.storage.private_files.raw", side_effect=AssertionError("No private read")),
@@ -360,14 +360,14 @@ class PlatformMainContracts(unittest.TestCase):
         self,
     ):
         from agent_brain_client.adapters.platforms.filesystem import PlatformUnsupported, private_mode, sync_directory
-        from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+        from agent_brain_client.adapters.storage.content_session import ContentSession
         from agent_brain_client.adapters.platforms.credentials import CredentialStore
         from agent_brain_client.adapters.packages.client import policy_file
         from agent_brain_client.runtime.launcher import serve_content
         from agent_brain_client.adapters.storage.host_files import atomic
 
         profile, policy, plan = self.config()
-        adapter = CodexContentSession.__new__(CodexContentSession)
+        adapter = ContentSession.__new__(ContentSession)
         adapter.platform = "win32-amd64"
         from agent_brain_client.application.synchronization.pull import ContentSynchronization
         adapter.synchronization = ContentSynchronization(adapter)
@@ -395,7 +395,7 @@ class PlatformMainContracts(unittest.TestCase):
                     lambda: sync_directory("synthetic"),
                     lambda: CredentialStore(None, "synthetic").lease(),
                     lambda: policy_file("synthetic", "a" * 64),
-                    lambda: CodexContentSession("synthetic", "cache", {}, None),
+                    lambda: ContentSession("synthetic", "cache", {}, None, host=object()),
                     lambda: atomic(Path("synthetic"), b"SYNTHETIC", 0o600),
                 ):
                     with self.assertRaises(PlatformUnsupported):

@@ -1,4 +1,5 @@
 """Fixed synthetic 20-record import and 10-question evidence recall check."""
+
 import hashlib
 import json
 import re
@@ -10,6 +11,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'tests'))
 sys.path.insert(0,str(ROOT/'src'))
 import test_content_outbox as base
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 
 FIXTURE=json.loads((ROOT/'tests/fixtures/agentbrain_030_acceptance.json').read_text())
 STOP={'a','an','and','are','did','do','for','how','in','is','it','of','the','to','what','was','were','which','with'}
@@ -42,8 +44,8 @@ class AgentBrain030Acceptance(unittest.TestCase):
     def setUp(self):
         self.helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
         self.helper.setUp();self.addCleanup(self.helper.doCleanups)
-        self.cloud=RecallCloud();self.adapter=base.CodexContentSession(
-            self.helper.home,self.helper.cache,base.POLICY,self.cloud,codex_home=self.helper.home/'.codex')
+        self.cloud=RecallCloud();self.adapter=base.ContentSession(
+            self.helper.home,self.helper.cache,base.POLICY,self.cloud,host=CodexContentPorts, native_home=self.helper.home/'.codex')
         self.plan={'schema':1,'binding':self.adapter.binding,'sources':[],
                    'coverage':[{'source_id':'synthetic-history','status':'read','reason':'Test fixture only'}]}
         for row in FIXTURE['records']:
@@ -60,7 +62,7 @@ class AgentBrain030Acceptance(unittest.TestCase):
         self.assertEqual(self.adapter.refresh()['status'],'content-refreshed')
         self.assertEqual(self.adapter.sources.import_status()['counts'],{'imported':20})
         self.assertEqual(self.cloud.puts,20)
-        restarted=base.CodexContentSession(self.helper.home,self.helper.cache,base.POLICY,self.cloud,codex_home=self.helper.home/'.codex')
+        restarted=base.ContentSession(self.helper.home,self.helper.cache,base.POLICY,self.cloud,host=CodexContentPorts, native_home=self.helper.home/'.codex')
         restarted.sources.stage_import(self.plan)
         restarted.refresh()
         self.assertEqual(restarted.sources.import_status()['counts'],{'imported':20})

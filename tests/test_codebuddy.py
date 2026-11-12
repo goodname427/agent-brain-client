@@ -254,17 +254,16 @@ class Installation(unittest.TestCase):
         self.assertEqual(rule.read_bytes(), changed)
 
     def test_upgrade_refreshes_existing_surface_without_installing_absent_hosts(self):
-        from agent_brain_client.adapters.harnesses.codex import updates
+        from agent_brain_client.adapters.installation import updates
         from agent_brain_client.adapters.packages.layout import PYTHON_FILES
-        from agent_brain_client.runtime.updates import HostUpdateInstallation
-        backend = updates.CodexUpdateInstallation(self.home, setup_sources=lambda: {})
-        adapter = HostUpdateInstallation(self.home, backend)
+        from agent_brain_client.runtime.host_maintenance import HostMaintenance
+        adapter = updates.RegisteredClientInstallation(self.home, setup_sources=lambda: {}, host_hooks=HostMaintenance(self.home))
         active = {"package": str(ROOT), "version": "0.8.5", "commit": "c" * 40}
-        adapter.channel = backend.channel = SimpleNamespace(verified_active=lambda: active)
+        adapter.channel = SimpleNamespace(verified_active=lambda: active)
         def shared_refresh(**kwargs):
             return {'status': 'global-hook-current', 'native_changed': False,
                     'update_available': False}
-        with patch.object(updates.hooks, 'refresh', side_effect=lambda *a, **kw: shared_refresh(**kw)):
+        with patch("agent_brain_client.runtime.host_maintenance.registered_hosts", side_effect=lambda home: ["codebuddy"] if (cbhost.state_directory(home) / "registration.json").exists() and not metadata.private_json(cbhost.state_directory(home) / "registration.json").get("removed") else []):
             adapter.refresh_hooks()
             self.assertFalse((cbhost.state_directory(self.home) / 'registration.json').exists())
             self.install(surface='cli')
@@ -277,7 +276,7 @@ class Installation(unittest.TestCase):
             changed = source / 'src/agent_brain_client/runtime/collection.py'
             changed.write_bytes(changed.read_bytes() + b'\n# synthetic upgrade\n')
             active["package"] = str(source)
-            with patch.object(updates.hooks, 'ROOT', source):
+            with patch("agent_brain_client.runtime.host_maintenance.ROOT", source):
                 checked = adapter.refresh_hooks(check_only=True)
                 self.assertTrue(checked['update_available'])
                 self.assertEqual((self.native / '.mcp.json').read_bytes(), old)
@@ -558,14 +557,14 @@ class Protocol(unittest.TestCase):
             env = dict(os.environ, HOME=str(home), SYNTHETIC_LOG=str(log))
             fresh = subprocess.run(['sh', str(script), '--server', 'https://synthetic.invalid'], env=env, capture_output=True)
             self.assertEqual(fresh.returncode, 0, fresh.stderr)
-            self.assertEqual(log.read_text().splitlines(), ['--server https://synthetic.invalid', 'bind'])
+            self.assertEqual(log.read_text().splitlines(), ['--harness codebuddy --server https://synthetic.invalid', 'bind'])
             log.write_text('')
             registration = home / '.config/agent-brain-client/codex-mcp.json'
             registration.parent.mkdir(parents=True)
             registration.write_text('{}')
             existing = subprocess.run(['sh', str(script)], env=env, capture_output=True)
             self.assertEqual(existing.returncode, 0, existing.stderr)
-            self.assertEqual(log.read_text().splitlines(), ['', '--action check-update', '--action update', 'bind'])
+            self.assertEqual(log.read_text().splitlines(), ['--harness codebuddy', '--action check-update', '--action update', 'bind'])
 
     def test_capture_queue_uses_shared_core_and_separate_host_binding(self):
         from agent_brain_client.application.queue.outbox import DurableOutbox
@@ -579,7 +578,8 @@ class Protocol(unittest.TestCase):
         registered = {'runtime': {'content_policy': str(file), 'content_policy_sha256': adapters_storage_bounded_json.digest(file.read_bytes()), 'codex_home': str(source.home / '.codex')}}
         local = {'kind': 'non-project', 'cwd': str(source.home), 'project_root': None, 'repository_root': None}
         with patch.object(registration_store, 'registration', return_value=({}, registered)):
-            client, queue = cb.open_queue(core, {'device_home': str(source.home)}, local)
+            from agent_brain_client.runtime.capture_queues import open_queue
+            client, queue = open_queue({'device_home': str(source.home)}, local, 'codebuddy', services=core)
         self.assertIsInstance(queue, DurableOutbox)
         self.assertEqual(client.queue_identity['host_adapter'], 'codebuddy')
         self.assertIn('codebuddy/outboxes', queue.cache.as_posix())
@@ -591,7 +591,7 @@ class Protocol(unittest.TestCase):
         execute = Mock()
         with patch.object(host_binding, 'backend', return_value=(command, {})), patch.object(host_binding.sys, 'platform', 'darwin'):
             host_binding.execute_mcp('/synthetic/home', object(), execute)
-        self.assertEqual(execute.call_args.args[:2], ('/synthetic/python', ['/synthetic/python', '-I', '/synthetic/startup.py']))
+        self.assertEqual(execute.call_args.args[:2], ('/synthetic/python', ['/synthetic/python', '-I', '/synthetic/startup.py', '--harness', 'codebuddy']))
         self.assertEqual(execute.call_args.args[2]['SYNTHETIC_CLIENT'], '1')
 
     def test_probe_requires_authenticated_protocol_result(self):
@@ -610,11 +610,12 @@ class Protocol(unittest.TestCase):
             home = Path(temp).resolve()
             self.assertEqual(entry.backend_home(home), home / '.config/agent-brain-client/shared-native')
             state = home / '.config/agent-brain-client'
-            state.mkdir(parents=True)
+            from agent_brain_client.adapters.platforms.filesystem import private_directory
+            private_directory(state)
             policy = state / 'policy.json'
             native = home / 'original-native'
-            policy.write_text(json.dumps({'runtime': {'codex_home': str(native)}}))
-            (state / 'codex-mcp.json').write_text(json.dumps({'release_policy': str(policy), 'release_policy_sha256': adapters_storage_bounded_json.digest(policy.read_bytes())}))
+            metadata.write(policy, {'runtime': {'codex_home': str(native)}})
+            metadata.write(state / 'codex-mcp.json', {'release_policy': str(policy), 'release_policy_sha256': adapters_storage_bounded_json.digest(policy.read_bytes())})
             self.assertEqual(entry.backend_home(home), native)
             self.assertFalse((home / '.codex').exists())
 

@@ -1,31 +1,27 @@
-"""Codex sources: concrete native behavior, separate from shared use cases."""
+"""Reviewed native-source inventory, import, CAS and reconciliation ledgers."""
 
 from agent_brain_client.domain.content import same_record
 from agent_brain_client.domain.errors import CacheBlocked
-import itertools
 import json
 import re
-import stat
 from agent_brain_client.domain import contract
 from agent_brain_client.adapters.platforms.filesystem import (
     cache_locked as locked,
     require_platform,
 )
-from agent_brain_client.adapters.harnesses.codex.content_limits import (
+from agent_brain_client.adapters.storage.content_limits import (
     REVIEW_DECISIONS,
     sha,
 )
-from agent_brain_client.adapters.harnesses.codex.memory_inventory import (
-    inventory_codex_memories,
-)
-
-
-from agent_brain_client.adapters.platforms.tree import open_tree, is_link
-
-
-class CodexSourceImports:
-    def __init__(self, session):
+class SourceImports:
+    def __init__(self, session, provider):
         self.session = session
+        self.provider = provider
+
+    def is_native(self, source_id):
+        if source_id.startswith(("codex-memory:", "codebuddy-memory:")) and not source_id.startswith(self.provider.prefix):
+            raise CacheBlocked()
+        return source_id.startswith(self.provider.prefix)
 
     def assert_shareable(self, source_keys):
         if not source_keys:
@@ -46,7 +42,7 @@ class CodexSourceImports:
             if item is None:
                 raise CacheBlocked()
             source = item["source"]
-            if source["source_id"].startswith("codex-memory:"):
+            if self.is_native(source["source_id"]):
                 review = reviews["items"].get(key)
                 if (
                     not isinstance(review, dict)
@@ -137,7 +133,7 @@ class CodexSourceImports:
             if "source_fingerprint" in item:
                 fingerprint = item["source_fingerprint"]
                 if fingerprint is None:
-                    if not item["source_id"].startswith("codex-memory:") or item[
+                    if not self.is_native(item["source_id"]) or item[
                         "status"
                     ] not in ("excluded", "unavailable"):
                         raise CacheBlocked()
@@ -172,7 +168,7 @@ class CodexSourceImports:
                 raise CacheBlocked()
             for entry in coverage:
                 source_id = entry["source_id"]
-                if not source_id.startswith("codex-memory:"):
+                if not self.is_native(source_id):
                     continue
                 fingerprint = entry.get("source_fingerprint")
                 if fingerprint is None:
@@ -243,7 +239,7 @@ class CodexSourceImports:
                 else:
                     raise CacheBlocked()
             for item in plan["sources"]:
-                if item["source_id"].startswith("codex-memory:"):
+                if self.is_native(item["source_id"]):
                     if (
                         not isinstance(memory_inventory, dict)
                         or memory_inventory.get("binding") != self.session.binding
@@ -333,7 +329,7 @@ class CodexSourceImports:
         """
         require_platform("cache-storage", self.session.platform)
         with locked(self.session.cache / "content.lock"):
-            fresh = inventory_codex_memories(self.session.native_memory_home)
+            fresh = self.provider.inventory()
             previous = self.session._load("memory-inventory.json", None)
             if previous is not None and (
                 not isinstance(previous, dict)
@@ -477,14 +473,14 @@ class CodexSourceImports:
             }
 
     def read_memory_source(self, source_id, fingerprint):
-        """Read one explicitly selected, inventoried Codex Memory file.
+        """Read one explicitly selected, inventoried native Memory file.
 
         The text is returned only to the local MCP caller and is never written
         into the cache or sent to AgentBrain. A bounded no-follow open and a
         post-read digest bind it to the inventory row reviewed by the caller.
         """
         if not isinstance(source_id, str) or not re.fullmatch(
-            r"codex-memory:[a-f0-9]{64}", source_id
+            re.escape(self.provider.prefix) + r"[a-f0-9]{64}", source_id
         ):
             raise CacheBlocked()
         if not isinstance(fingerprint, str) or not re.fullmatch(
@@ -512,81 +508,7 @@ class CodexSourceImports:
                 or row.get("status") not in ("not-checked", "read")
             ):
                 raise CacheBlocked()
-            root = self.session.native_memory_home / "memories"
-            try:
-                tree = open_tree(root)
-            except OSError:
-                raise CacheBlocked() from None
-            pending = [(tree.root, "", 0)]
-            entries_seen = 0
-            directories_seen = 0
-            raw = None
-            try:
-                while pending and raw is None:
-                    directory_fd, prefix, depth = pending.pop()
-                    directories_seen += 1
-                    if directories_seen > 1024 or depth > 16:
-                        tree.close_directory(directory_fd)
-                        raise CacheBlocked()
-                    try:
-                        with tree.scan(directory_fd) as scan:
-                            entries = sorted(
-                                itertools.islice(scan, 1025 - entries_seen),
-                                key=lambda e: e.name,
-                                reverse=True,
-                            )
-                    except OSError:
-                        tree.close_directory(directory_fd)
-                        raise CacheBlocked() from None
-                    try:
-                        for entry in entries:
-                            entries_seen += 1
-                            if entries_seen > 1024:
-                                raise CacheBlocked()
-                            relative = (prefix + "/" + entry.name).strip("/")
-                            try:
-                                info = tree.info(directory_fd, entry)
-                            except OSError:
-                                raise CacheBlocked() from None
-                            if is_link(info):
-                                continue
-                            if stat.S_ISDIR(info.st_mode):
-                                try:
-                                    child_fd = tree.open_directory(
-                                        directory_fd, entry, info
-                                    )
-                                    pending.append((child_fd, relative, depth + 1))
-                                except OSError:
-                                    raise CacheBlocked() from None
-                                continue
-                            if stat.S_ISREG(
-                                info.st_mode
-                            ) and source_id == "codex-memory:" + sha(
-                                relative.encode("utf-8", "surrogateescape")
-                            ):
-                                if info.st_size > 131072:
-                                    raise CacheBlocked()
-                                try:
-                                    with tree.verified_file(
-                                        directory_fd, entry, info
-                                    ) as source:
-                                        raw = source.read(131073)
-                                except OSError:
-                                    raise CacheBlocked() from None
-                                break
-                    finally:
-                        tree.close_directory(directory_fd)
-                if raw is None:
-                    raise CacheBlocked()
-            except OSError:
-                raise CacheBlocked() from None
-            finally:
-                for directory_fd, _, _ in pending:
-                    try:
-                        tree.close_directory(directory_fd)
-                    except OSError:
-                        pass
-                tree.close()
+            raw = self.provider.read(source_id)
             if len(raw) > 131072 or sha(raw) != fingerprint:
                 raise CacheBlocked()
             try:
@@ -614,7 +536,7 @@ class CodexSourceImports:
         decisions = REVIEW_DECISIONS
         if (
             not isinstance(source_id, str)
-            or not re.fullmatch(r"codex-memory:[a-f0-9]{64}", source_id)
+            or not re.fullmatch(re.escape(self.provider.prefix) + r"[a-f0-9]{64}", source_id)
             or not isinstance(fingerprint, str)
             or not re.fullmatch(r"[a-f0-9]{64}", fingerprint)
             or decision not in decisions
@@ -916,7 +838,7 @@ class CodexSourceImports:
                 if row["state"] == "confirmed":
                     item["status"] = (
                         "reconciled"
-                        if source["source_id"].startswith("codex-memory:")
+                        if self.is_native(source["source_id"])
                         else "imported"
                     )
                 elif row["state"] == "reconciled":
@@ -965,7 +887,7 @@ class CodexSourceImports:
                 continue
             # Native Memory staging is local review state; only a caller's explicit
             # content_put carrying this source_key may cross the Server boundary.
-            if source["source_id"].startswith("codex-memory:"):
+            if self.is_native(source["source_id"]):
                 continue
             try:
                 remote = self.session._read_target(kind, identity)

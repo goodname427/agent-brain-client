@@ -1,5 +1,6 @@
 """Content MCP interface for scoped memory, Rule and Skill operations."""
 
+
 import sys
 from pathlib import Path
 
@@ -27,12 +28,7 @@ from agent_brain_client.application.tools.catalog import (
     enabled_tools,
 )
 from agent_brain_client.adapters.storage.pinned import pinned
-from agent_brain_client.adapters.harnesses.codex.hooks import (
-    validate_hook_policy,
-    hook_enabled,
-    native_hook_fields,
-    run_event_hook,
-)
+
 from agent_brain_client.interfaces.mcp.server import serve
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.adapters.storage.reinstallation import require_memory_verified
@@ -54,8 +50,8 @@ import ssl
 from urllib.error import HTTPError
 import uuid
 from agent_brain_client.interfaces.mcp.topics import Server
-from agent_brain_client.adapters.harnesses.codex.content import (
-    CodexContentSession,
+from agent_brain_client.adapters.storage.content_session import (
+    ContentSession,
     contract,
     ROOT as CLIENT_ROOT,
 )
@@ -648,7 +644,7 @@ class ContentServer(Server):
         ):
             mapping = self.adapter.refresh()
             result["content_mapping"] = mapping
-            result["serverInfo"]["name"] = "agent-brain-content-codex-candidate"
+            result["serverInfo"]["name"] = "agent-brain-content"
             result["instructions"] = (
                 RECALL_EVIDENCE_GUIDANCE
                 + MEMORY_GUIDANCE
@@ -894,7 +890,7 @@ def installation_check(client, policy, client_version="0.2.0"):
     tool_names = [tool["name"] for tool in tools["tools"]]
     expected_tools = set(enabled_tools(policy, client.grant))
     if (
-        first["serverInfo"]["name"] != "agent-brain-content-codex-candidate"
+        first["serverInfo"]["name"] != "agent-brain-content"
         or len(tool_names) != len(set(tool_names))
         or set(tool_names) != expected_tools
         or result["isError"]
@@ -973,6 +969,7 @@ def main():
         "credential-source-sha256",
     ):
         parser.add_argument("--" + name)
+    parser.add_argument("--harness", choices=("codex", "codebuddy"), required=True)
     parser.add_argument(
         "--codex-home",
         help="Approved actual Codex home; otherwise honor CODEX_HOME and preserve device-level skills.",
@@ -1036,6 +1033,12 @@ def main():
     hook_policy = None
     hook_payload = None
     if args.event_hook:
+        from agent_brain_client.adapters.harnesses.codex.hooks import (
+            validate_hook_policy,
+            hook_enabled,
+            native_hook_fields,
+            run_event_hook,
+        )
         _STARTUP_STAGE = "event-hook-policy-validation"
         if args.installation_check or args.import_plan or not args.https_profile:
             raise ValueError("Distinct HTTPS native hook invocation required")
@@ -1142,8 +1145,11 @@ def main():
         print(json.dumps(installation_check(client, policy, args.client_version)))
         return
     _STARTUP_STAGE = "content-adapter-start"
-    adapter = CodexContentSession(
-        args.device_home, args.cache, policy, client, codex_home=args.codex_home
+    from agent_brain_client.runtime.harness_content import content_host
+    host = content_host(args.harness)
+    native, cache = host.location(Path(args.device_home), {"codex_home": args.codex_home, "content_cache": args.cache})
+    adapter = ContentSession(
+        args.device_home, cache, policy, client, host=host, native_home=native
     )
     if args.mapping_refresh:
         result = adapter.refresh()
@@ -1190,7 +1196,7 @@ def cli():
             cache = Path(sys.argv[sys.argv.index("--cache") + 1])
             cache_directory(cache)
             with cache_locked(cache / ".content-runtime.lock", timeout=0, shared=True):
-                from agent_brain_client.adapters.harnesses.codex.installation import (
+                from agent_brain_client.adapters.installation.installation import (
                     inspect,
                 )
 

@@ -1,4 +1,4 @@
-"""Mac Codex candidate installation: pinned plan, one MCP table, precise recovery.
+"""Pinned Client installation registry, exact plan and recovery.
 
 Preparation is read-only. Apply requires the current private plan's digest and
 the caller's deployment authorization. No secret creation, UI, hooks or daemon.
@@ -38,7 +38,8 @@ from agent_brain_client.adapters.storage.metadata import unique as pairs
 from agent_brain_client.adapters.storage.pinned import pinned
 from agent_brain_client.domain.tool_contract import TOOL_CONTRACT_VERSION
 from agent_brain_client.domain.content_policy import validate_policy
-from agent_brain_client.adapters.harnesses.codex.content import sha, contract
+from agent_brain_client.adapters.storage.content_limits import sha
+from agent_brain_client.domain import contract
 from agent_brain_client.adapters.platforms.macos.component import ComponentClient
 from agent_brain_client.adapters.storage.host_files import (
     atomic,
@@ -46,7 +47,7 @@ from agent_brain_client.adapters.storage.host_files import (
     host_atomic,
     host_image,
 )
-from agent_brain_client.adapters.harnesses.codex.configuration import (
+from agent_brain_client.adapters.installation.registry_format import (
     NAME,
     BEGIN,
     END,
@@ -95,7 +96,19 @@ def package_check(package, policy):
     return sha(contract.encode(manifest["files"]))
 
 
-def context(home, package, policy_path, policy_sha, *, inspection=False):
+def command_harness(command):
+    arguments = command["args"]
+    if arguments.count("--harness") != 1:
+        raise InstallBlocked("One explicit installed Harness required")
+    harness = arguments[arguments.index("--harness") + 1]
+    if harness not in ("codex", "codebuddy"):
+        raise InstallBlocked("Supported installed Harness required")
+    return harness
+
+
+def context(home, package, policy_path, policy_sha, *, harness, inspection=False):
+    if harness not in (None, "codex", "codebuddy"):
+        raise InstallBlocked("Explicit supported Harness required")
     require_platform("native-install")
     home = safe(home)
     policy_path = safe(policy_path)
@@ -198,6 +211,7 @@ def context(home, package, policy_path, policy_sha, *, inspection=False):
             "-I",
             "-B",
             str(safe(package) / launcher),
+            *(["--harness", harness] if harness is not None else []),
             "--policy-file",
             str(policy_path),
             "--policy-sha256",
@@ -221,7 +235,7 @@ def package_tools(package, content, grant):
 
     from agent_brain_client.adapters.packages.layout import PYTHON_FILES
 
-    root = Path(__file__).resolve().parents[5]
+    root = Path(__file__).resolve().parents[4]
     contract_files = [
         name
         for name in PYTHON_FILES
@@ -284,26 +298,21 @@ def registered_context(home, metadata, config_image=None):
     changing command/args/env never becomes acceptable by running another Python.
     config_image is only an uninstall journal's validated original config image.
     """
-    policy, mcp, package_sha, native = context(
-        home,
-        metadata["package"],
-        metadata["release_policy"],
-        metadata["release_policy_sha256"],
-        inspection=True,
-    )
-    recorded = (
-        tomllib.loads(
-            (
-                raw(native / "config.toml") if config_image is None else config_image
-            ).decode()
-        )
-        .get("mcp_servers", {})
-        .get(NAME)
-    )
+    pinned_policy = policy_file(metadata["release_policy"], metadata["release_policy_sha256"], runtime_check=False)
+    native = safe(pinned_policy["runtime"]["codex_home"])
+    recorded = tomllib.loads((raw(native / "config.toml") if config_image is None else config_image).decode()).get("mcp_servers", {}).get(NAME)
     if not isinstance(recorded, dict) or registered_mcp_digest(
         recorded
     ) != metadata.get("mcp_sha256"):
         raise InstallBlocked("Installed MCP binding drift")
+    arguments = recorded.get("args", [])
+    # Missing host arguments are accepted only as exact authenticated retained
+    # command data. Current launchers always require an explicit native host.
+    harness = arguments[arguments.index("--harness") + 1] if "--harness" in arguments else None
+    if harness is None and b'"--harness"' in raw(safe(metadata["package"]) / "src/agent_brain_client/interfaces/mcp/launcher.py"):
+        raise InstallBlocked("Explicit installed Harness command required")
+    policy, mcp, package_sha, native = context(home, metadata["package"], metadata["release_policy"],
+                                              metadata["release_policy_sha256"], inspection=True, harness=harness)
     command = recorded.get("command")
     if not isinstance(command, str):
         raise InstallBlocked("Installed interpreter unavailable")
@@ -346,6 +355,7 @@ def tool_discovery(home, metadata, active):
         metadata["release_policy"],
         metadata["release_policy_sha256"],
         inspection=True,
+        harness=registered["args"][registered["args"].index("--harness") + 1] if "--harness" in registered["args"] else None,
     )
     package_tools = declared["enabled_tools"]
     registered_tools = registered["enabled_tools"]
@@ -405,8 +415,10 @@ INSPECTION_REASONS = {
 }
 
 
-def prepare(home, package, policy_path, policy_sha, replace_existing=False):
-    policy, mcp, package_sha, native = context(home, package, policy_path, policy_sha)
+def prepare(home, package, policy_path, policy_sha, replace_existing=False, *, harness):
+    if harness not in ("codex", "codebuddy"):
+        raise InstallBlocked("Explicit installation Harness required")
+    policy, mcp, package_sha, native = context(home, package, policy_path, policy_sha, harness=harness)
     config = native / "config.toml"
     registration = Path(home) / ".config/agent-brain-client/codex-mcp.json"
     before = raw(config)
@@ -418,7 +430,10 @@ def prepare(home, package, policy_path, policy_sha, replace_existing=False):
         if fresh is not None and fresh["phase"] == "ready":
             if type(fresh.get("service_enabled")) is not bool:
                 raise InstallBlocked("Retained MCP pause state required")
-            mcp["enabled"] = fresh["service_enabled"]
+            # A moved registry separates former native pause from shared control.
+            # The native adapter restores that pause from registered_surfaces.
+            separate = native == Path(home) / ".config/agent-brain-client/shared-native" and fresh["native"] != str(native)
+            mcp["enabled"] = True if separate else fresh["service_enabled"]
     registered = raw(registration)
     legacy_agents = None
     if old:
@@ -634,7 +649,7 @@ def inspect_plan(path, digest):
             plan["release_policy"],
             plan["release_policy_sha256"],
             plan["replace_existing"],
-        )
+         harness=command_harness(plan["mcp"]), )
         != plan
     ):
         raise InstallBlocked("Install plan drift")
@@ -670,7 +685,7 @@ def rebase_update_plan(plan):
         plan["release_policy"],
         plan["release_policy_sha256"],
         plan["replace_existing"],
-    )
+     harness=command_harness(plan["mcp"]), )
     expected = copy.deepcopy(plan)
     expected["before"][str(native / "config.toml")] = current["before"][
         str(native / "config.toml")
@@ -917,7 +932,7 @@ def apply(plan, approved_digest, check=probe):
             plan["release_policy"],
             plan["release_policy_sha256"],
             plan["replace_existing"],
-        )
+         harness=command_harness(plan["mcp"]), )
         if current != plan:
             raise InstallBlocked("Install preimage or inputs changed")
         check(plan)  # Read-only protocol/auth preflight before native mutation.

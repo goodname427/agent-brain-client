@@ -1,3 +1,4 @@
+from agent_brain_client.runtime.host_maintenance import HostMaintenance
 import agent_brain_client.interfaces.cli.collection as collection_cli
 import agent_brain_client.adapters.storage.collection as source_policy
 import agent_brain_client.adapters.storage.metadata as metadata
@@ -18,12 +19,13 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 from agent_brain_client.adapters.platforms.filesystem import private_directory
-import agent_brain_client.adapters.harnesses.codex.configuration as host
+import agent_brain_client.adapters.storage.toml_document as toml_host
+import agent_brain_client.adapters.installation.registry_format as host
 import agent_brain_client.adapters.storage.host_files as host_files
 import agent_brain_client.runtime.collection as gm
 import agent_brain_client.adapters.harnesses.codex.collection_installation as hooks
 import agent_brain_client.adapters.harnesses.codex.project_configuration as project_sources
-from agent_brain_client.adapters.harnesses.codex.updates import CodexUpdateInstallation
+from agent_brain_client.adapters.installation.updates import RegisteredClientInstallation
 
 
 class GlobalMemoryUpdate(unittest.TestCase):
@@ -112,9 +114,10 @@ class GlobalMemoryUpdate(unittest.TestCase):
         return root
 
     def update_installation(self):
+        from agent_brain_client.runtime.host_maintenance import HostMaintenance
         active = {"version": "0.8.4", "commit": "c" * 40, "package": str(hooks.ROOT)}
-        installation = CodexUpdateInstallation(self.home, setup_sources=lambda: None)
-        installation.channel = SimpleNamespace(verified_active=lambda: active)
+        installation = RegisteredClientInstallation(self.home, setup_sources=lambda: None, host_hooks=HostMaintenance(self.home, hosts=["codex"]))
+        installation.channel = SimpleNamespace(harness="codex", verified_active=lambda: active)
         return installation
 
     def test_update_refresh_uses_verified_package_not_old_installer(self):
@@ -150,7 +153,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
             '"timeout = " + "121"',
         ))
         active = {"version": "0.8.4", "commit": "d" * 40, "package": str(target)}
-        installation.channel = SimpleNamespace(verified_active=lambda: active)
+        installation.channel = SimpleNamespace(harness="codex", verified_active=lambda: active)
         result = installation.refresh_hooks()
         self.assertEqual(result["source_package_commit"], active["commit"])
         self.assertIn("timeout = 121", self.config.read_text())
@@ -165,7 +168,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
 
     def test_codebuddy_refresh_uses_active_package_renderer_and_pins(self):
         from agent_brain_client.adapters.harnesses.codebuddy import configuration
-        from agent_brain_client.runtime.updates import HostUpdateInstallation
+        from agent_brain_client.runtime.host_maintenance import HostMaintenance
 
         configuration.install(self.home, hooks.ROOT, None, surface="both")
         rule = self.home / ".codebuddy/rules/agent-brain-client.md"
@@ -182,16 +185,16 @@ class GlobalMemoryUpdate(unittest.TestCase):
         renderer = target / "src/agent_brain_client/adapters/harnesses/codebuddy/configuration.py"
         renderer.write_text(renderer.read_text().replace('"timeout": 90', '"timeout": 91'))
         active = {"version": "0.8.5", "commit": "e" * 40, "package": str(target)}
-        backend = CodexUpdateInstallation(self.home, setup_sources=lambda: None)
-        installation = HostUpdateInstallation(self.home, backend)
-        installation.channel = backend.channel = SimpleNamespace(verified_active=lambda: active)
+        backend = RegisteredClientInstallation(self.home, setup_sources=lambda: None, host_hooks=HostMaintenance(self.home, hosts=["codex"]))
+        installation = RegisteredClientInstallation(self.home, setup_sources=lambda: None, host_hooks=HostMaintenance(self.home))
+        installation.channel = backend.channel = SimpleNamespace(harness="codex", verified_active=lambda: active)
         before = {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()}
         with patch.object(configuration, "refresh", side_effect=AssertionError("No old renderer")):
             checked = installation.refresh_hooks(check_only=True)
-            self.assertTrue(checked["codebuddy"]["update_available"])
+            self.assertTrue(checked["hosts"]["codebuddy"]["update_available"])
             self.assertEqual(before, {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()})
             result = installation.refresh_hooks()
-        self.assertTrue(result["codebuddy"]["native_changed"])
+        self.assertTrue(result["hosts"]["codebuddy"]["native_changed"])
         receipt = metadata.private_json(configuration.state_directory(self.home) / "registration.json")
         self.assertEqual(receipt["hooks"]["Stop"]["hooks"][0]["timeout"], 91)
         frozen = Path(receipt["mcp"]["args"][4]).parents[4]
@@ -225,11 +228,11 @@ class GlobalMemoryUpdate(unittest.TestCase):
         changed = dict(active, commit="f" * 40)
         backend.refresh_hooks = Mock(return_value={
             "status": "global-hook-current", "native_changed": False, "update_available": False})
-        installation = updates.HostUpdateInstallation(self.home, backend)
+        installation = RegisteredClientInstallation(self.home, setup_sources=lambda: None, host_hooks=HostMaintenance(self.home, hosts=["codebuddy"]))
         before = {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()}
         for readings, calls in (([active, changed], 0), ([active, active, changed], 1)):
             with self.subTest(readings=len(readings)):
-                installation.channel = SimpleNamespace(verified_active=Mock(side_effect=readings))
+                installation.channel = SimpleNamespace(harness="codex", verified_active=Mock(side_effect=readings))
                 with patch.object(updates, "refresh_bindings", return_value={
                     "status": "codebuddy-current", "native_changed": False,
                     "update_available": False}) as refresh:
@@ -245,18 +248,17 @@ class GlobalMemoryUpdate(unittest.TestCase):
         response = subprocess.CompletedProcess([], 0, b'{"host_edit_in_progress": true}', b"")
         with patch.object(subprocess, "run", return_value=response):
             with self.assertRaises(HostEditInProgress):
-                refresh_bindings(self.home, hooks.ROOT)
+                refresh_bindings(self.home, hooks.ROOT, harness="codebuddy")
 
-    def test_old_active_package_without_binding_refresh_does_not_block_discovery(self):
+    def test_missing_host_refresh_port_requires_review_without_mutation(self):
         from agent_brain_client.runtime.updates import refresh_bindings
 
         target = self.old_installer()
         renderer = target / "src/agent_brain_client/adapters/harnesses/codebuddy/configuration.py"
         renderer.write_text(renderer.read_text().replace("def refresh(", "def future_refresh("))
         before = {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()}
-        result = refresh_bindings(self.home, target, check_only=True)
-        self.assertEqual(result["status"], "codebuddy-refresh-requires-new-package")
-        self.assertFalse(result["native_changed"])
+        with self.assertRaises(ValueError):
+            refresh_bindings(self.home, target, harness="codebuddy", check_only=True)
         self.assertEqual(before, {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()})
 
     def test_update_refresh_identical_package_avoids_subprocess(self):
@@ -281,7 +283,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
 
     def test_update_refresh_rejects_unverified_package_without_local_fallback(self):
         installation = self.update_installation()
-        installation.channel = SimpleNamespace(verified_active=lambda: None)
+        installation.channel = SimpleNamespace(harness="codex", verified_active=lambda: None)
         before = self.config.read_bytes()
         with patch.object(hooks, "refresh", side_effect=AssertionError("No stale fallback")):
             with self.assertRaises(ValueError):
@@ -560,7 +562,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.no_client.stop()
         response = {'result': {'metadata_only': True, 'source_registered': False,
                                'source_device_id': 'd' * 32, 'global_profile_id': 'e' * 32}}
-        client = SimpleNamespace(wire=lambda method, params: response)
+        client = SimpleNamespace(harness="codex", wire=lambda method, params: response)
         output = io.StringIO()
         with (patch.object(gm, 'CollectionClient', return_value=client),
               patch.object(sys, 'argv', ['global_memory', 'global-status', '--device-home', str(self.home), '--check-server']),
@@ -583,7 +585,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertTrue(json.loads(proc.stdout)['global_entry_installed'])
 
     def test_retained_removal_requires_authenticated_journal_and_exact_block(self):
-        import agent_brain_client.adapters.harnesses.codex.lifecycle as lifecycle
+        import agent_brain_client.runtime.client_lifecycle as lifecycle
         outside, previous = hooks.split_owned(self.config.read_bytes())
         lines = previous.splitlines(keepends=True)
         for index in range(len(lines) - 1):
@@ -603,8 +605,8 @@ class GlobalMemoryUpdate(unittest.TestCase):
                                         ('complete', reordered, True),
                                         ('reinstalled', reordered, True),
                                         ('complete', reordered.replace('timeout = 120', 'timeout = 119'), False)):
-            with (patch.object(lifecycle, 'read_removal', return_value={'phase': phase, 'hook_block': block}),
-                  patch.object(lifecycle, 'validate_journal') as authenticate):
+            with (patch('agent_brain_client.adapters.installation.lifecycle.read_removal', return_value={'phase': phase, 'hook_block': block}),
+                  patch('agent_brain_client.adapters.installation.lifecycle.validate_journal') as authenticate):
                 if accepted:
                     self.assertEqual(hooks.refresh(self.home)['status'], 'global-hook-not-installed')
                 else:
@@ -740,7 +742,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         config['hooks']['Stop'].insert(0, {'hooks': [{'type': 'command', 'command': 'synthetic-foreign'}]})
         raw = ('# synthetic comment\u2028' + hooks.BEGIN + '\n'
                + 'description = """\n' + hooks.BEGIN + '\n[hooks.Stop]\n' + hooks.END + '\n"""\n'
-               + 'hooks = ' + host.toml_literal(config['hooks']) + '\n'
+               + 'hooks = ' + toml_host.toml_literal(config['hooks']) + '\n'
                + hooks.BEGIN + '\n' + hooks.END + '\n').encode()
         self.config.write_bytes(raw)
         expected = hooks.unowned_config(hooks.tomllib.loads(raw.decode()), hooks.block(self.value))
@@ -756,7 +758,7 @@ class GlobalMemoryUpdate(unittest.TestCase):
         config['hooks']['OtherEvent'] = [{'hooks': [{'type': 'command', 'command': 'synthetic-foreign'}]}]
         config['hooks']['state'] = {'synthetic-stop': {'enabled': False, 'trusted_hash': 'synthetic-pin'}}
         prefix = self.config.read_text().split(hooks.BEGIN)[0]
-        assignments = ''.join(('hooks.' if dotted else '') + event + ' = ' + host.toml_literal(groups) + '\n'
+        assignments = ''.join(('hooks.' if dotted else '') + event + ' = ' + toml_host.toml_literal(groups) + '\n'
                               for event, groups in config['hooks'].items())
         return (prefix + hooks.BEGIN + '\n' + ('' if dotted else '[hooks]\n') + assignments + hooks.END + '\n').encode()
 
@@ -883,20 +885,20 @@ class GlobalMemoryUpdate(unittest.TestCase):
 
 class SemanticConfigMerge(unittest.TestCase):
     def test_del_values_and_keys_stay_valid_toml_when_reencoding_shared_assignments(self):
-        import agent_brain_client.adapters.harnesses.codex.installation as ci
-        from agent_brain_client.adapters.harnesses.codex.lifecycle import remove_table
+        import agent_brain_client.adapters.installation.installation as ci
+        from agent_brain_client.runtime.client_lifecycle import remove_table
         source = ('mcp_servers={agent_brain_server={command="project_sources"}, other={command="other", '
                   'env={TOKEN="\\u007f", "\\u007f"="\U0001f600", "\U0001f600"="value"}}}\n').encode()
         expected = hooks.tomllib.loads(source.decode())
         target = {'command': 'new', 'enabled': False}
         merged = ci.render(source, target, True)
         expected['mcp_servers']['agent_brain_server'] = target
-        self.assertTrue(host.toml_equal(hooks.tomllib.loads(merged.decode()), expected))
+        self.assertTrue(toml_host.toml_equal(hooks.tomllib.loads(merged.decode()), expected))
         self.assertNotIn(b'\x7f', merged)
         removed = hooks.tomllib.loads(remove_table(merged).decode())
         self.assertEqual(removed['mcp_servers']['other'], expected['mcp_servers']['other'])
         for key in ('\x7f', '\U0001f600', 'ordinary'):
-            self.assertEqual(hooks.tomllib.loads(host.toml_key(key) + '=true\n'), {key: True})
+            self.assertEqual(hooks.tomllib.loads(toml_host.toml_key(key) + '=true\n'), {key: True})
 
     def test_hash_only_migration_uses_authenticated_image_not_live_file_hash(self):
         import base64
@@ -918,8 +920,8 @@ class SemanticConfigMerge(unittest.TestCase):
         self.assertFalse(host.migration_config_matches(config, current, pin, state, {}))
 
     def test_equivalent_mcp_syntax_and_shared_inline_tables(self):
-        import agent_brain_client.adapters.harnesses.codex.installation as ci
-        from agent_brain_client.adapters.harnesses.codex.lifecycle import remove_table
+        import agent_brain_client.adapters.installation.installation as ci
+        from agent_brain_client.runtime.client_lifecycle import remove_table
         import uuid
         name = 'tool_' + uuid.uuid4().hex + '\U0001f3a8'
         forms = [
@@ -949,7 +951,7 @@ class SemanticConfigMerge(unittest.TestCase):
         source = ('text="""\n[hooks.Stop]\n# agent-brain-global-memory:begin\n"""\n'
                   '[[arbitrary]]\nname="one"\n[[arbitrary.child]]\nvalue=1\n'
                   '[[arbitrary]]\nname="two"\n[[arbitrary.child]]\nvalue=2\n')
-        result = host.toml_remove(source, [('arbitrary', 0)])
+        result = toml_host.toml_remove(source, [('arbitrary', 0)])
         self.assertEqual(hooks.tomllib.loads(result), {'text': '[hooks.Stop]\n# agent-brain-global-memory:begin\n',
                                                       'arbitrary': [{'name': 'two', 'child': [{'value': 2}]}]})
 

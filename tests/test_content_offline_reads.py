@@ -1,4 +1,5 @@
 """Verified offline read fallback: synthetic records/homes, no credentials or network."""
+
 import copy
 import json
 from pathlib import Path
@@ -7,7 +8,8 @@ import unittest
 from unittest.mock import patch
 
 from test_content_outbox import Cloud,MEMORY,RULE,SKILL,POLICY
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
+from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.interfaces.mcp.content import ContentServer
 import agent_brain_client.domain.contract as contract
@@ -20,7 +22,7 @@ class OfflineReads(unittest.TestCase):
         self.cache=self.base/'cache';self.cloud=Cloud();self.adapter=self.restart()
 
     def restart(self):
-        return CodexContentSession(self.home,self.cache,copy.deepcopy(POLICY),self.cloud,codex_home=self.home/'.codex')
+        return ContentSession(self.home,self.cache,copy.deepcopy(POLICY),self.cloud,host=CodexContentPorts, native_home=self.home/'.codex')
 
     def warm(self):
         self.cloud.records={('memory','synthetic-topic'):copy.deepcopy(MEMORY),('rule','synthetic-rule'):copy.deepcopy(RULE),('skill','synthetic-skill'):copy.deepcopy(SKILL)}
@@ -69,7 +71,7 @@ class OfflineReads(unittest.TestCase):
     def test_new_service_principal_and_native_binding_cannot_read_old_snapshot(self):
         self.warm();self.cloud.offline=True;self.cloud.grant=dict(self.cloud.grant,actor='another-owner')
         self.assertEqual(self.restart().invoke(self.request())['error']['code'],'content_offline_cache_unverified')
-        self.cloud.grant.pop('actor');other=CodexContentSession(self.home,self.cache,copy.deepcopy(POLICY),self.cloud,codex_home=self.home/'other-codex')
+        self.cloud.grant.pop('actor');other=ContentSession(self.home,self.cache,copy.deepcopy(POLICY),self.cloud,host=CodexContentPorts, native_home=self.home/'other-codex')
         self.assertEqual(other.invoke(self.request())['error']['code'],'content_offline_cache_unverified')
 
     def test_tampered_snapshot_active_pin_permissions_and_links_fail_closed(self):

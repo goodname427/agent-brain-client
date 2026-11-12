@@ -43,7 +43,7 @@ def connect(
                     "next_action": "Use the exact content installation plan; preserve existing binding.",
                 }
             try:
-                from agent_brain_client.adapters.harnesses.codex.installation import (
+                from agent_brain_client.adapters.installation.installation import (
                     inspect,
                 )
 
@@ -280,7 +280,7 @@ def main():
         return 2
     if args.content_install_plan:
         try:
-            from agent_brain_client.adapters.harnesses.codex.installation import (
+            from agent_brain_client.adapters.installation.installation import (
                 inspect_plan,
                 apply as install,
             )

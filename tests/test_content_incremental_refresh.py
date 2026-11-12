@@ -1,11 +1,13 @@
 """Bounded refresh traffic and truthful mapping failures, synthetic homes only."""
+
 import copy
 import json
 import unittest
 from unittest.mock import patch
 
 import test_content_outbox as fixture
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
+from agent_brain_client.adapters.storage.content_session import ContentSession
 import agent_brain_client.domain.contract as contract
 
 
@@ -19,7 +21,7 @@ class IncrementalRefresh(unittest.TestCase):
         self.f.cloud.calls.clear()
 
     def restart(self):
-        return CodexContentSession(self.f.home,self.f.cache,fixture.POLICY,self.f.cloud,codex_home=self.f.home/'.codex')
+        return ContentSession(self.f.home,self.f.cache,fixture.POLICY,self.f.cloud,host=CodexContentPorts, native_home=self.f.home/'.codex')
 
     def reads(self):
         return [r['params']['id'] for r in self.f.cloud.calls if r['method']=='content_read']
@@ -85,7 +87,7 @@ class IncrementalRefresh(unittest.TestCase):
 
     def test_snapshot_only_change_does_not_claim_native_writes(self):
         self.f.cloud.puts+=1
-        with patch('agent_brain_client.adapters.harnesses.codex.mapping.host_apply',wraps=__import__('agent_brain_client.adapters.harnesses.codex.mapping',fromlist=['host_apply']).host_apply) as apply:
+        with patch('agent_brain_client.adapters.storage.native_mapping.host_apply',wraps=__import__('agent_brain_client.adapters.storage.native_mapping',fromlist=['host_apply']).host_apply) as apply:
             result=self.restart().refresh()
         self.assertEqual(result['status'],'content-refreshed')
         self.assertFalse(result['native_changed'])
