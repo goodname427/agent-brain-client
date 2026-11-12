@@ -796,6 +796,57 @@ class Transcript(Hooks):
             self.stop()
         self.assertEqual(len(self.sent), 1)
 
+    def test_snapshot_race_schedules_and_retries_without_another_hook(self):
+        for changed_file in ('index', 'body'):
+            with self.subTest(changed_file=changed_file):
+                # Each subcase owns an independent observed future turn.
+                case = Transcript()
+                case.setUp()
+                try:
+                    path, index, native = case.completed_ide_fixture()
+                    read = native_transcript.read_bound
+                    changes = []
+                    def race(target, **kwargs):
+                        raw = read(target, **kwargs)
+                        if target == native and not changes:
+                            changes.append(True)
+                            if changed_file == 'index':
+                                index['unrelated_update'] = True
+                                path.write_text(json.dumps(index))
+                            else:
+                                native.write_text(json.dumps({'id': 'answer', 'role': 'assistant',
+                                    'message': {'content': 'Stable revised answer'}}))
+                        return raw
+                    spawn = Mock()
+                    with patch.object(native_transcript, 'read_bound', side_effect=race):
+                        _, result = cb.hook(case.fixture.home, io.BytesIO(json.dumps(dict(
+                            case.payload, hook_event_name='Stop', stop_hook_active=False)).encode()),
+                            core=case.core, defer=spawn)
+                    self.assertEqual(result['status'], 'assistant-capture-deferred')
+                    turn = native_transcript.marker(case.fixture.home, case.payload).stem
+                    spawn.assert_called_once_with(turn)
+                    self.assertEqual(len(case.sent), 1)
+                    # Cause a second transient race inside the already-started worker.
+                    changes.clear()
+                    if changed_file == 'index':
+                        index.pop('unrelated_update')
+                        path.write_text(json.dumps(index))
+                    else:
+                        native.write_text(json.dumps({'id': 'answer', 'role': 'assistant',
+                            'message': {'content': 'Intermediate answer'}}))
+                    pause = Mock()
+                    with patch.object(native_transcript, 'read_bound', side_effect=race):
+                        result = cb.finish_deferred(case.fixture.home, case.core, turn, pause=pause)
+                    self.assertEqual(pause.call_count, 2)
+                    self.assertEqual(result['local_queue']['state'], 'confirmed')
+                    expected = 'Persisted terminal answer' if changed_file == 'index' else 'Stable revised answer'
+                    self.assertEqual(case.sent[-1]['params']['event']['messages'],
+                                     [{'role': 'assistant', 'content': expected}])
+                    cb.finish_deferred(case.fixture.home, case.core, turn, pause=lambda _: None)
+                    self.assertEqual(len(case.sent), 2)
+                finally:
+                    case.tearDown()
+
     def test_stop_schedules_only_exact_pending_ide_turn_without_blocking(self):
         path, index, _ = self.completed_ide_fixture()
         index['requests'][0]['state'] = 'running'
