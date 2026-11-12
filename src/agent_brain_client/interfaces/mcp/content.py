@@ -318,7 +318,7 @@ class ContentServer(Server):
                     r"[a-f0-9]{64}", arguments["turn_sha256"]
                 ):
                     raise ContentParameterError(
-                        "turn_sha256 must be the digest from the active Codex notify event."
+                        "turn_sha256 must be the digest from the active native turn."
                     )
                 if arguments["method"] not in (
                     "content_put",
@@ -776,71 +776,6 @@ class SafeArgumentParser(argparse.ArgumentParser):
         sys.exit(emit_startup_failure("arguments", ValueError("invalid_arguments")))
 
 
-# Codex invokes notify once after a turn and passes the event as one JSON argv.
-# An internal marker makes the queued capture turn a one-shot, not a loop.
-_NOTIFY_CAPTURE_MARKER = "AGENTBRAIN_NOTIFY_CAPTURE:"
-_NOTIFY_CAPTURE_INSTRUCTIONS = (
-    "Review the immediately preceding completed Codex turn for user-stated preferences, "
-    "facts, experiences, events, corrections, or short-term progress. Do not filter "
-    "these out solely because they are ordinary, temporary, or not important. Use only "
-    "direct user statements as evidence; ignore assistant "
-    "guesses and tool output. Process only the supported, authorized Codex Memories "
-    "scope exposed by content_sources_inventory/read/review/stage. Read every "
-    "eligible source to completion in bounded pages; do not claim account-wide or "
-    "session-history coverage. Do not count unread items as complete. Generalize "
-    "ordinary user project experience safely for the shared personal Memory scope; "
-    "exclude secrets, LocalOnly, confidential or customer-identifying content, and "
-    "report unsafe scope as deferred. For memory writes use content_read/CAS and "
-    "content_request_id with the supplied turn digest. Honor explicit forgetting "
-    "with the existing authorized content_remove path. Do not read transcripts or "
-    "store raw conversation text. Never claim durable save without the Server receipt."
-)
-
-
-def codex_notify_capture(event):
-    """Validate the documented notify payload and prepare one capture message."""
-    if not isinstance(event, dict) or event.get("type") != "agent-turn-complete":
-        return None
-    thread_id = event.get("thread-id")
-    turn_id = event.get("turn-id")
-    messages = event.get("input-messages")
-    if (
-        not isinstance(thread_id, str)
-        or not thread_id
-        or len(thread_id) > 128
-        or not isinstance(turn_id, str)
-        or not turn_id
-        or len(turn_id) > 256
-        or not isinstance(messages, list)
-        or not messages
-        or len(messages) > 128
-    ):
-        return None
-    if any(not isinstance(item, str) or len(item) > 65536 for item in messages):
-        return None
-    if any(item.startswith(_NOTIFY_CAPTURE_MARKER) for item in messages):
-        return None
-    last = event.get("last-assistant-message", "")
-    if not isinstance(last, str) or len(last) > 65536:
-        return None
-    turn_digest = hashlib.sha256(turn_id.encode("utf-8")).hexdigest()
-    message = (
-        _NOTIFY_CAPTURE_MARKER
-        + turn_id
-        + "\nTurn digest: "
-        + turn_digest
-        + "\n"
-        + _NOTIFY_CAPTURE_INSTRUCTIONS
-    )
-    return {
-        "thread_id": thread_id,
-        "turn_id": turn_id,
-        "turn_sha256": turn_digest,
-        "message": message,
-        "input_message_count": len(messages),
-    }
-
-
 def installation_check(client, policy, client_version="0.2.0"):
     """Fixed read-only MCP/auth check. No content cache/native mapping is created."""
     validate_policy(policy, client.grant)
@@ -1033,21 +968,17 @@ def main():
     hook_policy = None
     hook_payload = None
     if args.event_hook:
-        from agent_brain_client.adapters.harnesses.codex.hooks import (
-            validate_hook_policy,
-            hook_enabled,
-            native_hook_fields,
-            run_event_hook,
-        )
+        from agent_brain_client.runtime.harness_content import event_hook_host
+        hooks = event_hook_host(args.harness)
         _STARTUP_STAGE = "event-hook-policy-validation"
         if args.installation_check or args.import_plan or not args.https_profile:
             raise ValueError("Distinct HTTPS native hook invocation required")
-        hook_policy = validate_hook_policy(
+        hook_policy = hooks.validate_hook_policy(
             pinned(args.event_hook_policy, args.event_hook_policy_sha256),
             profile_sha256=args.https_profile_sha256,
             content_policy_sha256=args.content_policy_sha256,
         )
-        if not hook_enabled(hook_policy):
+        if not hooks.hook_enabled(hook_policy):
             print("{}")
             return
         _STARTUP_STAGE = "event-hook-input-read"
@@ -1056,7 +987,7 @@ def main():
             raise ValueError("Hook input exceeds bound")
         _STARTUP_STAGE = "event-hook-payload-validation"
         hook_payload = json.loads(raw, object_pairs_hook=pairs)
-        native_hook_fields(hook_policy, hook_payload)
+        hooks.native_hook_fields(hook_policy, hook_payload)
     elif args.event_hook_policy or args.event_hook_policy_sha256:
         raise ValueError("Explicit hook mode required")
     if args.https_profile:
@@ -1159,7 +1090,7 @@ def main():
         return
     if args.event_hook:
         _STARTUP_STAGE = "event-hook-run"
-        run_event_hook(adapter, hook_policy, hook_payload)
+        hooks.run_event_hook(adapter, hook_policy, hook_payload)
         # Hook output is protocol only; never inject captured text or continue a
         # completed turn. Receipt and pending evidence stay in the normal outbox.
         print("{}")

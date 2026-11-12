@@ -27,7 +27,14 @@ class CollectionControlIO:
 
     def stop_project(self, row):
         source = self.project_load(row["settings"], row["settings_sha256"])
-        Path(source["off_file"]).touch(mode=0o600)
+        marker = Path(source["off_file"])
+        if not marker.exists():
+            try:
+                # Use the private writer so a new Windows marker has its exact
+                # owner as well as its DACL before later resume validates it.
+                metadata.write(marker, {}, exclusive=True)
+            except FileExistsError:
+                pass  # A concurrent stop remains fenced; preserve its marker.
         self.project_command(source, "stop")
 
     def resume_project(self, row):

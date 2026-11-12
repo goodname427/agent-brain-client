@@ -29,14 +29,13 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 def control():
-    from agent_brain_client.adapters.storage import project_settings as project_sources
     from agent_brain_client.runtime import project_memory
     return CollectionControl(
         CollectionControlIO(
             settings_path=lambda home: settings_path(home),
             admission=lambda value: admission_state(value),
             client=lambda value: CollectionClient(value),
-            project_load=lambda *args: project_sources.load(*args),
+            project_load=lambda *args: project_memory.load(*args),
             project_command=lambda *args: project_memory.daily_command(*args),
         )
     )
@@ -56,6 +55,7 @@ def configure_recall(value, options):
 
 def native_services():
     return SimpleNamespace(
+        load=lambda home: load(home),
         approved=lambda value: approved(value),
         admission=lambda value: admission_state(value),
         discover=lambda cwd: discover(cwd),
@@ -100,9 +100,30 @@ def submit_hook(value, local, payload):
     )
 
 
-def hook(value, *, observe=None):
-    from agent_brain_client.adapters.harnesses.codex import collection as native_collection
-    return native_collection.hook(value, observe=observe, services=native_services())
+def hook(value, *, harness="codex", observe=None):
+    # Omitted host is retained only for existing Codex global-hook launchers.
+    if harness == "codex":
+        from agent_brain_client.adapters.harnesses.codex import collection as native_collection
+        return native_collection.hook(value, observe=observe, services=native_services())
+    if harness == "codebuddy":
+        import sys
+        import json
+        from agent_brain_client.adapters.harnesses.codebuddy import events
+        from agent_brain_client.runtime.delivery import schedule_assistant_completion
+        output, diagnostic = events.hook(
+            Path(value["device_home"]), sys.stdin.buffer, core=native_services(),
+            defer=lambda turn: schedule_assistant_completion(value["device_home"], turn),
+            observe=observe,
+        )
+        safe = {key: diagnostic[key] for key in (
+            "status", "error_type", "recall_status", "recall_error_type",
+            "assistant_capture", "timing_ms", "delivery_schedule", "schedule_error_type",
+        ) if key in diagnostic}
+        if diagnostic.get("error"):
+            safe["capture_error"] = diagnostic["error"].get("code", "unconfirmed")
+        print(json.dumps(dict(operation="codebuddy-hook", **safe)), file=sys.stderr)
+        return output
+    raise ValueError("Explicit supported collection Harness required")
 
 
 def flush(value):
