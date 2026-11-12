@@ -12,6 +12,7 @@ from unittest.mock import patch
 from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.runtime.harness_content import content_host
 from agent_brain_client.domain import contract
+from agent_brain_client.adapters.platforms.filesystem import private_directory
 from agent_brain_client.domain.errors import CacheBlocked
 from test_content_outbox import Cloud, POLICY, MEMORY, RULE, SKILL
 
@@ -57,7 +58,7 @@ class HarnessParity(unittest.TestCase):
             source.parent.mkdir(parents=True)
             source.write_text("---\ntitle: Synthetic IDE memory\n---\nA synthetic preference")
             row = adapter.sources.inventory_memory_sources()["sources"][0]
-            self.assertEqual(adapter.sources.read_memory_source(row["source_id"], row["source_fingerprint"])["text"], source.read_text())
+            self.assertEqual(adapter.sources.read_memory_source(row["source_id"], row["source_fingerprint"])["text"], source.read_bytes().decode())
             self.assertFalse((home / ".codex").exists())
 
     def test_shared_session_requires_explicit_host(self):
@@ -75,7 +76,7 @@ class HarnessParity(unittest.TestCase):
             inventory = adapter.sources.inventory_memory_sources()
             row = inventory["sources"][0]
             self.assertTrue(row["source_id"].startswith("codebuddy-memory:"))
-            self.assertEqual(adapter.sources.read_memory_source(row["source_id"], row["source_fingerprint"])["text"], source.read_text())
+            self.assertEqual(adapter.sources.read_memory_source(row["source_id"], row["source_fingerprint"])["text"], source.read_bytes().decode())
             with self.assertRaises(CacheBlocked):
                 adapter.sources.stage_memory_import(row["source_id"], row["source_fingerprint"], "memory", "synthetic-topic", MEMORY)
             adapter.sources.review_memory_source(row["source_id"], row["source_fingerprint"], "shareable", "safe-cross-project-personal-summary")
@@ -224,7 +225,7 @@ class ProjectParity(unittest.TestCase):
             codex = project_settings(home, project, harness="codex")
             buddy = project_settings(home, project, harness="codebuddy")
             self.assertNotEqual(codex, buddy)
-            buddy.parent.mkdir(parents=True)
+            private_directory(buddy.parent)
             metadata.write(buddy, {"synthetic": True})
             settings = {"harness": "codebuddy", "project_root": str(project), "source_mode": "recall-only"}
             config = project / ".codebuddy/settings.local.json"
@@ -423,8 +424,7 @@ with tempfile.TemporaryDirectory() as tmp:
             project = home / "synthetic-project"
             project.mkdir()
             directory = home / ".config/agent-brain-client/project-memory/synthetic-control"
-            directory.mkdir(parents=True)
-            directory.chmod(0o700)
+            private_directory(directory)
             off = directory / "memory.off"
             off.touch(mode=0o600)
             metadata.write(directory / "settings.json", {"schema": 1, "harness": "codex", "enabled": True,

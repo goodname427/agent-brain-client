@@ -57,8 +57,11 @@ def remove(session):
                     raise ValueError("Removed Harness projection changed; preserve it")
                 return
         payload = prepare(session)
+        # These are cache images already validated by the cache policy. Keep
+        # their existing security/object, including a legitimate Windows owner;
+        # private-store replacement would incorrectly require a user-owned ACL.
         record = {"schema": 1, "binding": session.binding, "policy_sha": session.policy_sha,
-                  "phase": "applying", "host": host_plan(payload, private_paths=(session.cache / "owned.json",))}
+                  "phase": "applying", "host": host_plan(payload)}
         session._save(file.name, record)
         try:
             host_apply(record["host"], lambda: session._save(file.name, record))

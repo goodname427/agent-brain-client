@@ -56,7 +56,7 @@ def setup(args):
     m, policy = registration(home)
     r = policy["runtime"]
     output = canonical(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    private_directory(output.parent)
     if output.exists():
         raise ValueError(
             "Existing setup preserved; use a new output or explicit refresh"
@@ -1065,7 +1065,7 @@ def activate_bundle(args):
         raise ValueError("Reviewed activation receipt and project required")
     imported = import_bundle(args)
     output = project_settings(args.device_home, args.project_root, harness=args.harness)
-    output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    private_directory(output.parent)
     old = output.read_bytes() if output.exists() else None
     if old is not None:
         previous = private_json(output, digest(old))
