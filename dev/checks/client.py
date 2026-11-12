@@ -145,6 +145,7 @@ COMMANDS = {
             "test_host_config.WindowsBoundary",
             "test_install_plan",
             "test_source_paths",
+            "test_native_source_files",
             "test_non_git_origins",
             "test_access_install",
             "test_bootstrap_main",

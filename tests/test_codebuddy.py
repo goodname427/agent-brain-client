@@ -653,6 +653,43 @@ class Transcript(Hooks):
         self.assertEqual(result['local_queue']['state'], 'confirmed')
         self.assertEqual(self.sent[-1]['params']['event']['messages'][0]['content'], 'IDE actual final answer')
 
+    def test_modern_ide_paths_preserve_exact_session_and_generation(self):
+        for base in ('AppData/Local', 'Library/Application Support'):
+            for uid in ('', 'synthetic-uid'):
+                path = (self.fixture.home / base / 'CodeBuddyExtension/Data'
+                        / 'synthetic-user' / 'CodeBuddyIDE' / uid / 'history'
+                        / ('a' * 32) / self.payload['session_id'] / 'index.json')
+                payload = dict(self.payload, transcript_path=str(path))
+                self.assertEqual(native_transcript.native_path(self.fixture.home, payload), path)
+                for changed in (dict(payload, session_id='different'),
+                                dict(payload, generation_id=None),
+                                dict(payload, transcript_path=str(path).replace('history', 'logs')),
+                                dict(payload, transcript_path=str(path).replace('a' * 32, 'not-a-workspace-hash'))):
+                    with self.subTest(payload=changed), self.assertRaises(ValueError):
+                        native_transcript.native_path(self.fixture.home, changed)
+
+    def test_modern_ide_capture_and_missing_path_diagnostics(self):
+        _, result = self.hook()
+        self.assertEqual(result['assistant_capture'], 'transcript-unavailable-direct-stop-only')
+        self.payload['generation_id'] = 'modern-generation'
+        path = (self.fixture.home / 'AppData/Local/CodeBuddyExtension/Data'
+                / 'synthetic-user/CodeBuddyIDE/synthetic-uid/history'
+                / ('b' * 32) / self.payload['session_id'] / 'index.json')
+        path.parent.mkdir(parents=True)
+        self.payload['transcript_path'] = str(path)
+        path.write_text(json.dumps({'requests': [{'id': 'modern-generation', 'state': 'running', 'messages': ['answer']}],
+                                   'messages': [{'id': 'answer', 'role': 'assistant'}]}))
+        _, result = self.hook()
+        self.assertEqual(result['assistant_capture'], 'current-turn-observed')
+        path.write_text(path.read_text().replace('running', 'complete'))
+        (path.parent / 'messages').mkdir()
+        (path.parent / 'messages/answer.json').write_text(json.dumps(
+            {'id': 'answer', 'role': 'assistant', 'message': {'content': 'Only this future answer'}}))
+        _, result = self.stop()
+        self.assertEqual(result['local_queue']['state'], 'confirmed')
+        self.assertEqual(self.sent[-1]['params']['event']['messages'],
+                         [{'role': 'assistant', 'content': 'Only this future answer'}])
+
     def test_ide_persistence_lag_is_retried_on_a_later_hook(self):
         path = self.native_file('.json')
         path.write_text(json.dumps({'messages': [{'id': 'assistant', 'role': 'assistant', 'isComplete': False}],
