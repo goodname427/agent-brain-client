@@ -34,7 +34,7 @@ from agent_brain_client.adapters.packages.client import (
     CHECK_UPDATE_COMMAND,
     UPDATE_COMMAND,
 )
-from agent_brain_client.adapters.harnesses.codex.installation import (
+from agent_brain_client.adapters.installation.installation import (
     inspect_plan,
     prepare,
 )
@@ -130,11 +130,11 @@ def resolve_connection(home, native, path=None, expected=None):
         return connection_file(path, expected)
     if expected is not None:
         raise ValueError("An expected file digest requires an explicit file")
-    from agent_brain_client.adapters.harnesses.codex.lifecycle import (
+    from agent_brain_client.runtime.client_lifecycle import (
         read_removal,
         validate_uninstalled_state,
     )
-    from agent_brain_client.adapters.harnesses.codex.installation import (
+    from agent_brain_client.adapters.installation.installation import (
         inspect,
         policy_file,
     )
@@ -300,6 +300,7 @@ def prepare_materials(
     connection,
     connection_sha,
     *,
+    harness,
     updater=None,
     runner=subprocess.run,
 ):
@@ -383,9 +384,9 @@ def prepare_materials(
     if fresh and fresh["phase"] in ("ready", "complete"):
         from agent_brain_client.runtime.fresh_installation import retained_installation
 
-        retained_installation(home, native).restore_mapping(
-            state / "content-cache", content
-        )
+        from agent_brain_client.runtime.harness_content import content_host
+        target_cache = home / ".config/agent-brain-client" / harness / "content-cache"
+        retained_installation(home, Path(fresh["native"]), target_host=content_host(harness)).restore_mapping(target_cache, content)
     runtime = {
         "https_profile": str(state / "https-profile.json"),
         "https_profile_sha256": profile_sha,
@@ -394,7 +395,7 @@ def prepare_materials(
         "content_policy_sha256": content_sha,
         "device_home": str(home),
         "codex_home": str(native),
-        "content_cache": str(state / "content-cache"),
+        "content_cache": str(home / ".config/agent-brain-client" / harness / "content-cache") if native == home / ".config/agent-brain-client/shared-native" or harness == "codebuddy" else str(state / "content-cache"),
         "dependency_policy": str(state / "dependencies.json"),
         "dependency_policy_sha256": deps_sha,
     }
@@ -447,7 +448,7 @@ def prepare_materials(
             raise ValueError("Helper health unconfirmed")
     plan_path = state / "install-plan.json"
     removal = home / ".config/agent-brain-client/uninstall-receipt.json"
-    from agent_brain_client.adapters.harnesses.codex.lifecycle import read_removal
+    from agent_brain_client.runtime.client_lifecycle import read_removal
 
     if removal.exists() and read_removal(home).get("phase") == "applying":
         raise ValueError("Resume uninstall with --action repair before reinstall")
@@ -525,7 +526,7 @@ def prepare_materials(
             target_platform=native_platform(),
         )
         os.rename(staging / "package", package)
-    plan = prepare(home, package, state / "release-policy.json", policy_sha)
+    plan = prepare(home, package, state / "release-policy.json", policy_sha, harness=harness)
     plan_sha = same_private(plan_path, plan)
     readiness(state, connection, connection_sha, bundle_sha, plan_sha)
     return plan, plan_sha, binding
@@ -543,13 +544,14 @@ def confirm_target(message, buttons=("Cancel", "Continue")):
 
 
 def existing_connection(home, native, connection, metadata):
-    from agent_brain_client.adapters.harnesses.codex.installation import context
+    from agent_brain_client.adapters.installation.installation import context
 
     policy, _, _, configured_native = context(
         home,
         metadata["package"],
         metadata["release_policy"],
         metadata["release_policy_sha256"],
+        harness=None,
     )
     runtime = policy["runtime"]
     profile = profile_file(runtime["https_profile"], runtime["https_profile_sha256"])
@@ -571,6 +573,7 @@ def reinstall_removed(
     native,
     connection,
     *,
+    harness,
     store=None,
     transport=None,
     secure_input=None,
@@ -579,7 +582,7 @@ def reinstall_removed(
     """Reuse the original identity/config/cache; update only the fixed source entry."""
     from agent_brain_client.adapters.storage.install_state import same_private
     from agent_brain_client.adapters.storage.install_state import sha
-    from agent_brain_client.adapters.harnesses.codex.lifecycle import (
+    from agent_brain_client.runtime.client_lifecycle import (
         read_removal,
         validate_journal,
     )
@@ -635,7 +638,7 @@ def reinstall_removed(
                 removed,
             )
         return result
-    from agent_brain_client.adapters.harnesses.codex.lifecycle import (
+    from agent_brain_client.runtime.client_lifecycle import (
         validate_uninstalled_state,
     )
 
@@ -653,7 +656,7 @@ def reinstall_removed(
         os.rename(staging / "package", package)
     # Existing package is independently rehashed by prepare; never overwrite it.
     plan = prepare(
-        home, package, metadata["release_policy"], metadata["release_policy_sha256"]
+        home, package, metadata["release_policy"], metadata["release_policy_sha256"], harness=harness
     )
     plan_sha = sha(plan_bytes(plan))
     plan_path = state / ("reinstall-plan-" + plan_sha + ".json")
@@ -687,6 +690,7 @@ def run(
     connection,
     connection_sha,
     *,
+    harness,
     confirm=confirm_target,
     updater=None,
     runner=subprocess.run,
@@ -697,6 +701,8 @@ def run(
     installer=None,
     access_mode=False,
 ):
+    if harness not in ("codex", "codebuddy"):
+        raise ValueError("Explicit installation Harness required")
     from agent_brain_client.adapters.storage.install_state import private_lease
     from agent_brain_client.adapters.storage.install_state import same_private
     from agent_brain_client.adapters.storage.install_state import sha
@@ -727,10 +733,10 @@ def run(
                     "installed": False,
                     "native_changed": False,
                 }
-            from agent_brain_client.adapters.harnesses.codex.lifecycle import (
+            from agent_brain_client.runtime.client_lifecycle import (
                 read_removal,
             )
-            from agent_brain_client.adapters.harnesses.codex.installation import inspect
+            from agent_brain_client.adapters.installation.installation import inspect
 
             registration = Path(home) / ".config/agent-brain-client/codex-mcp.json"
             if (
@@ -774,6 +780,7 @@ def run(
                     transport=transport,
                     secure_input=secure_input,
                     installer=installer,
+                    harness=harness,
                 )
             retire_ready(state)
             materials = dependency_preparer(Path(home), runner=runner)
@@ -783,6 +790,7 @@ def run(
                 Path(native),
                 connection,
                 connection_sha,
+                harness=harness,
                 updater=updater,
                 runner=runner,
             )
@@ -830,7 +838,7 @@ def run(
             )
             removal = Path(home) / ".config/agent-brain-client/uninstall-receipt.json"
             if result.get("installed") and removal.exists():
-                from agent_brain_client.adapters.harnesses.codex.lifecycle import (
+                from agent_brain_client.runtime.client_lifecycle import (
                     read_removal,
                 )
 
@@ -897,7 +905,7 @@ def run(
         }
 
 
-def finish_install(home, value):
+def finish_install(home, value, *, harness=None):
     from agent_brain_client.runtime.updates import manage_update
     from agent_brain_client.runtime.installation_completion import complete
 
@@ -913,7 +921,7 @@ def finish_install(home, value):
                 installation_complete=False,
                 next_action="Resume the public update entry to complete the trusted launcher handover before mapping or Hook setup.",
             )
-    return complete(home, value)
+    return complete(home, value, harness=harness)
 
 
 def recover_windows_setup(home, native):

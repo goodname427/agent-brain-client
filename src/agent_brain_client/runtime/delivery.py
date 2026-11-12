@@ -40,7 +40,7 @@ def schedule_delivery(home, host_adapter, origin):
 
 
 def schedule_project(home, settings_path, settings_sha256, *, wake_worker=True):
-    from agent_brain_client.adapters.harnesses.codex.project_configuration import load
+    from agent_brain_client.runtime.project_memory import load
 
     value = load(settings_path, settings_sha256)
     if Path(value['device_home']) != Path(home):
@@ -58,6 +58,14 @@ def schedule_assistant_completion(home, turn_id):
     root = directory(home)
     cache_directory(root)
     task = {'schema': 1, 'harness': 'codebuddy-final', 'turn_id': turn_id}
+    return register_task(home, digest(task), task)
+
+
+def schedule_project_final(home, turn_id, settings, pin):
+    if not re.fullmatch('[a-f0-9]{64}', turn_id):
+        raise ValueError('Observed project turn required')
+    task = {'schema': 1, 'harness': 'codebuddy-project-final', 'turn_id': turn_id,
+            'settings': str(settings), 'settings_sha256': pin}
     return register_task(home, digest(task), task)
 
 
@@ -113,6 +121,9 @@ def deliver_origin(home, task, core):
         raise ValueError('Bound delivery task required')
     value = core.load(home)
     local = task['origin']
+    from agent_brain_client.adapters.storage.project_settings import source_active
+    if not source_active(home, local['cwd'], task['harness']):
+        return True
     if not core.approved(value) or select(value['scope'], local) is None:
         return True  # Suspended, not empty: the supervisor rechecks without network.
     client, queue = core.build_delivery_queue(value, local, task['harness'])
@@ -126,7 +137,8 @@ def deliver_origin(home, task, core):
 
     def allowed(session):
         current = core.load(home)
-        if (not core.approved(current) or digest(current['scope']) != scope
+        if (not source_active(home, local['cwd'], task['harness'])
+                or not core.approved(current) or digest(current['scope']) != scope
                 or select(current['scope'], local) is None):
             return False
         fresh, _ = core.build_delivery_queue(current, local, task['harness'])
@@ -188,9 +200,15 @@ def run(home, *, max_seconds=600, pause=time.sleep):
                                         'status': 'review-required', 'task_sha256': digest(task),
                                         'error_type': type(error).__name__,
                                     }, cache=True)
+                            elif task.get('harness') == 'codebuddy-project-final':
+                                from agent_brain_client.runtime.project_memory import finish_codebuddy_project
+                                if (set(task) != {'schema', 'harness', 'turn_id', 'settings', 'settings_sha256'}
+                                        or task['schema'] != 1 or not re.fullmatch('[a-f0-9]{64}', task['turn_id'])):
+                                    raise ValueError('Observed project completion task required')
+                                pending = finish_codebuddy_project(home, task) or pending
                             elif task.get('harness') == 'codex-project':
                                 from agent_brain_client.runtime.project_memory import delivery_port
-                                from agent_brain_client.adapters.harnesses.codex.project_configuration import load
+                                from agent_brain_client.runtime.project_memory import load
 
                                 if set(task) != {'schema', 'harness', 'settings', 'settings_sha256'} or task['schema'] != 1:
                                     raise ValueError('Pinned project delivery required')
@@ -275,7 +293,7 @@ def discover_existing(home):
             task = metadata.private_json(task_file, cache=True)
             if task.get('harness') != 'codex-project':
                 continue
-            from agent_brain_client.adapters.harnesses.codex.project_configuration import load
+            from agent_brain_client.runtime.project_memory import load
 
             project = load(task['settings'], task['settings_sha256'])
             if Path(project['device_home']) == Path(home) and _has_work(project['cache']):
@@ -292,7 +310,10 @@ def discover_existing(home):
                 row = metadata.private_json(marker, cache=True)
                 if not row.get('stopped') or row.get('complete') or row.get('excluded'):
                     continue
-                task = {'schema': 1, 'harness': 'codebuddy-final', 'turn_id': marker.stem}
+                if row.get('project_delivery'):
+                    task = {'schema': 1, 'harness': 'codebuddy-project-final', 'turn_id': marker.stem, **row['project_delivery']}
+                else:
+                    task = {'schema': 1, 'harness': 'codebuddy-final', 'turn_id': marker.stem}
                 cache_directory(root)
                 task_file = root / (digest(task) + '.json')
                 if not task_file.exists():

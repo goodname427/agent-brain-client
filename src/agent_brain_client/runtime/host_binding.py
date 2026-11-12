@@ -67,24 +67,27 @@ def load_core(home):
     return core
 
 
-def backend(home, core):
-    """Authenticate the existing native registration before using its command."""
-    from agent_brain_client.adapters.harnesses.codex.installation import (
-        inspect,
-        registered_context,
-    )
-
+def inspect_backend(home, core):
+    """Verify registration metadata while keeping a paused service paused."""
+    from agent_brain_client.adapters.installation.installation import inspect, registered_context
     status = inspect(home)
-    if status.get("installed") is not True:
-        raise ValueError("Verified shared Client installation required")
+    if status.get("registration_verified", status.get("installed")) is not True:
+        raise ValueError("Verified shared Client registration required")
     metadata, _ = registration_store.registration(home)
     _, command, _, _ = registered_context(home, metadata)
     return command, status
 
 
+def backend(home, core):
+    command, status = inspect_backend(home, core)
+    if status.get("installed") is not True:
+        raise ValueError("Shared Client service is paused")
+    return command, status
+
+
 def execute_mcp(home, core, execute=os.execve, runner=subprocess.run):
     command, _ = backend(home, core)
-    argv = [command["command"], *command["args"]]
+    argv = [command["command"], *command["args"], "--harness", "codebuddy"]
     environment = dict(os.environ)
     environment.update(command.get("env", {}))
     # Keep the verified backend's complete tool set and MCP framing. The

@@ -105,7 +105,7 @@ def local_tools(kinds, memory_sources, layered_recall=False):
     tools.append(
         {
             "name": "content_request_id",
-            "description": "Generate a deterministic idempotent write request_id from the completed Codex turn digest, operation and AgentBrain target identity. Different targets/operations in one turn receive different IDs; retries of the same operation get the same ID. Local-only; no transfer.",
+            "description": "Generate a deterministic idempotent write request_id from the completed Harness turn digest, operation and AgentBrain target identity. Different targets/operations in one turn receive different IDs; retries of the same operation get the same ID. Local-only; no transfer.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -135,7 +135,7 @@ def local_tools(kinds, memory_sources, layered_recall=False):
         tools.append(
             {
                 "name": "content_sources_inventory",
-                "description": "Enumerate only the Codex persistent memories directory. Returns path-free IDs, file fingerprints and per-item processing status in pages of 64; never returns memory text or reads session/transcript files. Inventory is not semantic review or import coverage. Use the returned cursor for the next page; restart if it changes. Local-only read; no Server request or data transfer.",
+                "description": "Enumerate only the selected Harness persistent memories. Returns path-free IDs, file fingerprints and per-item processing status in pages of 64; never returns memory text or reads session/transcript files. Inventory is not semantic review or import coverage. Use the returned cursor for the next page; restart if it changes. Local-only read; no Server request or data transfer.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {"cursor": {"type": "string", "maxLength": 96}},
@@ -151,13 +151,13 @@ def local_tools(kinds, memory_sources, layered_recall=False):
         tools.append(
             {
                 "name": "content_sources_read",
-                "description": "Read the bounded body of exactly one previously inventoried Codex persistent Memory file, matching its ID and fingerprint. Local-only; never reads transcript/session paths and does not transfer data. Review the returned text for secrets, LocalOnly, customer/employer confidential data and cross-project scope before staging.",
+                "description": "Read the bounded body of exactly one previously inventoried selected Harness persistent Memory file, matching its ID and fingerprint. Local-only; never reads transcript/session paths and does not transfer data. Review the returned text for secrets, LocalOnly, customer/employer confidential data and cross-project scope before staging.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "source_id": {
                             "type": "string",
-                            "pattern": "^codex-memory:[a-f0-9]{64}$",
+                            "pattern": "^(codex|codebuddy)-memory:[a-f0-9]{64}$",
                         },
                         "source_fingerprint": {
                             "type": "string",
@@ -183,7 +183,7 @@ def local_tools(kinds, memory_sources, layered_recall=False):
                     "properties": {
                         "source_id": {
                             "type": "string",
-                            "pattern": "^codex-memory:[a-f0-9]{64}$",
+                            "pattern": "^(codex|codebuddy)-memory:[a-f0-9]{64}$",
                         },
                         "source_fingerprint": {
                             "type": "string",
@@ -228,7 +228,7 @@ def local_tools(kinds, memory_sources, layered_recall=False):
                     "properties": {
                         "source_id": {
                             "type": "string",
-                            "pattern": "^codex-memory:[a-f0-9]{64}$",
+                            "pattern": "^(codex|codebuddy)-memory:[a-f0-9]{64}$",
                         },
                         "source_fingerprint": {
                             "type": "string",

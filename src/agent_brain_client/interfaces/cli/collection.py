@@ -32,6 +32,7 @@ def main(argv=None):
             "global-recall",
         ),
     )
+    p.add_argument("--harness", choices=("codex", "codebuddy"))
     p.add_argument("--device-home", default=str(Path.home()))
     p.add_argument("--include-root", action="append", default=[])
     p.add_argument("--isolate-root", action="append", default=[])
@@ -77,12 +78,14 @@ def main(argv=None):
     diagnostic = {"stage": "global-settings"}
     try:
         if a.action in ("global-install", "global-uninstall"):
-            from agent_brain_client.adapters.harnesses.codex.collection_installation import (
-                install,
-                uninstall,
-            )
-
-            result = install(a) if a.action == "global-install" else uninstall(a)
+            from agent_brain_client.runtime.host_maintenance import global_entry
+            if a.harness is None:
+                from agent_brain_client.runtime.client_lifecycle import registered_host
+                port = registered_host(a.device_home)
+                if port is None:
+                    raise ValueError("Registered Harness or explicit --harness required")
+                a.harness = port.name
+            result = global_entry(a, harness=a.harness, remove=a.action == "global-uninstall")
             if a.action == "global-install":
                 from agent_brain_client.runtime.installation_completion import (
                     source_setup,
@@ -173,7 +176,7 @@ def main(argv=None):
             2
             if failed_activation
             or result.get("status")
-            in ("global-memory-activation-required", "global-memory-resume-unconfirmed")
+            in ("global-memory-activation-required", "global-memory-resume-unconfirmed", "global-queue-sync-incomplete")
             else 0
         )
     except Exception as error:

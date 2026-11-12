@@ -175,7 +175,7 @@ class ClientUpdate:
                 result["tool_discovery"] = self.installation.tool_discovery(before)
                 if action == "check-update":
                     discovered = channel.discover(
-                        "codex", registration.platform, before["version"]
+                        registration.transport_adapter, registration.platform, before["version"]
                     )
                     rows = discovered.get("releases", [])
                     if (

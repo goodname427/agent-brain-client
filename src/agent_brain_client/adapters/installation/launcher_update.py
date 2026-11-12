@@ -17,7 +17,7 @@ def completed_reinstall_registration(home, current, meta):
     if current["plan_sha256"] == meta["plan_sha256"]:
         return meta
     import base64
-    import agent_brain_client.adapters.harnesses.codex.installation as ci
+    import agent_brain_client.adapters.installation.installation as ci
 
     registration = safe(Path(home) / ".config/agent-brain-client/codex-mcp.json")
     receipt = private_json(registration.parent / "content-install-receipt.json")
@@ -52,7 +52,7 @@ def retire_completed_reinstall(home, meta):
     """Archive a proven completed reinstall before replacing its registration."""
     from agent_brain_client.adapters.storage.install_state import same_private
     from agent_brain_client.adapters.storage.install_state import sha
-    import agent_brain_client.adapters.harnesses.codex.installation as ci
+    import agent_brain_client.adapters.installation.installation as ci
     from agent_brain_client.adapters.storage.pinned import pinned
 
     state = safe(Path(home) / ".config/agent-brain-client/first-install")
@@ -89,7 +89,7 @@ def retire_completed_reinstall(home, meta):
 def refresh_launcher(
     home, *, channel_factory=None, channel=None, before=None, meta=None
 ):
-    import agent_brain_client.adapters.harnesses.codex.installation as ci
+    import agent_brain_client.adapters.installation.installation as ci
     from agent_brain_client.adapters.storage.host_files import HostConfigChanged
 
     for attempt in range(3):
@@ -124,7 +124,7 @@ def apply_launcher_update(
     persisted before handover. No credentials, policy expansion or worker kill.
     """
     from agent_brain_client.adapters.storage.install_state import sha
-    import agent_brain_client.adapters.harnesses.codex.installation as ci
+    import agent_brain_client.adapters.installation.installation as ci
 
     marker = safe(Path(home) / ".config/agent-brain-client/launcher-handover.json")
     if marker.exists():
@@ -159,12 +159,16 @@ def apply_launcher_update(
             / (row["manifest"]["version"] + "-" + row["commit"])
         )
         ci.package_check(candidate, channel.engine.policy)
+        _, registered, _, _ = ci.registered_context(home, meta)
+        if "--harness" not in registered["args"]:
+            raise ValueError("Reinstall with an explicit Harness to refresh retained legacy registration")
         plan = ci.prepare(
             home,
             candidate,
             meta["release_policy"],
             meta["release_policy_sha256"],
             replace_existing=True,
+            harness=registered["args"][registered["args"].index("--harness") + 1],
         )
         _, registered, _, _ = ci.registered_context(home, meta)
         if str(candidate) == meta["package"] and plan["mcp"] == registered:

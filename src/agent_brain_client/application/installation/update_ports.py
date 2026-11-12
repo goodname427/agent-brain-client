@@ -20,6 +20,7 @@ class RegisteredInstallation:
     platform: str
     supported: bool
     launcher: dict
+    transport_adapter: str
 
 
 class UpdateChannel(Protocol):

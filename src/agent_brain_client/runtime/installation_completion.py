@@ -18,10 +18,8 @@ from types import SimpleNamespace
 
 def resume_setup(home, native):
     """Dispatch owned pending transactions before original-install inspection."""
-    import agent_brain_client.adapters.harnesses.codex.installation as ci
-    from agent_brain_client.adapters.harnesses.codex.collection_installation import (
-        recover_pending,
-    )
+    import agent_brain_client.adapters.installation.installation as ci
+    from agent_brain_client.runtime.host_maintenance import recover_pending
     from agent_brain_client.runtime.updates import manage_update
 
     stage = "hook-recovery"
@@ -81,6 +79,8 @@ def mapping_refresh(home, policy, mcp, *, runner=subprocess.run):
         str(
             Path(active["package"]) / "src/agent_brain_client/interfaces/mcp/content.py"
         ),
+        "--harness",
+        mcp["args"][mcp["args"].index("--harness") + 1],
         "--client-version",
         active["version"],
         "--mapping-refresh",
@@ -157,10 +157,9 @@ def source_setup(home, *, choose=input):
     return dict(result, collection_enabled=result.get("activated") is True)
 
 
-def complete(home, result, *, choose=input, refresh=mapping_refresh):
+def complete(home, result, *, harness=None, choose=input, refresh=mapping_refresh):
     """Continue an authorized install; each stage reports independent evidence."""
-    import agent_brain_client.adapters.harnesses.codex.installation as ci
-    import agent_brain_client.adapters.harnesses.codex.collection_installation as hooks
+    import agent_brain_client.adapters.installation.installation as ci
 
     value = dict(result)
     if result.get("installed") is not True:
@@ -183,8 +182,19 @@ def complete(home, result, *, choose=input, refresh=mapping_refresh):
             Path(home) / ".config/agent-brain-client/codex-mcp.json"
         )
         policy, mcp, _, _ = ci.registered_context(home, meta)
+        selected = harness if harness is not None else mcp["args"][mcp["args"].index("--harness") + 1]
+        if selected not in ("codex", "codebuddy"):
+            raise ValueError("Explicit installation Harness required")
         if not policy["platform"].startswith(("win32-", "darwin-")):
             return result
+        from agent_brain_client.runtime.fresh_installation import restore_native_bindings
+        restore_native_bindings(home)
+        if selected == "codex":
+            stage = "native-mcp"
+            from agent_brain_client.adapters.harnesses.codex import binding
+            previous = binding.receipt(home)
+            stages["native_mcp"] = (binding.install(home, native=Path(previous["native_home"]), enabled=previous["mcp"]["enabled"])
+                                    if previous is not None and previous["removed"] else binding.install(home))
         if mcp.get("enabled") is False:
             stages.update(
                 mapping={"status": "paused"},
@@ -193,17 +203,22 @@ def complete(home, result, *, choose=input, refresh=mapping_refresh):
             )
             return value
         stage = "mapping"
-        stages["mapping"] = refresh(home, policy, mcp)
+        import copy
+        selected_mcp = copy.deepcopy(mcp)
+        selected_mcp["args"][selected_mcp["args"].index("--harness") + 1] = selected
+        stages["mapping"] = refresh(home, policy, selected_mcp)
         stage = "hook"
-        stages["hook"] = hooks.install(
+        from agent_brain_client.runtime.host_maintenance import install_sources
+        stages["hook"] = install_sources(
             SimpleNamespace(
                 device_home=str(home),
                 profile_id=None,
                 operator=None,
                 operator_sha256=None,
+                harness=selected,
             )
         )
-        stages["hook_trust"] = "normal-codex-review-required"
+        stages["hook_trust"] = "normal-host-review-required"
         stage = "source-routing"
         from agent_brain_client.runtime.fresh_installation import restore_source_routing
 
@@ -215,7 +230,7 @@ def complete(home, result, *, choose=input, refresh=mapping_refresh):
             and stages["sources"].get("collection_enabled") is True
         )
         value["next_action"] = (
-            "Review installation_stages. Observe fresh MCP client_runtime version and commit before deciding whether only Agent Brain MCP needs a reload. If unobservable, report unknown. Review inline Hook trust in normal Codex settings when pending; use a fresh conversation when mapped Rules/Skills need loading. Follow the sources next_action if source selection or Server admission is pending."
+            "Review installation_stages. Observe fresh MCP client_runtime version and commit before deciding whether only Agent Brain MCP needs a reload. If unobservable, report unknown. Review Hook trust in the selected host settings when pending; use a fresh conversation when mapped Rules/Skills need loading. Follow the sources next_action if source selection or Server admission is pending."
         )
     except Exception:
         stages["setup"] = {"status": "pending-review-or-resume", "stage": stage}

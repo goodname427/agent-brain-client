@@ -10,7 +10,7 @@ if __package__ in (None, ""):
 import argparse
 import hashlib
 import json
-from agent_brain_client.adapters.harnesses.codex import installation
+from agent_brain_client.adapters.installation import installation
 from agent_brain_client.adapters.storage.pinned import pinned
 from agent_brain_client.adapters.storage.private_files import safe, save
 from agent_brain_client.domain.contract import encode
@@ -26,6 +26,7 @@ def dispatch(args):
             args.release_policy,
             args.release_policy_sha256,
             args.replace_existing,
+            harness=args.harness,
         )
         output = safe(args.output)
         if output.exists():
@@ -45,6 +46,7 @@ def dispatch(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--harness", choices=("codex", "codebuddy"))
     parser.add_argument("action", choices=("plan", "apply", "inspect"))
     parser.add_argument("--device-home", default=str(Path.home()))
     for name in (

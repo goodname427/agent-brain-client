@@ -24,33 +24,8 @@ ROOT = Path(__file__).resolve().parents[4]
 
 def backend_home(home):
     """Metadata-only bootstrap path; works before a Python runtime is prepared."""
-    from agent_brain_client.adapters.storage.reinstallation import read_journal
-
-    fresh = read_journal(home)
-    if fresh is not None and fresh["phase"] != "complete":
-        native = Path(fresh["native"])
-        if not native.is_absolute() or native.is_symlink():
-            raise ValueError("Original fresh-install native home required")
-        return native
-    registration = Path(home) / ".config/agent-brain-client/codex-mcp.json"
-    if not registration.exists():
-        if fresh is not None:
-            return Path(fresh["native"])
-        return Path(home) / ".config/agent-brain-client/shared-native"
-    if registration.is_symlink():
-        raise ValueError("Existing Client registration changed")
-    metadata = json.loads(registration.read_bytes())
-    policy = Path(metadata["release_policy"])
-    if (
-        policy.is_symlink()
-        or hashlib.sha256(policy.read_bytes()).hexdigest()
-        != metadata["release_policy_sha256"]
-    ):
-        raise ValueError("Existing Client release policy changed")
-    native = Path(json.loads(policy.read_bytes())["runtime"]["codex_home"])
-    if not native.is_absolute() or native.is_symlink():
-        raise ValueError("Existing shared native binding required")
-    return native
+    from agent_brain_client.adapters.storage.registration import registry_home
+    return registry_home(home)
 
 
 def verify_adapter():
@@ -79,7 +54,7 @@ def probe(home, core, runner=subprocess.run):
 
     command, _ = backend(home, core)
     result = runner(
-        [command["command"], *command["args"], "--installation-check"],
+        [command["command"], *command["args"], "--harness", "codebuddy", "--installation-check"],
         env=dict(os.environ, **command.get("env", {})),
         capture_output=True,
         timeout=120,
@@ -170,8 +145,8 @@ def main():
         if args.action == "probe":
             value = probe(home, core)
         elif args.action == "status":
-            value = host.status(home, core, backend_check=host_binding.backend)
-            value["source_enabled"] = core.approved(core.load(home))
+            value = host.status(home, core, backend_check=host_binding.inspect_backend)
+            value["source_enabled"] = value.get("collection_hooks_installed", value.get("automatic_recall", True)) and core.approved(core.load(home))
         else:
             if args.action == "install":
                 checked = probe(home, core)
@@ -185,7 +160,7 @@ def main():
             if args.action == "install":
                 value.update(checked)
                 value["status"] = "codebuddy-configured"
-                value["source_enabled"] = core.approved(core.load(home))
+                value["source_enabled"] = value.get("collection_hooks_installed", value.get("automatic_recall", True)) and core.approved(core.load(home))
         print(json.dumps(value, ensure_ascii=False))
         return 0
     except Exception as error:
