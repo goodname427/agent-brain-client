@@ -25,7 +25,7 @@ class HostEntries(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="synthetic-entry-home-") as tmp:
             result = subprocess.run(
                 [sys.executable, "-I", "-B", str(Path(__file__).resolve()), mode, harness],
-                env=dict(os.environ, HOME=tmp, USERPROFILE=tmp, CODEX_HOME=str(Path(tmp) / ".codex")),
+                env=dict(os.environ, HOME=str(Path(tmp) / "home"), USERPROFILE=str(Path(tmp) / "home"), CODEX_HOME=str(Path(tmp) / "home/.codex")),
                 capture_output=True, text=True, timeout=40,
             )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -67,7 +67,8 @@ def probe(mode, harness):
     sys.meta_path.insert(0, ForbiddenHost())
     from agent_brain_client.adapters.storage import metadata, registration
     from agent_brain_client.runtime.harness_content import content_host
-    home = Path.home().resolve()
+    from agent_brain_client.adapters.platforms.filesystem import private_directory, private_mode
+    home = private_directory(Path.home().resolve())
     native = home / (".codex" if harness == "codex" else ".codebuddy")
     content_policy = home / "content.json"
     content_pin = metadata.write(content_policy, POLICY)
@@ -235,10 +236,22 @@ def probe(mode, harness):
                     assert rc == 0 and result["remote_confirmed"], result
                     assert (settings_path(home).parent / "global.off").exists() == (action == "stop")
                     assert Path(loaded["off_file"]).exists() == (action == "stop")
+                    if action == "stop":
+                        private_mode(loaded["off_file"], owner=True)
+                marker = Path(loaded["off_file"])
+                metadata.write(marker, {"synthetic": "retained-stop"}, exclusive=True)
+                before = marker.read_bytes()
+                with patch.object(sys, "stdout", io.StringIO()):
+                    assert collection.main(["global-stop", "--device-home", str(home)]) == 0
+                assert marker.read_bytes() == before
+                marker.unlink()
+                with patch.object(metadata, "write", side_effect=OSError("Synthetic marker write failure")), patch.object(sys, "stdout", io.StringIO()):
+                    assert collection.main(["global-stop", "--device-home", str(home)]) == 2
+                assert calls == ["memory_stop", "memory_resume", "memory_stop"], calls
                 with patch.object(project_memory, "adapter_for", side_effect=OSError("Synthetic remote unavailable")), patch.object(sys, "stdout", io.StringIO()):
                     assert collection.main(["global-resume", "--device-home", str(home)]) == 2
                 assert (settings_path(home).parent / "global.off").exists()
-            assert calls == ["memory_stop", "memory_resume"], calls
+            assert calls == ["memory_stop", "memory_resume", "memory_stop"], calls
     else:
         raise AssertionError(mode)
     assert not attempts, attempts
