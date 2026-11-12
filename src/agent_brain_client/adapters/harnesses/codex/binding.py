@@ -84,9 +84,9 @@ def recover(home):
 
 
 def install(home, *, native=None, remove=False, enabled=None, check_only=False):
-    from agent_brain_client.adapters.storage.registration import registration
     from agent_brain_client.adapters.installation.installation import registered_context
-    meta, policy = registration(home)
+    meta = io.private_json(Path(home) / ".config/agent-brain-client/codex-mcp.json")
+    policy = io.private_json(meta["release_policy"], meta["release_policy_sha256"])
     if not private_control(home, policy["runtime"]):
         return {"status": "retained-direct-codex-binding", "native_changed": False,
                 "update_available": False}

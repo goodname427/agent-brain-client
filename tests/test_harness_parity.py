@@ -716,6 +716,12 @@ class NativeBindingTransaction(unittest.TestCase):
             file.write_text('model = "synthetic"\n[mcp_servers.other]\ncommand = "preserve"\n')
             file.chmod(0o600)
             policy = {"runtime": {"codex_home": str(home / ".config/agent-brain-client/shared-native")}}
+            from agent_brain_client.adapters.storage import metadata
+            policy_file = home / ".config/agent-brain-client/policy.json"
+            private_directory(policy_file.parent)
+            metadata.write(policy_file, policy)
+            metadata.write(policy_file.parent / "codex-mcp.json", {"release_policy": str(policy_file),
+                "release_policy_sha256": metadata.digest(policy_file.read_bytes())})
             command = {"command": str(Path(sys.executable).resolve()), "args": ["--harness", "codebuddy"],
                        "env": {}, "enabled": True}
             with patch.object(registration, "registration", return_value=({}, policy)), patch(
