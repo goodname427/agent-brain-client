@@ -166,7 +166,7 @@ class Client:
   return {"error":{"code":"synthetic-unconfirmed"}} if mode=="server-error" else {"result":{"stopped":True}}
 core.CollectionClient=Client
 from agent_brain_client.adapters.storage import project_settings
-project_settings.load=lambda *a:{"off_file":str(home/"project.off")}
+project_settings.load=lambda *a,**k:{"off_file":str(home/"project.off")}
 from agent_brain_client.runtime import project_memory
 project_memory.daily_command=lambda source,action:record("project-"+action)
 sys.argv=[str(entry),*args[3:]]
