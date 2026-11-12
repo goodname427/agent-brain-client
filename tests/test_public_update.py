@@ -86,6 +86,15 @@ class PublicUpdate(unittest.TestCase):
         handover = patch.object(codex_updates, 'refresh_launcher', return_value=False)
         handover.start()
         self.addCleanup(handover.stop)
+        # The installation fixture's Python is an inert executable used to
+        # verify registration. Host subprocess execution is covered separately
+        # by test_global_memory_update with real isolated interpreters.
+        binding = patch.object(runtime_updates, 'refresh_bindings', return_value={
+            'status': 'codebuddy-not-installed', 'native_changed': False,
+            'update_available': False,
+        })
+        binding.start()
+        self.addCleanup(binding.stop)
 
     def action(self, action):
         before_env = dict(os.environ)
