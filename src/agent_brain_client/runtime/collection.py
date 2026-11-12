@@ -66,6 +66,8 @@ def native_services():
         adapter=lambda *args: adapter(*args),
         submit_hook=lambda *args: submit_hook(*args),
         recall=lambda *args, **kwargs: recall(*args, **kwargs),
+        recall_prompt=lambda *args, **kwargs: recall_prompt(*args, **kwargs),
+        schedule_delivery=lambda *args: schedule_delivery(*args),
     )
 
 
@@ -127,3 +129,30 @@ recall = partial(
         approved=lambda value: approved(value),
     ),
 )
+
+
+def build_delivery_queue(value, local, harness):
+    if harness == "codex":
+        return adapter(value, local)
+    if harness == "codebuddy":
+        from agent_brain_client.adapters.harnesses.codebuddy.events import open_queue
+        import sys
+        return open_queue(sys.modules[__name__], value, local)
+    raise ValueError("Supported Harness required")
+
+
+def schedule_delivery(home, harness, local):
+    from agent_brain_client.runtime.delivery import schedule_delivery as schedule
+    return schedule(home, harness, local)
+
+
+def recall_prompt(value, local, payload, query, *, observe=None):
+    from agent_brain_client.application.memory.prompt_recall import recall_prompt as invoke
+    from agent_brain_client.adapters.platforms.filesystem import locked
+    from agent_brain_client.adapters.storage.content import operation_stage
+    return invoke(value, local, payload, query, observe=observe, services=SimpleNamespace(
+        settings_path=lambda home: settings_path(home),
+        recall=lambda *args, **kwargs: recall(*args, **kwargs),
+        locked=locked, operation_stage=operation_stage, cache_exists=lambda path: path.exists(),
+        write=metadata_io.write, save_observation=save_recall_observation,
+    ))

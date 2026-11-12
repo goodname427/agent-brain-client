@@ -251,7 +251,8 @@ def import_bundle(args):
     }
 
 
-def recalled(p, session):
+def recalled(p, session, query=None):
+    p = dict(p, query=query[:1024]) if query is not None else p
     from agent_brain_client.adapters.server.https import HTTPSContentClient
 
     profile = private_json(p["profile"], p["profile_sha256"])
@@ -486,7 +487,7 @@ def capture(p, payload):
     from agent_brain_client.adapters.harnesses.codex.hooks import (
         validate_hook_policy,
         native_hook_fields,
-        run_event_hook,
+        hook_enabled,
     )
     from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
     from agent_brain_client.domain.content_policy import validate_policy
@@ -497,6 +498,8 @@ def capture(p, payload):
         profile_sha256=p["profile_sha256"],
         content_policy_sha256=p["content_policy_sha256"],
     )
+    if not hook_enabled(policy):
+        return {"status": "disabled", "data_transferred": False}
     scope, turn, kind, text, key = native_hook_fields(policy, payload)
     if policy.get("schema") == 2:
         blocked = canonical(Path(p["off_file"]).parent / ("excluded-" + key + ".json"))
@@ -532,12 +535,13 @@ def capture(p, payload):
                     exclusive=True,
                 )
             return {"status": "excluded-turn", "data_transferred": False}
-    return run_event_hook(
-        adapter,
-        policy,
-        payload,
-        source_gate=daily_gate(p, client) if policy.get("schema") == 2 else None,
-    )
+    from agent_brain_client.application.memory.observations import stage_messages
+    previous = adapter._load("outbox/agentbrain_event_" + key + ".json")
+    if previous is not None:
+        return dict(adapter._queue_result(previous), status="retained-paired-event")
+    return stage_messages(adapter, project_id=scope["project_id"], session_id=scope["session_id"],
+                          operation_id=turn, phase="prompt" if kind == "UserPromptSubmit" else "assistant",
+                          messages=[{"role": "user" if kind == "UserPromptSubmit" else "assistant", "content": text}])
 
 
 def record(p, path):
@@ -638,9 +642,10 @@ def record(p, path):
     }
 
 
-def hook_payload(p):
+def hook_payload(p, *, settings_path=None, settings_sha256=None):
     if not active(p):
         return {}
+    started = time.monotonic()
     raw = sys.stdin.buffer.read(1048577)
     if len(raw) > 1048576:
         raise ValueError("Bounded native payload required")
@@ -648,45 +653,75 @@ def hook_payload(p):
     if payload.get("cwd") != p["project_root"]:
         return {}
     event = payload.get("hook_event_name")
-    if event in ("UserPromptSubmit", "Stop") and p["source_mode"] in (
-        "codex-hooks",
-        "codex-project",
-    ):
-        cap = private_json(p["capture_policy"], p["capture_policy_sha256"])
-        if any(
-            s["session_id"] is None or s["session_id"] == payload.get("session_id")
-            for s in cap["scopes"]
-        ):
-            capture(p, payload)
-        return {}
-    if event != "SessionStart":
-        return {}
-    if daily(p) and p["capture_policy"] is not None:
-        try:
-            daily_command(p, "flush")
-            daily_command(p, "sync")
-        except Exception:
-            pass
-    extra = context(p, recalled(p, payload.get("session_id")))
-    return (
-        {"hookSpecificOutput": {"hookEventName": event, "additionalContext": extra}}
-        if extra
-        else {}
-    )
+    from agent_brain_client.application.memory.lifecycle import handle
+    from agent_brain_client.runtime.delivery import schedule_project
+
+    def stage():
+        if p["source_mode"] not in ("codex-hooks", "codex-project"):
+            return {"status": "recall-only", "data_transferred": False}
+        return capture(p, payload)
+
+    def schedule():
+        if p["capture_policy"] is not None:
+            if settings_path is None or settings_sha256 is None:
+                raise ValueError("Pinned project settings required for delivery")
+            schedule_project(p["device_home"], settings_path, settings_sha256)
+
+    items, diagnostic = handle(event, prompt=payload.get("prompt", ""), stage=stage,
+        schedule=schedule, recall=lambda query: recalled(p, payload.get("session_id"), query))
+    diagnostic["timing_ms"]["adapter_total_ms"] = round((time.monotonic() - started) * 1000, 3)
+    print(json.dumps(dict(operation="native-lifecycle", harness="codex-project", **diagnostic)), file=sys.stderr)
+    extra = context(p, items)
+    return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": extra}} if extra else {}
 
 
-def hook(p):
+def hook(p, *, settings_path=None, settings_sha256=None):
     if not active(p):
         return {}
-    pass
     from agent_brain_client.application.control import RequestControl
-
     control = RequestControl(25)
     try:
         with control.activate():
-            return hook_payload(p)
+            return hook_payload(p, settings_path=settings_path, settings_sha256=settings_sha256)
     finally:
         control.close()
+
+
+def delivery_port(settings, sha):
+    from agent_brain_client.adapters.harnesses.codex.hooks import validate_hook_policy, hook_enabled
+    p = load(settings, sha)
+    if not active(p) or p["capture_policy"] is None:
+        raise ValueError("Project source inactive")
+    client, queue = adapter_for(p)
+    policy = validate_hook_policy(private_json(p["capture_policy"], p["capture_policy_sha256"]),
+        profile_sha256=p["profile_sha256"], content_policy_sha256=p["content_policy_sha256"])
+    from agent_brain_client.adapters.storage.observed_migration import migrate_staged_turns
+    migrate_staged_turns(queue, origin={"cwd": p["project_root"]},
+        project_ids={scope["project_id"] for scope in policy["scopes"] if scope["cwd"] == p["project_root"]},
+        excluded_directory=Path(p["off_file"]).parent)
+
+    def allowed(session):
+        current = load(settings, sha)
+        if not active(current):
+            return False
+        policy = validate_hook_policy(private_json(current["capture_policy"], current["capture_policy_sha256"]),
+            profile_sha256=current["profile_sha256"], content_policy_sha256=current["content_policy_sha256"])
+        if not hook_enabled(policy):
+            return False
+        if not any(scope["cwd"] == current["project_root"] and scope["session_id"] in (None, session)
+                   for scope in policy["scopes"]):
+            return False
+        return daily_gate(current, client)() if policy["schema"] == 2 else True
+    def allowed_event(event):
+        current = load(settings, sha)
+        policy = validate_hook_policy(private_json(current["capture_policy"], current["capture_policy_sha256"]),
+            profile_sha256=current["profile_sha256"], content_policy_sha256=current["content_policy_sha256"])
+        return active(current) and hook_enabled(policy) and any(
+            scope["cwd"] == current["project_root"]
+            and scope["project_id"] == event["project_id"]
+            and scope["session_id"] in (None, event["session_id"])
+            for scope in policy["scopes"])
+    return queue, allowed, allowed_event
 
 
 def daily(p):

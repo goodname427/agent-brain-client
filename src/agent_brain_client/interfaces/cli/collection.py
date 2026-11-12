@@ -10,10 +10,12 @@ if __package__ in (None, ""):
 import argparse
 import json
 import os
+import time
 from agent_brain_client.runtime import collection as core
 
 
 def main(argv=None):
+    started = time.monotonic()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "action",
@@ -107,6 +109,7 @@ def main(argv=None):
                     operation_diagnostics,
                 )
 
+                initialized = time.monotonic()
                 control = RequestControl(110)
                 try:
                     with operation_diagnostics() as progress:
@@ -142,6 +145,11 @@ def main(argv=None):
                     "native_hook_verified": False,
                 }
         print(json.dumps(result, ensure_ascii=False), flush=True)
+        if a.action == "global-hook":
+            print(json.dumps({"operation": "global-hook-timing", "timing_ms": {
+                "initialization_ms": round((initialized - started) * 1000, 3),
+                "total_ms": round((time.monotonic() - started) * 1000, 3),
+            }}), file=sys.stderr)
         if a.action == "global-hook" and observation:
             observation["output_written"] = True
             try:

@@ -43,6 +43,16 @@ Domain modules have no filesystem, network, native API or application dependency
 
 Capture follows `native event → Harness parsing → normalized turn use case → bound durable queue → enrolled transport → validated receipt`. Rule/Skill activation follows `CLI/MCP/page → management use case → original request ID and CAS → receipt → synchronization coordinator → native mapper`.
 
+## Shared Harness lifecycle
+
+`application/memory/lifecycle.py` owns foreground order for native lifecycle events. A session start prepares background delivery; a user prompt is durably staged, schedules delivery, then recalls context for that same question before the Hook returns. A completed assistant message is staged and schedules delivery. Network upload and old pending recovery are not foreground prerequisites. `observations.py` owns message validation, splitting, immutable event identities and durable enqueue; `prompt_recall.py` owns exact-query receipt coordination. Harness adapters translate native identities, validate completion evidence and wrap returned context, rather than choosing different business order.
+
+The foreground never calls a pending receipt a confirmed save. Background delivery reuses the original outbox and checks current identity, source scope and admission at the send boundary. A detached worker survives normal Hook exit; the ordinary MCP process supervises recovery while it is running. This is not an OS service: after a reboot, normal Harness/MCP startup is required to resume work. No login item or service is installed. Queue bytes survive worker crashes and unknown network outcomes retain the original request ID.
+
+Previously observed Codex staged turns are migrated in the background, not by scanning native transcript history. Existing paired outbox events remain authoritative; previously staged messages without an outbox become deterministic single-message events with the original occurrence time. Original staging and receipts are retained. This data migration is not a second old execution path.
+
+The explicit finite-policy `--event-hook` protocol command remains a direct submission tool, not a second installed session/recall orchestrator. Its separate transport contract is not silently rebound to a global identity. Rule fallback still labels summaries separately from observed native messages and only owns missing Hook capabilities.
+
 ## Scopes and identities
 
 Owner/grant determines which collection and operations are authorized. Personal/project sharing determines provenance and applicability. Device enrollment determines credentials and the queue binding. Directory/worktree metadata determines origin. Session/turn identity determines ordering, deduplication and exact retries. Native global/project configuration determines where a Harness maps approved instructions.

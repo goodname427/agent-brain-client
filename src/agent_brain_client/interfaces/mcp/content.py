@@ -1169,7 +1169,13 @@ def main():
             raise ValueError("Import plan drift")
         adapter.sources.stage_import(json.loads(raw, object_pairs_hook=pairs))
     _STARTUP_STAGE = "mcp-serve"
-    serve(ContentServer(adapter, args.client_version), sys.stdin.buffer, sys.stdout)
+    from agent_brain_client.runtime.delivery import supervise
+
+    delivery_stop = supervise(args.device_home)
+    try:
+        serve(ContentServer(adapter, args.client_version), sys.stdin.buffer, sys.stdout)
+    finally:
+        delivery_stop.set()
 
 
 def cli():
