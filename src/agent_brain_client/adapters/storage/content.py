@@ -225,8 +225,8 @@ class FileContentOutbox(DurableOutbox):
         if directory.exists():
             cache_mode(directory, directory=True, blocked=CacheBlocked)
         paths = list(directory.iterdir()) if directory.exists() else []
-        if len(paths) > 2048:
-            raise CacheBlocked()
+        # Retained confirmations are lifetime deduplication evidence. Bound
+        # unresolved rows below, rather than total directory history.
         rows = []
         for path in paths:
             self._safe(path, self.cache)

@@ -100,7 +100,7 @@ class CaptureRecovery(unittest.TestCase):
     def test_confirmed_receipts_do_not_consume_active_capacity_or_disappear(self):
         self.stage()
         original = self.queue._queued()[0]
-        for index in range(1024):
+        for index in range(2049):
             row = copy.deepcopy(original)
             request = row['request']
             request['request_id'] = 'synthetic_receipt_' + str(index).zfill(8)
@@ -109,9 +109,9 @@ class CaptureRecovery(unittest.TestCase):
             self.queue._save('outbox/' + request['request_id'] + '.json', row)
         result = self.stage(operation='new-turn')
         self.assertTrue(result['local_queue']['saved'])
-        self.assertEqual(self.queue.queue_status()['confirmed'], 1024)
+        self.assertEqual(self.queue.queue_status()['confirmed'], 2049)
         self.assertEqual(self.queue.queue_status()['pending'], 2)
-        self.assertEqual(len(self.queue._queued()), 1026)
+        self.assertEqual(len(self.queue._queued()), 2051)
 
     def test_project_long_private_or_restricted_prompt_excludes_following_assistant(self):
         policy = {'schema': 2, 'scopes': [{'cwd': str(self.home),
@@ -169,6 +169,26 @@ class CaptureRecovery(unittest.TestCase):
         self.f.cloud.request = accepted
         self.assertFalse(deliver_pending(self.queue, allowed=lambda _: True))
         self.assertEqual(self.captured([r['request_id'] for r in requests]), text)
+
+    def test_real_active_budget_stays_bounded_and_resumes_after_confirmation(self):
+        self.stage()
+        original = self.queue._queued()[0]
+        for index in range(1023):
+            row = copy.deepcopy(original)
+            request = row['request']
+            request['request_id'] = 'synthetic_pending_' + str(index).zfill(8)
+            row['request_sha'] = metadata.digest(contract.encode(request))
+            self.queue._save('outbox/' + request['request_id'] + '.json', row)
+        with self.assertRaises(CacheBlocked):
+            self.stage(operation='blocked-by-active-budget')
+        self.assertEqual(self.queue.queue_status()['pending'], 1024)
+        journal = next(self.queue.cache.glob('observed-staging/*.json'))
+        request = self.queue._load('observed-staging/' + journal.name)['requests'][0]
+        original.update(state='confirmed', response=accepted(original['request']))
+        self.queue._save('outbox/' + original['request']['request_id'] + '.json', original)
+        self.assertFalse(resume_staging(self.queue))
+        self.assertEqual(self.queue.queue_status()['pending'], 1024)
+        self.assertEqual(self.queue._load('outbox/' + request['request_id'] + '.json')['request'], request)
 
     def test_idle_supervisor_detects_durable_rows_after_hook_dies_before_schedule(self):
         for harness, base in [('codex', 'global-memory'), ('codebuddy', 'codebuddy')]:
