@@ -18,7 +18,7 @@
     "src/agent_brain_client/adapters/harnesses/codebuddy/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/adapters/harnesses/codebuddy/configuration.py": "82714b89eba8db5777f938a3d9402b7fad516cfbc91f12794f3b244e55de3808",
     "src/agent_brain_client/adapters/harnesses/codebuddy/events.py": "ea0e0c6815d564682cb277d143eef130032ff9959ad0bba7cdaafe6ab6ae5489",
-    "src/agent_brain_client/adapters/harnesses/codebuddy/transcript.py": "c21cc4a7835c932679007d621fbb3a7d97e6fc1471a81580a77585bcd37f6706",
+    "src/agent_brain_client/adapters/harnesses/codebuddy/transcript.py": "f301223d01e2388085ba88cf33446e8c57802716fbc1389b054619832e045744",
     "src/agent_brain_client/adapters/harnesses/codex/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/adapters/harnesses/codex/collection.py": "a5210763cfd90459bd68967c0efe7206569ec1816f976175bd541c111dd485ef",
     "src/agent_brain_client/adapters/harnesses/codex/collection_control.py": "110aeaa2823c0c1f2b435a1b440e45fae46c204446540557f392088715621755",
@@ -166,5 +166,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.8.7"
+  "version": "0.8.8"
 }

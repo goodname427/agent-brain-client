@@ -288,5 +288,7 @@ def assistant(home, payload, core):
         if read_bound(path) != snapshot or any(
             digest(read_bound(native)) != checksum for native, checksum in observed
         ):
-            raise ValueError("IDE completed generation changed during read")
+            # The session index may change for another request. Discard this
+            # snapshot and retry the exact bound generation, never partial text.
+            raise PendingTranscript("IDE completed generation changed during read")
     return [{"role": "assistant", "content": text} for text in texts], row, file
