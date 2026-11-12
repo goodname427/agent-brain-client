@@ -13,6 +13,9 @@ def save_recall_observation(value, receipt):
     private_directory(receipts)
     metadata.write(receipts / (receipt["request_key"] + ".json"), receipt)
     metadata.write(directory / "last-recall.json", receipt)
+    if receipt.get("output_written") is True and receipt.get("status") != "failed":
+        metadata.write(directory / ("prompt-" + receipt["request_key"] + ".json"),
+                       {"at": receipt["at"]})
 
 
 def recall_observation(value, request_key=None):

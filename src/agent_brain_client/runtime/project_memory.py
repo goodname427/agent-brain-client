@@ -8,6 +8,7 @@ import time
 import tempfile
 from agent_brain_client.adapters.platforms.filesystem import command_line
 from agent_brain_client.domain.privacy import private_content
+from agent_brain_client.domain.scopes import restricted
 from agent_brain_client.adapters.storage.registration import registration
 from agent_brain_client.adapters.storage.metadata import (
     canonical,
@@ -501,26 +502,25 @@ def capture(p, payload):
     if not hook_enabled(policy):
         return {"status": "disabled", "data_transferred": False}
     scope, turn, kind, text, key = native_hook_fields(policy, payload)
-    if policy.get("schema") == 2:
-        blocked = canonical(Path(p["off_file"]).parent / ("excluded-" + key + ".json"))
-        if blocked.exists():
-            return {"status": "excluded-turn", "data_transferred": False}
-        if private_content(text):
-            write(
-                blocked,
-                {"schema": 1, "reason": "local-only-or-sensitive", "turn_sha256": key},
-                exclusive=True,
-            )
-            return {"status": "excluded-turn", "data_transferred": False}
+    blocked = canonical(Path(p["off_file"]).parent / ("excluded-" + key + ".json"))
+    if blocked.exists():
+        return {"status": "excluded-turn", "data_transferred": False}
+    if private_content(text) or restricted(text):
+        write(
+            blocked,
+            {"schema": 1, "reason": "local-only-or-sensitive", "turn_sha256": key},
+            exclusive=True,
+        )
+        return {"status": "excluded-turn", "data_transferred": False}
     client = HTTPSContentClient(p["profile"], p["profile_sha256"])
     content = pinned(p["content_policy"], p["content_policy_sha256"])
     validate_policy(content, client.grant)
     adapter = CodexContentSession(
         p["device_home"], p["cache"], content, client, codex_home=p["codex_home"]
     )
-    if policy.get("schema") == 2 and kind == "Stop":
+    if kind == "Stop":
         staged = adapter._load("hook-turns/" + key + ".json")
-        if isinstance(staged, dict) and private_content(staged.get("prompt", "")):
+        if isinstance(staged, dict) and (private_content(staged.get("prompt", "")) or restricted(staged.get("prompt", ""))):
             blocked = canonical(
                 Path(p["off_file"]).parent / ("excluded-" + key + ".json")
             )
@@ -659,6 +659,11 @@ def hook_payload(p, *, settings_path=None, settings_sha256=None):
     def stage():
         if p["source_mode"] not in ("codex-hooks", "codex-project"):
             return {"status": "recall-only", "data_transferred": False}
+        if p["capture_policy"] is not None and settings_path is not None and settings_sha256 is not None:
+            # Persist the pinned recovery route before durable content exists.
+            # Registration failure follows the shared capture failure path,
+            # which still permits current-question recall.
+            schedule_project(p["device_home"], settings_path, settings_sha256, wake_worker=False)
         return capture(p, payload)
 
     def schedule():
