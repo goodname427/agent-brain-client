@@ -4,7 +4,6 @@ import sys
 import json
 import os
 from pathlib import Path
-import time
 from agent_brain_client.domain import privacy
 from agent_brain_client.domain.scopes import (
     select,
@@ -18,7 +17,6 @@ from agent_brain_client.adapters.storage import (
     metadata as metadata_io,
 )
 from agent_brain_client.adapters.storage.recall_receipts import (
-    save_recall_observation,
     recall_observation,
 )
 from agent_brain_client.adapters.harnesses.hook_output import hook_context
@@ -48,7 +46,6 @@ def adapter(value, local, *, services):
 def submit_hook(value, local, payload, *, services):
     from agent_brain_client.adapters.harnesses.codex.hooks import (
         native_hook_fields,
-        run_event_hook,
     )
 
     selected = select(value["scope"], local)
@@ -102,74 +99,22 @@ def submit_hook(value, local, payload, *, services):
         return {"status": "excluded-local-only-or-sensitive", "data_transferred": False}
     client, queue = services.adapter(value, local)
     metadata_io.write(queue.cache / "origin.json", local, cache=True)
-    result = run_event_hook(
-        queue,
-        cap,
-        payload,
-        source_gate=lambda: services.approved(value)
-        and select(value["scope"], local) is not None
-        and client.status(payload["session_id"]).get("source_admitted") is True,
+    from agent_brain_client.application.memory.observations import stage_messages
+
+    scope, turn, _, text, _ = native_hook_fields(cap, payload)
+    previous = queue._load("outbox/agentbrain_event_" + key + ".json")
+    if previous is not None:
+        return dict(queue._queue_result(previous), status="retained-paired-event")
+    return stage_messages(
+        queue, project_id=scope["project_id"], session_id=scope["session_id"],
+        operation_id=turn, phase="prompt" if kind == "UserPromptSubmit" else "assistant",
+        messages=[{"role": "user" if kind == "UserPromptSubmit" else "assistant", "content": text}],
     )
 
 
-    if kind == "Stop" and result.get("request_id"):
-        # Current capture has priority. Recovery never resends this turn twice.
-        try:
-            recover_pending(value, local, client, queue, result["request_id"], services=services)
-        except Exception:
-            pass  # Recovery must not replace the current capture result.
-    return result
-
-
-def recover_pending(value, local, client, queue, current_id, *, services):
-    """Opportunistically retry one retained event, with its original identity.
-
-    Only a normal capture Hook enters here. Reads, startup and refresh stay
-    read-only. A separate cursor prevents a permanently unavailable oldest
-    event from starving later events, without rewriting any queue record.
-    """
-    from agent_brain_client.application.control import RequestControl, request_timeout
-
-    if not services.approved(value) or select(value["scope"], local) is None:
-        return
-    control = RequestControl(request_timeout(5))
-    try:
-        with control.activate(), queue._outbox_lock(
-            queue.cache / "capture-recovery.lock", "capture-recovery-lock"
-        ):
-            cursor = queue._load("capture-recovery.json") or {}
-            after = cursor.get("request_id", "")
-            rows = [row for row in queue._queued()
-                    if row["state"] == "pending"
-                    and row["request"]["method"] == "memory_event_submit"
-                    and row["request"]["request_id"] != current_id]
-            rows.sort(key=lambda row: (
-                row["request"]["request_id"] <= after,
-                row["request"]["request_id"],
-            ))
-            for row in rows:
-                request = row["request"]
-                event = request["params"]["event"]
-                if any(privacy.private_content(m["content"]) or restricted(m["content"])
-                       for m in event["messages"]):
-                    continue
-                queue._save("capture-recovery.json", {"request_id": request["request_id"]})
-                queue.invoke(
-                    request,
-                    event_gate=lambda: services.approved(value)
-                    and select(value["scope"], local) is not None
-                    and client.status(event["session_id"]).get("source_admitted") is True,
-                )
-                return
-    except Exception:
-        # Best effort only. The immutable pending entry remains authoritative.
-        # Never undo, mask or retry the current turn's capture on this failure.
-        return
-    finally:
-        control.close()
-
-
 def hook(value, *, services, observe=None):
+    from time import monotonic
+    started = monotonic()
     local = services.eligible(value, os.getcwd())
     if local is None:
         return {}
@@ -180,107 +125,21 @@ def hook(value, *, services, observe=None):
     if payload.get("cwd") != local["cwd"]:
         return {}
     kind = payload.get("hook_event_name")
-    if kind in ("UserPromptSubmit", "Stop"):
-        if services.legacy(value, local) is not None:
-            return {}
-        from agent_brain_client.adapters.storage.content import operation_stage
+    if services.legacy(value, local) is not None:
+        return {}
+    from agent_brain_client.application.memory.lifecycle import handle
 
-        with operation_stage("global-capture"):
-            result = services.submit_hook(value, local, payload)
-        if kind != "UserPromptSubmit" or result.get("status") != "staged":
-            return {}
-        question = payload.get("prompt")
-        if (
-            not isinstance(question, str)
-            or not question.strip()
-            or privacy.private_content(question)
-            or restricted(question)
-        ):
-            return {}
-        from agent_brain_client.adapters.platforms.filesystem import locked
-
-        directory = services.settings_path(value["device_home"]).parent
-        key = digest(
-            [
-                digest(value["scope"]),
-                local,
-                payload.get("session_id"),
-                payload.get("turn_id"),
-                question,
-                *([value["recall"]] if value.get("recall") else []),
-            ]
-        )
-        stamp = directory / ("prompt-" + key + ".json")
-        with locked(directory / "prompt-recall.lock"):
-            if stamp.exists():
-                return {}
-            query = question[:1024]
-            receipt = {
-                "schema": 2,
-                "at": time.time(),
-                "stage": "agentbrain-global-recall",
-                "request_key": key,
-                "request_id": "global_recall_" + key,
-                "session_sha256": digest(payload["session_id"]),
-                "turn_sha256": digest(payload["turn_id"]),
-                "query_sha256": digest(query),
-                "output_written": False,
-                "model_used": "unknown",
-                "status": "failed",
-                "error_type": None,
-                "layer_counts": {"L1": 0, "L2": 0, "L3": 0},
-                "item_count": 0,
-                "context_bytes": 0,
-                "context_sha256": None,
-                "offline_cache": False,
-                "retrieval": {
-                    "candidate_count": 0,
-                    "returned": [],
-                    "selected": [],
-                    "omitted_for_budget": 0,
-                },
-            }
-            try:
-                with operation_stage("global-recall"):
-                    items = services.recall(
-                        value,
-                        local,
-                        payload["session_id"],
-                        query,
-                        request_id=receipt["request_id"],
-                        observe=receipt["retrieval"],
-                    )
-                result = hook_context(kind, items)
-            except Exception as error:
-                receipt["error_type"] = type(error).__name__
-                save_recall_observation(value, receipt)
-                if observe is not None:
-                    observe(receipt)
-                raise
-            context = result.get("hookSpecificOutput", {}).get("additionalContext", "")
-            receipt.update(
-                {
-                    "status": "context-prepared" if result else "empty",
-                    "layer_counts": {
-                        layer: sum(item.get("layer") == layer for item in items)
-                        for layer in ("L1", "L2", "L3")
-                    },
-                    "item_count": len(items),
-                    "context_bytes": len(context.encode()),
-                    "context_sha256": digest(context),
-                    "offline_cache": any(
-                        item.get("offline_cache") is True for item in items
-                    ),
-                }
-            )
-            save_recall_observation(value, receipt)
-            metadata_io.write(stamp, {"at": time.time()})
-        if observe is not None:
-            observe(receipt)
-        return result
-    # Recall waits for the actual question rather than injecting unrelated project
-    # constraints from a generic startup query. No transcript or file scan.
-    return {}
+    initialized = monotonic()
+    items, diagnostic = handle(
+        kind, prompt=payload.get("prompt", ""),
+        stage=lambda: services.submit_hook(value, local, payload),
+        schedule=lambda: services.schedule_delivery(value["device_home"], "codex", local),
+        recall=lambda query: services.recall_prompt(value, local, payload, query, observe=observe),
+    )
+    diagnostic["timing_ms"]["initialization_ms"] = round((initialized - started) * 1000, 3)
+    diagnostic["timing_ms"]["adapter_total_ms"] = round((monotonic() - started) * 1000, 3)
+    print(json.dumps(dict(operation="native-lifecycle", harness="codex", **diagnostic)), file=sys.stderr)
+    return hook_context(kind, items)
 
 
 def flush(value, *, services):
