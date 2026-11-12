@@ -243,11 +243,11 @@ class Installation(unittest.TestCase):
     def test_upgrade_refreshes_existing_surface_without_installing_absent_hosts(self):
         from agent_brain_client.adapters.harnesses.codex import updates
         from agent_brain_client.adapters.packages.layout import PYTHON_FILES
-        adapter = updates.CodexUpdateInstallation(self.home, setup_sources=lambda: {},
-            refresh_bindings=lambda package, **kw: cbhost.refresh(
-                self.home, package, check_only=kw["check_only"]))
+        from agent_brain_client.runtime.updates import HostUpdateInstallation
+        backend = updates.CodexUpdateInstallation(self.home, setup_sources=lambda: {})
+        adapter = HostUpdateInstallation(self.home, backend)
         active = {"package": str(ROOT), "version": "0.8.5", "commit": "c" * 40}
-        adapter.channel = SimpleNamespace(verified_active=lambda: active)
+        adapter.channel = backend.channel = SimpleNamespace(verified_active=lambda: active)
         def shared_refresh(**kwargs):
             return {'status': 'global-hook-current', 'native_changed': False,
                     'update_available': False}

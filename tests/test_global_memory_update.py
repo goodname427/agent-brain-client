@@ -165,18 +165,22 @@ class GlobalMemoryUpdate(unittest.TestCase):
 
     def test_codebuddy_refresh_uses_active_package_renderer_and_pins(self):
         from agent_brain_client.adapters.harnesses.codebuddy import configuration
-        from agent_brain_client.runtime.updates import refresh_bindings
+        from agent_brain_client.runtime.updates import HostUpdateInstallation
 
         configuration.install(self.home, hooks.ROOT, None, surface="both")
+        rule = self.home / ".codebuddy/rules/agent-brain-client.md"
+        disabled = rule.read_text().replace("enabled: true", "enabled: false")
+        rule.write_text(disabled)
+        off = self.file.parent / "global.off"
+        off.write_bytes(b"Synthetic paused capture")
+        original_settings = metadata.private_json(self.file)
         target = self.old_installer()
         renderer = target / "src/agent_brain_client/adapters/harnesses/codebuddy/configuration.py"
         renderer.write_text(renderer.read_text().replace('"timeout": 90', '"timeout": 91'))
         active = {"version": "0.8.5", "commit": "e" * 40, "package": str(target)}
-        installation = CodexUpdateInstallation(
-            self.home, setup_sources=lambda: None,
-            refresh_bindings=lambda package, **kw: refresh_bindings(self.home, package, **kw),
-        )
-        installation.channel = SimpleNamespace(verified_active=lambda: active)
+        backend = CodexUpdateInstallation(self.home, setup_sources=lambda: None)
+        installation = HostUpdateInstallation(self.home, backend)
+        installation.channel = backend.channel = SimpleNamespace(verified_active=lambda: active)
         before = {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()}
         with patch.object(configuration, "refresh", side_effect=AssertionError("No old renderer")):
             checked = installation.refresh_hooks(check_only=True)
@@ -191,6 +195,53 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertEqual(frozen_pins, metadata.private_json(self.file)["code_sha256"])
         self.assertEqual((frozen / renderer.relative_to(target)).read_bytes(), renderer.read_bytes())
         self.assertEqual(result["source_package_commit"], active["commit"])
+        self.assertEqual(rule.read_text(), disabled)
+        self.assertEqual(off.read_bytes(), b"Synthetic paused capture")
+        after = metadata.private_json(self.file)
+        self.assertEqual({k: v for k, v in original_settings.items() if k != "code_sha256"},
+                         {k: v for k, v in after.items() if k != "code_sha256"})
+
+    def test_codex_adapter_does_not_coordinate_codebuddy(self):
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration
+        from agent_brain_client.runtime import updates
+
+        configuration.install(self.home, hooks.ROOT, None, surface="ide")
+        before = {p: p.read_bytes() for p in (self.home / ".codebuddy").rglob("*") if p.is_file()}
+        with patch.object(updates, "refresh_bindings", side_effect=AssertionError("Codex must remain isolated")):
+            result = self.update_installation().refresh_hooks()
+        self.assertNotIn("codebuddy", result)
+        self.assertEqual(before, {p: p.read_bytes() for p in (self.home / ".codebuddy").rglob("*") if p.is_file()})
+
+    def test_runtime_rejects_active_pointer_drift_before_and_after_codebuddy(self):
+        from unittest.mock import Mock
+        from agent_brain_client.runtime import updates
+
+        backend = self.update_installation()
+        active = dict(backend.channel.verified_active())
+        changed = dict(active, commit="f" * 40)
+        backend.refresh_hooks = Mock(return_value={
+            "status": "global-hook-current", "native_changed": False, "update_available": False})
+        installation = updates.HostUpdateInstallation(self.home, backend)
+        before = {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()}
+        for readings, calls in (([active, changed], 0), ([active, active, changed], 1)):
+            with self.subTest(readings=len(readings)):
+                installation.channel = SimpleNamespace(verified_active=Mock(side_effect=readings))
+                with patch.object(updates, "refresh_bindings", return_value={
+                    "status": "codebuddy-current", "native_changed": False,
+                    "update_available": False}) as refresh:
+                    with self.assertRaisesRegex(ValueError, "Active package"):
+                        installation.refresh_hooks(check_only=True)
+                    self.assertEqual(refresh.call_count, calls)
+        self.assertEqual(before, {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()})
+
+    def test_runtime_preserves_codebuddy_child_host_edit_failure(self):
+        from agent_brain_client.runtime.updates import refresh_bindings
+        from agent_brain_client.application.installation.update_ports import HostEditInProgress
+
+        response = subprocess.CompletedProcess([], 0, b'{"host_edit_in_progress": true}', b"")
+        with patch.object(subprocess, "run", return_value=response):
+            with self.assertRaises(HostEditInProgress):
+                refresh_bindings(self.home, hooks.ROOT)
 
     def test_old_active_package_without_binding_refresh_does_not_block_discovery(self):
         from agent_brain_client.runtime.updates import refresh_bindings
