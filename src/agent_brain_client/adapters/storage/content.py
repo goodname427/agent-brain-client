@@ -37,6 +37,7 @@ from agent_brain_client.adapters.storage.host_files import atomic
 from agent_brain_client.adapters.platforms.filesystem import (
     require_platform,
     sync_directory,
+    atomic_replace,
 )
 import agent_brain_client.adapters.platforms.filesystem as brain_lock
 from agent_brain_client.application.queue.outbox import DurableOutbox
@@ -142,7 +143,39 @@ class FileContentOutbox(DurableOutbox):
             raise ValueError("Hook staging capacity reached")
 
     def _cache_bytes(self, name):
+        if name.startswith(("observed-staging/", "observed-review/")):
+            return 8 * 1048576
         return 1048576
+
+    def _staged_observations(self):
+        directory = self.cache / "observed-staging"
+        self._safe(directory, self.cache)
+        return ["observed-staging/" + path.name for path in sorted(directory.glob("*.json"))]
+
+    def _discard_staging(self, name):
+        if not name.startswith("observed-staging/"):
+            raise CacheBlocked()
+        path = self.cache / name
+        self._safe(path, self.cache)
+        path.unlink()
+        sync_directory(path.parent)
+
+    def _review_staging(self, name, error_type):
+        path = self.cache / name
+        self._safe(path, self.cache)
+        cache_mode(path, blocked=CacheBlocked)
+        if path.stat().st_size > self._cache_bytes(name):
+            raise CacheBlocked()
+        target = self.cache / "observed-review" / (Path(name).stem + "-" + sha(path.read_bytes()) + ".json")
+        self._safe(target, self.cache)
+        cache_directory(target.parent)
+        self._save("observed-review/" + target.stem + ".status",
+                   {"error_type": error_type})
+        # Move original bytes, including malformed JSON, without discarding or
+        # rewriting evidence. Content-addressed names preserve earlier errors.
+        atomic_replace(path, target)
+        sync_directory(target.parent)
+        sync_directory(path.parent)
 
     def _safe(self, path, base):
         require_platform("cache-storage", self.platform)
@@ -236,7 +269,7 @@ class FileContentOutbox(DurableOutbox):
             ):
                 raise CacheBlocked()
             rows.append(row)
-        if len(rows) > 1024:
+        if sum(row["state"] not in ("confirmed", "reconciled") for row in rows) > 1024:
             raise CacheBlocked()
         return sorted(
             rows, key=lambda row: (row["created"], row["request"]["request_id"])

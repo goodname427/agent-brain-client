@@ -142,11 +142,12 @@ def native_hook_fields(policy, payload):
     content = payload.get(
         "prompt" if kind == "UserPromptSubmit" else "last_assistant_message"
     )
-    from agent_brain_client.domain.turns import normalized_turn
+    from agent_brain_client.domain.turns import turn_key
 
-    key = normalized_turn(
-        scope, turn, "prompt" if kind == "UserPromptSubmit" else "final", content
-    )
+    # The envelope is bounded by the host reader. Transport message limits
+    # apply after shared staging splits the complete observation.
+    contract.text(content, 1048576)
+    key = turn_key(scope, turn)
     return scope, turn, kind, content, key
 
 

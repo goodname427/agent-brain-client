@@ -46,6 +46,7 @@ class LayeredRecall(unittest.TestCase):
                                  wire=lambda method, params, **kwargs: self.send(method, params))
         for target in (patch.object(gm, 'schedule_delivery', return_value=False),
                        patch.object(gm, 'CollectionClient', return_value=client),
+                       patch.object(recall_receipts, 'settings_path', return_value=self.root/'settings.json'),
                        patch.object(gm, 'settings_path', return_value=self.root/'settings.json')):
             target.start(); self.addCleanup(target.stop)
 
@@ -204,7 +205,11 @@ class LayeredRecall(unittest.TestCase):
         self.assertEqual(receipt['context_bytes'], len(context.encode()))
         for forbidden in ('answer marker', 'question marker', 'synthetic-reader', '/synthetic', self.peer):
             self.assertNotIn(forbidden, json.dumps(receipt))
-        self.assertEqual(self.run_hook(), {}); self.assertEqual(len(self.sent), 1)
+        # Prepared output may be replayed until stdout has actually flushed.
+        self.assertTrue(self.run_hook()); self.assertEqual(len(self.sent), 2)
+        receipt['output_written'] = True
+        recall_receipts.save_recall_observation(self.value, receipt)
+        self.assertEqual(self.run_hook(), {}); self.assertEqual(len(self.sent), 2)
 
     def test_empty_recall_and_unobserved_are_distinct(self):
         self.assertEqual(recall_receipts.recall_observation(self.value), {'status': 'unobserved', 'model_used': 'unknown'})
@@ -288,6 +293,42 @@ class LayeredRecall(unittest.TestCase):
         self.assertFalse(receipt['output_written'])
         self.assertNotIn('hook-output-written', diagnostic.getvalue())
         self.assertNotIn('FICTIONAL_PRIVATE_ERROR', diagnostic.getvalue())
+
+    def test_stdout_write_and_flush_interruption_allow_same_turn_recall_retry(self):
+        class Interrupted(BaseException):
+            pass
+
+        for boundary in ('write', 'flush'):
+            with self.subTest(boundary=boundary):
+                output = io.StringIO()
+                original_prompt = self.prompt
+                def prompt():
+                    payload = json.loads(original_prompt().buffer.read())
+                    payload['turn_id'] += '-' + boundary
+                    return SimpleNamespace(buffer=io.BytesIO(json.dumps(payload).encode()))
+                with (patch.object(sys, 'argv', ['global_memory', 'global-hook']),
+                      patch.object(gm, 'load', return_value=self.value),
+                      patch.object(gm, 'eligible', return_value=self.local),
+                      patch.object(gm, 'submit_hook', return_value={'status': 'staged'}),
+                      patch.object(sys, 'stdin', prompt()),
+                      patch.object(sys, 'stdout', output),
+                      patch.object(sys, 'stderr', io.StringIO()),
+                      patch.object(output, boundary, side_effect=Interrupted)):
+                    with self.assertRaises(Interrupted):
+                        collection_cli.main()
+                receipt = recall_receipts.recall_observation(self.value)
+                self.assertFalse(receipt['output_written'])
+                output = io.StringIO()
+                with (patch.object(sys, 'argv', ['global_memory', 'global-hook']),
+                      patch.object(gm, 'load', return_value=self.value),
+                      patch.object(gm, 'eligible', return_value=self.local),
+                      patch.object(gm, 'submit_hook', return_value={'status': 'staged'}),
+                      patch.object(sys, 'stdin', prompt()),
+                      patch.object(sys, 'stdout', output),
+                      patch.object(sys, 'stderr', io.StringIO())):
+                    self.assertEqual(collection_cli.main(), 0)
+                self.assertIn('additionalContext', output.getvalue())
+                self.assertTrue(recall_receipts.recall_observation(self.value)['output_written'])
 
 
 if __name__ == '__main__': unittest.main()

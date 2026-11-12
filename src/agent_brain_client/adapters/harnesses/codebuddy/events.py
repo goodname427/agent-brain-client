@@ -94,7 +94,7 @@ def capture_messages(core, value, local, payload, messages, phase):
     return result
 
 
-def hook(home, stream, *, core=None, defer=None):
+def hook(home, stream, *, core=None, defer=None, observe=None):
     from time import monotonic
     started = monotonic()
     core = core or (_ for _ in ()).throw(
@@ -164,7 +164,8 @@ def hook(home, stream, *, core=None, defer=None):
     items, diagnostic = handle(
         kind, prompt=prompt, stage=stage,
         schedule=lambda: core.schedule_delivery(home, "codebuddy", local),
-        recall=lambda query: core.recall_prompt(value, local, normalized, query),
+        recall=lambda query: core.recall_prompt(value, local, normalized, query,
+            **({"observe": observe} if observe is not None else {})),
     )
     diagnostic["timing_ms"]["initialization_ms"] = round((initialized - started) * 1000, 3)
     diagnostic["timing_ms"]["adapter_total_ms"] = round((monotonic() - started) * 1000, 3)

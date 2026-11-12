@@ -125,13 +125,23 @@ def main():
         if args.action == "hook":
             initialized = time.monotonic()
             from agent_brain_client.runtime.delivery import schedule_assistant_completion
+            observation = {}
             output, state = runtime.hook(home, sys.stdin.buffer, core=core,
-                defer=lambda turn: schedule_assistant_completion(home, turn))
+                defer=lambda turn: schedule_assistant_completion(home, turn),
+                observe=observation.update)
             state["cli_timing_ms"] = {
                 "initialization_ms": round((initialized - started) * 1000, 3),
                 "total_ms": round((time.monotonic() - started) * 1000, 3),
             }
             print(json.dumps(output, ensure_ascii=False), flush=True)
+            if observation and observation["status"] != "failed":
+                from agent_brain_client.adapters.storage.recall_receipts import save_recall_observation
+
+                observation["output_written"] = True
+                try:
+                    save_recall_observation({"device_home": str(home)}, observation)
+                except (OSError, ValueError):
+                    pass  # Flushed stdout is already observable; never emit it twice.
             # Keep diagnostics content-free. A pending queue is not a save.
             diagnostic = {
                 key: state[key]

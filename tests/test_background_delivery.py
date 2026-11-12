@@ -14,6 +14,13 @@ def row(key='one', state='pending'):
 
 
 class Delivery(unittest.TestCase):
+    def setUp(self):
+        # These tests use transport-only queue doubles. Durable staging is
+        # exercised with real private queues in test_capture_crash_recovery.
+        recovery = patch('agent_brain_client.application.memory.observations.resume_staging', return_value=False)
+        recovery.start()
+        self.addCleanup(recovery.stop)
+
     def test_original_request_and_gate_reused(self):
         item = row()
         queue = Mock()
