@@ -98,16 +98,30 @@ def probe(home, core, runner=subprocess.run):
     }
 
 
+def defer_turn(home, turn_id):
+    """Detach only the verified entry; no host pipes, prompts or secrets in argv."""
+    command = [sys.executable, "-I", "-B", str(Path(__file__).resolve()),
+               "finish-turn", "--device-home", str(home), "--turn-id", turn_id]
+    options = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+               "stderr": subprocess.DEVNULL, "close_fds": True}
+    if sys.platform == "win32":
+        options["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        options["start_new_session"] = True
+    subprocess.Popen(command, **options)
+
+
 def main():
     if sys.argv[1:] == ["backend-home"]:
         print(backend_home(Path.home()))
         return 0
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "action", choices=("install", "status", "uninstall", "probe", "serve", "hook")
+        "action", choices=("install", "status", "uninstall", "probe", "serve", "hook", "finish-turn")
     )
     parser.add_argument("--surface", choices=("ide", "cli", "both"), default="both")
     parser.add_argument("--device-home", type=Path, default=Path.home())
+    parser.add_argument("--turn-id")
     args = parser.parse_args()
     try:
         verify_adapter()
@@ -120,8 +134,20 @@ def main():
         require_platform("codebuddy-host")
         if args.action == "serve":
             return host_binding.execute_mcp(home, core)
+        if args.action == "finish-turn":
+            from agent_brain_client.application.control import RequestControl
+
+            control = RequestControl(45)
+            try:
+                with control.activate():
+                    state = runtime.finish_deferred(home, core, args.turn_id or "")
+            finally:
+                control.close()
+            print(json.dumps({"operation": "codebuddy-finish-turn", "status": state.get("status")}))
+            return 0
         if args.action == "hook":
-            output, state = runtime.hook(home, sys.stdin.buffer, core=core)
+            output, state = runtime.hook(home, sys.stdin.buffer, core=core,
+                                         defer=lambda turn: defer_turn(home, turn))
             print(json.dumps(output, ensure_ascii=False))
             # Keep diagnostics content-free. A pending queue is not a save.
             diagnostic = {

@@ -17,8 +17,8 @@
     "src/agent_brain_client/adapters/harnesses/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/adapters/harnesses/codebuddy/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/adapters/harnesses/codebuddy/configuration.py": "82714b89eba8db5777f938a3d9402b7fad516cfbc91f12794f3b244e55de3808",
-    "src/agent_brain_client/adapters/harnesses/codebuddy/events.py": "2eb40ec25564100bb1f81f506e1f935332d6838a0670e3b09b73b7c7cbb39c5b",
-    "src/agent_brain_client/adapters/harnesses/codebuddy/transcript.py": "74df0966fe838baec8dc61fbb856a307aa0a2b7d2fb5f186ebe9858aaaca53ab",
+    "src/agent_brain_client/adapters/harnesses/codebuddy/events.py": "ea0e0c6815d564682cb277d143eef130032ff9959ad0bba7cdaafe6ab6ae5489",
+    "src/agent_brain_client/adapters/harnesses/codebuddy/transcript.py": "c21cc4a7835c932679007d621fbb3a7d97e6fc1471a81580a77585bcd37f6706",
     "src/agent_brain_client/adapters/harnesses/codex/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/adapters/harnesses/codex/collection.py": "a5210763cfd90459bd68967c0efe7206569ec1816f976175bd541c111dd485ef",
     "src/agent_brain_client/adapters/harnesses/codex/collection_control.py": "110aeaa2823c0c1f2b435a1b440e45fae46c204446540557f392088715621755",
@@ -134,7 +134,7 @@
     "src/agent_brain_client/interfaces/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/interfaces/cli/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/interfaces/cli/access.py": "a29d9908420b23003dd0bbecdffa204a06509ae69281aa5166e5e14312fb4285",
-    "src/agent_brain_client/interfaces/cli/codebuddy.py": "267038e045ccc8152e30d1d91c255de8e33311d553d4530e04b15f80ba4380db",
+    "src/agent_brain_client/interfaces/cli/codebuddy.py": "2706084282992e698eec2d11a6fb270311dc7bd6a507c6c74dfa3a637599d59e",
     "src/agent_brain_client/interfaces/cli/collection.py": "6627acdc560ad0ca922685aa3724bc9c512f73381b1074ac88c8492fec88d5bd",
     "src/agent_brain_client/interfaces/cli/device.py": "68ef9ce8a4947e423e5d6a26ec22e8ffaf5886ab58beb4d4417c0cc4cef2653d",
     "src/agent_brain_client/interfaces/cli/install.py": "7cddad7d06fd04fb0c35a413aaab247c9254405baf60ab23dced7ba541fd6bbf",
@@ -167,5 +167,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.8.6"
+  "version": "0.8.7"
 }

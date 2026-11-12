@@ -234,7 +234,7 @@ def capture(core, value, local, payload, *, messages=None, phase="prompt", send=
         return queue.invoke(request, event_gate=admitted)
 
 
-def hook(home, stream, *, core=None):
+def hook(home, stream, *, core=None, defer=None):
     core = core or (_ for _ in ()).throw(
         ValueError("Verified runtime binding required")
     )
@@ -288,7 +288,22 @@ def hook(home, stream, *, core=None):
     if kind == "Stop":
         if payload.get("stop_hook_active") is not False:
             return {}, {"status": "recursive-stop-skipped", "data_transferred": False}
-        return {}, finish_assistant(home, core, value, local, payload)
+        try:
+            return {}, finish_assistant(home, core, value, local, payload)
+        except (ValueError, OSError) as error:
+            import agent_brain_client.adapters.harnesses.codebuddy.transcript as transcript
+
+            if defer is None or not isinstance(error, transcript.PendingTranscript):
+                raise
+            file = transcript.marker(home, payload)
+            row = metadata_io.private_json(file, cache=True)
+            if (not row.get("stopped") or row["complete"] or row["excluded"]
+                    or not row["binding"].get("generation_id")
+                    or Path(row["binding"].get("path") or "").name != "index.json"):
+                raise
+            defer(file.stem)
+            return {}, {"status": "assistant-capture-deferred", "data_transferred": False}
+
     # Failure to capture must not remove independently available recall.
     if kind == "UserPromptSubmit":
         native_status = "unavailable"
@@ -335,8 +350,24 @@ def hook(home, stream, *, core=None):
 
 def finish_assistant(home, core, value, local, payload):
     import agent_brain_client.adapters.harnesses.codebuddy.transcript as transcript
+    from agent_brain_client.adapters.platforms.filesystem import cache_locked
 
-    messages, row, file = transcript.assistant(home, payload, core)
+    file = transcript.marker(home, payload)
+    from agent_brain_client.application.control import check_request
+
+    with cache_locked(file.with_suffix(".lock"), timeout=1, cancel_check=check_request):
+        return _finish_assistant(home, core, value, local, payload)
+
+
+def _finish_assistant(home, core, value, local, payload):
+    import agent_brain_client.adapters.harnesses.codebuddy.transcript as transcript
+
+    try:
+        messages, row, file = transcript.assistant(home, payload, core)
+    except (FileNotFoundError, json.JSONDecodeError) as error:
+        # Only native-read lag is retryable. Never retry these errors if they
+        # arise later in queue persistence or a possibly delivered request.
+        raise transcript.PendingTranscript("Native transcript not yet readable") from error
     if not messages:
         if row["excluded"] and not row["complete"]:
             row["complete"] = True
@@ -358,3 +389,69 @@ def finish_assistant(home, core, value, local, payload):
         row["complete"] = True
         metadata_io.write(file, row, cache=True)
     return result
+
+
+def finish_deferred(home, core, turn_id, *, pause=None):
+    """Keep content-free worker outcome beside the exact observed turn."""
+    import re
+    from agent_brain_client.adapters.platforms.filesystem import cache_locked
+
+    if not re.fullmatch(r"[a-f0-9]{64}", turn_id):
+        raise ValueError("Exact deferred turn identifier required")
+    file = Path(home) / ".config/agent-brain-client/codebuddy/turns" / (turn_id + ".json")
+    result = {"status": "assistant-capture-deferred-unconfirmed"}
+    try:
+        result = _finish_deferred(home, core, turn_id, pause=pause)
+        return result
+    finally:
+        with cache_locked(file.with_suffix(".lock"), timeout=1):
+            row = metadata_io.private_json(file, cache=True)
+            row["deferred_capture"] = {"status": result.get("status", "assistant-capture-queued")}
+            metadata_io.write(file, row, cache=True)
+
+
+def _finish_deferred(home, core, turn_id, *, pause=None):
+    """Bounded reread of one observed Stop, never replay or scan other turns."""
+    import re
+    import time
+
+    if not re.fullmatch(r"[a-f0-9]{64}", turn_id):
+        raise ValueError("Exact deferred turn identifier required")
+    pause = pause or time.sleep
+    file = Path(home) / ".config/agent-brain-client/codebuddy/turns" / (turn_id + ".json")
+    from agent_brain_client.application.control import check_request
+    from agent_brain_client.domain.scopes import digest as scope_digest
+    import agent_brain_client.adapters.harnesses.codebuddy.transcript as transcript
+
+    initial = core.load(home)
+    initial_scope = scope_digest(initial["scope"])
+    original = metadata_io.private_json(file, cache=True)["binding"]
+    if transcript.marker(home, original) != file:
+        raise ValueError("Deferred turn binding changed")
+    deadline = time.monotonic() + 30
+    for _ in range(30):
+        check_request()
+        if time.monotonic() >= deadline:
+            break
+        pause(1)  # Let the host return from Stop and finish its native writes.
+        row = metadata_io.private_json(file, cache=True)
+        if row["complete"] or row["excluded"] or not row.get("stopped"):
+            return {"status": "assistant-capture-no-longer-pending"}
+        binding = row["binding"]
+        if binding != original:
+            return {"status": "assistant-capture-binding-changed"}
+        value = core.load(home)
+        local = core.eligible(value, binding["cwd"])
+        if (not core.approved(value) or local is None
+                or scope_digest(value["scope"]) != initial_scope):
+            return {"status": "assistant-capture-source-disabled"}
+        native = dict(binding, hook_event_name="Stop", stop_hook_active=False,
+                      transcript_path=binding["path"])
+        try:
+            return finish_assistant(home, core, value, local, native)
+        except (ValueError, OSError) as error:
+            import agent_brain_client.adapters.harnesses.codebuddy.transcript as transcript
+
+            if not isinstance(error, transcript.PendingTranscript):
+                return {"status": "assistant-capture-review-required", "error_type": type(error).__name__}
+    return {"status": "assistant-capture-deferred-expired", "preserve_existing_state": True}
