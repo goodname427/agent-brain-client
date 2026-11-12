@@ -1,4 +1,4 @@
-"""Owned Mac/Codex removal; keep identity, immutable runtimes and recovery data."""
+"""Owned Client removal through explicit native content ports; keep identity, immutable runtimes and recovery data."""
 
 import agent_brain_client.adapters.storage.private_files as private_files
 
@@ -10,9 +10,8 @@ import os
 from pathlib import Path
 import re
 
-import agent_brain_client.adapters.harnesses.codex.installation as install
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
-from agent_brain_client.adapters.harnesses.codex.content_limits import BEGIN, END, BLOCK
+import agent_brain_client.adapters.installation.installation as install
+from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.adapters.storage.pinned import pinned
 from agent_brain_client.adapters.platforms.filesystem import (
     locked,
@@ -91,7 +90,7 @@ def lease(path, *, cache=False):
     return locked(path, timeout=0, cache=cache)
 
 
-def adapter_for(home, meta, config_image=None):
+def adapter_for(home, meta, config_image=None, *, host):
     policy, mcp, _, native = install.registered_context(home, meta, config_image)
     if policy["capabilities"] != HTTPS_CONTENT_CAPABILITIES:
         raise install.InstallBlocked(
@@ -99,13 +98,17 @@ def adapter_for(home, meta, config_image=None):
         )
     runtime = policy["runtime"]
     content = pinned(runtime["content_policy"], runtime["content_policy_sha256"])
-    adapter = CodexContentSession.metadata_view(
+    if host is None:
+        raise install.InstallBlocked("Explicit native content port required")
+    mapping_native, mapping_cache = host.location(home, runtime)
+    adapter = ContentSession.metadata_view(
         home,
-        native,
-        private_files.safe(runtime["content_cache"]),
+        mapping_native,
+        private_files.safe(mapping_cache),
         content,
-        platform=policy["platform"],
+        platform=policy["platform"], host=host,
     )
+    adapter.registry_home = native
     return adapter, mcp, native
 
 
@@ -169,7 +172,7 @@ def remove_table(raw):
     parsed = install.tomllib.loads(text)
     if install.NAME not in parsed.get("mcp_servers", {}):
         raise install.InstallBlocked("Owned table missing")
-    from agent_brain_client.adapters.harnesses.codex.configuration import (
+    from agent_brain_client.adapters.storage.toml_document import (
         toml_remove,
         toml_equal,
     )
@@ -186,7 +189,7 @@ def remove_table(raw):
     return desired
 
 
-def prepare_removal(home):
+def prepare_removal(home, *, host):
     require_platform("native-install")
     home = private_files.safe(home)
     inspected = install.inspect(home)
@@ -194,7 +197,7 @@ def prepare_removal(home):
         raise install.InstallBlocked("Installed ownership requires repair")
     registration = state_path(home) / "codex-mcp.json"
     meta = private_files.private_json(registration)
-    adapter, _, native = adapter_for(home, meta)
+    adapter, _, native = adapter_for(home, meta, host=host)
     counts = queue_counts(adapter)
     if any(counts[s] for s in ("pending", "conflict", "blocked")):
         return {
@@ -211,40 +214,11 @@ def prepare_removal(home):
     config_before = private_files.raw(native / "config.toml")
     config_after = remove_table(config_before)
     hook_block = None
-    if adapter.platform.startswith("win32-"):
-        from agent_brain_client.adapters.harnesses.codex.collection_installation import (
-            split_owned,
-        )
-        from agent_brain_client.adapters.storage.collection import settings_path
-
-        _, hook_block = split_owned(config_before)
-        if hook_block is not None:
-            record = private_files.private_json(
-                settings_path(home).parent / "hook-install.json"
-            )
-            from agent_brain_client.adapters.harnesses.codex.collection_installation import (
-                same_owned,
-            )
-
-            if record.get("phase") != "complete" or not same_owned(
-                record.get("block"), hook_block
-            ):
-                raise install.InstallBlocked("Hook ownership changed")
-            config_after = split_owned(config_after)[0].encode()
+    config_after, hook_block = host.remove_hooks(home, config_after, adapter.platform)
     payload = {native / "config.toml": config_after, registration: None}
     for name in owned["files"]:
         path = adapter.mapping._path(name)
-        if name == ".codex/AGENTS.md":
-            text = adapter.mapping._raw(name).decode()
-            if (
-                text.count(BEGIN) != 1
-                or text.count(END) != 1
-                or len(BLOCK.findall(text)) != 1
-            ):
-                raise install.InstallBlocked("Managed instructions changed")
-            payload[path] = BLOCK.sub("", text).encode()
-        else:
-            payload[path] = None
+        payload[path] = adapter.mapping.detached_bytes(name, adapter.mapping._raw(name))
     payload[adapter.cache / "owned.json"] = install.contract.encode(
         dict(owned, files={})
     )
@@ -275,7 +249,7 @@ def prepare_removal(home):
     }
 
 
-def validate_journal(home, journal):
+def validate_journal(home, journal, *, host):
     if (
         set(journal) - {"host", "hook_block"}
         != {
@@ -301,7 +275,7 @@ def validate_journal(home, journal):
     )
     config = Path(policy["runtime"]["codex_home"]) / "config.toml"
     original_config = decode(journal["before"][str(config)]["data"])
-    adapter, mcp, native = adapter_for(home, metadata, original_config)
+    adapter, mcp, native = adapter_for(home, metadata, original_config, host=host)
     scope = {
         native / "config.toml",
         state_path(home) / "codex-mcp.json",
@@ -313,11 +287,7 @@ def validate_journal(home, journal):
     for name in journal["before"]:
         path = private_files.safe(name)
         if path not in scope:
-            relative = (
-                ".codex/AGENTS.md"
-                if path == native / "AGENTS.md"
-                else path.relative_to(home).as_posix()
-            )
+            relative = adapter.mapping.logical_name(path)
             if adapter.mapping._path(relative) != path:
                 raise install.InstallBlocked("Removal path changed")
         old = journal["before"][name]
@@ -344,18 +314,9 @@ def validate_journal(home, journal):
     config_before = decode(journal["before"][str(config)]["data"])
     expected = remove_table(config_before)
     if "hook_block" in journal:
-        from agent_brain_client.adapters.harnesses.codex.collection_installation import (
-            split_owned,
-        )
-
-        _, block = split_owned(config_before)
-        if (
-            not adapter.platform.startswith("win32-")
-            or block != journal["hook_block"]
-            or block is None
-        ):
+        expected, block = host.remove_hooks(home, expected, adapter.platform)
+        if block != journal["hook_block"] or block is None:
             raise install.InstallBlocked("Removal Hook scope changed")
-        expected = split_owned(expected)[0].encode()
     if (
         install.tomllib.loads(config_before.decode())
         .get("mcp_servers", {})
@@ -391,16 +352,7 @@ def validate_journal(home, journal):
         before = decode(journal["before"][path]["data"])
         if install.sha(before) != digest:
             raise install.InstallBlocked("Removal mapping image changed")
-        desired = None
-        if name == ".codex/AGENTS.md":
-            text = before.decode()
-            if (
-                text.count(BEGIN) != 1
-                or text.count(END) != 1
-                or len(BLOCK.findall(text)) != 1
-            ):
-                raise install.InstallBlocked("Removal instruction image changed")
-            desired = BLOCK.sub("", text).encode()
+        desired = adapter.mapping.detached_bytes(name, before)
         if decode(journal["after"][path]) != desired:
             raise install.InstallBlocked("Removal mapping output changed")
     if len(install.contract.encode(journal)) > 3 * 1048576:
@@ -433,15 +385,15 @@ def validate_uninstalled_state(
     resume_plan=None,
     resume_receipt=None,
     require_owned_postimages=True,
-):
+    host):
     """Validate a completed removal while recognizing safe user config edits.
 
     Codex TOML may change outside the Agent Brain table. Such edits remain
     intact; malformed TOML, an Agent Brain table, and every other owned
     postimage change still require review.
     """
-    adapter = validate_journal(home, journal)
-    config = adapter.native_home / "config.toml"
+    adapter = validate_journal(home, journal, host=host)
+    config = adapter.registry_home / "config.toml"
     if not any(
         Path(name).resolve(strict=False) == config.resolve(strict=False)
         for name in journal["before"]
@@ -501,8 +453,8 @@ def validate_uninstalled_state(
     return changed
 
 
-def finish_removal(home, journal):
-    adapter = validate_journal(home, journal)
+def finish_removal(home, journal, *, host):
+    adapter = validate_journal(home, journal, host=host)
     from agent_brain_client.adapters.storage.host_files import (
         host_plan,
         host_apply,
@@ -523,7 +475,7 @@ def finish_removal(home, journal):
             raise install.InstallBlocked("Outside edit retained")
     host_paths = set()
     if adapter.platform.startswith("win32-"):
-        host_paths = {str(adapter.native_home / "config.toml")} | {
+        host_paths = {str(adapter.registry_home / "config.toml")} | {
             str(adapter.mapping._path(name))
             for name in adapter._load("owned.json", {"files": {}})["files"]
         }
@@ -571,11 +523,11 @@ def finish_removal(home, journal):
             "profiles-and-install-receipts",
             "outbox-imports-and-snapshots",
         ],
-        "next_action": "Reinstall with the same connection using the install command; no new invitation. Codex and Server data remain intact.",
+        "next_action": "Reinstall with the same connection using the install command; no new invitation. Other host data and Server data remain intact.",
     }
 
 
-def uninstall(home, confirm):
+def uninstall(home, confirm, *, host):
     require_platform("native-install")
     home = private_files.safe(home)
     state = state_path(home)
@@ -590,7 +542,7 @@ def uninstall(home, confirm):
         previous = read_removal(home) if journal_path(home).exists() else None
         continuing = previous and previous["phase"] in ("applying", "complete")
         if previous and previous["phase"] == "complete" and not registration.exists():
-            validate_journal(home, previous)
+            validate_journal(home, previous, host=host)
             for name, value in previous["after"].items():
                 if private_files.digest_or_none(
                     private_files.raw(name, 1048576)
@@ -608,9 +560,9 @@ def uninstall(home, confirm):
             meta = private_files.private_json(registration)
         if continuing:
             assert previous is not None
-            adapter = validate_journal(home, previous)
+            adapter = validate_journal(home, previous, host=host)
         else:
-            adapter, _, _ = adapter_for(home, meta)
+            adapter, _, _ = adapter_for(home, meta, host=host)
         cache_directory(adapter.cache)
         cache_mode(
             adapter.cache, directory=True, owner=True, blocked=install.InstallBlocked
@@ -623,7 +575,7 @@ def uninstall(home, confirm):
                 assert previous is not None
                 journal = previous
             else:
-                journal = prepare_removal(home)
+                journal = prepare_removal(home, host=host)
             if journal.get("status"):
                 return journal
             if (
@@ -631,7 +583,7 @@ def uninstall(home, confirm):
                 and confirm(
                     "Remove only Agent Brain MCP registration and "
                     + str(journal["removed_mapping_files"])
-                    + " owned mappings. Keep recoverable data, helper and Keychain identity. Codex/Server data are unchanged."
+                    + " owned mappings. Keep recoverable data, helper and Keychain identity. Other host data and Server data remain intact."
                 )
                 != "Continue"
             ):
@@ -640,10 +592,10 @@ def uninstall(home, confirm):
                     "installed": True,
                     "native_changed": False,
                 }
-            return finish_removal(home, journal)
+            return finish_removal(home, journal, host=host)
 
 
-def status(home):
+def status(home, *, host):
     require_platform("native-install")
     state = state_path(home)
     registration = state / "codex-mcp.json"
@@ -666,7 +618,7 @@ def status(home):
             return dict(review, reason="uninstall-receipt-unverified")
         if journal.get("phase") == "complete":
             try:
-                validate_journal(home, journal)
+                validate_journal(home, journal, host=host)
             except Exception:
                 return dict(review, reason="uninstall-receipt-unverified")
             try:
@@ -675,7 +627,7 @@ def status(home):
                     journal,
                     allow_unrelated_config_edits=True,
                     require_owned_postimages=False,
-                )
+                    host=host)
             except Exception:
                 return dict(review, reason="uninstall-postimage-unverified")
             if changed:
@@ -693,7 +645,7 @@ def status(home):
             }
     if not registration.exists():
         if journal is not None:
-            validate_journal(home, journal)
+            validate_journal(home, journal, host=host)
             return {
                 "status": "uninstall-resume-required",
                 "installed": False,
@@ -703,7 +655,7 @@ def status(home):
     result = install.inspect(home)
     if result.get("registration_verified", result.get("installed")):
         try:
-            adapter, _, _ = adapter_for(home, private_files.private_json(registration))
+            adapter, _, _ = adapter_for(home, private_files.private_json(registration), host=host)
             result["queue"] = queue_counts(adapter)
             result["owned_mapping_files"] = len(
                 adapter.mapping.owned_snapshot()["files"]
@@ -739,12 +691,12 @@ def status(home):
     return result
 
 
-def repair(home):
+def repair(home, *, host):
     require_platform("native-install")
     path = journal_path(home)
     if path.exists() and read_removal(home)["phase"] == "applying":
-        return uninstall(home, lambda message: "Continue")
-    return status(home)
+        return uninstall(home, lambda message: "Continue", host=host)
+    return status(home, host=host)
 
 
 def retained_mcp_enabled(journal, home):
@@ -772,11 +724,11 @@ def retained_memory_ids(journal, home):
         return []
     if journal.get("phase") != "complete" or journal.get("device_home") != str(home):
         raise install.InstallBlocked("Completed removal scope required")
-    prefix = str(Path(home) / ".config/agent-brain-client/content/memory")
+    root = Path(home) / ".config/agent-brain-client/content"
     identities = []
     for name in journal["before"]:
         path = Path(name)
-        if str(path.parent) == prefix and path.suffix == ".md":
+        if root in path.parents and path.parent.name == "memory" and path.suffix == ".md":
             install.contract.validate(
                 "content_read", {"kind": "memory", "id": path.stem}
             )

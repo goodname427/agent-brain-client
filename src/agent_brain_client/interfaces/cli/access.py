@@ -186,6 +186,7 @@ def run_address_install(
     native,
     endpoint=None,
     *,
+    harness,
     transport=None,
     store_factory=access_store,
     dependency_preparer=dependencies.prepare_dependencies,
@@ -323,6 +324,7 @@ def run_address_install(
                 transport=peer,
                 secure_input=lambda: secrets.token_urlsafe(32),
                 access_mode=True,
+                harness=harness,
             )
     except EOFError:
         return {
@@ -346,7 +348,7 @@ def run_address_install(
         }
 
 
-def resume_applying_registration(home, native, endpoint=None):
+def resume_applying_registration(home, native, endpoint=None, *, harness):
     """Reach the existing journal recovery only through the original local pins.
 
     No new bootstrap, invitation or origin credential access is needed after
@@ -362,7 +364,7 @@ def resume_applying_registration(home, native, endpoint=None):
         journal = wizard.private_json(owned(receipt_path))
         if journal.get("phase") != "applying":
             return None
-        from agent_brain_client.adapters.harnesses.codex.installation import (
+        from agent_brain_client.adapters.installation.installation import (
             plan_scope,
             validate_recovery,
         )
@@ -438,7 +440,7 @@ def resume_applying_registration(home, native, endpoint=None):
             validate_recovery(journal, plan)
             stage = "transaction-recovery"
             return wizard.run(
-                home, native, connection, binding["connection_sha256"], access_mode=True
+                home, native, connection, binding["connection_sha256"], access_mode=True, harness=harness
             )
     except Exception:
         return {

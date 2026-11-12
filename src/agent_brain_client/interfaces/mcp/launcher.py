@@ -17,6 +17,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--policy-file", type=Path, required=True)
     parser.add_argument("--policy-sha256", required=True)
+    parser.add_argument("--harness", choices=("codex", "codebuddy"), required=True)
     parser.add_argument("--check-only", action="store_true")
     parser.add_argument(
         "--installation-check",
@@ -46,6 +47,7 @@ def main(argv=None):
             (args.event_hook_policy, args.event_hook_policy_sha256)
             if args.event_hook
             else None,
+            harness=args.harness,
         )
     except PlatformUnsupported as error:
         result = error.result(served=False, native_changed=False)

@@ -26,8 +26,9 @@ def install_once(
     This does not create an invitation, read a token from argv or broaden an
     existing profile. Pairing recovery remains in the same dedicated OS item.
     """
-    from agent_brain_client.adapters.harnesses.codex.installation import (
+    from agent_brain_client.adapters.installation.installation import (
         context,
+        command_harness,
         prepare,
         apply,
     )
@@ -46,7 +47,7 @@ def install_once(
             plan["package"],
             plan["release_policy"],
             plan["release_policy_sha256"],
-        )
+         harness=command_harness(plan["mcp"]), )
         from agent_brain_client.adapters.packages.client import (
             HTTPS_CONTENT_CAPABILITIES,
         )
@@ -86,7 +87,7 @@ def install_once(
                 plan["release_policy"],
                 plan["release_policy_sha256"],
                 plan["replace_existing"],
-            )
+             harness=command_harness(plan["mcp"]), )
             != plan
         ):
             raise InstallBlocked("Install preimage changed before credential input")
