@@ -500,7 +500,11 @@ finally:
         record = f.port.load()
         self.assertEqual(record["mapping"]["additional_projections"]["codebuddy"]["mapping"]["owned"], original)
         self.assertEqual(record["mapping"]["registered_surfaces"]["codebuddy"], {"surface": "cli", "hooks_enabled": False})
-        f.port.restore_mapping(f.cache, f.content)
+        from agent_brain_client.runtime.fresh_installation import retained_installation
+        switched = retained_installation(f.home, Path(record["native"]), target_host=content_host("codebuddy"))
+        switched.restore_mapping(buddy_cache, f.content)
+        codex_cache = f.root / "codex/content-cache"
+        self.assertEqual(metadata.private_json(codex_cache / "owned.json", cache=True), record["mapping"]["owned"])
         self.assertEqual(metadata.private_json(buddy_cache / "owned.json", cache=True), original)
         self.assertFalse(old_queue.exists())
         self.assertEqual((Path(record["archive"]) / "codebuddy/content-cache/outbox/retained-original-request.json").read_bytes(), b"SYNTHETIC_OLD_QUEUE_NOT_REPLAYED")

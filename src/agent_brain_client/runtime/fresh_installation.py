@@ -82,14 +82,37 @@ def retained_installation(home, native, *, target_host=None):
         original = projection_host(home, native)
         selected = target_host if target_host is not None else original
         original_native, _ = location(cache)
-        primary_cache = Path(cache) if selected.name == original.name else Path(home) / ".config/agent-brain-client/retained-projections" / original.name
+        base = Path(home) / ".config/agent-brain-client"
+        # Public reconnection restores every registered projection into its
+        # current host cache, independently of the newly selected primary host.
+        primary_cache = (base / original.name / "content-cache" if target_host is not None else Path(cache))
+        legacy_control_projection = (original.name == "codex" and original_native == base / "shared-native"
+                                     and "codex" not in snapshot.get("registered_surfaces", {}))
+        if legacy_control_projection:
+            primary_cache = base / "retained-projections/codex"
         restore_mapping(home, original_native, primary_cache, content, snapshot, host=original)
+        if legacy_control_projection and selected.name == "codex" and target_host is not None:
+            # A pre-split CodeBuddy backend could own global Codex-format data
+            # without a native Codex entry. Verify its exact original image, then
+            # adopt only paths that retain the same physical meaning. Its old
+            # control-directory AGENTS file stays in retained data; the native
+            # mapper builds guidance in the explicitly selected profile.
+            import copy
+            from agent_brain_client.domain import contract
+            from agent_brain_client.adapters.storage.metadata import digest
+            destination = Path(selected.default_home(home))
+            if destination == base / "shared-native":
+                raise ValueError("Explicit native Codex profile required")
+            adopted = copy.deepcopy(snapshot)
+            adopted["owned"]["files"].pop(".codex/AGENTS.md", None)
+            adopted["owned"]["binding"] = selected.binding(home, destination)
+            adopted["owned"]["policy_sha"] = digest(contract.encode({"policy": content, "binding": adopted["owned"]["binding"]}))
+            restore_mapping(home, destination, Path(cache), content, adopted, host=selected)
         from agent_brain_client.runtime.harness_content import content_host
         for name, row in snapshot.get("additional_projections", {}).items():
             port = content_host(name)
-            target_cache = (Path(cache) if name == selected.name else
-                            Path(home) / ".config/agent-brain-client/codebuddy/content-cache" if name == "codebuddy" else
-                            Path(home) / ".config/agent-brain-client/retained-projections" / name)
+            target_cache = (base / name / "content-cache" if target_host is not None else
+                            Path(cache) if name == selected.name else base / name / "content-cache")
             expected = port.binding(home, Path(row["native"]))
             if row["mapping"]["owned"]["binding"] != expected:
                 raise ValueError("Retained secondary projection identity changed")

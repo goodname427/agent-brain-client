@@ -610,11 +610,12 @@ class Protocol(unittest.TestCase):
             home = Path(temp).resolve()
             self.assertEqual(entry.backend_home(home), home / '.config/agent-brain-client/shared-native')
             state = home / '.config/agent-brain-client'
-            state.mkdir(parents=True)
+            from agent_brain_client.adapters.platforms.filesystem import private_directory
+            private_directory(state)
             policy = state / 'policy.json'
             native = home / 'original-native'
-            policy.write_text(json.dumps({'runtime': {'codex_home': str(native)}}))
-            (state / 'codex-mcp.json').write_text(json.dumps({'release_policy': str(policy), 'release_policy_sha256': adapters_storage_bounded_json.digest(policy.read_bytes())}))
+            metadata.write(policy, {'runtime': {'codex_home': str(native)}})
+            metadata.write(state / 'codex-mcp.json', {'release_policy': str(policy), 'release_policy_sha256': adapters_storage_bounded_json.digest(policy.read_bytes())})
             self.assertEqual(entry.backend_home(home), native)
             self.assertFalse((home / '.codex').exists())
 

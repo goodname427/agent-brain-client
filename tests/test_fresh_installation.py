@@ -582,6 +582,9 @@ class FreshInstallation(unittest.TestCase):
         )
         io.write(self.root / "codex-mcp.json", self.metadata)
         self.owned["binding"]["codex_home"] = str(shared)
+        old_guidance = shared / "AGENTS.md"
+        atomic(old_guidance, b"Retained old backend guidance.\n", 0o600)
+        self.owned["files"][".codex/AGENTS.md"] = io.digest(old_guidance.read_bytes())
         self.owned["policy_sha"] = io.digest(
             contract.encode({"policy": self.content, "binding": self.owned["binding"]})
         )
@@ -593,6 +596,22 @@ class FreshInstallation(unittest.TestCase):
         self.assertNotIn("agent_brain_server", self.config.read_text())
         self.port.restore_mapping(self.cache, self.content)
         self.assertEqual(self.memory_path.read_text(), MEMORY["body"])
+        from agent_brain_client.runtime.harness_content import content_host
+        actual = self.home / "selected-native-profile"
+        private_directory(actual)
+        agents = actual / "AGENTS.md"
+        atomic(agents, b"Preserve the native user's instructions.\n", 0o600)
+        destination = self.root / "codex/content-cache"
+        with patch.dict(os.environ, CODEX_HOME=str(actual)):
+            selected = retained_installation(self.home, shared, target_host=content_host("codex"))
+            selected.restore_mapping(destination, self.content)
+        restored = io.private_json(destination / "owned.json", cache=True)
+        self.assertEqual(restored["binding"], {"device_home": str(self.home), "codex_home": str(actual)})
+        self.assertNotIn(".codex/AGENTS.md", restored["files"])
+        self.assertEqual(agents.read_bytes(), b"Preserve the native user's instructions.\n")
+        self.assertEqual(old_guidance.read_bytes(), b"Retained old backend guidance.\n")
+        self.assertEqual(self.memory_path.read_text(), MEMORY["body"])
+        self.assertFalse((destination / "outbox").exists())
 
     def test_public_entry_advertises_explicit_reinstall_and_bootstrap_refresh(self):
         import subprocess
