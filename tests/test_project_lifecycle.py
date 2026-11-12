@@ -85,7 +85,8 @@ class ProjectLifecycle(unittest.TestCase):
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         queue = fixture.adapter
-        p = dict(self.p, cache=str(queue.cache), codex_home=str(fixture.home))
+        p = dict(self.p, cache=str(queue.cache), codex_home=str(fixture.home),
+                 off_file=str(fixture.home / 'memory.off'))
         scope = {'project_id': 'bound-project', 'session_id': 'bound-session'}
         with (patch('agent_brain_client.adapters.storage.pinned.pinned', return_value={}),
               patch.object(hooks, 'validate_hook_policy', return_value={'schema': 1}),

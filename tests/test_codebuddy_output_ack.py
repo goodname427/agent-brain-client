@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from agent_brain_client.adapters.harnesses.codebuddy import events
 from agent_brain_client.adapters.harnesses.hook_output import hook_context
-from agent_brain_client.adapters.platforms.filesystem import locked
+from agent_brain_client.adapters.platforms.filesystem import locked, private_directory
 from agent_brain_client.adapters.storage import recall_receipts
 from agent_brain_client.adapters.storage.collection import settings_path
 from agent_brain_client.application.memory.lifecycle import handle
@@ -40,7 +40,7 @@ class CodeBuddyOutputAck(unittest.TestCase):
             recall=self.retrieval,
             save_observation=recall_receipts.save_recall_observation,
         )
-        settings_path(self.home).parent.mkdir(parents=True, mode=0o700)
+        private_directory(settings_path(self.home).parent)
 
     def native_hook(self, home, stream, *, core, observe, defer):
         self.assertEqual(home, self.home)
