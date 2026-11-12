@@ -72,7 +72,8 @@ def recover_pending(home, native):
         from agent_brain_client.adapters.harnesses.codex import binding
         binding.recover(home)
         from agent_brain_client.adapters.harnesses.codex.collection_installation import recover_pending as recover
-        recover(home, native)
+        _, policy = registration(home)
+        recover(home, binding.native_home(home, policy["runtime"]))
     if "codebuddy" in registered_hosts(home):
         from agent_brain_client.adapters.harnesses.codebuddy.configuration import recover
         recover(home, None)

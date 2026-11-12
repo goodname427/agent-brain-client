@@ -622,6 +622,36 @@ class IndependentHostControl(unittest.TestCase):
                 self.assertEqual(f.config.read_bytes(), shared_before)
                 self.assertFalse((f.home / ".codex").exists())
 
+    def test_early_hook_recovery_uses_native_profile_and_authenticates_shared_control(self):
+        from types import SimpleNamespace
+        from agent_brain_client.adapters.harnesses.codex import binding, collection_installation as hooks
+        from agent_brain_client.adapters.storage import host_files
+        from agent_brain_client.adapters.storage.collection import settings_path
+        from agent_brain_client.runtime.host_maintenance import install_sources
+        from agent_brain_client.runtime.installation_completion import resume_setup
+        f = self.shared_install("codex")
+        native = f.home / "selected-codex-profile"
+        binding.install(f.home, native=native)
+        install_sources(SimpleNamespace(device_home=str(f.home), profile_id=None,
+                                         operator=None, operator_sha256=None, harness="codex"))
+        shared_before = f.config.read_bytes()
+        native_file = native / "config.toml"
+        before = native_file.read_bytes()
+        original_apply = host_files.host_apply
+        def interrupt(plan, save):
+            original_apply(plan, save)
+            raise SystemExit("Synthetic interruption after native commit")
+        owned = hooks.split_owned(before)[1]
+        wanted = owned.replace("timeout = 120", "timeout = 121")
+        self.assertNotEqual(owned, wanted)
+        with patch.object(host_files, "host_apply", side_effect=interrupt), self.assertRaises(SystemExit):
+            hooks.transact(native, settings_path(f.home).parent, wanted)
+        self.assertNotEqual(native_file.read_bytes(), before)
+        self.assertIsNone(resume_setup(f.home, f.native))
+        self.assertEqual(native_file.read_bytes(), before)
+        self.assertEqual(f.config.read_bytes(), shared_before)
+        self.assertEqual(hooks.read_receipt(settings_path(f.home).parent / "hook-install.json")["phase"], "rolled-back")
+
     def test_private_control_uninstall_detaches_both_native_entries_and_retains_data(self):
         from types import SimpleNamespace
         from agent_brain_client.adapters.harnesses.codex import binding

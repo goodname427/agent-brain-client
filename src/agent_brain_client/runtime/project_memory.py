@@ -216,8 +216,6 @@ def import_bundle(args):
         raise ValueError("Reviewed compiler activation receipt required")
     directory = canonical(Path(args.activation).parent, existing=True)
     target = canonical(manifest["client_policy_directory"])
-    private_directory(target)
-    private_mode(target, directory=True, owner=True)
     bundle = private_json(
         directory / "client-bundle.json", manifest["files"]["client-bundle.json"]
     )
@@ -229,7 +227,8 @@ def import_bundle(args):
     )
     _, registered = registration(canonical(args.device_home, existing=True))
     r = registered["runtime"]
-    native_home = canonical(r["codex_home"])
+    from agent_brain_client.runtime.harness_content import content_host
+    native_home, _ = content_host(args.harness).location(canonical(args.device_home), r)
     if target == native_home or native_home in target.parents:
         raise ValueError(
             "Native history/config directories are never policy or note stores"
@@ -242,6 +241,8 @@ def import_bundle(args):
             raise ValueError(
                 "Persistent source metadata belongs in the private Client project-memory directory"
             )
+    private_directory(target)
+    private_mode(target, directory=True, owner=True)
     if capture.get("schema") == 2 and capture.get("source_mode") == "operator-notes":
         notes = canonical(capture["notes_directory"])
         if notes != target / "notes":
