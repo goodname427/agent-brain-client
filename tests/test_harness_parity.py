@@ -730,3 +730,23 @@ class NativeBindingTransaction(unittest.TestCase):
                 binding.install(home, remove=True)
                 self.assertNotIn(b"agent_brain_server", file.read_bytes())
                 self.assertIn(b'command = "preserve"', file.read_bytes())
+
+    def test_native_collision_is_rejected_before_shared_enrollment(self):
+        import os
+        from agent_brain_client.interfaces.cli.install import selected_native, lifecycle_exit
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            native = home / "native-profile"
+            private_directory(native)
+            file = native / "config.toml"
+            original = b'[mcp_servers.agent_brain_server]\ncommand = "preserve-legacy-service"\n'
+            file.write_bytes(original)
+            file.chmod(0o600)
+            with patch.dict(os.environ, CODEX_HOME=str(native)):
+                with self.assertRaises(ValueError):
+                    selected_native(home, "codex")
+                self.assertEqual(selected_native(home, "codebuddy"), home / ".config/agent-brain-client/shared-native")
+            self.assertEqual(file.read_bytes(), original)
+            self.assertFalse((home / ".config/agent-brain-client").exists())
+        self.assertEqual(lifecycle_exit("install", {"installed": True,
+            "installation_stages": {"setup": {"stage": "native-mcp", "status": "pending-review-or-resume"}}}), 2)

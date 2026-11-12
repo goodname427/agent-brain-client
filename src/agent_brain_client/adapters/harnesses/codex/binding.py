@@ -181,3 +181,15 @@ def status(home, runtime):
     if value is not None and not matches(actual, value["mcp"]):
         raise ValueError("Owned Codex MCP entry changed")
     return {"installed": actual is not None, "service_enabled": actual is not None and actual.get("enabled", True)}
+
+
+def preflight(home):
+    """Reject a conflicting native entry before a new shared enrollment."""
+    previous = receipt(home)
+    native = Path(previous["native_home"]) if previous else Path(os.environ.get("CODEX_HOME", str(Path(home) / ".codex")))
+    native = io.canonical(native)
+    if native == Path(home) / ".config/agent-brain-client/shared-native":
+        raise ValueError("Separate Codex native profile required")
+    actual = entry(read(native / "config.toml"))
+    if actual is not None and (previous is None or previous["removed"] or not matches(actual, previous["mcp"])):
+        raise ValueError("Existing Codex MCP entry preserved; review before enrollment")

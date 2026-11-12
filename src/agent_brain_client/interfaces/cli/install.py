@@ -22,6 +22,8 @@ OFFICIAL_REF = "refs/heads/releases/personal-https-stable"
 def lifecycle_exit(action, value):
     """Exit success denotes the requested action, never merely an old installation."""
     status = value.get("status")
+    if action == "install" and value.get("installation_stages", {}).get("setup", {}).get("stage") == "native-mcp":
+        return 2
     if (
         value.get("memory_accessibility", {}).get("status")
         == "review-or-resume-required"
@@ -63,7 +65,12 @@ def selected_native(home, harness):
     if harness not in ("codex", "codebuddy"):
         raise ValueError("Install and reinstall require an explicit --harness")
     from agent_brain_client.adapters.storage.registration import registry_home
-    return registry_home(home)
+    native = registry_home(home)
+    if (harness == "codex" and native == Path(home) / ".config/agent-brain-client/shared-native"
+            and not (Path(home) / ".config/agent-brain-client/codex-mcp.json").exists()):
+        from agent_brain_client.adapters.harnesses.codex.binding import preflight
+        preflight(home)
+    return native
 
 
 def main():

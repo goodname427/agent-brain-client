@@ -616,6 +616,7 @@ class NewDeviceConnectionCLI(unittest.TestCase):
             path = home / '.config/agent-brain-client/first-install/connection.json'
             adapters_storage_private_files.save(path, {'schema': 1})
             with patch.object(Path, 'home', return_value=home), \
+                    patch.dict(os.environ, CODEX_HOME=str(home / 'native')), \
                     patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', "--harness", "codex"]), \
                     patch.object(sys, 'stdout', io.StringIO()) as output, \
                     patch.object(wizard, 'run', side_effect=AssertionError('Must not install')):

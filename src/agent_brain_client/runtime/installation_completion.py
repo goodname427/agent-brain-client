@@ -190,6 +190,7 @@ def complete(home, result, *, harness=None, choose=input, refresh=mapping_refres
         from agent_brain_client.runtime.fresh_installation import restore_native_bindings
         restore_native_bindings(home)
         if selected == "codex":
+            stage = "native-mcp"
             from agent_brain_client.adapters.harnesses.codex import binding
             previous = binding.receipt(home)
             stages["native_mcp"] = (binding.install(home, native=Path(previous["native_home"]), enabled=previous["mcp"]["enabled"])
