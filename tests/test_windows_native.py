@@ -428,7 +428,7 @@ class WindowsNative(unittest.TestCase):
             return result
         with patch.dict(os.environ, CODEX_HOME=str(native)):
             plan, pin, _ = installer.prepare_materials(materials, self.home, native, connection,
-                adapters_storage_install_state.sha(installer.canonical(connection)), updater=update)
+                adapters_storage_install_state.sha(installer.canonical(connection)), harness="codex", updater=update)
             calls = []
             before_config = config.read_bytes()
             before_identity = config.stat().st_ino
