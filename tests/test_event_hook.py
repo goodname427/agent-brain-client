@@ -42,7 +42,7 @@ class EventHook(unittest.TestCase):
         self.adapter=self.fixture.adapter;self.sent=[]
         self.project=self.fixture.base/'project';self.project.mkdir()
         self.policy={'schema':1,'enabled':True,'profile_sha256':'a'*64,'content_policy_sha256':'b'*64,
-                     'off_file':str(self.fixture.base/'capture.off'),
+                     'off_file':str(self.adapter.cache/'capture.off'),
                      'scopes':[{'cwd':str(self.project),'project_id':'synthetic-project','session_id':'synthetic-session'}]}
         validate_hook_policy(self.policy,profile_sha256='a'*64,content_policy_sha256='b'*64)
         self.payload={'session_id':'synthetic-session','turn_id':'synthetic-turn','cwd':str(self.project),
