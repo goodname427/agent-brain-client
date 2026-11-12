@@ -1,5 +1,6 @@
 """Maintain only registered native hosts; shared code/policy is managed separately."""
 
+from agent_brain_client.runtime.harness_content import content_location
 from pathlib import Path
 from types import SimpleNamespace
 from agent_brain_client.adapters.storage import metadata
@@ -53,14 +54,14 @@ def install_sources(args):
         fresh = read_journal(home)
         retained = fresh["mapping"].get("registered_surfaces", {}).get("codex") if fresh and fresh["phase"] == "complete" else None
         if retained is not None and not retained["hooks_enabled"]:
-            value = prepare(args)
+            value = prepare(args, locate=content_location)
             freeze_code(settings_path(home).parent, value["code_sha256"])
             return {"status": "retained-codex-hooks-paused", "native_changed": False, "harness": harness}
         from agent_brain_client.adapters.harnesses.codex.collection_installation import install
         return install(args)
     if harness != "codebuddy":
         raise ValueError("Explicit installed Harness required")
-    value = prepare(args)
+    value = prepare(args, locate=content_location)
     freeze_code(settings_path(home).parent, value["code_sha256"])
     return {"status": "shared-source-runtime-prepared", "native_changed": False,
             "harness": harness, "settings": str(settings_path(home)),
@@ -173,7 +174,7 @@ def global_entry(args, *, harness, remove=False):
         raise ValueError("CodeBuddy is uninstalled; preserve its retained configuration")
     if not remove:
         from agent_brain_client.adapters.storage.collection_setup import prepare
-        value = prepare(args)
+        value = prepare(args, locate=content_location)
         freeze_code(settings_path(args.device_home).parent, value["code_sha256"])
     result = configuration.install(Path(args.device_home), ROOT, None, surface=receipt["surface"], enable_hooks=not remove)
     return dict(result, status="global-hook-removed" if remove else "global-hook-installed", harness=harness)
