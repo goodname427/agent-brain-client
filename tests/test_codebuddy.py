@@ -401,13 +401,23 @@ class Hooks(unittest.TestCase):
         self.value = {'device_home': root, 'enabled': True, 'scope': scope, 'approved_scope_sha256': digest(scope), 'server_scope_sha256': digest(scope)}
         self.client = SimpleNamespace(actor='synthetic-owner', status=lambda session: {'source_admitted': True})
         self.sent = []
+        self.staged = []
+        enqueue = self.queue._enqueue
+        def stage(request, *args, **kwargs):
+            result = enqueue(request, *args, **kwargs)
+            if not any(row['request_id'] == request['request_id'] for row in self.staged):
+                self.staged.append(copy.deepcopy(request))
+            return result
+        staged = patch.object(self.queue, '_enqueue', side_effect=stage)
+        staged.start()
+        self.addCleanup(staged.stop)
         def send(request):
             self.sent.append(copy.deepcopy(request))
             return accepted(request)
         self.fixture.cloud.request = send
         self.core = SimpleNamespace(approved=source_policy.approved, load=lambda home: self.value,
                                     adapter=lambda value, local: (self.client, self.queue),
-                                    eligible=lambda value, cwd: self.local, recall=Mock(return_value=[{'content': 'Synthetic recalled memory'}]), hook_context=adapters_harnesses_hook_output.hook_context)
+                                    eligible=lambda value, cwd: self.local, recall_prompt=Mock(return_value=[{'content': 'Synthetic recalled memory'}]), schedule_delivery=Mock(), hook_context=adapters_harnesses_hook_output.hook_context)
         queue = patch.object(cb, 'open_queue', return_value=(self.client, self.queue))
         queue.start()
         self.addCleanup(queue.stop)
@@ -415,29 +425,58 @@ class Hooks(unittest.TestCase):
                         'cwd': root, 'prompt': 'Synthetic user prefers Python', 'transcript_path': '/must-not-be-read/synthetic.jsonl'}
 
     def hook(self, **changes):
-        return cb.hook(self.fixture.home, io.BytesIO(json.dumps(dict(self.payload, **changes)).encode()), core=self.core)
+        result = cb.hook(self.fixture.home, io.BytesIO(json.dumps(dict(self.payload, **changes)).encode()), core=self.core)
+        self.assertEqual(self.sent, [], 'Foreground Hook must not send queued observations')
+        return result
 
     def test_prompt_capture_real_outbox_deduplicates_and_recalls(self):
         output, state = self.hook()
-        self.assertEqual(state['local_queue']['state'], 'confirmed')
-        self.assertEqual(len(self.sent), 1)
-        self.assertEqual(self.sent[0]['params']['event']['messages'], [{'role': 'user', 'content': self.payload['prompt']}])
-        self.assertTrue(self.sent[0]['params']['event']['session_id'].startswith('codebuddy-'))
+        self.assertEqual(state['local_queue']['state'], 'pending')
+        self.assertEqual(len(self.staged), 1)
+        self.assertEqual(self.staged[0]['params']['event']['messages'], [{'role': 'user', 'content': self.payload['prompt']}])
+        self.assertTrue(self.staged[0]['params']['event']['session_id'].startswith('codebuddy-'))
         self.assertIn('Synthetic recalled memory', output['hookSpecificOutput']['additionalContext'])
         self.hook()
-        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.staged), 1)
         self.hook(generation_id='generation-2')
-        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(len(self.staged), 2)
         data = '\n'.join(p.read_text() for p in (self.queue.cache / 'outbox').glob('*.json'))
         self.assertNotIn('transcript_path', data)
         self.assertNotIn('/must-not-be-read', data)
-        self.assertFalse(state['persistence']['durable'])
+        self.assertFalse(state['data_transferred'])
+        self.assertTrue(state['local_queue']['saved'])
+
+    def test_session_start_only_schedules_without_recall_or_replaying_pending(self):
+        self.hook()
+        queued = [path.read_bytes() for path in (self.queue.cache / 'outbox').glob('*.json')]
+        self.core.recall_prompt.reset_mock()
+        self.core.schedule_delivery.reset_mock()
+        output, state = self.hook(hook_event_name='SessionStart')
+        self.assertEqual(output, {})
+        self.assertEqual(state['status'], 'session-ready')
+        self.core.recall_prompt.assert_not_called()
+        self.core.schedule_delivery.assert_called_once()
+        self.assertEqual([path.read_bytes() for path in (self.queue.cache / 'outbox').glob('*.json')], queued)
+
+    def test_prompt_does_not_enter_upload_transport_before_recall(self):
+        def recall(value, local, payload, query):
+            self.assertEqual(len(self.staged), 1)
+            self.assertEqual(self.sent, [])
+            self.assertEqual(query, self.payload['prompt'])
+            return [{'content': 'Synthetic recalled memory'}]
+        self.core.recall_prompt.side_effect = recall
+        with patch.object(self.fixture.cloud, 'request', side_effect=AssertionError('Slow upload must not enter foreground')) as transport:
+            output, state = self.hook()
+        transport.assert_not_called()
+        self.assertIn('Synthetic recalled memory', output['hookSpecificOutput']['additionalContext'])
+        self.assertEqual(state['local_queue']['state'], 'pending')
+        self.assertFalse(state['data_transferred'])
 
     def test_no_generation_does_not_deduplicate_identical_real_prompts(self):
         self.payload.pop('generation_id')
         self.hook()
         self.hook()
-        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(len(self.staged), 2)
 
     def test_offline_queue_retries_exact_payload_on_redelivery(self):
         with patch.object(self.fixture.cloud, 'request', side_effect=OSError('offline')):
@@ -446,7 +485,11 @@ class Hooks(unittest.TestCase):
         pending = next((self.queue.cache / 'outbox').glob('*.json')).read_bytes()
         self.assertTrue(output)
         self.hook()
-        self.assertEqual(self.sent[0], json.loads(pending)['request'])
+        self.assertEqual(self.staged[0], json.loads(pending)['request'])
+        self.assertEqual(next((self.queue.cache / 'outbox').glob('*.json')).read_bytes(), pending)
+        from agent_brain_client.application.queue.delivery import deliver_pending
+        deliver_pending(self.queue, allowed=lambda session: True)
+        self.assertEqual(self.sent, [json.loads(pending)['request']])
 
     def test_stop_gate_explicit_private_payload_and_capture_failure_keep_recall_independent(self):
         self.value['enabled'] = False
@@ -457,46 +500,45 @@ class Hooks(unittest.TestCase):
         self.value['enabled'] = True
         output, state = self.hook(prompt='LocalOnly: synthetic private content')
         self.assertEqual(output, {})
-        self.assertEqual(self.sent, [])
-        with patch.object(cb, 'capture', side_effect=PermissionError('SECRET')):
+        self.assertEqual(self.staged, [])
+        with patch.object(cb, 'capture_messages', side_effect=PermissionError('SECRET')):
             output, state = self.hook()
         self.assertTrue(output)
         self.assertEqual(state['status'], 'capture-unconfirmed')
         self.assertNotIn('SECRET', json.dumps(state))
 
-    def test_pending_events_replay_on_a_later_hook_with_original_payload(self):
+    def test_pending_events_only_deliver_in_background_with_original_payload(self):
         with patch.object(self.fixture.cloud, 'request', side_effect=OSError('offline')):
             _, state = self.hook()
         self.assertEqual(state['local_queue']['state'], 'pending')
         row = json.loads(next((self.queue.cache / 'outbox').glob('*.json')).read_bytes())
         self.hook(hook_event_name='SessionStart')
+        self.assertEqual(self.staged, [row['request']])
+        self.assertEqual(self.sent, [])
+        self.core.schedule_delivery.assert_called()
+        from agent_brain_client.application.queue.delivery import deliver_pending
+        deliver_pending(self.queue, allowed=lambda session: True)
         self.assertEqual(self.sent, [row['request']])
 
     def test_long_unicode_text_is_queued_before_network_and_not_truncated(self):
         text = '合成文字🙂' * 18000
-        original = self.fixture.cloud.request
-        checked = []
-        def send(request):
-            if not checked:
-                pending = list((self.queue.cache / 'outbox').glob('*.json'))
-                self.assertGreater(len(pending), 1)
-                checked.append(True)
-            return original(request)
-        with patch.object(self.fixture.cloud, 'request', side_effect=send):
+        with patch.object(self.fixture.cloud, 'request', side_effect=AssertionError('Foreground must not upload')):
             result = cb.capture_messages(self.core, self.value, self.local, self.payload,
                                          [{'role': 'assistant', 'content': text}], 'assistant')
-        self.assertEqual(result['local_queue']['state'], 'confirmed')
-        self.assertEqual(''.join(m['content'] for r in self.sent for m in r['params']['event']['messages']), text)
-        for request in self.sent:
+        self.assertEqual(result['local_queue']['state'], 'pending')
+        self.assertEqual(self.sent, [])
+        self.assertGreater(result['native_event_batches'], 1)
+        self.assertEqual(''.join(m['content'] for r in self.staged for m in r['params']['event']['messages']), text)
+        for request in self.staged:
             self.assertLessEqual(len(json.dumps(request, ensure_ascii=False).encode()), 120000)
 
     def test_no_stop_transcript_reader_and_generation_drift_is_rejected(self):
         self.hook()
         with self.assertRaises(ValueError):
-            cb.capture(self.core, self.value, self.local, dict(self.payload, prompt='Changed native generation'), phase='prompt-0')
+            cb.capture_messages(self.core, self.value, self.local, self.payload, [{'role': 'user', 'content': 'Changed native generation'}], 'prompt')
         with self.assertRaises(ValueError):
             self.hook(hook_event_name='Stop', stop_hook_active=False)
-        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.staged), 1)
 
 
 class Protocol(unittest.TestCase):
@@ -605,8 +647,8 @@ class Transcript(Hooks):
         output, result = self.hook(hook_event_name='Stop', stop_hook_active=False,
                                    last_assistant_message='Actual CLI final reply')
         self.assertEqual(output, {})
-        self.assertEqual(result['local_queue']['state'], 'confirmed')
-        self.assertEqual(self.sent[-1]['params']['event']['messages'][0]['content'], 'Actual CLI final reply')
+        self.assertEqual(result['local_queue']['state'], 'pending')
+        self.assertEqual(self.staged[-1]['params']['event']['messages'][0]['content'], 'Actual CLI final reply')
 
     def native_file(self, suffix='.jsonl'):
         directory = self.fixture.home / '.codebuddy/projects/synthetic'
@@ -631,12 +673,12 @@ class Transcript(Hooks):
         with path.open('a') as stream:
             stream.write(json.dumps({'type': 'assistant', 'sessionId': self.payload['session_id'], 'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': 'Synthetic final reply'}, {'type': 'thinking', 'thinking': 'Never collect reasoning'}, {'type': 'tool_use', 'input': 'Never collect tools'}]}}) + '\n')
         _, result = self.stop()
-        self.assertEqual(result['local_queue']['state'], 'confirmed')
-        self.assertEqual(self.sent[-1]['params']['event']['messages'], [{'role': 'assistant', 'content': 'Synthetic final reply'}])
-        self.assertNotIn('Historical text', json.dumps(self.sent))
-        self.assertNotIn('Never collect', json.dumps(self.sent))
+        self.assertEqual(result['local_queue']['state'], 'pending')
+        self.assertEqual(self.staged[-1]['params']['event']['messages'], [{'role': 'assistant', 'content': 'Synthetic final reply'}])
+        self.assertNotIn('Historical text', json.dumps(self.staged))
+        self.assertNotIn('Never collect', json.dumps(self.staged))
         self.stop()
-        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(len(self.staged), 2)
 
     def test_ide_reads_only_exact_generation_message_files(self):
         path = self.native_file('.json')
@@ -652,8 +694,8 @@ class Transcript(Hooks):
         index['requests'][1]['state'] = 'complete'
         path.write_text(json.dumps(index))
         _, result = self.stop()
-        self.assertEqual(result['local_queue']['state'], 'confirmed')
-        self.assertEqual(self.sent[-1]['params']['event']['messages'][0]['content'], 'IDE actual final answer')
+        self.assertEqual(result['local_queue']['state'], 'pending')
+        self.assertEqual(self.staged[-1]['params']['event']['messages'][0]['content'], 'IDE actual final answer')
 
     def test_modern_ide_paths_preserve_exact_session_and_generation(self):
         for base in ('AppData/Local', 'Library/Application Support'):
@@ -688,11 +730,11 @@ class Transcript(Hooks):
         (path.parent / 'messages/answer.json').write_text(json.dumps(
             {'id': 'answer', 'role': 'assistant', 'message': {'content': 'Only this future answer'}}))
         _, result = self.stop()
-        self.assertEqual(result['local_queue']['state'], 'confirmed')
-        self.assertEqual(self.sent[-1]['params']['event']['messages'],
+        self.assertEqual(result['local_queue']['state'], 'pending')
+        self.assertEqual(self.staged[-1]['params']['event']['messages'],
                          [{'role': 'assistant', 'content': 'Only this future answer'}])
 
-    def test_ide_persistence_lag_is_retried_on_a_later_hook(self):
+    def test_ide_persistence_lag_is_completed_by_background_after_start_wakes(self):
         path = self.native_file('.json')
         path.write_text(json.dumps({'messages': [{'id': 'assistant', 'role': 'assistant', 'isComplete': False}],
                                     'requests': [{'id': 'generation-1', 'messages': ['assistant']}]}))
@@ -705,7 +747,9 @@ class Transcript(Hooks):
         messages.mkdir()
         (messages / 'assistant.json').write_text(json.dumps({'id': 'assistant', 'role': 'assistant', 'message': {'content': 'Fully persisted IDE answer'}}))
         self.hook(hook_event_name='SessionStart')
-        self.assertEqual(self.sent[-1]['params']['event']['messages'][0]['content'], 'Fully persisted IDE answer')
+        self.assertEqual(len(self.staged), 1)
+        self.assertFalse(cb.resume_observed_assistant(self.fixture.home, self.core, native_transcript.marker(self.fixture.home, self.payload).stem))
+        self.assertEqual(self.staged[-1]['params']['event']['messages'][0]['content'], 'Fully persisted IDE answer')
 
     def completed_ide_fixture(self):
         path = self.native_file('.json')
@@ -725,26 +769,28 @@ class Transcript(Hooks):
     def test_ide_terminal_request_accepts_stale_message_completion_flag(self):
         self.completed_ide_fixture()
         _, result = self.stop()
-        self.assertEqual(result['local_queue']['state'], 'confirmed')
-        self.assertEqual(self.sent[-1]['params']['event']['messages'],
+        self.assertEqual(result['local_queue']['state'], 'pending')
+        self.assertEqual(self.staged[-1]['params']['event']['messages'],
                          [{'role': 'assistant', 'content': 'Persisted terminal answer'}])
         self.stop()
-        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(len(self.staged), 2)
 
-    def test_ide_stop_before_finalize_retries_stale_flag_on_next_hook(self):
+    def test_ide_stop_before_finalize_background_retries_stale_flag(self):
         path, index, _ = self.completed_ide_fixture()
         index['requests'][0]['state'] = 'running'
         path.write_text(json.dumps(index))
         with self.assertRaises(ValueError):
             self.stop()
-        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.staged), 1)
         index['requests'][0]['state'] = 'complete'
         path.write_text(json.dumps(index))
         self.hook(hook_event_name='SessionStart')
-        self.assertEqual(self.sent[-1]['params']['event']['messages'],
+        self.assertEqual(len(self.staged), 1)
+        self.assertFalse(cb.resume_observed_assistant(self.fixture.home, self.core, native_transcript.marker(self.fixture.home, self.payload).stem))
+        self.assertEqual(self.staged[-1]['params']['event']['messages'],
                          [{'role': 'assistant', 'content': 'Persisted terminal answer'}])
         self.hook(hook_event_name='SessionStart')
-        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(len(self.staged), 2)
 
     def test_ide_nonterminal_request_rejects_even_complete_message(self):
         path, index, _ = self.completed_ide_fixture()
@@ -754,7 +800,7 @@ class Transcript(Hooks):
             path.write_text(json.dumps(index))
             with self.subTest(state=state), self.assertRaises(ValueError):
                 self.stop()
-            self.assertEqual(len(self.sent), 1)
+            self.assertEqual(len(self.staged), 1)
 
     def test_ide_terminal_request_requires_complete_bound_message_file(self):
         _, _, native = self.completed_ide_fixture()
@@ -762,11 +808,11 @@ class Transcript(Hooks):
             native.write_text(body)
             with self.assertRaises(ValueError):
                 self.stop()
-            self.assertEqual(len(self.sent), 1)
+            self.assertEqual(len(self.staged), 1)
         native.unlink()
         with self.assertRaises(native_transcript.PendingTranscript):
             self.stop()
-        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.staged), 1)
 
     def test_ide_terminal_snapshot_changes_preserve_unconsumed_cursor(self):
         path, index, native = self.completed_ide_fixture()
@@ -779,7 +825,7 @@ class Transcript(Hooks):
             return result
         with patch.object(native_transcript, 'read_bound', side_effect=racing_read), self.assertRaises(ValueError):
             self.stop()
-        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.staged), 1)
         row = metadata_io.private_json(native_transcript.marker(self.fixture.home, self.payload), cache=True)
         self.assertFalse(row['complete'])
 
@@ -794,7 +840,7 @@ class Transcript(Hooks):
             return result
         with patch.object(native_transcript, 'read_bound', side_effect=racing_read), self.assertRaises(ValueError):
             self.stop()
-        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.staged), 1)
 
     def test_snapshot_race_schedules_and_retries_without_another_hook(self):
         for changed_file in ('index', 'body'):
@@ -825,7 +871,7 @@ class Transcript(Hooks):
                     self.assertEqual(result['status'], 'assistant-capture-deferred')
                     turn = native_transcript.marker(case.fixture.home, case.payload).stem
                     spawn.assert_called_once_with(turn)
-                    self.assertEqual(len(case.sent), 1)
+                    self.assertEqual(len(case.staged), 1)
                     # Cause a second transient race inside the already-started worker.
                     changes.clear()
                     if changed_file == 'index':
@@ -834,16 +880,14 @@ class Transcript(Hooks):
                     else:
                         native.write_text(json.dumps({'id': 'answer', 'role': 'assistant',
                             'message': {'content': 'Intermediate answer'}}))
-                    pause = Mock()
                     with patch.object(native_transcript, 'read_bound', side_effect=race):
-                        result = cb.finish_deferred(case.fixture.home, case.core, turn, pause=pause)
-                    self.assertEqual(pause.call_count, 2)
-                    self.assertEqual(result['local_queue']['state'], 'confirmed')
+                        self.assertTrue(cb.resume_observed_assistant(case.fixture.home, case.core, turn))
+                        self.assertFalse(cb.resume_observed_assistant(case.fixture.home, case.core, turn))
                     expected = 'Persisted terminal answer' if changed_file == 'index' else 'Stable revised answer'
-                    self.assertEqual(case.sent[-1]['params']['event']['messages'],
+                    self.assertEqual(case.staged[-1]['params']['event']['messages'],
                                      [{'role': 'assistant', 'content': expected}])
-                    cb.finish_deferred(case.fixture.home, case.core, turn, pause=lambda _: None)
-                    self.assertEqual(len(case.sent), 2)
+                    self.assertFalse(cb.resume_observed_assistant(case.fixture.home, case.core, turn))
+                    self.assertEqual(len(case.staged), 2)
                 finally:
                     case.tearDown()
 
@@ -857,7 +901,7 @@ class Transcript(Hooks):
             core=self.core, defer=spawn)
         self.assertEqual(result['status'], 'assistant-capture-deferred')
         spawn.assert_called_once_with(native_transcript.marker(self.fixture.home, self.payload).stem)
-        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.staged), 1)
 
     def test_deferred_capture_finishes_without_another_hook_and_deduplicates(self):
         path, index, _ = self.completed_ide_fixture()
@@ -865,31 +909,33 @@ class Transcript(Hooks):
         path.write_text(json.dumps(index))
         with self.assertRaises(ValueError):
             self.stop()
-        def finalize(_):
-            index['requests'][0]['state'] = 'complete'
-            path.write_text(json.dumps(index))
         turn = native_transcript.marker(self.fixture.home, self.payload).stem
-        result = cb.finish_deferred(self.fixture.home, self.core, turn, pause=finalize)
-        self.assertEqual(result['local_queue']['state'], 'confirmed')
-        cb.finish_deferred(self.fixture.home, self.core, turn, pause=lambda _: None)
-        self.assertEqual(len(self.sent), 2)
+        self.assertTrue(cb.resume_observed_assistant(self.fixture.home, self.core, turn))
+        index['requests'][0]['state'] = 'complete'
+        path.write_text(json.dumps(index))
+        self.assertFalse(cb.resume_observed_assistant(self.fixture.home, self.core, turn))
+        self.assertFalse(cb.resume_observed_assistant(self.fixture.home, self.core, turn))
+        self.assertEqual(len(self.staged), 2)
 
-    def test_deferred_expiry_and_revoked_source_never_transfer(self):
+    def test_pending_completion_survives_many_attempts_and_revocation_without_reading(self):
         path, index, _ = self.completed_ide_fixture()
         index['requests'][0]['state'] = 'running'
         path.write_text(json.dumps(index))
         with self.assertRaises(ValueError):
             self.stop()
         turn = native_transcript.marker(self.fixture.home, self.payload).stem
-        pause = Mock()
-        result = cb.finish_deferred(self.fixture.home, self.core, turn, pause=pause)
-        self.assertEqual(result['status'], 'assistant-capture-deferred-expired')
-        self.assertEqual(pause.call_count, 30)
-        def revoke(_):
-            self.value['enabled'] = False
-        result = cb.finish_deferred(self.fixture.home, self.core, turn, pause=revoke)
-        self.assertEqual(result['status'], 'assistant-capture-source-disabled')
-        self.assertEqual(len(self.sent), 1)
+        # Individual shared-worker attempts have no 30-second data expiry.
+        for _ in range(31):
+            self.assertTrue(cb.resume_observed_assistant(self.fixture.home, self.core, turn))
+        self.value['enabled'] = False
+        with patch.object(native_transcript, 'read_bound', side_effect=AssertionError('Revoked content read')):
+            self.assertTrue(cb.resume_observed_assistant(self.fixture.home, self.core, turn))
+        self.assertEqual(len(self.staged), 1)
+        self.value['enabled'] = True
+        index['requests'][0]['state'] = 'complete'
+        path.write_text(json.dumps(index))
+        self.assertFalse(cb.resume_observed_assistant(self.fixture.home, self.core, turn))
+        self.assertEqual(len(self.staged), 2)
 
     def test_deferred_never_retries_transport_or_queue_read_errors(self):
         path, index, _ = self.completed_ide_fixture()
@@ -901,10 +947,9 @@ class Transcript(Hooks):
         path.write_text(json.dumps(index))
         for error in (FileNotFoundError('synthetic'), json.JSONDecodeError('synthetic', '', 0)):
             with self.subTest(error=type(error).__name__), patch.object(cb, 'capture_messages', side_effect=error) as capture:
-                result = cb.finish_deferred(self.fixture.home, self.core,
-                    native_transcript.marker(self.fixture.home, self.payload).stem,
-                    pause=lambda _: None)
-                self.assertEqual(result['status'], 'assistant-capture-review-required')
+                with self.assertRaises(type(error)):
+                    cb.resume_observed_assistant(self.fixture.home, self.core,
+                        native_transcript.marker(self.fixture.home, self.payload).stem)
                 capture.assert_called_once()
                 spawn = Mock()
                 with self.assertRaises(type(error)):
@@ -919,16 +964,13 @@ class Transcript(Hooks):
         path.write_text(json.dumps(index))
         with self.assertRaises(ValueError):
             self.stop()
-        def cancel(_):
-            index['requests'][0]['state'] = 'cancelled'
-            path.write_text(json.dumps(index))
-        pause = Mock(side_effect=cancel)
-        result = cb.finish_deferred(self.fixture.home, self.core,
-                                    native_transcript.marker(self.fixture.home, self.payload).stem,
-                                    pause=pause)
-        self.assertEqual(result['status'], 'assistant-capture-review-required')
-        self.assertEqual(pause.call_count, 1)
-        self.assertEqual(len(self.sent), 1)
+        turn = native_transcript.marker(self.fixture.home, self.payload).stem
+        self.assertTrue(cb.resume_observed_assistant(self.fixture.home, self.core, turn))
+        index['requests'][0]['state'] = 'cancelled'
+        path.write_text(json.dumps(index))
+        with self.assertRaises(ValueError):
+            cb.resume_observed_assistant(self.fixture.home, self.core, turn)
+        self.assertEqual(len(self.staged), 1)
 
     def test_already_completed_ide_generation_is_not_a_future_capture_source(self):
         path = self.native_file('.json')
@@ -936,8 +978,8 @@ class Transcript(Hooks):
                                     'requests': [{'id': 'generation-1', 'state': 'complete', 'messages': ['old-assistant']}]}))
         self.hook()
         self.stop()
-        self.assertEqual(len(self.sent), 1)
-        self.assertEqual(self.sent[0]['params']['event']['messages'][0]['role'], 'user')
+        self.assertEqual(len(self.staged), 1)
+        self.assertEqual(self.staged[0]['params']['event']['messages'][0]['role'], 'user')
 
     def test_unknown_history_outside_path_and_rotation_never_transfers(self):
         path = self.native_file()
@@ -949,7 +991,7 @@ class Transcript(Hooks):
         path.write_text('{"type":"assistant","message":{"content":"wrong new file"}}\n')
         with self.assertRaises(ValueError):
             self.stop()
-        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.staged), 1)
         self.payload['transcript_path'] = str(self.fixture.home / 'unrelated.jsonl')
         with self.assertRaises(ValueError):
             native_transcript.native_path(self.fixture.home, self.payload)
@@ -961,7 +1003,7 @@ class Transcript(Hooks):
         self.hook()
         path.write_text('{"type":"assistant","message":{"content":"private answer"}}\n')
         self.stop()
-        self.assertEqual(self.sent, [])
+        self.assertEqual(self.staged, [])
 
     def test_sharing_question_keeps_both_sides_of_the_turn(self):
         path = self.native_file()
@@ -970,12 +1012,12 @@ class Transcript(Hooks):
         self.payload['prompt'] = question
         output, result = self.hook()
         self.assertTrue(output)
-        self.assertEqual(result['local_queue']['state'], 'confirmed')
+        self.assertEqual(result['local_queue']['state'], 'pending')
         answer = '文档中的“仅限本项目”说明来源适用范围。'
         path.write_text(json.dumps({'type': 'assistant', 'message': {'content': answer}}) + '\n')
         _, result = self.stop()
-        self.assertEqual(result['local_queue']['state'], 'confirmed')
-        self.assertEqual([request['params']['event']['messages'] for request in self.sent],
+        self.assertEqual(result['local_queue']['state'], 'pending')
+        self.assertEqual([request['params']['event']['messages'] for request in self.staged],
                          [[{'role': 'user', 'content': question}], [{'role': 'assistant', 'content': answer}]])
 
     def test_explicit_sharing_request_keeps_both_sides_excluded_even_as_question(self):
@@ -987,7 +1029,7 @@ class Transcript(Hooks):
         self.assertFalse(result['data_transferred'])
         path.write_text('{"type":"assistant","message":{"content":"synthetic private answer"}}\n')
         self.stop()
-        self.assertEqual(self.sent, [])
+        self.assertEqual(self.staged, [])
 
     def test_body_shape_keeps_prompt_and_native_assistant_capture(self):
         path = self.native_file()
@@ -996,12 +1038,12 @@ class Transcript(Hooks):
         self.payload['prompt'] = prompt
         output, result = self.hook()
         self.assertTrue(output)
-        self.assertEqual(result['local_queue']['state'], 'confirmed')
+        self.assertEqual(result['local_queue']['state'], 'pending')
         answer = 'Synthetic documentation: Bearer ' + 'synthetic' * 4
         path.write_text(json.dumps({'type': 'assistant', 'message': {'content': answer}}) + '\n')
         _, result = self.stop()
-        self.assertEqual(result['local_queue']['state'], 'confirmed')
-        self.assertEqual([request['params']['event']['messages'] for request in self.sent],
+        self.assertEqual(result['local_queue']['state'], 'pending')
+        self.assertEqual([request['params']['event']['messages'] for request in self.staged],
                          [[{'role': 'user', 'content': prompt}], [{'role': 'assistant', 'content': answer}]])
 
     def test_explicit_private_assistant_still_stops_before_queueing(self):
@@ -1009,29 +1051,35 @@ class Transcript(Hooks):
         _, result = self.hook(hook_event_name='Stop', stop_hook_active=False,
                               last_assistant_message='[no-memory] synthetic private answer')
         self.assertEqual(result['status'], 'excluded-local-only-or-sensitive')
-        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.staged), 1)
 
 
 if __name__ == '__main__':
     unittest.main()
 
 class DeferredProcess(unittest.TestCase):
-    def test_detached_entry_has_no_inherited_host_pipes(self):
-        import agent_brain_client.interfaces.cli.codebuddy as entry
+    def test_detached_shared_entry_has_no_inherited_host_pipes(self):
+        from agent_brain_client.runtime import delivery
         for platform in ('darwin', 'win32'):
-            with self.subTest(platform=platform), \
-                    patch.object(entry.sys, 'platform', platform), \
-                    patch.object(entry.subprocess, 'DETACHED_PROCESS', 8, create=True), \
-                    patch.object(entry.subprocess, 'CREATE_NEW_PROCESS_GROUP', 512, create=True), \
-                    patch.object(entry.subprocess, 'Popen') as spawn:
-                entry.defer_turn(Path('/synthetic/home'), 'a' * 64)
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as temp, \
+                    patch.object(delivery, 'sys', SimpleNamespace(platform=platform, executable=sys.executable)), \
+                    patch.object(delivery.subprocess, 'DETACHED_PROCESS', 8, create=True), \
+                    patch.object(delivery.subprocess, 'CREATE_NEW_PROCESS_GROUP', 512, create=True), \
+                    patch.object(delivery.subprocess, 'Popen') as spawn:
+                home = Path(temp).resolve()
+                delivery.schedule_assistant_completion(home, 'a' * 64)
+                tasks = [p for p in delivery.directory(home).glob('*.json') if p.name not in ('spawn.json', 'status.json')]
+                self.assertEqual(len(tasks), 1)
+                task = metadata_io.private_json(tasks[0], cache=True)
+                self.assertEqual(task, {'schema': 1, 'harness': 'codebuddy-final', 'turn_id': 'a' * 64})
                 command = spawn.call_args.args[0]
                 options = spawn.call_args.kwargs
                 self.assertEqual(command[:3], [sys.executable, '-I', '-B'])
-                self.assertEqual(command[-2:], ['--turn-id', 'a' * 64])
-                self.assertEqual(options['stdin'], entry.subprocess.DEVNULL)
-                self.assertEqual(options['stdout'], entry.subprocess.DEVNULL)
-                self.assertEqual(options['stderr'], entry.subprocess.DEVNULL)
+                self.assertEqual(command[-2:], ['--device-home', str(home)])
+                self.assertNotIn('a' * 64, command)
+                self.assertEqual(options['stdin'], delivery.subprocess.DEVNULL)
+                self.assertEqual(options['stdout'], delivery.subprocess.DEVNULL)
+                self.assertEqual(options['stderr'], delivery.subprocess.DEVNULL)
                 self.assertTrue(options['close_fds'])
                 if platform == 'win32':
                     self.assertEqual(options['creationflags'], 520)

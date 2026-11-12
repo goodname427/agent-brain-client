@@ -180,6 +180,10 @@ COMMANDS = {
             "test_runtime_reload",
             "test_codebuddy",
             "test_codebuddy_gateway",
+            "test_shared_lifecycle",
+            "test_background_delivery",
+            "test_observed_migration",
+            "test_project_lifecycle",
         ],
         [
             "pwsh",

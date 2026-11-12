@@ -158,11 +158,16 @@ class WindowsNative(unittest.TestCase):
         with patch('agent_brain_client.adapters.storage.registration.registration', return_value=({}, {'runtime':r})), patch.object(gm, 'CollectionClient', return_value=cloud):
             self.assertEqual(gm.submit_hook(value, local, payload)['status'], 'staged')
             sandbox = 'S-1-5-21-111111111-222222222-333333333-1002'
-            for item in (cache / 'hook-turns', cache / 'event-hook.lock', next((cache / 'hook-turns').glob('*.json'))):
+            for item in (cache / 'observed-operations', cache / 'observed-messages.lock', next((cache / 'observed-operations').glob('*.json'))):
                 self.assertIn(sandbox, host_security(item))
             pending = gm.submit_hook(value, local, stop)
             self.assertEqual(pending['local_queue']['state'], 'pending')
-            request = sent[0]
+            self.assertEqual(sent, [])  # Foreground staging never waits on the server.
+            from agent_brain_client.application.queue.delivery import deliver_pending
+            queued = CodexContentSession(home, cache, POLICY, cloud, codex_home=r['codex_home'])
+            self.assertTrue(deliver_pending(queued, allowed=lambda session: True))
+            requests = copy.deepcopy(sent)
+            self.assertEqual(len(requests), 2)
             # Simulate existing data/locks from a prior run acquiring the same
             # host ACE. Strict credential checks must still reject that ACL.
             security = {}
@@ -170,13 +175,15 @@ class WindowsNative(unittest.TestCase):
                 security[item] = self.host_acl(item)
             with self.assertRaises(ValueError): private_mode(cache, directory=True)
             restarted = CodexContentSession(home, cache, POLICY, cloud, codex_home=r['codex_home'])
-            self.assertEqual(restarted._queued()[0]['request'], request)
+            self.assertEqual({row['request']['request_id']: row['request'] for row in restarted._queued()},
+                             {request['request_id']: request for request in requests})
             from agent_brain_client.adapters.harnesses.codex.lifecycle import queue_counts
-            self.assertEqual(queue_counts(restarted)['pending'], 1)
+            self.assertEqual(queue_counts(restarted)['pending'], 2)
             cloud.request = lambda req: (sent.append(copy.deepcopy(req)), accepted(req))[1]
+            self.assertFalse(deliver_pending(restarted, allowed=lambda session: True))
+            self.assertEqual(sent, requests + requests)
             self.assertEqual(gm.submit_hook(value, local, stop)['local_queue']['state'], 'confirmed')
-            self.assertEqual(sent, [request, request])
-            self.assertEqual(len(list((cache / 'outbox').glob('*.json'))), 1)
+            self.assertEqual(len(list((cache / 'outbox').glob('*.json'))), 2)
             # The existing lock and directory objects retain their ACLs.
             for item, before in security.items():
                 if item.is_dir() or item.suffix == '.lock': self.assertEqual(host_security(item), before)

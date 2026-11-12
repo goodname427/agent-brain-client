@@ -44,7 +44,8 @@ class LayeredRecall(unittest.TestCase):
         client = SimpleNamespace(actor='synthetic-owner', device=self.device,
                                  params=lambda session: {'origin': self.local, 'session_id': session},
                                  wire=lambda method, params, **kwargs: self.send(method, params))
-        for target in (patch.object(gm, 'CollectionClient', return_value=client),
+        for target in (patch.object(gm, 'schedule_delivery', return_value=False),
+                       patch.object(gm, 'CollectionClient', return_value=client),
                        patch.object(gm, 'settings_path', return_value=self.root/'settings.json')):
             target.start(); self.addCleanup(target.stop)
 
@@ -250,7 +251,7 @@ class LayeredRecall(unittest.TestCase):
             data = json.loads(original().buffer.read()); data['turn_id'] += '-next'
             return SimpleNamespace(buffer=io.BytesIO(json.dumps(data).encode()))
         with patch.object(self, 'prompt', side_effect=next_prompt), patch.object(gm, 'recall', side_effect=ValueError('FICTIONAL_PRIVATE_ERROR')):
-            with self.assertRaises(ValueError): self.run_hook()
+            self.assertEqual(self.run_hook(), {})
         failed = recall_receipts.recall_observation(self.value)
         self.assertEqual(failed['status'], 'failed'); self.assertEqual(failed['error_type'], 'ValueError')
         self.assertNotEqual(first['request_key'], failed['request_key'])
@@ -262,13 +263,31 @@ class LayeredRecall(unittest.TestCase):
         with patch.object(sys, 'argv', ['global_memory', 'global-hook']), patch.object(gm, 'load', return_value=self.value), patch.object(gm, 'eligible', return_value=self.local), patch.object(gm, 'submit_hook', return_value={'status': 'staged'}), patch.object(sys, 'stdin', self.prompt()), patch.object(sys, 'stdout', output), patch.object(sys, 'stderr', diagnostic):
             self.assertEqual(collection_cli.main(), 0)
         self.assertIn('additionalContext', output.getvalue())
-        receipt = json.loads(diagnostic.getvalue())
+        entries = [json.loads(line) for line in diagnostic.getvalue().splitlines()]
+        receipt = next(row for row in entries if row.get('status') == 'hook-output-written')
         self.assertEqual(receipt['status'], 'hook-output-written'); self.assertEqual(receipt['recall_status'], 'context-prepared')
         self.assertTrue(recall_receipts.recall_observation(self.value, receipt['request_key'])['output_written'])
         self.assertNotIn('answer marker', diagnostic.getvalue()); self.assertEqual(receipt['model_used'], 'unknown')
         with patch.object(sys, 'argv', ['global_memory', 'global-hook']), patch.object(gm, 'load', side_effect=RuntimeError('SYNTHETIC_SECRET')), patch.object(sys, 'stdout', io.StringIO()), patch.object(sys, 'stderr', io.StringIO()) as errors:
             self.assertEqual(collection_cli.main(), 0)
         self.assertNotIn('SYNTHETIC_SECRET', errors.getvalue()); self.assertNotIn('hook-output-written', errors.getvalue())
+
+    def test_cli_failed_recall_never_claims_context_was_output(self):
+        output, diagnostic = io.StringIO(), io.StringIO()
+        with (patch.object(sys, 'argv', ['global_memory', 'global-hook']),
+              patch.object(gm, 'load', return_value=self.value),
+              patch.object(gm, 'eligible', return_value=self.local),
+              patch.object(gm, 'submit_hook', return_value={'status': 'staged'}),
+              patch.object(gm, 'recall', side_effect=ValueError('FICTIONAL_PRIVATE_ERROR')),
+              patch.object(sys, 'stdin', self.prompt()),
+              patch.object(sys, 'stdout', output), patch.object(sys, 'stderr', diagnostic)):
+            self.assertEqual(collection_cli.main(), 0)
+        self.assertEqual(json.loads(output.getvalue()), {})
+        receipt = recall_receipts.recall_observation(self.value)
+        self.assertEqual(receipt['status'], 'failed')
+        self.assertFalse(receipt['output_written'])
+        self.assertNotIn('hook-output-written', diagnostic.getvalue())
+        self.assertNotIn('FICTIONAL_PRIVATE_ERROR', diagnostic.getvalue())
 
 
 if __name__ == '__main__': unittest.main()

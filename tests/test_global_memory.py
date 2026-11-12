@@ -141,7 +141,7 @@ class GlobalMemoryFixtures(unittest.TestCase):
         payload = {'cwd': local['cwd'], 'hook_event_name': 'UserPromptSubmit', 'session_id': 'session', 'turn_id': 'turn', 'prompt': 'How did the other project handle retries?'}
         value = {'scope': self.scope, 'legacy_projects': [], 'device_home': str(self.root)}
         def stdin(): return type('Input', (), {'buffer': io.BytesIO(json.dumps(payload).encode())})()
-        with patch.object(gm, 'eligible', return_value=local), patch.object(gm, 'submit_hook', return_value={'status': 'staged'}), patch.object(gm, 'settings_path', return_value=self.root/'settings.json'), patch.object(gm, 'recall', return_value=[item]) as recall:
+        with patch.object(gm, 'schedule_delivery'), patch.object(gm, 'eligible', return_value=local), patch.object(gm, 'submit_hook', return_value={'status': 'staged'}), patch.object(gm, 'settings_path', return_value=self.root/'settings.json'), patch.object(gm, 'recall', return_value=[item]) as recall:
             with patch.object(sys, 'stdin', stdin()): result = gm.hook(value)
             self.assertEqual(recall.call_args.args[3], payload['prompt'])
             self.assertIn('do not apply to this project', result['hookSpecificOutput']['additionalContext'])

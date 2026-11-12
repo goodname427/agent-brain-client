@@ -173,7 +173,7 @@ def main():
                     session_id=args.session_id if args.event_id is not None else None,
                 )
             elif args.action == "hook":
-                result = hook(p)
+                result = hook(p, settings_path=args.settings, settings_sha256=args.settings_sha256)
             elif args.action == "record":
                 if not args.input:
                     parser.error("record requires an explicit private --input file")
