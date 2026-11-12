@@ -70,7 +70,8 @@ def normal_retry(test, home, native):
         {"schema": 1, "endpoint": "https://synthetic.invalid"},
     )
 
-    def original_install_recovery(*args):
+    def original_install_recovery(*args, **kwargs):
+        test.assertEqual(kwargs["harness"], "codex")
         receipt = adapters_storage_private_files.private_json(state / "content-install-receipt.json")
         test.assertEqual(receipt["phase"], "complete")
         value = ci.inspect(home)

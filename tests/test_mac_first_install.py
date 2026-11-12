@@ -600,7 +600,7 @@ class NewDeviceConnectionCLI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
             env = dict(os.environ, HOME=str(home), CODEX_HOME=str(home / 'codex'))
-            result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'src/agent_brain_client/interfaces/cli/install.py')],
+            result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'src/agent_brain_client/interfaces/cli/install.py'), '--harness', 'codex'],
                                     env=env, capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 2, result.stderr)
             value = json.loads(result.stdout)

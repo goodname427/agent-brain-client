@@ -94,11 +94,11 @@ def submit_hook(value, local, payload, *, services):
 def hook(value, *, services, observe=None):
     from time import monotonic
     started = monotonic()
-    from agent_brain_client.adapters.storage.project_settings import source_active
-    if not source_active(value["device_home"], os.getcwd(), "codex"):
-        return {}
     local = services.eligible(value, os.getcwd())
-    if local is None:
+    if local is None or services.legacy(value, local) is not None:
+        return {}
+    from agent_brain_client.adapters.storage.project_settings import source_active
+    if not source_active(value["device_home"], local["cwd"], "codex"):
         return {}
     raw = sys.stdin.buffer.read(1048577)
     if len(raw) > 1048576:
@@ -107,8 +107,6 @@ def hook(value, *, services, observe=None):
     if payload.get("cwd") != local["cwd"]:
         return {}
     kind = payload.get("hook_event_name")
-    if services.legacy(value, local) is not None:
-        return {}
     from agent_brain_client.application.memory.lifecycle import handle
 
     initialized = monotonic()
