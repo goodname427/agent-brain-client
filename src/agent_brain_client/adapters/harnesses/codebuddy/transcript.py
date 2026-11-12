@@ -20,6 +20,11 @@ from agent_brain_client.adapters.platforms.source_files import open_native_sourc
 LIMIT = 4 * 1048576
 
 
+class PendingTranscript(ValueError):
+    """The exact observed IDE generation has not reached its terminal state."""
+
+
+
 def ide_history_path(home, path):
     """Recognize modern IDE storage, not arbitrary files below its data root."""
     roots = (
@@ -234,7 +239,8 @@ def assistant(home, payload, core):
             if text.strip():
                 texts.append(text)
     else:
-        index = json.loads(read_bound(path), object_pairs_hook=unique)
+        snapshot = read_bound(path)
+        index = json.loads(snapshot, object_pairs_hook=unique)
         requests = [
             r
             for r in index.get("requests", [])
@@ -243,7 +249,9 @@ def assistant(home, payload, core):
         if len(requests) != 1:
             raise ValueError("IDE current generation unavailable")
         if requests[0].get("state") == "running":
-            raise ValueError("IDE current generation still being persisted")
+            raise PendingTranscript("IDE current generation still being persisted")
+        if requests[0].get("state") != "complete":
+            raise ValueError("IDE current generation is not complete")
         ids = requests[0].get("messages")
         if (
             not isinstance(ids, list)
@@ -262,16 +270,23 @@ def assistant(home, payload, core):
             and m.get("id") in ids
             and m.get("role") == "assistant"
         }
+        observed = []
         for mid in ids:
             if mid not in metadata:
                 continue
-            if metadata[mid].get("isComplete") is False:
-                raise ValueError("IDE assistant message still being persisted")
+            # Native addMessages rewrites existing bodies without updating
+            # isComplete. finalizeRequest owns the terminal request state.
             native = path.parent / "messages" / (mid + ".json")
-            item = json.loads(read_bound(native), object_pairs_hook=unique)
+            raw = read_bound(native)
+            item = json.loads(raw, object_pairs_hook=unique)
+            observed.append((native, digest(raw)))
             if item.get("id") != mid or item.get("role") != "assistant":
                 raise ValueError("IDE current message identity changed")
             text = plain(item.get("message"))
             if text.strip():
                 texts.append(text)
+        if read_bound(path) != snapshot or any(
+            digest(read_bound(native)) != checksum for native, checksum in observed
+        ):
+            raise ValueError("IDE completed generation changed during read")
     return [{"role": "assistant", "content": text} for text in texts], row, file
