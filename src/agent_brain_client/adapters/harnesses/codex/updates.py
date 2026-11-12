@@ -36,10 +36,11 @@ class CodexUpdateInstallation:
     check_command = CHECK_UPDATE_COMMAND
     update_command = UPDATE_COMMAND
 
-    def __init__(self, home, *, channel_factory=None, setup_sources):
+    def __init__(self, home, *, channel_factory=None, setup_sources, refresh_bindings=None):
         self.home = Path(home)
         self.channel_factory = channel_factory
         self._setup_sources = setup_sources
+        self._refresh_bindings = refresh_bindings
 
     @contextmanager
     def config_operation(self):
@@ -137,11 +138,12 @@ class CodexUpdateInstallation:
         with self.config_operation():
             # Maintenance can run from an older installer checkout. Only reuse
             # its renderer when every executable byte matches the active bundle.
-            if all(
+            same_code = all(
                 private_files.raw(package / name, 1048576)
                 == (hooks.ROOT / name).read_bytes()
                 for name in hooks.FILES
-            ):
+            )
+            if same_code:
                 result = (
                     hooks.refresh(self.home, check_only=True)
                     if check_only
@@ -203,11 +205,22 @@ print(json.dumps(value))
                 or self.channel.verified_active() != active
             ):
                 raise ValueError("Active package Hook refresh unconfirmed")
-            return dict(
+            result = dict(
                 result,
                 source_package_version=active["version"],
                 source_package_commit=active["commit"],
             )
+            if self._refresh_bindings is None:
+                return result
+            binding = self._refresh_bindings(package, check_only=check_only, same_code=same_code)
+            if self.channel.verified_active() != active:
+                raise ValueError("Active package Harness refresh unconfirmed")
+            result["codebuddy"] = binding
+            result["update_available"] = result.get("update_available", False) or binding["update_available"]
+            result["native_changed"] = result.get("native_changed", False) or binding["native_changed"]
+            if binding["native_changed"]:
+                result["status"] = "global-hook-updated"
+            return result
 
     def collection_installed(self):
         return settings_path(self.home).exists()

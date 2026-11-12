@@ -163,6 +163,47 @@ class GlobalMemoryUpdate(unittest.TestCase):
         self.assertEqual(error.exception.field, "config.hooks.SessionStart[0].hooks[0].timeout")
         self.assertEqual(self.config.read_bytes(), before)
 
+    def test_codebuddy_refresh_uses_active_package_renderer_and_pins(self):
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration
+        from agent_brain_client.runtime.updates import refresh_bindings
+
+        configuration.install(self.home, hooks.ROOT, None, surface="both")
+        target = self.old_installer()
+        renderer = target / "src/agent_brain_client/adapters/harnesses/codebuddy/configuration.py"
+        renderer.write_text(renderer.read_text().replace('"timeout": 90', '"timeout": 91'))
+        active = {"version": "0.8.5", "commit": "e" * 40, "package": str(target)}
+        installation = CodexUpdateInstallation(
+            self.home, setup_sources=lambda: None,
+            refresh_bindings=lambda package, **kw: refresh_bindings(self.home, package, **kw),
+        )
+        installation.channel = SimpleNamespace(verified_active=lambda: active)
+        before = {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()}
+        with patch.object(configuration, "refresh", side_effect=AssertionError("No old renderer")):
+            checked = installation.refresh_hooks(check_only=True)
+            self.assertTrue(checked["codebuddy"]["update_available"])
+            self.assertEqual(before, {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()})
+            result = installation.refresh_hooks()
+        self.assertTrue(result["codebuddy"]["native_changed"])
+        receipt = metadata.private_json(configuration.state_directory(self.home) / "registration.json")
+        self.assertEqual(receipt["hooks"]["Stop"]["hooks"][0]["timeout"], 91)
+        frozen = Path(receipt["mcp"]["args"][4]).parents[4]
+        frozen_pins = metadata.private_json(frozen / "code.json")["files"]
+        self.assertEqual(frozen_pins, metadata.private_json(self.file)["code_sha256"])
+        self.assertEqual((frozen / renderer.relative_to(target)).read_bytes(), renderer.read_bytes())
+        self.assertEqual(result["source_package_commit"], active["commit"])
+
+    def test_old_active_package_without_binding_refresh_does_not_block_discovery(self):
+        from agent_brain_client.runtime.updates import refresh_bindings
+
+        target = self.old_installer()
+        renderer = target / "src/agent_brain_client/adapters/harnesses/codebuddy/configuration.py"
+        renderer.write_text(renderer.read_text().replace("def refresh(", "def future_refresh("))
+        before = {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()}
+        result = refresh_bindings(self.home, target, check_only=True)
+        self.assertEqual(result["status"], "codebuddy-refresh-requires-new-package")
+        self.assertFalse(result["native_changed"])
+        self.assertEqual(before, {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()})
+
     def test_update_refresh_identical_package_avoids_subprocess(self):
         installation = self.update_installation()
         hooks.refresh(self.home)

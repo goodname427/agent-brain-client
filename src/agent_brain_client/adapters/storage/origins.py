@@ -1,7 +1,41 @@
-"""Discover only current directory and Git marker metadata, never history."""
+"""Discover local project marker metadata, never history or project contents."""
 
 import os
 from pathlib import Path
+
+
+def _plain_file(marker):
+    return not marker.is_symlink() and marker.is_file()
+
+
+def _non_git_project(root):
+    # A global P4 config or a launch from HOME must not admit every personal
+    # directory. Markers describe a project, not permission to capture it.
+    if root == Path.home().resolve() or root.parent == root:
+        return False
+    p4config = os.environ.get("P4CONFIG", ".p4config")
+    # P4CONFIG may be an absolute/global config. Only a local filename is a
+    # workspace marker; never traverse or read its potentially secret contents.
+    if (
+        p4config not in ("", ".", "..")
+        and not any(c in p4config for c in ("/", "\\", ":", "\x00"))
+        and _plain_file(root / p4config)
+    ):
+        return True
+    # Unreal projects and source-engine workspaces do not require Git (P4 is
+    # common). Only inspect marker names/types, with no recursive file scan.
+    if any(_plain_file(marker) for marker in root.glob("*.uproject")):
+        return True
+    engine = root / "Engine"
+    build = engine / "Build"
+    source = engine / "Source"
+    return (
+        not engine.is_symlink()
+        and not build.is_symlink()
+        and not source.is_symlink()
+        and source.is_dir()
+        and _plain_file(build / "Build.version")
+    )
 
 
 def discover(cwd=None):
@@ -41,6 +75,17 @@ def discover(cwd=None):
                 "cwd": str(current),
                 "project_root": str(root),
                 "repository_root": str(repository),
+            }
+    # Preserve existing Git/worktree identity even when it also contains a
+    # language/engine project marker. Non-Git projects use their local root as
+    # repository identity; this does not claim any remote/depot identity.
+    for root in (current, *current.parents):
+        if _non_git_project(root):
+            return {
+                "kind": "project",
+                "cwd": str(current),
+                "project_root": str(root),
+                "repository_root": str(root),
             }
     return {
         "kind": "non-project",

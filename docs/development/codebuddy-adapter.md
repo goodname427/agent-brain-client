@@ -21,7 +21,9 @@
 | `runtime/host_binding.py` | 校验既有共享运行库与原登记，绑定共用传输和来源服务 |
 | `bootstrap/{macos,windows}/codebuddy.*` | 解释器和官方安装入口的顺序协调 |
 
-冻结包包含当前完整 Python 运行库，逐项记录并验证摘要，可脱离源码 checkout 启动。共享运行库和正在执行的 Harness 包必须匹配；代码改变后重新运行官方 CodeBuddy 安装入口刷新绑定，不加载不匹配版本，也不改设备身份、队列或来源范围。
+冻结包包含当前完整 Python 运行库，逐项记录并验证摘要，可脱离源码 checkout 启动。共享运行库和正在执行的 Harness 包必须匹配；普通更新在共享代码刷新后同步刷新已经登记的 CodeBuddy 绑定；也可重新运行官方 CodeBuddy 安装入口刷新绑定，不加载不匹配版本，也不改设备身份、队列或来源范围。
+
+Windows 网关使用继承原始 stdio 的子进程并透传退出码，POSIX 仍使用 `execve`；不缓存或改写 MCP 帧。本轮不包含其他性能优化。
 
 协议、CAS/outbox、回执、传输、来源门禁与召回算法只有一份源码。Codex 使用共用 `submit_turn` 配对 prompt/final；CodeBuddy 在同一事件和队列合同上提交有界正文批次，以保留真实长文本。物理行数不作为适配边界的质量证明。
 

@@ -199,6 +199,118 @@ class Installation(unittest.TestCase):
             self.install()
         self.assertEqual(self.settings.read_text(), text)
 
+    def test_ide_rule_migrates_legacy_receipt_and_preserves_user_rules(self):
+        self.install(surface='ide')
+        rule = self.native / 'rules/agent-brain-client.md'
+        self.assertIn(cbhost.GUIDANCE, rule.read_text())
+        self.assertFalse((self.native / 'CODEBUDDY.md').exists())
+        user_rule = self.native / 'rules/agent-brain.md'
+        user_rule.write_text('---\nenabled: false\n---\nKeep my personal rule unchanged.\n')
+        legacy = self.native / 'CODEBUDDY.md'
+        legacy.write_text('Personal instruction\n\n' + cbhost.GUIDANCE + '\n')
+        rule.unlink()
+        receipt_file = cbhost.state_directory(self.home) / 'registration.json'
+        receipt = metadata.private_json(receipt_file)
+        receipt.pop('instruction_paths')
+        metadata.write(receipt_file, receipt)
+        self.assertTrue(cbhost.refresh(self.home, ROOT, check_only=True)['update_available'])
+        self.assertFalse(rule.exists())
+        self.assertTrue(cbhost.refresh(self.home, ROOT)['native_changed'])
+        self.assertIn(cbhost.GUIDANCE, rule.read_text())
+        self.assertTrue(rule.read_text().startswith(cbhost.IDE_HEADER))
+        self.assertNotIn(cbhost.BEGIN, legacy.read_text())
+        self.assertIn('Personal instruction', legacy.read_text())
+        self.assertEqual(user_rule.read_text(), '---\nenabled: false\n---\nKeep my personal rule unchanged.\n')
+        self.install(surface='ide', remove=True)
+        self.assertNotIn(cbhost.BEGIN, rule.read_text())
+        self.assertEqual(user_rule.read_text(), '---\nenabled: false\n---\nKeep my personal rule unchanged.\n')
+
+    def test_ide_rule_is_automatic_on_creation_and_keeps_user_disabled_header(self):
+        self.install(surface='both')
+        rule = self.native / 'rules/agent-brain-client.md'
+        self.assertTrue(rule.read_text().startswith('---\nalwaysApply: true\nenabled: true\n---\n'))
+        self.assertFalse((self.native / 'CODEBUDDY.md').read_text().startswith('---'))
+        disabled = rule.read_text().replace('enabled: true', 'enabled: false').replace(
+            'alwaysApply: true', 'alwaysApply: false\ndescription: User controlled')
+        rule.write_text(disabled)
+        cbhost.refresh(self.home, ROOT)
+        self.assertEqual(rule.read_text(), disabled)
+        self.install(remove=True)
+        self.assertIn('enabled: false', rule.read_text())
+        self.assertIn('alwaysApply: false', rule.read_text())
+        self.assertNotIn(cbhost.BEGIN, rule.read_text())
+
+    def test_upgrade_refreshes_existing_surface_without_installing_absent_hosts(self):
+        from agent_brain_client.adapters.harnesses.codex import updates
+        from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+        adapter = updates.CodexUpdateInstallation(self.home, setup_sources=lambda: {},
+            refresh_bindings=lambda package, **kw: cbhost.refresh(
+                self.home, package, check_only=kw["check_only"]))
+        active = {"package": str(ROOT), "version": "0.8.5", "commit": "c" * 40}
+        adapter.channel = SimpleNamespace(verified_active=lambda: active)
+        def shared_refresh(**kwargs):
+            return {'status': 'global-hook-current', 'native_changed': False,
+                    'update_available': False}
+        with patch.object(updates.hooks, 'refresh', side_effect=lambda *a, **kw: shared_refresh(**kw)):
+            adapter.refresh_hooks()
+            self.assertFalse((cbhost.state_directory(self.home) / 'registration.json').exists())
+            self.install(surface='cli')
+            old = (self.native / '.mcp.json').read_bytes()
+            source = self.home / 'synthetic-source'
+            for name in PYTHON_FILES:
+                target = source / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((ROOT / name).read_bytes())
+            changed = source / 'src/agent_brain_client/runtime/collection.py'
+            changed.write_bytes(changed.read_bytes() + b'\n# synthetic upgrade\n')
+            active["package"] = str(source)
+            with patch.object(updates.hooks, 'ROOT', source):
+                checked = adapter.refresh_hooks(check_only=True)
+                self.assertTrue(checked['update_available'])
+                self.assertEqual((self.native / '.mcp.json').read_bytes(), old)
+                updated = adapter.refresh_hooks()
+                self.assertTrue(updated['native_changed'])
+                self.assertNotEqual((self.native / '.mcp.json').read_bytes(), old)
+                self.assertFalse((self.native / 'mcp.json').exists())
+                self.assertFalse((self.native / 'rules/agent-brain-client.md').exists())
+                receipt = metadata.private_json(cbhost.state_directory(self.home) / 'registration.json')
+                frozen = Path(receipt['mcp']['args'][4]).parents[4]
+                self.assertEqual((frozen / 'src/agent_brain_client/runtime/collection.py').read_bytes(), changed.read_bytes())
+                self.assertFalse(adapter.refresh_hooks()['native_changed'])
+            self.install(surface='cli', remove=True)
+            self.assertFalse(adapter.refresh_hooks()['native_changed'])
+            self.assertNotIn(cbhost.NAME, (self.native / '.mcp.json').read_text())
+
+    def test_fresh_installation_removes_only_registered_instruction_blocks(self):
+        self.install(surface='both')
+        rule = self.native / 'rules/agent-brain-client.md'
+        legacy = self.native / 'CODEBUDDY.md'
+        user_rule = self.native / 'rules/personal.md'
+        user_rule.write_text('Personal instruction remains.\n')
+        payload = cbhost.fresh_installation_payload(self.home)
+        self.assertNotIn(cbhost.BEGIN.encode(), payload[rule])
+        self.assertEqual(payload[rule], b"")
+        self.assertNotIn(cbhost.BEGIN.encode(), payload[legacy])
+        self.assertNotIn(user_rule, payload)
+        self.assertIn(cbhost.BEGIN, rule.read_text())
+
+    def test_rule_collision_and_disabled_binding_are_not_overwritten(self):
+        rules = self.native / 'rules'
+        rules.mkdir()
+        rule = rules / 'agent-brain-client.md'
+        rule.write_text(cbhost.GUIDANCE + '\n')
+        with self.assertRaises(ValueError):
+            self.install(surface='ide')
+        self.assertEqual(self.settings.read_bytes(), self.original)
+        rule.unlink()
+        self.install(surface='ide')
+        config = self.native / 'mcp.json'
+        disabled = cbhost.Document(config.read_text()).patch(('mcpServers', cbhost.NAME, 'disabled'), True)
+        config.write_text(disabled)
+        with self.assertRaises(ValueError):
+            cbhost.refresh(self.home, ROOT)
+        self.assertEqual(config.read_text(), disabled)
+
     def test_legacy_receipt_owner_repair_requires_the_original_private_journal(self):
         self.install()
         directory = cbhost.state_directory(self.home)
@@ -422,7 +534,7 @@ class Protocol(unittest.TestCase):
     def test_gateway_preserves_backend_argv_and_environment(self):
         command = {'command': '/synthetic/python', 'args': ['-I', '/synthetic/startup.py'], 'env': {'SYNTHETIC_CLIENT': '1'}}
         execute = Mock()
-        with patch.object(host_binding, 'backend', return_value=(command, {})):
+        with patch.object(host_binding, 'backend', return_value=(command, {})), patch.object(host_binding.sys, 'platform', 'darwin'):
             host_binding.execute_mcp('/synthetic/home', object(), execute)
         self.assertEqual(execute.call_args.args[:2], ('/synthetic/python', ['/synthetic/python', '-I', '/synthetic/startup.py']))
         self.assertEqual(execute.call_args.args[2]['SYNTHETIC_CLIENT'], '1')
