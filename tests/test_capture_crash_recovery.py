@@ -112,6 +112,10 @@ class CaptureRecovery(unittest.TestCase):
         self.assertEqual(self.queue.queue_status()['confirmed'], 2049)
         self.assertEqual(self.queue.queue_status()['pending'], 2)
         self.assertEqual(len(self.queue._queued()), 2051)
+        from agent_brain_client.adapters.harnesses.codex.lifecycle import queue_counts
+        counts = queue_counts(self.queue)
+        self.assertEqual(counts['confirmed'], 2049)
+        self.assertEqual(counts['pending'], 2)
 
     def test_project_long_private_or_restricted_prompt_excludes_following_assistant(self):
         policy = {'schema': 2, 'scopes': [{'cwd': str(self.home),
