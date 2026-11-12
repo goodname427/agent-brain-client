@@ -58,8 +58,11 @@ def entry(raw):
 
 
 def matches(actual, expected):
-    return actual == expected or (isinstance(actual, dict) and expected.get("enabled") is True
-                                 and actual == dict(expected, enabled=False))
+    # Native Settings owns the service switch. Authenticate the command and
+    # every other field, while preserving either explicit boolean transition.
+    return (isinstance(actual, dict) and type(actual.get("enabled")) is bool
+            and type(expected.get("enabled")) is bool
+            and dict(actual, enabled=True) == dict(expected, enabled=True))
 
 
 def read(file):
