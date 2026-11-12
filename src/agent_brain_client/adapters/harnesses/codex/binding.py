@@ -156,7 +156,7 @@ def install(home, *, native=None, remove=False, enabled=None, check_only=False):
             host_restore(record["host"], lambda: io.write(journal, record))
             io.write(journal, dict(record, phase="rolled-back"))
             raise
-        return dict(result, native_changed=True, update_available=False)
+        return dict(result, native_changed=before != after, update_available=False)
 
 
 def detach_payload(home):
