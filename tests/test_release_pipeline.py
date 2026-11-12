@@ -604,6 +604,63 @@ class PlatformRelease(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     rc.prepare_platforms(output, plan['source'], 'auto', 'all')
 
+    def test_changelog_is_frozen_with_technical_identity_and_rejects_tampering(self):
+        plan, assets = platform_fixture()
+        changelog = "### 修复\n- 保留中文、`code` 和 $(literal)\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            with patch.object(rc, 'commit', return_value='3' * 40), \
+                    patch.object(rc, 'git', return_value=json.dumps({'version': '1.2.3'})), \
+                    patch.object(rc, 'build_platforms', return_value=(plan, assets)), \
+                    patch.object(rc, 'validate'), patch.object(rc, 'source_payload'):
+                rc.prepare_platforms(output, plan['source'], 'auto', 'all', release_notes=changelog)
+                body = (output / 'release-notes.md').read_text()
+                self.assertIn(changelog, body)
+                self.assertIn('manifest SHA256:', body)
+                self.assertIn(plan['source'], body)
+                frozen = rc.load_bundle(output)
+                self.assertEqual(frozen['release_notes_sha256'], rc.sha(body.encode()))
+                rc.prepare_platforms(output, plan['source'], 'auto', 'all', release_notes=changelog)
+                with self.assertRaises(ValueError):
+                    rc.prepare_platforms(output, plan['source'], 'auto', 'all', release_notes='different')
+                (output / 'release-notes.md').write_text('tampered')
+                with self.assertRaisesRegex(ValueError, 'differs from rebuilt'):
+                    rc.load_bundle(output)
+
+    def test_published_changelog_is_read_back_and_conflicts_are_rejected(self):
+        plan, assets = platform_fixture()
+        remote = PlatformRemote(plan, assets)
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            self.setup_output(output, assets)
+            plan['release_notes_sha256'] = rc.sha((output / 'release-notes.md').read_bytes())
+            self.publish_case(remote, output)
+            self.assertTrue(all(row['body'] == 'Synthetic release notes\n' for row in remote.releases.values()))
+            next(iter(remote.releases.values()))['body'] = 'changed'
+            remote.events.clear()
+            with self.assertRaisesRegex(ValueError, 'release notes differ'):
+                self.publish_case(remote, output)
+            self.assertEqual(remote.events, [])
+
+    def test_prepare_cli_requires_changelog_and_passes_markdown_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'notes.md'
+            path.write_text('中文 `literal` $(not-a-command)\n')
+            args = ['client.py', 'prepare', '--output', tmp, '--source', '1' * 40]
+            with patch.object(rc.sys, 'argv', args), patch('sys.stderr', new=io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    rc.main()
+            with patch.object(rc.sys, 'argv', args + ['--release-notes-file', str(path)]), \
+                    patch.object(rc, 'prepare_platforms') as prepare:
+                self.assertEqual(rc.main(), 0)
+                self.assertEqual(prepare.call_args.kwargs['release_notes'], path.read_text())
+
+    def test_empty_changelog_rejected_before_build(self):
+        with patch.object(rc, 'build_platforms') as build:
+            with self.assertRaisesRegex(ValueError, 'Non-empty'):
+                rc.prepare_platforms(Path('/unused'), '1' * 40, 'auto', 'all', release_notes=' \n')
+            build.assert_not_called()
+
     def test_mac_catchup_retains_windows_and_does_not_upload_existing_installer(self):
         plan, assets = platform_fixture(('macos',))
         plan['tags']['installer'] = 'installer-1.2.4-windows-setup'
