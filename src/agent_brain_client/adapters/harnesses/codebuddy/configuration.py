@@ -17,6 +17,7 @@ from agent_brain_client.adapters.storage.bounded_json import (
 NAME = "agent_brain_server"
 BEGIN = "<!-- agent-brain-codebuddy:begin -->"
 END = "<!-- agent-brain-codebuddy:end -->"
+IDE_HEADER = "---\nalwaysApply: true\nenabled: true\n---\n"
 GUIDANCE = (
     BEGIN + "\n# Agent Brain shared memory\n"
     "Use agent_brain_server for shared memory queries and writes. Read the matching "
@@ -217,7 +218,7 @@ def render_json(text, wanted, previous, *, hooks=False, remove=False):
     return result.encode("utf-8")
 
 
-def guidance(text, *, previous=False, remove=False):
+def guidance(text, *, previous=False, remove=False, rule=False):
     if text.count(BEGIN) != text.count(END) or text.count(BEGIN) > 1:
         raise ValueError("CodeBuddy instruction block changed")
     if BEGIN in text:
@@ -227,11 +228,63 @@ def guidance(text, *, previous=False, remove=False):
         text = text.replace(block, "")
     elif previous:
         raise ValueError("Owned CodeBuddy instructions missing")
+    if rule and not previous and not remove:
+        text = IDE_HEADER + text
+    if rule and remove and text.startswith(IDE_HEADER):
+        text = text[len(IDE_HEADER):]
+        if not text.strip():
+            text = ""
     return (
         text
         if remove
         else text.rstrip() + ("\n\n" if text.strip() else "") + GUIDANCE + "\n"
     ).encode()
+
+
+
+def instruction_paths(home, surface, receipt=None):
+    native = canonical(Path(home) / ".codebuddy")
+    names = (
+        receipt.get("instruction_paths", ["CODEBUDDY.md"])
+        if receipt is not None
+        else (["CODEBUDDY.md"] if surface == "cli" else
+              ["rules/agent-brain-client.md"] if surface == "ide" else
+              ["CODEBUDDY.md", "rules/agent-brain-client.md"])
+    )
+    if not isinstance(names, list) or not names or set(names) - {
+        "CODEBUDDY.md", "rules/agent-brain-client.md"
+    } or len(names) != len(set(names)):
+        raise ValueError("CodeBuddy instruction scope changed")
+    return [canonical(native / name) for name in names]
+
+
+def refresh(home, source, *, check_only=False):
+    """Refresh only a registered surface; never install another host or resume it."""
+    directory = state_directory(home)
+    file = directory / "registration.json"
+    absent = {"status": "codebuddy-not-installed", "native_changed": False,
+              "update_available": False}
+    if not file.exists():
+        return absent
+    receipt = (
+        metadata_io.private_json(file) if check_only
+        else registration(file, directory / "transaction.json", None)
+    )
+    if receipt.get("removed"):
+        return absent
+    from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+
+    pins = {name: digest((source / name).read_bytes()) for name in PYTHON_FILES}
+    root = directory / "code" / digest(json.dumps(pins, sort_keys=True).encode())
+    wanted, _ = definitions(root / "src/agent_brain_client/interfaces/cli/codebuddy.py", home)
+    available = (receipt["mcp"] != wanted or
+                 instruction_paths(home, receipt["surface"], receipt) !=
+                 instruction_paths(home, receipt["surface"]))
+    if check_only:
+        return {"status": "codebuddy-update-available" if available else "codebuddy-current",
+                "native_changed": False, "update_available": available}
+    result = install(home, source, None, surface=receipt["surface"])
+    return dict(result, native_changed=available, update_available=False)
 
 
 def definitions(entry, home):
@@ -298,7 +351,7 @@ def recover(home, core):
     native = Path(home) / ".codebuddy"
     permitted = {
         str(native / name)
-        for name in (".mcp.json", "mcp.json", "settings.json", "CODEBUDDY.md")
+        for name in (".mcp.json", "mcp.json", "settings.json", "CODEBUDDY.md", "rules/agent-brain-client.md")
     } | {str(Path(home) / ".codebuddy.json"), str(directory / "registration.json")}
     if record.get("schema") != 1 or set(record.get("host", {})) - permitted:
         raise ValueError("CodeBuddy recovery scope changed")
@@ -390,19 +443,26 @@ def install(home, source, core, *, surface="both", remove=False):
         payload[settings] = render_json(
             read_host(settings), hooks, previous_hooks, hooks=True, remove=remove
         )
-        instructions = canonical(Path(home) / ".codebuddy/CODEBUDDY.md")
         from agent_brain_client.adapters.storage.host_files import host_image
 
-        image = host_image(instructions)
-        payload[instructions] = guidance(
-            image[0].decode() if image else "",
-            previous=receipt is not None,
-            remove=remove,
-        )
+        previous_paths = instruction_paths(home, surface, receipt) if receipt else []
+        wanted_paths = [] if remove else instruction_paths(home, surface)
+        for instructions in dict.fromkeys([*previous_paths, *wanted_paths]):
+            image = host_image(instructions)
+            if (instructions.name == "agent-brain-client.md" and image is not None and image[0].strip()
+                    and instructions not in previous_paths):
+                raise ValueError("Existing CodeBuddy user rule preserved")
+            payload[instructions] = guidance(
+                image[0].decode() if image else "",
+                previous=instructions in previous_paths,
+                remove=instructions not in wanted_paths,
+                rule=instructions.name == "agent-brain-client.md",
+            )
         saved = {
             "schema": 1,
             "surface": surface,
             "mcp_paths": list(map(str, paths)),
+            "instruction_paths": [p.relative_to(canonical(Path(home) / ".codebuddy")).as_posix() for p in wanted_paths],
             "mcp": mcp,
             "hooks": hooks,
             "removed": remove,
@@ -455,7 +515,8 @@ def status(home, core, *, backend_check):
         receipt["hooks"],
         hooks=True,
     )
-    guidance((Path(home) / ".codebuddy/CODEBUDDY.md").read_text(), previous=True)
+    for instructions in instruction_paths(home, receipt["surface"], receipt):
+        guidance(instructions.read_text(), previous=True)
     _, checked = backend_check(home, core)
     return {
         "status": "codebuddy-configured",
@@ -499,8 +560,9 @@ def fresh_installation_payload(home):
     payload[settings] = render_json(
         read_host(settings), None, receipt["hooks"], hooks=True, remove=True
     )
-    instructions = canonical(Path(home) / ".codebuddy/CODEBUDDY.md")
-    payload[instructions] = guidance(
-        read_host(instructions), previous=True, remove=True
-    )
+    for instructions in instruction_paths(home, receipt["surface"], receipt):
+        payload[instructions] = guidance(
+            read_host(instructions), previous=True, remove=True,
+            rule=instructions.name == "agent-brain-client.md",
+        )
     return payload

@@ -5,6 +5,8 @@ from agent_brain_client.adapters.storage import registration as registration_sto
 import json
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path, PurePosixPath
 from agent_brain_client.adapters.storage.bounded_json import (
     canonical,
@@ -80,11 +82,16 @@ def backend(home, core):
     return command, status
 
 
-def execute_mcp(home, core, execute=os.execve):
+def execute_mcp(home, core, execute=os.execve, runner=subprocess.run):
     command, _ = backend(home, core)
     argv = [command["command"], *command["args"]]
     environment = dict(os.environ)
     environment.update(command.get("env", {}))
     # Keep the verified backend's complete tool set and MCP framing. The
     # enrolled device adapter is transport metadata, not CodeBuddy's host name.
+    # Windows execve emulates replacement through the CRT and can terminate
+    # before the stdio handshake. Inherit all three streams without buffering.
+    if sys.platform == "win32":
+        return runner(argv, env=environment, check=False).returncode
     execute(argv[0], argv, environment)
+    return 0
