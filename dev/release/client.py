@@ -690,7 +690,12 @@ def prepare_platforms(
     *,
     validate_source=True,
     installation_mode="upgrade",
+    release_notes=None,
 ):
+    if release_notes is not None:
+        if not release_notes.strip():
+            raise ValueError("Non-empty release notes required")
+        require_publishable({"release-notes.md": release_notes.encode("utf-8")})
     existing = output / "plan.json"
     groups = list(GROUPS) if target == "all" else [target]
     if existing.exists():
@@ -733,9 +738,6 @@ def prepare_platforms(
     plan, artifacts = build_platforms(
         source, baselines, selected, groups, installer_tag, **options
     )
-    immutable(existing, encoded(plan))
-    for name, raw in artifacts.items():
-        immutable(output / "assets" / name, raw)
     notes = (
         f"Agent Brain Client {selected}\n\nSource: {source}\n"
         f"Release executor: {plan['executor_source']}\n\n"
@@ -754,6 +756,17 @@ def prepare_platforms(
         )
         + "Desktop and worker/model reload acceptance are separate.\n"
     )
+    if release_notes is not None:
+        notes = (
+            "## 更新日志\n\n"
+            + release_notes.rstrip()
+            + "\n\n## 发布校验信息\n\n"
+            + notes
+        )
+        plan = {**plan, "release_notes_sha256": sha(notes.encode("utf-8"))}
+    immutable(existing, encoded(plan))
+    for name, raw in artifacts.items():
+        immutable(output / "assets" / name, raw)
     immutable(output / "release-notes.md", notes.encode())
     report(output, "validating", source=source, version=selected, groups=groups)
     if validate_source:
@@ -770,7 +783,9 @@ def prepare_platforms(
     )
 
 
-def prepare_local(output, source, selected, target, *, installation_mode="upgrade"):
+def prepare_local(
+    output, source, selected, target, *, installation_mode="upgrade", release_notes=None
+):
     from dev.checks.client import run_checks
 
     if sys.platform != "darwin" or sys.version_info[:2] != (3, 12):
@@ -805,6 +820,7 @@ def prepare_local(output, source, selected, target, *, installation_mode="upgrad
         target,
         validate_source=False,
         installation_mode=installation_mode,
+        release_notes=release_notes,
     )
     immutable(
         output / "local-preparation.json",
@@ -1058,6 +1074,11 @@ def load_bundle(output):
         )
     else:
         plan, artifacts = build(saved["source"], saved["baseline"], saved["version"])
+    if "release_notes_sha256" in saved:
+        plan = {
+            **plan,
+            "release_notes_sha256": sha((output / "release-notes.md").read_bytes()),
+        }
     if saved != plan:
         raise ValueError("Prepared plan differs from rebuilt source")
     for name, raw in artifacts.items():
@@ -1120,6 +1141,14 @@ def download_assets(plan, row, kind):
             raise ValueError("Public download differs: " + name)
 
 
+def check_release_notes(plan, row, kind):
+    digest = plan.get("release_notes_sha256")
+    # A partial platform delivery may reuse an already published installer.
+    if digest and not (kind == "installer" and len(plan.get("groups", [])) == 1):
+        if sha(row.get("body", "").encode("utf-8")) != digest:
+            raise ValueError("Published release notes differ from prepared bundle")
+
+
 def verify(output, api, plan):
     for kind, target in targets(plan).items():
         if remote_ref("refs/tags/" + plan["tags"][kind]) != target:
@@ -1127,6 +1156,7 @@ def verify(output, api, plan):
         row = api.find_release(plan["tags"][kind])
         if row is None:
             raise ValueError("Published release not found")
+        check_release_notes(plan, row, kind)
         download_assets(plan, row, kind)
     for ref, row in channel_targets(plan).items():
         if remote_ref(ref) != row["runtime"]:
@@ -1180,6 +1210,7 @@ def publish(output, api, plan, *, local_checks=(), hybrid_checks=False):
     for kind in targets(plan):
         row = api.find_release(plan["tags"][kind])
         if row:
+            check_release_notes(plan, row, kind)
             check_assets(row, assets_for(plan, kind), complete=not row["draft"])
         releases[kind] = row
     report(output, "publishing-tags", version=plan["version"])
@@ -1227,6 +1258,7 @@ def publish(output, api, plan, *, local_checks=(), hybrid_checks=False):
                 "PATCH",
                 {"draft": False, "make_latest": "false"},
             )
+        check_release_notes(plan, row, kind)
         download_assets(plan, row, kind)
         releases[kind] = row
     report(output, "promoting-channel", version=plan["version"])
@@ -1295,6 +1327,11 @@ def main():
         default="upgrade",
         help="prepare only: reinstall explicitly audits a new layout for all four platforms; existing pins remain untouched",
     )
+    parser.add_argument(
+        "--release-notes-file",
+        type=Path,
+        help="Required for prepare: UTF-8 public Markdown changelog, frozen with the bundle",
+    )
     parser.add_argument("--allow-publish", action="store_true")
     parser.add_argument(
         "--local-check",
@@ -1314,6 +1351,15 @@ def main():
         "prepare-local",
     ):
         parser.error("installation mode is frozen in the prepared bundle")
+    if args.action in ("prepare", "prepare-local"):
+        if args.release_notes_file is None:
+            parser.error("prepare requires --release-notes-file")
+        release_notes = args.release_notes_file.read_text(encoding="utf-8")
+        if not release_notes.strip():
+            parser.error("release notes must not be empty")
+        require_publishable({"release-notes.md": release_notes.encode("utf-8")})
+    elif args.release_notes_file is not None:
+        parser.error("release notes are frozen in the prepared bundle")
     if args.source_root:
         ROOT = args.source_root.resolve()
     if sys.version_info < (3, 11):
@@ -1353,6 +1399,7 @@ def main():
                     args.version,
                     args.targets,
                     installation_mode=args.installation_mode,
+                    release_notes=release_notes,
                 )
             else:
                 plan = load_bundle(output)

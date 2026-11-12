@@ -21,12 +21,18 @@ Windows 保留 `refs/heads/releases/personal-https-windows-stable`。Mac 保留�
 本地等价入口（两个路径均为干净的独立官方 checkout，Python 3.11+；同一提交时可使用同一路径）：
 
 ```sh
-python3 -B "$RELEASE_TOOLS/dev/release/client.py" prepare --source-root "$SOURCE_CHECKOUT" --source "$SOURCE_SHA" --targets all --output "$RELEASE_OUTPUT"
+python3 -B "$RELEASE_TOOLS/dev/release/client.py" prepare --release-notes-file "$RELEASE_NOTES_FILE" --source-root "$SOURCE_CHECKOUT" --source "$SOURCE_SHA" --targets all --output "$RELEASE_OUTPUT"
 python3 -B "$RELEASE_TOOLS/dev/release/client.py" publish --source-root "$SOURCE_CHECKOUT" --output "$RELEASE_OUTPUT" --allow-publish
 python3 -B "$RELEASE_TOOLS/dev/release/client.py" verify --source-root "$SOURCE_CHECKOUT" --output "$RELEASE_OUTPUT"
 ```
 
 prepare 不访问网络、凭据或设备，不推送、不安装；先正常 fetch 渠道快照。它冻结源码树、执行工具、各渠道前像、版本、平台、安装器 tag 和确定性资产，运行完整隔离测试、源码／公开扫描及 diff 检查。审阅输出的 plan.json、release-notes.md 和检查日志后再发布。本地 publish 仅消费已有授权会话的 GH_TOKEN 和原 Git 推送身份；没有授权时停止，不另建凭据。
+
+## 每版更新日志
+
+启动 `Client release` 时必须填写 `release_notes`；本地 `prepare` / `prepare-local` 使用 `--release-notes-file` 指向 UTF-8 Markdown 文件。内容只包含可公开的新增、修复、影响与升级／重载提示，不填写凭据、个人资料或私有日志。空白输入在构建前拒绝，正文沿用公开内容扫描。
+
+prepare 将这份日志放在 Release 正文顶部，保留后面的源码、运行包、manifest 摘要和验收边界，并在 plan 中固定完整正文摘要。同一 bundle 的重试不得换日志；publish 不再接收另一份文本，自动将准备好的正文用于本轮新建的安装器和平台 Release。补齐平台时已有安装器 Release 不改写。检查 `release-notes.md` 后再发布；流程不会自动改写历史版本，也不会仅因日志功能自动增加产品版本。
 
 ## Actions 额度耗尽时
 
@@ -36,7 +42,8 @@ prepare 不访问网络、凭据或设备，不推送、不安装；先正常 fe
 
 ```sh
 python3.12 -B dev/release/client.py prepare-local \
-  --source "$SOURCE_SHA" --targets all --output "$RELEASE_OUTPUT"
+  --source "$SOURCE_SHA" --targets all --output "$RELEASE_OUTPUT" \
+  --release-notes-file "$RELEASE_NOTES_FILE"
 ```
 
 `prepare-local` 要求产品与执行工具为同一 checkout；重新读取官方 main 并验证源码已合入，刷新三个既有渠道前像，执行 documentation、source、macos 全部对应检查，然后使用原构建器生成确定性双平台／四架构运行包及共用安装器。检查前后核对精确提交、干净状态和 Git blob 字节；任何检查失败不写成功回执，也不开始构建。不提供跳过检查开关。原 `prepare` 继续提供不联网打包路径，默认 publish 仍核验 Actions；不能因 bundle 可构建就声称可发布。
