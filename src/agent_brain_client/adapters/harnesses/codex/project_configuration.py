@@ -235,8 +235,8 @@ def definitions(p, path, sha):
             sha,
         ]
     )
-    events = ["SessionStart"] + (
-        ["UserPromptSubmit", "Stop"]
+    events = ["SessionStart", "UserPromptSubmit"] + (
+        ["Stop"]
         if p["source_mode"] in ("codex-hooks", "codex-project")
         else []
     )
