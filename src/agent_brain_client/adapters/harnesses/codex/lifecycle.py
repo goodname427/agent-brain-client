@@ -120,8 +120,8 @@ def queue_counts(adapter):
         cache_mode(
             directory, directory=True, owner=True, blocked=install.InstallBlocked
         )
-    if len(rows) > 2048:
-        raise install.InstallBlocked("Queue inventory requires recovery")
+    # Confirmed history is retained for deduplication and must remain
+    # inspectable by status/removal after the active queue has drained.
     binding = None
     for path in rows:
         if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}\.json", path.name):

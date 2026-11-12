@@ -242,7 +242,7 @@ class DurableOutbox:
             self._queued()
             return old
         rows = self._queued()
-        if len(rows) >= 1024:
+        if sum(row["state"] not in ("confirmed", "reconciled") for row in rows) >= 1024:
             raise CacheBlocked()
         target = (request["params"]["kind"], request["params"]["id"])
         for rid in reconciles["request_ids"]:
