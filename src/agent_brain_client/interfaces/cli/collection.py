@@ -118,7 +118,7 @@ def main(argv=None):
                     with operation_diagnostics() as progress:
                         try:
                             with control.activate():
-                                result = core.hook(value, observe=observation.update)
+                                result = core.hook(value, harness=a.harness or "codex", observe=observation.update)
                         finally:
                             diagnostic.update(progress)
                 finally:

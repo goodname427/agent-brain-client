@@ -15,7 +15,7 @@ from agent_brain_client.domain.scopes import validate
 ROOT = Path(__file__).resolve().parents[4]
 
 
-def prepare(args):
+def prepare(args, *, locate):
     from agent_brain_client.adapters.storage.collection import settings_path
 
     home = metadata_io.canonical(args.device_home, existing=True)
@@ -70,7 +70,7 @@ def prepare(args):
         for candidate in base.glob("*/settings.json"):
             try:
                 pin = metadata_io.digest(candidate.read_bytes())
-                source = project_sources.load(candidate, pin)
+                source = project_sources.load(candidate, pin, locate=locate)
                 if source["source_mode"] != "codex-project" or source["harness"] != "codex":
                     continue
                 recall = metadata_io.private_json(
