@@ -21,6 +21,7 @@ from agent_brain_client.interfaces.mcp.content import ContentServer, ProtocolErr
 from agent_brain_client.adapters.harnesses.codex.hooks import run_event_hook, validate_hook_policy
 from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
 from agent_brain_client.domain.errors import CacheBlocked
+from agent_brain_client.adapters.platforms.filesystem import private_directory
 from agent_brain_client.adapters.server.http import RemoteClient
 import agent_brain_client.runtime.launcher as client_startup
 from agent_brain_client.adapters.packages.client import HTTPS_CONTENT_CAPABILITIES
@@ -42,7 +43,7 @@ class EventHook(unittest.TestCase):
         self.adapter=self.fixture.adapter;self.sent=[]
         self.project=self.fixture.base/'project';self.project.mkdir()
         self.policy={'schema':1,'enabled':True,'profile_sha256':'a'*64,'content_policy_sha256':'b'*64,
-                     'off_file':str(self.adapter.cache/'capture.off'),
+                     'off_file':str(private_directory(self.fixture.base/'hook-control')/'capture.off'),
                      'scopes':[{'cwd':str(self.project),'project_id':'synthetic-project','session_id':'synthetic-session'}]}
         validate_hook_policy(self.policy,profile_sha256='a'*64,content_policy_sha256='b'*64)
         self.payload={'session_id':'synthetic-session','turn_id':'synthetic-turn','cwd':str(self.project),
