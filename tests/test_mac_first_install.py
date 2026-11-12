@@ -1,4 +1,4 @@
-import agent_brain_client.adapters.harnesses.codex.update_interpreter as update_interpreter
+import agent_brain_client.adapters.installation.update_interpreter as update_interpreter
 import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
 import agent_brain_client.adapters.storage.install_state as adapters_storage_install_state
 import agent_brain_client.interfaces.cli.install as interfaces_cli_install
@@ -27,7 +27,7 @@ from agent_brain_client.application.installation.pairing import EnrollmentTermin
 from agent_brain_client.adapters.packages.client import dependency_environment
 from agent_brain_client.adapters.platforms.credentials import canonical
 import agent_brain_client.runtime.installation as wizard
-import agent_brain_client.adapters.harnesses.codex.installation as content_install
+import agent_brain_client.adapters.installation.installation as content_install
 
 
 class FirstInstall(unittest.TestCase):
@@ -137,7 +137,7 @@ class FirstInstall(unittest.TestCase):
         return {"status": "updated", "active": {"version": "0.2.6"}}
 
     def run_wizard(self, **kwargs):
-        options = {
+        options = {"harness": getattr(self, "harness", "codex"),
             "confirm": lambda *args: "Continue",
             "updater": self.update,
             "runner": self.runner,
@@ -160,8 +160,8 @@ class FirstInstall(unittest.TestCase):
         self.fixture()
         original = wizard.run
 
-        def run(home, native, connection, digest):
-            return original(home, native, connection, digest,
+        def run(home, native, connection, digest, *, harness):
+            return original(home, native, connection, digest, harness=harness,
                             confirm=lambda *a: 'Continue', updater=self.update,
                             runner=self.runner, dependency_preparer=lambda *a, **k: self.materials,
                             store=self.store, transport=self.transport, secure_input=self.input,
@@ -170,7 +170,7 @@ class FirstInstall(unittest.TestCase):
         output = io.StringIO()
         with patch.object(Path, 'home', return_value=self.home), \
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
-                patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', '--connection', str(self.base / 'connection.json')]), \
+                patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', "--harness", "codex", '--connection', str(self.base / 'connection.json')]), \
                 patch.object(wizard, 'run', side_effect=run), patch.object(sys, 'stdout', output):
             code = interfaces_cli_install.main()
         result = json.loads(output.getvalue())
@@ -571,7 +571,7 @@ class PreparingReset(unittest.TestCase):
 class LifecycleExitCodes(unittest.TestCase):
     def command(self,action,response):
         output=io.StringIO()
-        with patch.object(sys,'argv',['agent_brain_client.runtime.installation.py','--action',action]),patch.object(sys,'platform','darwin'),patch('platform.machine',return_value='arm64'),patch.object(wizard.Path,'home',return_value=Path('/synthetic/home')),patch('agent_brain_client.adapters.harnesses.codex.lifecycle.'+action,return_value=response),patch.object(sys,'stdout',output):
+        with patch.object(sys,'argv',['agent_brain_client.runtime.installation.py', "--harness", "codex",'--action',action]),patch.object(sys,'platform','darwin'),patch('platform.machine',return_value='arm64'),patch.object(wizard.Path,'home',return_value=Path('/synthetic/home')),patch('agent_brain_client.runtime.client_lifecycle.'+action,return_value=response),patch.object(sys,'stdout',output):
             code=interfaces_cli_install.main()
         self.assertEqual(json.loads(output.getvalue()),response)
         return code
@@ -616,7 +616,7 @@ class NewDeviceConnectionCLI(unittest.TestCase):
             path = home / '.config/agent-brain-client/first-install/connection.json'
             adapters_storage_private_files.save(path, {'schema': 1})
             with patch.object(Path, 'home', return_value=home), \
-                    patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py']), \
+                    patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', "--harness", "codex"]), \
                     patch.object(sys, 'stdout', io.StringIO()) as output, \
                     patch.object(wizard, 'run', side_effect=AssertionError('Must not install')):
                 self.assertEqual(interfaces_cli_install.main(), 2)

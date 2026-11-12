@@ -1,3 +1,5 @@
+
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 from agent_brain_client.application.installation.enrollment import DeviceEnrollment
 import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
 """HTTPS content with fake Keychain/UI, synthetic ledger and isolated homes."""
@@ -20,7 +22,7 @@ from agent_brain_client.adapters.server.https import HTTPSContentClient,PairingH
 from agent_brain_client.runtime.enrollment import install_once
 from agent_brain_client.adapters.platforms.credentials import CredentialStore,canonical
 from agent_brain_client.adapters.platforms.macos.keychain import NativeKeychain
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.adapters.server.http import RemoteClient, NoRedirect
 from dev.build.package import export
@@ -132,11 +134,11 @@ class HTTPSContent(unittest.TestCase):
 
     def test_device_change_retains_old_outbox_in_distinct_namespace(self):
         first=self.paired();policy={'schema':1,'adapter':'codex','kinds':GRANT['artifact_types'],'ids':GRANT['ids'],'dependencies':{'commands':[],'python_modules':[]}}
-        cache=self.base/'cache';adapter=CodexContentSession(self.home,cache,policy,first,codex_home=self.home/'codex');old=adapter.queue_sha
+        cache=self.base/'cache';adapter=ContentSession(self.home,cache,policy,first,host=CodexContentPorts, native_home=self.home/'codex');old=adapter.queue_sha
         request={'request_id':'synthetic_pending_write_123456','method':'content_put','params':{'kind':'memory','id':'synthetic-memory','record':{'title':'Synthetic','description':'Synthetic only','body':'Synthetic offline','type':'feedback'},'expected_revision':'missing'}}
         adapter._enqueue(request);outbox=cache/'outbox'/ (request['request_id']+'.json');before=outbox.read_bytes()
         self.backend.record['device_id']='f'*32
-        second=HTTPSContentClient(self.profile_path,self.digest,store=self.store);other=CodexContentSession(self.home,cache,policy,second,codex_home=self.home/'codex');self.assertNotEqual(old,other.queue_sha)
+        second=HTTPSContentClient(self.profile_path,self.digest,store=self.store);other=ContentSession(self.home,cache,policy,second,host=CodexContentPorts, native_home=self.home/'codex');self.assertNotEqual(old,other.queue_sha)
         self.assertNotIn(self.backend.record['credential'],json.dumps(first.queue_identity));self.assertEqual(first.request({'request_id':'synthetic_request_123456','method':'content_catalog','params':{'kinds':['memory']}})['error']['code'],'device_transport_blocked')
 
         with self.assertRaises(CacheBlocked):other._drain()
@@ -144,7 +146,7 @@ class HTTPSContent(unittest.TestCase):
 
     def test_native_l1_https_receipt_confirms_adapter_outbox_without_git_commit(self):
         client=self.paired();policy={'schema':1,'adapter':'codex','kinds':GRANT['artifact_types'],'ids':GRANT['ids'],'dependencies':{'commands':[],'python_modules':[]}}
-        adapter=CodexContentSession(self.home,self.base/'native-cache',policy,client,codex_home=self.home/'codex')
+        adapter=ContentSession(self.home,self.base/'native-cache',policy,client,host=CodexContentPorts, native_home=self.home/'codex')
         request={'request_id':'synthetic_native_https_0001','method':'content_put','params':{'kind':'memory','id':'synthetic-memory',
             'record':{'title':'Synthetic','description':'Native L1 fixture','body':'Synthetic direct fact','type':'user'},'expected_revision':'missing'}}
         response={'request_id':request['request_id'],'result':{'content_api_version':1,'kind':'memory','id':'synthetic-memory',
@@ -166,7 +168,7 @@ class HTTPSContent(unittest.TestCase):
         self.assertFalse(reply['persistence']['github_confirmed'])
 
     def test_https_owned_install_plan_readonly_then_failed_postcheck_restores_preimage(self):
-        import agent_brain_client.adapters.harnesses.codex.installation as install
+        import agent_brain_client.adapters.installation.installation as install
         import agent_brain_client.adapters.packages.client as releases
         native=self.home/'codex';native.mkdir(mode=0o700);config=native/'config.toml';config.write_text('model="synthetic"\n');config.chmod(0o600);before=config.read_bytes()
         package=self.base/'package';manifest=export(ROOT,package,https_content_candidate=True)
@@ -175,7 +177,7 @@ class HTTPSContent(unittest.TestCase):
         policy={'schema':1,'adapter':'codex','platform':GRANT['platform'],'origin':'https://synthetic.invalid/client.git','ref':'refs/heads/releases/stable','anchor_commit':'a'*40,'channel':'stable','core_api':1,'state_schema':1,'capabilities':HTTPS_CONTENT_CAPABILITIES,'file_prefixes':list(HTTPS_CONTENT_CLIENT_FILES),'repository':str(self.base/'repository'),'cache':str(self.base/'release-cache'),'runtime':runtime}
         path=self.base/'release-policy.json';path.write_bytes(canonical(policy));path.chmod(0o600);digest=hashlib.sha256(path.read_bytes()).hexdigest()
         with patch.object(NativeKeychain,'call',side_effect=AssertionError('No real credential access during plan')):
-            plan=install.prepare(self.home,package,path,digest);self.assertEqual(config.read_bytes(),before);self.assertEqual(plan['mcp']['enabled_tools'],['content_catalog','content_put','content_queue_inspect','content_read','content_request_id','content_set_enabled','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage','memory_query'])
+            plan=install.prepare(self.home,package,path,digest, harness="codex");self.assertEqual(config.read_bytes(),before);self.assertEqual(plan['mcp']['enabled_tools'],['content_catalog','content_put','content_queue_inspect','content_read','content_request_id','content_set_enabled','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage','memory_query'])
             calls=[]
             def check(value):
                 calls.append(value)
@@ -216,7 +218,7 @@ class HTTPSContent(unittest.TestCase):
             publish('0.2.3',True);self.assertEqual(channel.update()['status'],'release-review-required');self.assertEqual(channel.verified_active(),active)
         fixed=SimpleNamespace(policy=policy,verified_active=lambda:active,update=lambda:{'status':'offline','active':active});commands=[]
         with patch.object(client_startup,'ClientReleases',return_value=fixed),patch.object(client_startup.subprocess,'run',side_effect=lambda argv,**kw:commands.append(argv) or SimpleNamespace(returncode=0)):
-            self.assertTrue(client_startup.startup(path,digest,installation_check=True)['served'])
+            self.assertTrue(client_startup.startup(path,digest,installation_check=True, harness="codex")['served'])
         self.assertIn('--https-profile-sha256',commands[0]);self.assertIn('--credential-source-sha256',commands[0]);self.assertNotIn('--token-file',commands[0])
 
 
@@ -255,14 +257,14 @@ class HTTPSContent(unittest.TestCase):
         with self.assertRaises(ValueError):export(ROOT,self.base/'mixed',ssh_content_candidate=True,https_content_candidate=True)
 
     def install_fixture(self):
-        import agent_brain_client.adapters.harnesses.codex.installation as install
+        import agent_brain_client.adapters.installation.installation as install
         native=self.home/'codex';native.mkdir(mode=0o700);config=native/'config.toml';config.write_text('model="synthetic"\n');config.chmod(0o600)
         package=self.base/'install-package';export(ROOT,package,https_content_candidate=True)
         content=self.base/'install-content.json';content.write_bytes(canonical({'schema':1,'adapter':'codex','kinds':GRANT['artifact_types'],'ids':GRANT['ids'],'dependencies':{'commands':[],'python_modules':[]}}));content.chmod(0o600)
         runtime={'https_profile':str(self.profile_path),'https_profile_sha256':self.digest,'credential_source_sha256':self.profile['credential_source_sha256'],'content_policy':str(content),'content_policy_sha256':hashlib.sha256(content.read_bytes()).hexdigest(),'device_home':str(self.home),'codex_home':str(native),'content_cache':str(self.base/'install-cache')}
         policy={'schema':1,'adapter':'codex','platform':GRANT['platform'],'origin':'https://synthetic.invalid/client.git','ref':'refs/heads/releases/stable','anchor_commit':'a'*40,'channel':'stable','core_api':1,'state_schema':1,'capabilities':HTTPS_CONTENT_CAPABILITIES,'file_prefixes':list(HTTPS_CONTENT_CLIENT_FILES),'repository':str(self.base/'install-repository'),'cache':str(self.base/'install-release-cache'),'runtime':runtime}
         path=self.base/'install-release-policy.json';path.write_bytes(canonical(policy));path.chmod(0o600)
-        plan=install.prepare(self.home,package,path,hashlib.sha256(path.read_bytes()).hexdigest());return install,plan,install.sha(install.contract.encode(plan)),config
+        plan=install.prepare(self.home,package,path,hashlib.sha256(path.read_bytes()).hexdigest(), harness="codex");return install,plan,install.sha(install.contract.encode(plan)),config
 
     def test_install_once_digest_and_preimage_rejected_before_any_credential_input(self):
         install,plan,digest,config=self.install_fixture();before=config.read_bytes()

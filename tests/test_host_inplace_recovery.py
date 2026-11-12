@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import agent_brain_client.adapters.storage.host_files as host
-import agent_brain_client.adapters.harnesses.codex.installation as install
+import agent_brain_client.adapters.installation.installation as install
 import test_content_install as fixture
 
 

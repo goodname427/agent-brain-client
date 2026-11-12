@@ -64,12 +64,12 @@ class Management(unittest.TestCase):
         calls = []
         with (
             patch(
-                "agent_brain_client.adapters.harnesses.codex.installation.inspect_plan",
+                "agent_brain_client.adapters.installation.installation.inspect_plan",
                 side_effect=AssertionError("Recovery must run first"),
             ) as inspect,
             patch.object(entry, "pinned", return_value=plan),
             patch(
-                "agent_brain_client.adapters.harnesses.codex.installation.apply",
+                "agent_brain_client.adapters.installation.installation.apply",
                 side_effect=lambda p, d: calls.append(p) or {"installed": True},
             ),
         ):
@@ -84,7 +84,7 @@ class Management(unittest.TestCase):
         with (
             patch.object(entry, "pinned", side_effect=ValueError()),
             patch(
-                "agent_brain_client.adapters.harnesses.codex.installation.apply"
+                "agent_brain_client.adapters.installation.installation.apply"
             ) as apply,
         ):
             code, value = self.run_entry(
@@ -98,7 +98,7 @@ class Management(unittest.TestCase):
         with (
             patch.object(entry, "pinned", return_value={}),
             patch(
-                "agent_brain_client.adapters.harnesses.codex.installation.apply",
+                "agent_brain_client.adapters.installation.installation.apply",
                 side_effect=OSError(),
             ),
         ):

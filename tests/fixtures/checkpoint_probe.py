@@ -1,4 +1,5 @@
 """Isolated source/release MCP checkpoint regression; synthetic catalog only."""
+
 import json
 import os
 from pathlib import Path
@@ -6,11 +7,12 @@ import sys
 
 package = Path(sys.argv[1])
 sys.path[:0] = [str(package / 'src')]
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 from agent_brain_client.adapters.platforms.filesystem import require_platform
 from agent_brain_client.interfaces.mcp.topics import Server
 from agent_brain_client.interfaces.mcp.content import installation_check
 from agent_brain_client.interfaces.mcp.content import ContentServer
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.adapters.storage.content_session import ContentSession
 import tempfile
 
 target = require_platform('checkpoint-regression')
@@ -52,7 +54,7 @@ assert result['status'] == 'content-native-protocol-checked' and len(cloud.reque
 assert result['native_changed'] is False
 with tempfile.TemporaryDirectory(dir=Path(os.environ['HOME'])) as temporary:
     home = Path(temporary)
-    adapter = CodexContentSession(home, home / 'cache', policy, cloud, codex_home=home / 'codex')
+    adapter = ContentSession(home, home / 'cache', policy, cloud, host=CodexContentPorts, native_home=home / 'codex')
     server = ContentServer(adapter, '0.5.6')
     server.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
         'protocolVersion': '2025-11-25', 'capabilities': {},

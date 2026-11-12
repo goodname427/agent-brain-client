@@ -17,7 +17,7 @@ try {
     $OutputEncoding = [Console]::OutputEncoding
     $env:CODEX_HOME = & $python -X utf8 -I -B (Join-Path $root 'bootstrap/codebuddy.py') backend-home
     if ($LASTEXITCODE -ne 0) { throw 'Existing shared Client binding could not be verified.' }
-    & (Join-Path $PSScriptRoot 'install.ps1') -Action $Action -Server $Server
+    & (Join-Path $PSScriptRoot 'install.ps1') -Action $Action -Harness codebuddy -Server $Server
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if ($existingBackend -and $Action -eq 'install') {
         & (Join-Path $PSScriptRoot 'install.ps1') -Action check-update

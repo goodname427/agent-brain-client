@@ -23,7 +23,7 @@ esac
 NATIVE_BACKEND=$(/usr/bin/python3 -I -B "$HERE/bootstrap/codebuddy.py" backend-home)
 EXISTING_BACKEND=false
 if [ -f "$HOME/.config/agent-brain-client/codex-mcp.json" ]; then EXISTING_BACKEND=true; fi
-CODEX_HOME="$NATIVE_BACKEND" sh "$HERE/bootstrap/macos/install.sh" "$@"
+CODEX_HOME="$NATIVE_BACKEND" sh "$HERE/bootstrap/macos/install.sh" --harness codebuddy "$@"
 if [ "$EXISTING_BACKEND" = true ] && [ "$REQUESTED_ACTION" = install ]; then
     # Repeating the shared install only verifies registration. Refresh the
     # existing approved runtime before using the newly shared 0.7 modules.

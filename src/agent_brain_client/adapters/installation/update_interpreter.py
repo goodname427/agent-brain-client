@@ -13,12 +13,12 @@ from agent_brain_client.adapters.packages.client import (
 )
 from agent_brain_client.adapters.storage.private_files import private_json, safe
 
-ROOT = Path(__file__).resolve().parents[5]
+ROOT = Path(__file__).resolve().parents[4]
 
 
-def reexec_update_runtime(home, action, *, runner=subprocess.run):
+def reexec_update_runtime(home, action, *, recovery_context, runner=subprocess.run):
     """Use the originally pinned Python/Git without changing their binding."""
-    from agent_brain_client.adapters.harnesses.codex.installation import (
+    from agent_brain_client.adapters.installation.installation import (
         inspect,
         registered_context,
     )
@@ -26,38 +26,14 @@ def reexec_update_runtime(home, action, *, runner=subprocess.run):
     if not inspect(home).get("registration_verified"):
         if action != "update":
             return None
-        import agent_brain_client.adapters.harnesses.codex.installation as content_install
+        import agent_brain_client.adapters.installation.installation as content_install
 
-        # A torn inline Hook can make live TOML unreadable. Authenticate its
-        # exact saved MCP preimage to select the original interpreter before
-        # manage_update performs any recovery writes.
-        from agent_brain_client.adapters.storage.collection import settings_path
-        import agent_brain_client.adapters.harnesses.codex.collection_installation as hooks
-
-        hook_receipt = settings_path(home).parent / "hook-install.json"
-        if hook_receipt.exists():
-            record = hooks.read_receipt(hook_receipt)
-            if record.get("phase") == "applying":
-                import base64
-
-                from agent_brain_client.adapters.storage.registration import (
-                    registration,
-                )
-
-                _, hook_policy = registration(home)
-                native = Path(hook_policy["runtime"]["codex_home"])
-                if set(record.get("host", {})) != {str(native / "config.toml")}:
-                    raise ValueError("Hook recovery binding changed")
-                before = base64.b64decode(
-                    record["host"][str(native / "config.toml")]["before"], validate=True
-                )
-                meta = private_json(
-                    safe(Path(home) / ".config/agent-brain-client/codex-mcp.json")
-                )
-                policy, mcp, _, native = registered_context(
-                    home, meta, config_image=before
-                )
-                return pinned_update_runtime(home, action, policy, mcp, native, runner)
+        # Native recovery authenticates its own saved preimage through an
+        # injected port. This service never chooses a concrete host.
+        recovered = recovery_context()
+        if recovered is not None:
+            policy, mcp, native = recovered
+            return pinned_update_runtime(home, action, policy, mcp, native, runner)
         handover = safe(
             Path(home) / ".config/agent-brain-client/launcher-handover.json"
         )

@@ -27,14 +27,10 @@ import os
 import re
 from agent_brain_client.adapters.platforms.filesystem import (
     command_line,
-    private_directory,
     private_mode,
 )
 import tomllib
-import uuid
 
-import agent_brain_client.adapters.harnesses.codex.project_configuration as project_sources
-from agent_brain_client.domain.scopes import validate
 
 # Status also runs from an isolated CLI without the test runner's PYTHONPATH.
 # Load the same fixed bundle paths used by install and Hook execution.
@@ -139,7 +135,7 @@ def owned_groups(config):
 
 
 def render_groups(groups):
-    from agent_brain_client.adapters.harnesses.codex.configuration import (
+    from agent_brain_client.adapters.storage.toml_document import (
         toml_literal,
         toml_key,
     )
@@ -161,7 +157,7 @@ def render_groups(groups):
 
 
 def split_owned(raw):
-    from agent_brain_client.adapters.harnesses.codex.configuration import (
+    from agent_brain_client.adapters.storage.toml_document import (
         toml_statements,
         toml_remove,
         toml_get,
@@ -203,7 +199,7 @@ def render_owned(outside, owned):
     """Merge into existing inline event arrays, append ordinary array tables."""
     if owned is None:
         return (outside.rstrip() + "\n").encode()
-    from agent_brain_client.adapters.harnesses.codex.configuration import (
+    from agent_brain_client.adapters.storage.toml_document import (
         toml_statements,
         toml_replace,
     )
@@ -260,7 +256,7 @@ def owned_conflict(previous, candidates):
 
 
 def typed_equal(x, y):
-    from agent_brain_client.adapters.harnesses.codex.configuration import toml_equal
+    from agent_brain_client.adapters.storage.toml_document import toml_equal
 
     return toml_equal(x, y)
 
@@ -393,7 +389,7 @@ def recover_pending(home, native):
     All policy/command validation uses the pinned preimage, never an exception
     to registration verification. No credentials or source bodies are read.
     """
-    import agent_brain_client.adapters.harnesses.codex.installation as ci
+    import agent_brain_client.adapters.installation.installation as ci
     from agent_brain_client.adapters.platforms.filesystem import locked
     from agent_brain_client.adapters.storage.collection import settings_path
 
@@ -426,13 +422,14 @@ def verified_removal(home, previous, record):
     """Recognize the same Hook definition in an authenticated removal journal."""
     if previous is not None:
         return False
-    from agent_brain_client.adapters.harnesses.codex.lifecycle import (
+    from agent_brain_client.adapters.installation.lifecycle import (
         read_removal,
         validate_journal,
     )
 
     removal = read_removal(home)
-    validate_journal(home, removal)
+    from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
+    validate_journal(home, removal, host=CodexContentPorts)
     return removal.get("phase") in ("complete", "reinstalled") and same_owned(
         removal.get("hook_block"), record.get("block")
     )
@@ -574,95 +571,15 @@ def transact_once(native, directory, owned, *, remove=False):
 
 
 def install(args):
+    from agent_brain_client.adapters.storage.collection_setup import prepare
     from agent_brain_client.adapters.storage.collection import settings_path, approved
-
-    home = metadata_io.canonical(args.device_home, existing=True)
-    _, registered = registration_store.registration(home)
-    native = Path(registered["runtime"]["codex_home"])
-    file = settings_path(home)
-    private_directory(file.parent)
-    private_mode(file.parent, directory=True, owner=True)
-    if file.exists():
-        value = metadata_io.private_json(file)
-        validate(value["scope"])
-        if value["device_home"] != str(home):
-            raise ValueError("Existing global identity preserved")
-    else:
-        value = {
-            "schema": 1,
-            "enabled": False,
-            "device_home": str(home),
-            "scope": {
-                "schema": 1,
-                "profile_id": uuid.uuid4().hex,
-                "include_roots": [],
-                "exclude_roots": [],
-                "non_project_roots": [],
-                "recall_personal": True,
-            },
-            "approved_scope_sha256": None,
-            "server_scope_sha256": None,
-            "legacy_projects": [],
-            "operator": None,
-            "operator_sha256": None,
-        }
-    profile_id = getattr(args, "profile_id", None)
-    if profile_id:
-        import re
-
-        if not re.fullmatch("[a-f0-9]{32}", profile_id):
-            raise ValueError("Exact existing personal pool identity required")
-        if (
-            value["scope"]["profile_id"] != profile_id
-            and value["server_scope_sha256"] is None
-        ):
-            value["scope"]["profile_id"] = profile_id
-            if value["approved_scope_sha256"] is not None:
-                from agent_brain_client.domain.scopes import digest
-
-                value["approved_scope_sha256"] = digest(value["scope"])
-        # A registered source is reconciled through authenticated configure,
-        # never rebound just because a caller supplied a profile hint.
-    routes = {row["root"]: row for row in value["legacy_projects"]}
-    base = home / ".config/agent-brain-client/project-memory"
-    if os.name != "nt" and base.exists():
-        for candidate in base.glob("*/settings.json"):
-            try:
-                pin = metadata_io.digest(candidate.read_bytes())
-                source = project_sources.load(candidate, pin)
-                if source["source_mode"] != "codex-project":
-                    continue
-                recall = metadata_io.private_json(
-                    source["recall_policy"], source["recall_policy_sha256"]
-                )
-                routes[source["project_root"]] = {
-                    **routes.get(source["project_root"], {}),
-                    "root": source["project_root"],
-                    "settings": str(candidate),
-                    "settings_sha256": pin,
-                    "project_id": recall["project_id"],
-                }
-            except (ValueError, OSError):
-                continue
-    value["legacy_projects"] = list(routes.values())
-    value["code_sha256"] = {
-        n: metadata_io.digest((ROOT / n).read_bytes()) for n in FILES
-    }
-    if bool(args.operator) != bool(args.operator_sha256):
-        raise ValueError("Complete existing operator reference required")
-    if args.operator:
-        metadata_io.private_json(args.operator, args.operator_sha256)
-        value.update(operator=args.operator, operator_sha256=args.operator_sha256)
-    metadata_io.write(file, value)
-    result = transact(native, file.parent, block(value))
-    result.update(
-        expanded_sources_enabled=approved(value),
-        automatic_all_projects=True,
-        legacy_project_roots=list(routes),
-        settings=str(file),
-        model_calls=0,
-    )
-    return result
+    value = prepare(args)
+    _, registered = registration_store.registration(args.device_home)
+    file = settings_path(args.device_home)
+    result = transact(Path(registered["runtime"]["codex_home"]), file.parent, block(value))
+    return dict(result, expanded_sources_enabled=approved(value), automatic_all_projects=True,
+                legacy_project_roots=[row["root"] for row in value["legacy_projects"]],
+                settings=str(file), model_calls=0)
 
 
 def uninstall(args):
@@ -692,48 +609,7 @@ def installation_status(value):
     )
 
 
-def recover_code(home):
-    """Restore an interrupted code-pin write, preserving every approval field."""
-    from agent_brain_client.adapters.storage.host_files import host_restore
-    from agent_brain_client.adapters.storage.collection import (
-        settings_path,
-        validate_settings,
-    )
-
-    file = settings_path(home)
-    journal = file.parent / "code-refresh.json"
-    if not journal.exists():
-        return False
-    record = read_receipt(journal)
-    if (
-        set(record) != {"schema", "phase", "device_home", "host"}
-        or record["schema"] != 1
-        or record["device_home"] != str(home)
-        or record["phase"] not in ("applying", "complete", "rolled-back")
-        or set(record["host"]) != {str(file)}
-    ):
-        raise ValueError("Global code recovery binding changed")
-    row = record["host"][str(file)]
-    before, target = (
-        validate_settings(
-            json.loads(
-                base64.b64decode(row[k], validate=True),
-                object_pairs_hook=metadata_io.unique,
-            ),
-            home,
-        )
-        for k in ("before", "target")
-    )
-    if {k: v for k, v in before.items() if k != "code_sha256"} != {
-        k: v for k, v in target.items() if k != "code_sha256"
-    }:
-        raise ValueError("Global code recovery must preserve source approval")
-    if record["phase"] != "applying":
-        return False
-    registration_store.registration(home)  # Metadata only; no credential activation.
-    host_restore(record["host"], lambda: metadata_io.write(journal, record))
-    metadata_io.write(journal, dict(record, phase="rolled-back"))
-    return True
+from agent_brain_client.adapters.storage.collection_setup import recover_code
 
 
 def recover_update(home, *, check_only=False):
@@ -755,38 +631,7 @@ def recover_update(home, *, check_only=False):
     return True
 
 
-def freeze_code(directory, pins):
-    """Keep executable Hook code in a private immutable cache, never a checkout."""
-    from agent_brain_client.adapters.storage.host_files import atomic
-
-    root = (
-        directory
-        / "code"
-        / metadata_io.digest(json.dumps(pins, sort_keys=True).encode())
-    )
-    metadata_io.canonical(root)  # Reject linked ancestors before creating any cache.
-    for parent in (directory / "code", root):
-        private_directory(parent)
-        private_mode(parent, directory=True, owner=True)
-    for name, pin in pins.items():
-        target = root / name
-        metadata_io.canonical(target)
-        private_directory(target.parent)
-        private_mode(target.parent, directory=True, owner=True)
-        if target.exists():
-            metadata_io.canonical(target, existing=True)
-            private_mode(target, owner=True)
-            if (
-                target.stat().st_nlink != 1
-                or metadata_io.digest(target.read_bytes()) != pin
-            ):
-                raise ValueError("Frozen global code changed")
-            continue
-        raw = (ROOT / name).read_bytes()
-        if metadata_io.digest(raw) != pin:
-            raise ValueError("Global update source changed")
-        atomic(target, raw, 0o600)
-    return root
+from agent_brain_client.adapters.packages.frozen import freeze_code
 
 
 def refresh(home, *, check_only=False):
@@ -860,7 +705,7 @@ def refresh(home, *, check_only=False):
         recover_code(home)
         if file.read_bytes() != original:
             raise ValueError("Global settings changed before refresh")
-        freeze_code(file.parent, pins)
+        freeze_code(file.parent, pins, source=ROOT)
         if not available:
             return result
         journal = file.parent / "code-refresh.json"
@@ -895,3 +740,26 @@ def refresh(home, *, check_only=False):
         update_available=False,
         native_changed=changed["native_changed"],
     )
+
+
+def recovery_registration(home):
+    """Authenticate only this host's interrupted Hook registration preimage."""
+    import base64
+    from agent_brain_client.adapters.installation.installation import registered_context
+    from agent_brain_client.adapters.storage.registration import registration
+    from agent_brain_client.adapters.storage.collection import settings_path
+    hook_receipt = settings_path(home).parent / "hook-install.json"
+    if not hook_receipt.exists():
+        return None
+    record = read_receipt(hook_receipt)
+    if record.get("phase") != "applying":
+        return None
+    _, policy = registration(home)
+    native = Path(policy["runtime"]["codex_home"])
+    if set(record.get("host", {})) != {str(native / "config.toml")}:
+        raise ValueError("Hook recovery binding changed")
+    before = base64.b64decode(record["host"][str(native / "config.toml")]["before"], validate=True)
+    from agent_brain_client.adapters.storage.metadata import private_json
+    meta = private_json(Path(home) / ".config/agent-brain-client/codex-mcp.json")
+    policy, mcp, _, native = registered_context(home, meta, config_image=before)
+    return policy, mcp, native

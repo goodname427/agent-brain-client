@@ -1,3 +1,5 @@
+
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 import agent_brain_client.interfaces.mcp.launcher as launcher_cli
 """Synthetic native hooks through public Client classes; no host credentials."""
 import copy
@@ -16,10 +18,10 @@ from urllib.error import HTTPError
 
 import test_content_outbox as fixture
 import agent_brain_client.interfaces.mcp.content as content_mcp
-import agent_brain_client.adapters.harnesses.codex.content as content_cache
+import agent_brain_client.adapters.storage.content_session as content_cache
 from agent_brain_client.interfaces.mcp.content import ContentServer, ProtocolError
 from agent_brain_client.adapters.harnesses.codex.hooks import run_event_hook, validate_hook_policy
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.adapters.platforms.filesystem import private_directory
 from agent_brain_client.adapters.server.http import RemoteClient
@@ -124,7 +126,7 @@ class EventHook(unittest.TestCase):
             with self.assertRaises(ValueError):validate_hook_policy(dict(self.policy,**changes),profile_sha256='a'*64,content_policy_sha256='b'*64)
 
     def test_cli_disabled_before_stdin_credentials_and_unregistered_before_auth(self):
-        argv=['content_mcp','--content-policy','synthetic-content','--content-policy-sha256','b'*64,
+        argv=['content_mcp',"--harness", "codex", '--content-policy','synthetic-content','--content-policy-sha256','b'*64,
               '--device-home',str(self.fixture.home),'--cache',str(self.fixture.cache),
               '--https-profile','synthetic-profile','--https-profile-sha256','a'*64,
               '--event-hook','--event-hook-policy','synthetic-hook','--event-hook-policy-sha256','c'*64]
@@ -146,7 +148,7 @@ class EventHook(unittest.TestCase):
         self.assertEqual(Path(self.policy['off_file']).stat().st_mode&0o777,0o600)
 
     def test_hook_failures_identify_policy_input_and_payload_before_identity(self):
-        argv=['content_mcp','--content-policy','synthetic-content','--content-policy-sha256','b'*64,
+        argv=['content_mcp',"--harness", "codex", '--content-policy','synthetic-content','--content-policy-sha256','b'*64,
               '--device-home',str(self.fixture.home),'--cache',str(self.fixture.cache),
               '--https-profile','synthetic-profile','--https-profile-sha256','a'*64,
               '--event-hook','--event-hook-policy','synthetic-hook','--event-hook-policy-sha256','c'*64]
@@ -167,7 +169,7 @@ class EventHook(unittest.TestCase):
                 self.assertEqual(self.sent,[])
 
     def test_bootstrap_worker_failure_is_visible_without_blocking_prompt(self):
-        argv=['client_startup','--policy-file','synthetic-release','--policy-sha256','a'*64,
+        argv=['client_startup','--harness', 'codex', '--policy-file','synthetic-release','--policy-sha256','a'*64,
               '--event-hook','--event-hook-policy','synthetic-hook','--event-hook-policy-sha256','b'*64]
         for code in (0,1,-9):
             with self.subTest(worker_exit=code):
@@ -350,7 +352,7 @@ class EventHook(unittest.TestCase):
                 seen.append(request);return Response(accepted(json.loads(request.data)))
         client.transport.opener=Opener()
         policy=dict(fixture.POLICY,ids=grant['ids'])
-        adapter=CodexContentSession(owned.home,owned.base/'event-cache',policy,client,codex_home=owned.home/'codex')
+        adapter=ContentSession(owned.home,owned.base/'event-cache',policy,client,host=CodexContentPorts, native_home=owned.home/'codex')
         hook_policy=dict(self.policy,profile_sha256=owned.digest)
         with patch('agent_brain_client.adapters.server.https.native_store',side_effect=AssertionError('No second credential source')):
             run_event_hook(adapter,hook_policy,self.payload)
@@ -367,15 +369,15 @@ class EventHook(unittest.TestCase):
         policy={'platform':self.adapter.platform,'capabilities':HTTPS_CONTENT_CAPABILITIES,
                 'runtime':{'device_home':str(self.fixture.home),'content_cache':str(self.fixture.cache)}}
         releases=SimpleNamespace(policy=policy,verified_active=MagicMock(return_value=active),update=MagicMock(side_effect=AssertionError('No per-turn update')))
-        with patch.object(client_startup,'ClientReleases',return_value=releases),patch('agent_brain_client.adapters.harnesses.codex.installation.inspect',return_value={'installed':True}),patch.object(client_startup.subprocess,'run',return_value=SimpleNamespace(returncode=0)) as run:
-            result=client_startup.startup('synthetic-policy','a'*64,event_hook=('synthetic-hook','b'*64))
+        with patch.object(client_startup,'ClientReleases',return_value=releases),patch('agent_brain_client.adapters.installation.installation.inspect',return_value={'installed':True}),patch.object(client_startup.subprocess,'run',return_value=SimpleNamespace(returncode=0)) as run:
+            result=client_startup.startup('synthetic-policy','a'*64,event_hook=('synthetic-hook','b'*64), harness="codex")
         self.assertTrue(result['served']);releases.update.assert_not_called();self.assertGreaterEqual(releases.verified_active.call_count,2)
         self.assertTrue(all(call.kwargs=={'serving':True} for call in releases.verified_active.call_args_list))
         command=run.call_args.args[0];self.assertIn('--event-hook',command);self.assertIn('--event-hook-policy',command)
         self.assertTrue(run.call_args.kwargs['pass_fds'])
 
     def test_capture_bootstrap_failure_does_not_block_native_prompt(self):
-        argv=['client_startup','--policy-file','synthetic-release','--policy-sha256','a'*64,
+        argv=['client_startup','--harness', 'codex', '--policy-file','synthetic-release','--policy-sha256','a'*64,
               '--event-hook','--event-hook-policy','synthetic-hook','--event-hook-policy-sha256','b'*64]
         output=io.StringIO()
         with patch.object(sys,'argv',argv),patch.object(sys,'stdout',output),patch.object(sys,'stderr',io.StringIO()),patch.object(client_startup,'startup',return_value={'status':'startup-review-required','served':False}):

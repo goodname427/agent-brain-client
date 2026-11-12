@@ -60,6 +60,15 @@ def lifecycle_exit(action, value):
     return 2
 
 
+def selected_native(home, harness):
+    if harness == "codebuddy":
+        from agent_brain_client.interfaces.cli.codebuddy import backend_home
+        return backend_home(home)
+    if harness == "codex":
+        return Path(os.environ.get("CODEX_HOME", str(home / ".codex"))).absolute()
+    raise ValueError("Install and reinstall require an explicit --harness")
+
+
 def main():
     from agent_brain_client.runtime.installation import ConnectionRequired
     from agent_brain_client.runtime.installation import confirm_target
@@ -71,6 +80,7 @@ def main():
     from agent_brain_client.runtime.installation import run
 
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--harness", choices=("codex", "codebuddy"))
     parser.add_argument(
         "--action",
         choices=(
@@ -172,7 +182,7 @@ def main():
             )
             from agent_brain_client.adapters.storage.reinstallation import read_journal
 
-            native = Path(os.environ.get("CODEX_HOME", str(home / ".codex"))).absolute()
+            native = selected_native(home, args.harness)
             port = retained_installation(home, native)
             with port.lease():
                 prepared = prepare_fresh_installation(
@@ -187,7 +197,7 @@ def main():
             args.action = "install"
             fresh_stage = "reconnection"
         if args.action != "install":
-            from agent_brain_client.adapters.harnesses.codex.lifecycle import (
+            from agent_brain_client.runtime.client_lifecycle import (
                 status,
                 repair,
                 uninstall,
@@ -210,7 +220,7 @@ def main():
             except Exception:
                 partial = False
                 if args.action in ("uninstall", "repair"):
-                    from agent_brain_client.adapters.harnesses.codex.lifecycle import (
+                    from agent_brain_client.runtime.client_lifecycle import (
                         journal_path,
                         read_removal,
                     )
@@ -231,7 +241,7 @@ def main():
                 }
             print(json.dumps(value))
             return lifecycle_exit(args.action, value)
-        native = Path(os.environ.get("CODEX_HOME", str(home / ".codex"))).absolute()
+        native = selected_native(home, args.harness)
         access_state = (
             home / ".config/agent-brain-client/access-bootstrap/endpoint.json"
         )
@@ -256,7 +266,7 @@ def main():
                 resume_applying_registration,
             )
 
-            resumed = resume_applying_registration(home, native, args.server)
+            resumed = resume_applying_registration(home, native, args.server, harness=args.harness)
             if resumed is not None:
                 from agent_brain_client.application.installation.follow_up import (
                     installation_follow_up,
@@ -274,7 +284,7 @@ def main():
         ):
             from agent_brain_client.interfaces.cli.access import run_address_install
 
-            value = run_address_install(home, native, args.server)
+            value = run_address_install(home, native, args.server, harness=args.harness)
             from agent_brain_client.application.installation.follow_up import (
                 installation_follow_up,
             )
@@ -289,7 +299,7 @@ def main():
         except ConnectionRequired:
             from agent_brain_client.interfaces.cli.access import run_address_install
 
-            value = run_address_install(home, native, args.server)
+            value = run_address_install(home, native, args.server, harness=args.harness)
             from agent_brain_client.application.installation.follow_up import (
                 installation_follow_up,
             )
@@ -316,7 +326,7 @@ def main():
             connection["endpoint"]
         ):
             raise ValueError("Existing Server identity preserved")
-        value = run(home, native, connection, connection_sha)
+        value = run(home, native, connection, connection_sha, harness=args.harness)
         from agent_brain_client.application.installation.follow_up import (
             installation_follow_up,
         )

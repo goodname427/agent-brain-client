@@ -1,3 +1,5 @@
+
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 from agent_brain_client.adapters.platforms.tree import is_link
 from agent_brain_client.adapters.platforms.posix.tree import PosixTree
 from agent_brain_client.adapters.platforms.windows.tree import WindowsTree
@@ -16,8 +18,8 @@ from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'))
-import agent_brain_client.adapters.harnesses.codex.content as content_cache
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession, contract, locked
+import agent_brain_client.adapters.storage.content_session as content_cache
+from agent_brain_client.adapters.storage.content_session import ContentSession, contract, locked
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.adapters.harnesses.codex.memory_inventory import inventory_codex_memories
 sys.path.insert(0,str(ROOT/'tests'))
@@ -363,7 +365,7 @@ class CodexMemoryInventory(unittest.TestCase):
         helper.setUp();self.addCleanup(helper.doCleanups)
         policy={'schema':1,'adapter':'codex','kinds':['rule'],'ids':{'rule':['synthetic-rule']},
                 'dependencies':{'commands':[],'python_modules':[]}}
-        helper.adapter=CodexContentSession(helper.home,helper.cache,policy,helper.cloud,codex_home=helper.home/'.codex')
+        helper.adapter=ContentSession(helper.home,helper.cache,policy,helper.cloud,host=CodexContentPorts, native_home=helper.home/'.codex')
         memories=helper.home/'.codex/memories';memories.mkdir(parents=True)
         (memories/'private.md').write_text('Synthetic fixture; must not be enumerated')
         server=ContentServer(helper.adapter)

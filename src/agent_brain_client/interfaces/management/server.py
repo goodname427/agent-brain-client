@@ -4,6 +4,7 @@ The short-lived loopback page has no external resources. Listing is read-only;
 only explicit Enable/Disable and Pull actions change Server/local state.
 """
 
+
 import sys
 from pathlib import Path
 
@@ -27,12 +28,19 @@ import webbrowser
 
 ROOT = Path(__file__).resolve().parents[4]
 import agent_brain_client.domain.contract as contract
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.adapters.storage.registration import registration
 from agent_brain_client.adapters.storage.metadata import private_json, canonical
 
 
-def installed_adapter(home):
+def installed_adapter(home, *, harness=None):
+    if harness is None:
+        from agent_brain_client.runtime.client_lifecycle import registered_host
+        port = registered_host(home)
+        if port is None:
+            raise ValueError("Registered native host required")
+        harness = port.name
+    from agent_brain_client.runtime.harness_content import content_host
     home = canonical(Path(home).expanduser(), existing=True)
     _, policy = registration(home)
     runtime = policy["runtime"]
@@ -48,12 +56,12 @@ def installed_adapter(home):
         runtime["https_profile"], runtime["https_profile_sha256"]
     )
     content = private_json(runtime["content_policy"], runtime["content_policy_sha256"])
-    return CodexContentSession(
+    return ContentSession(
         home,
-        runtime["content_cache"],
+        runtime["content_cache"] if harness == "codex" else home / ".config/agent-brain-client/codebuddy/content-cache",
         content,
         client,
-        codex_home=runtime["codex_home"],
+        host=content_host(harness), native_home=runtime["codex_home"] if harness == "codex" else home / ".codebuddy",
     )
 
 
@@ -222,10 +230,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["content-manage"])
     parser.add_argument("--device-home", default=str(Path.home()))
+    parser.add_argument("--harness", choices=("codex", "codebuddy"))
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
     try:
-        management = Management(installed_adapter(args.device_home))
+        management = Management(installed_adapter(args.device_home, harness=args.harness))
         with ManagementHTTP(management) as server:
             url = server.origin + "/#" + server.token
             print("Rule / Skill 本机管理：" + url, flush=True)

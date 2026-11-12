@@ -82,7 +82,7 @@ def require_collection_ready(home, profile_sha=None):
     require_verified_memory(record, profile_sha)
     if (
         record is not None
-        and record["project_controls"]["blocked_roots"]
+        and any(row["stopped"] or not row["enabled"] for row in record["project_controls"]["states"])
         and record.get("routing_restored") is not True
     ):
         raise FreshSourceRoutingRequired("fresh-install-source-routing-required")

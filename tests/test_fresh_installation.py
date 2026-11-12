@@ -20,7 +20,7 @@ from agent_brain_client.adapters.platforms.filesystem import (
     locked,
 )
 from agent_brain_client.adapters.packages.client import HTTPS_CONTENT_CAPABILITIES
-from agent_brain_client.adapters.harnesses.codex.installation import (
+from agent_brain_client.adapters.installation.installation import (
     registered_mcp_digest,
 )
 from agent_brain_client.adapters.server.https import profile_metadata
@@ -299,7 +299,7 @@ class FreshInstallation(unittest.TestCase):
                     "result": contract.envelope("memory", "personal-owner", MEMORY),
                 }
 
-        def connect(home, native, endpoint):
+        def connect(home, native, endpoint, *, harness):
             self.port.validate_connection({"endpoint": endpoint, "grant": self.grant})
             fresh = read_journal(home)
             # The real material preparer creates private first-install metadata
@@ -341,7 +341,7 @@ class FreshInstallation(unittest.TestCase):
                 sys,
                 "argv",
                 [
-                    "install.py",
+                    "install.py", "--harness", "codex",
                     "--action",
                     "reinstall",
                     "--server",
@@ -701,7 +701,7 @@ class FreshInstallation(unittest.TestCase):
             transport=SimpleNamespace(bootstrap=lambda *args: connection),
             key_input=lambda *args: "SYNTHETIC_ACCESS_KEY_" + "x" * 40,
             install=install,
-        )
+         harness="codex", )
         self.assertEqual(result["status"], "fresh-install-account-mismatch")
         install.assert_not_called()
         self.assertIsNone(backend["record"])
@@ -710,7 +710,7 @@ class FreshInstallation(unittest.TestCase):
     def test_old_completed_uninstall_can_archive_and_reconnect_without_native_entry(
         self,
     ):
-        from agent_brain_client.adapters.harnesses.codex.lifecycle import remove_table
+        from agent_brain_client.runtime.client_lifecycle import remove_table
         import base64
 
         journal = {
@@ -809,7 +809,7 @@ class FreshInstallation(unittest.TestCase):
                 runner=lambda *a, **k: (_ for _ in ()).throw(
                     StopBeforeNativeOrNetwork()
                 ),
-            )
+             harness="codex", )
         profile = io.private_json(self.profile)
         self.assertEqual(profile["instance_id"], read_journal(self.home)["id"])
         self.assertEqual(
@@ -827,7 +827,7 @@ class FreshInstallation(unittest.TestCase):
         import agent_brain_client.interfaces.cli.install as cli
         from unittest.mock import Mock
 
-        def connect(*args):
+        def connect(*args, **kwargs):
             self.port.restore_mapping(self.cache, self.content)
             return {"status": "content-native-client-installed", "installed": True}
 
@@ -840,7 +840,7 @@ class FreshInstallation(unittest.TestCase):
         with (
             patch.dict(os.environ, {"CODEX_HOME": str(self.native)}),
             patch.object(cli.Path, "home", return_value=self.home),
-            patch.object(sys, "argv", ["install.py", "--action", "reinstall"]),
+            patch.object(sys, "argv", ["install.py", "--harness", "codex", "--action", "reinstall"]),
             patch("builtins.input", return_value="FRESH"),
             patch(
                 "agent_brain_client.interfaces.cli.access.run_address_install",

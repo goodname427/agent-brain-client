@@ -1,10 +1,12 @@
 """Collection cache policy and local path checks in isolated homes."""
+
 import copy
 import tempfile
 from pathlib import Path
 import unittest
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 import agent_brain_client.domain.contract as contract
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.domain.content_policy import validate_policy
 from agent_brain_client.adapters.server.https import grant_check
@@ -28,7 +30,7 @@ class OwnerScope(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             home=Path(directory).resolve()/'home';home.mkdir(mode=0o700)
             client=type('Client',(),{'grant':self.grant})()
-            adapter=CodexContentSession(home,Path(directory)/'cache',self.policy,client,codex_home=home/'codex')
+            adapter=ContentSession(home,Path(directory)/'cache',self.policy,client,host=CodexContentPorts, native_home=home/'codex')
             self.assertEqual(adapter.mapping._path('.agents/skills/future-skill/SKILL.md'),home/'.agents/skills/future-skill/SKILL.md')
             for name in ('.agents/skills/future-skill/../outside','other/file','.config/agent-brain-client/content/rule/../outside.md'):
                 with self.assertRaises((CacheBlocked,ValueError)):adapter.mapping._path(name)

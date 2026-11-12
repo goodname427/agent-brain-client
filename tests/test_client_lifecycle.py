@@ -28,7 +28,7 @@ import dev.integration.checkpoint as remote_connect
 
 class Releases(unittest.TestCase):
     def test_check_only_offline_requires_a_verified_active_package(self):
-        args=['src/agent_brain_client/interfaces/mcp/launcher.py','--policy-file','unused-policy','--policy-sha256','a'*64,'--check-only']
+        args=['src/agent_brain_client/interfaces/mcp/launcher.py','--harness', 'codex', '--policy-file','unused-policy','--policy-sha256','a'*64,'--check-only']
         for active,expected in ((None,2),({'commit':'a'*40,'version':'0.1.1'},0)):
             result={'status':'offline','active':active}
             with patch.object(sys,'argv',args),patch.object(client_startup,'startup',return_value=result),patch.object(sys,'stdout',io.StringIO()):
@@ -135,7 +135,7 @@ class Releases(unittest.TestCase):
 
     def test_offline_startup_serves_only_previous_verified_client(self):
         self.publish();old=self.channel.update()['active'];self.remote.rename(self.base/'offline-origin.git')
-        checked=client_startup.startup(self.policy_path,self.policy_sha,True);self.assertEqual(checked['status'],'offline');self.assertEqual(checked['active'],old)
+        checked=client_startup.startup(self.policy_path,self.policy_sha,True, harness="codex");self.assertEqual(checked['status'],'offline');self.assertEqual(checked['active'],old)
         run=subprocess.run;commands=[]
         def serve_only(command,**kwargs):
             if any(str(arg).endswith('/interfaces/mcp/topics.py') for arg in command):
@@ -146,7 +146,7 @@ class Releases(unittest.TestCase):
             worker=thread_type(*args,**kwargs);background.append(worker);return worker
         with patch.object(client_startup.threading,'Thread',side_effect=track_thread),patch.object(client_startup.subprocess,'run',side_effect=serve_only):
             try:
-                result=client_startup.startup(self.policy_path,self.policy_sha)
+                result=client_startup.startup(self.policy_path,self.policy_sha, harness="codex")
             finally:
                 # The real startup check can still write release diagnostics
                 # after serving returns. Own its lifetime before mutating the
@@ -157,7 +157,7 @@ class Releases(unittest.TestCase):
         self.assertTrue(result['served']);command=commands[0];self.assertIn(str(Path(old['package'])/'src/agent_brain_client/interfaces/mcp/topics.py'),command);self.assertEqual(command[-1],'darwin-arm64')
         target=Path(old['package'])/'src/agent_brain_client/interfaces/mcp/topics.py';target.write_text('external package change')
         with patch.object(client_startup.subprocess,'run') as runner:
-            result=client_startup.startup(self.policy_path,self.policy_sha)
+            result=client_startup.startup(self.policy_path,self.policy_sha, harness="codex")
         self.assertFalse(result.get('served',False));runner.assert_not_called()
 
 

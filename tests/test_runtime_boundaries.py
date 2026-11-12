@@ -42,7 +42,7 @@ assert not {'content_cache','content_mcp','codex_connect','project_memory','firs
 
     def test_dependency_fence_rejects_direct_qualified_and_dynamic_host_imports(self):
         for source in (
-            "import agent_brain_client.adapters.harnesses.codex.content as cache",
+            "import agent_brain_client.adapters.storage.content_session as cache",
             "from agent_brain_client.adapters.harnesses.codex import content",
             "from agent_brain_client.runtime.installation import run",
             "from dev.build import package",

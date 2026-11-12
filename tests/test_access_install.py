@@ -100,7 +100,7 @@ class AddressInstall(unittest.TestCase):
             key_input=self.prompts,
         )
         options.update(kwargs)
-        return access.run_address_install(self.home, self.native, endpoint, **options)
+        return access.run_address_install(self.home, self.native, endpoint, **options, harness="codex")
 
     def test_only_address_and_hidden_key_no_public_secret_and_no_false_success(self):
         self.assertTrue(self.run_install()["installed"])
@@ -264,7 +264,7 @@ class AccessTransaction(unittest.TestCase):
         self.assertTrue(second["installed"], second)
         device_id = fixture.backend.record["device_id"]
         with patch(
-            "agent_brain_client.adapters.harnesses.codex.installation.inspect",
+            "agent_brain_client.adapters.installation.installation.inspect",
             return_value={"installed": True, "native_changed": False},
         ):
             third = fixture.run_wizard(
@@ -386,11 +386,12 @@ class BootstrapCacheEntry(unittest.TestCase):
         address = Mock(return_value="https://synthetic.invalid")
         original = access.run_address_install
 
-        def install(home, native, endpoint=None):
+        def install(home, native, endpoint=None, *, harness):
             return original(
                 home,
                 native,
                 endpoint,
+                harness=harness,
                 transport=self.peer,
                 store_factory=lambda *a: self.store,
                 dependency_preparer=lambda *a: {},
@@ -402,7 +403,7 @@ class BootstrapCacheEntry(unittest.TestCase):
         with (
             patch.object(Path, "home", return_value=self.home),
             patch.dict(os.environ, CODEX_HOME=str(self.native)),
-            patch.object(sys, "argv", ["agent_brain_client.runtime.installation.py"]),
+            patch.object(sys, "argv", ["agent_brain_client.runtime.installation.py", "--harness", "codex"]),
             patch.object(sys, "stdout", io.StringIO()) as output,
             patch.object(access, "run_address_install", side_effect=install),
         ):
@@ -420,7 +421,7 @@ class BootstrapCacheEntry(unittest.TestCase):
 )
 class ApplyingAccessEntry(unittest.TestCase):
     def fixture(self, unicode_home=False):
-        import agent_brain_client.adapters.harnesses.codex.installation as content_install
+        import agent_brain_client.adapters.installation.installation as content_install
 
         f = fixtures.FirstInstall(
             "test_first_install_cli_emits_onboard_handoff_without_importing"
@@ -456,7 +457,7 @@ class ApplyingAccessEntry(unittest.TestCase):
         return f, state, receipt
 
     def exercise_recovery(self, unicode_home=False):
-        import agent_brain_client.adapters.harnesses.codex.installation as content_install
+        import agent_brain_client.adapters.installation.installation as content_install
 
         f, state, _ = self.fixture(unicode_home=unicode_home)
         identity = copy.deepcopy(f.backend.record)
@@ -481,7 +482,7 @@ class ApplyingAccessEntry(unittest.TestCase):
         with (
             patch.object(Path, "home", return_value=f.home),
             patch.dict(os.environ, CODEX_HOME=str(f.native)),
-            patch.object(sys, "argv", ["agent_brain_client.runtime.installation.py"]),
+            patch.object(sys, "argv", ["agent_brain_client.runtime.installation.py", "--harness", "codex"]),
             patch.object(wizard, "run", side_effect=run),
             patch.object(sys, "stdout", io.StringIO()) as output,
         ):
@@ -511,7 +512,7 @@ class ApplyingAccessEntry(unittest.TestCase):
         with (
             patch.object(Path, "home", return_value=f.home),
             patch.dict(os.environ, CODEX_HOME=str(f.native)),
-            patch.object(sys, "argv", ["agent_brain_client.runtime.installation.py"]),
+            patch.object(sys, "argv", ["agent_brain_client.runtime.installation.py", "--harness", "codex"]),
             patch.object(
                 wizard,
                 "run",

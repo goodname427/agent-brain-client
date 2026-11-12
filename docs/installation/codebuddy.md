@@ -1,7 +1,7 @@
 # CodeBuddy 接入
 
 0.8 旧布局请使用[保留记忆并重新连接的重装入口](reinstall.md)，普通 install 不会自动覆盖旧安装；旧未同步队列不会自动接续。
-> Client 0.7 适配源码。源码合入不等于已发布；真实 IDE/CLI 的模型加载与用户验收另行核对。
+> Harness 功能对等整改基于 Client 0.8.9。发布状态以受信渠道为准；真实 IDE/CLI 的模型加载与用户验收保持暂停。
 
 CodeBuddy IDE 和 CodeBuddy Code（CLI）共用现有 Agent Brain Client 与 Server。支持原生 Mac、Windows；首次只需 HTTPS Server 地址和本机隐藏输入的接入密钥，**不要求安装 Codex 应用**。已有 Client 则复用其原策略、设备身份、系统凭据与来源范围。
 
@@ -19,7 +19,7 @@ sh bootstrap/macos/codebuddy.sh --server 'https://your-server.example'
 
 省略地址时沿用原安装器的本机输入／恢复。密钥不放进命令、聊天或环境变量。新设备把共享后端的原生登记放在私有 `shared-native` 目录，不创建用户 `.codex` 配置；原有安装保留原绑定。Server 冻结设备协议仍使用原 `codex` adapter 名称，这是兼容传输身份，不冒充 CodeBuddy 专属 Server grant，也不改变设备权限或信任锚。
 
-已有 Client 时，入口先沿原受信渠道执行 check-update／update，刷新 0.7 共用运行时；重复原 install 本身不能代替升级。安装再验证共享 Client 的 MCP initialize、工具目录与只读认证，然后事务安装 CodeBuddy 配置。`installed:true` 表示配置与协议核验通过；`source_enabled` 单独反映现有全局采集授权，`model_loaded:false` 表示未运行模型验收。来源状态异常应沿原安装器恢复；不能替换凭据或绕过 Server 拒绝。旧渠道尚未提供共用模块时保留原安装，等待统一 0.7 发行，不冒称自动采集已就绪。
+已有 Client 时，入口先沿原受信渠道执行 check-update／update，刷新共用运行时；重复原 install 本身不能代替升级。安装再验证共享 Client 的 MCP initialize、工具目录与只读认证，然后事务安装 CodeBuddy 配置。`installed:true` 表示配置与协议核验通过；`source_enabled` 单独反映现有全局采集授权，`model_loaded:false` 表示未运行模型验收。来源状态异常应沿原安装器恢复；不能替换凭据或绕过 Server 拒绝。旧渠道尚未提供共用模块时保留原安装，等待受信渠道发行，不冒称自动采集已就绪。
 
 默认配置 IDE 与 CLI。需要单独绑定其中一种时，在共享 Client 安装完成后执行 `python3 -I -B src/agent_brain_client/interfaces/cli/codebuddy.py install --surface ide` 或 `--surface cli`。已安装后切换范围应先卸载原 CodeBuddy 绑定，保留共享后端。
 
@@ -32,7 +32,7 @@ sh bootstrap/macos/codebuddy.sh --server 'https://your-server.example'
 | Hooks | `.codebuddy/settings.json` 增加 SessionStart、UserPromptSubmit、Stop；保留其他 Hook 和权限 |
 | 上下文 | IDE 使用 `~/.codebuddy/rules/agent-brain-client.md` 的自有说明块；CLI 使用 `~/.codebuddy/CODEBUDDY.md`；两端另有 Hook 的 `additionalContext` |
 | 查询与写入 | 原验证后 MCP 启动链及完整工具集；CAS、幂等键、回执、队列与 Server 同原 Client |
-| 自动召回 | SessionStart 和 UserPromptSubmit，复用原全局召回、来源证据检查、预算及离线标识 |
+| 自动召回 | UserPromptSubmit，复用原全局召回、来源证据检查、预算及离线标识 |
 | 用户消息采集 | UserPromptSubmit 的实际 prompt；generation_id 可用时去重，不合并两次独立的相同提问 |
 | CLI 助手采集 | Stop 提供时优先使用 last_assistant_message；缺失时仅读取本轮 prompt Hook 记录的 JSONL 游标之后的 assistant 文本 |
 | IDE 助手采集 | Stop 的 generation_id 精确匹配当前会话 index.json 请求，只读取该请求引用的 assistant 消息文件 |
@@ -40,11 +40,13 @@ sh bootstrap/macos/codebuddy.sh --server 'https://your-server.example'
 
 官方 Hooks 文档未承诺 Stop 最终正文；另外核对了官方 npm 包 `@tencent-ai/codebuddy-code` 2.180.0 的实际 Hook 输入转换代码，它会转发可用的 `last_assistant_message`，因此优先使用该字段，缺失再走原生正文读取。IDE 格式依据本机官方程序的 `HistoryStorage.getTranscriptPath`、`ConversationManager` 实现，JSONL 格式须匹配识别结构；均用合成文件验证，这不是实机模型验收。只接受 Hook 给出的 CodeBuddy 原生存储路径和安装后实际观察到的当前轮。不会扫描历史会话或读取旧消息正文；不采集工具输入输出、附件或推理内容。
 
-文件缺失、尚未写完、轮次交叠、轮换、未知格式、路径越界或来源停止时保留证据并给出内容无关诊断；查询、正常 MCP 写入和可用的召回不因助手正文缺失而被关闭。IDE 落盘晚于 Stop 时，Hook 不阻塞宿主：独立收尾进程最多等待 30 秒，只重读本轮已观察的 generation；总请求期限 45 秒，仍未完成则保留游标与内容无关诊断，后续正常 Hook 也可补齐。必须看到请求 `state=complete`，并核验消息身份及读取期间索引、正文未变；宿主对既有消息重写正文时可能保留旧 `isComplete=false`，不再以该字段单独拒收。取消、失败、授权撤销或范围变化不会继续后台采集。不会把未完成正文冒称为完整回复。原生读取每次至多 4 MiB；超过边界明确失败，不截断后声称完整。没有 generation_id 的 IDE index 格式无法精确定位助手回复，保留 prompt 采集与召回并报告缺口。
+文件缺失、尚未写完、轮次交叠、轮换、未知格式、路径越界或来源停止时保留证据并给出内容无关诊断；查询、正常 MCP 写入和可用的召回不因助手正文缺失而被关闭。IDE 落盘晚于 Stop 时，Hook 不阻塞宿主：先持久记录本轮已观察的 generation 与后台任务，再由共用后台投递器重读该轮完成证据；进程重启后可从原标记继续，后续 Hook 也可唤醒恢复。必须看到请求 `state=complete`，并核验消息身份及读取期间索引、正文未变；宿主对既有消息重写正文时可能保留旧 `isComplete=false`，不再以该字段单独拒收。取消、失败、授权撤销或范围变化不会继续后台采集。不会把未完成正文冒称为完整回复。原生读取每次至多 4 MiB；超过边界明确失败，不截断后声称完整。没有 generation_id 的 IDE index 格式无法精确定位助手回复，保留 prompt 采集与召回并报告缺口。
 
 CodeBuddy 按正常宿主流程审核 MCP/Hooks。CLI 文档要求在 `/hooks` 面板审核外部变更；IDE 的项目级设置可能覆盖用户级设置，需要在实际项目检查。安装不会修改信任或权限配置。IDE 使用支持 MCP 的 Agent/Craft 模式；旧 Ask 模式不承诺 MCP。SDK 默认不加载文件配置，需要其调用方明确设置 settingSources。
 
-云端 Rule/Skill 的内容操作仍可通过完整 MCP 使用；本适配不把现有 Codex 原生 Rule/Skill 文件映射冒称为 CodeBuddy 原生加载。
+云端 Rule/Skill 使用公共内容同步、所有权事务和回滚，原生路径为 `.codebuddy/rules` 与 `.codebuddy/skills`。Rule 的启停和触发条件保留；CLI 缺少 IDE 智能选取时使用可读索引引导按需读取，不扩大为始终加载全文。原生 Memory 来源支持 CLI Auto Memory、用户 `CODEBUDDY.md` 与已核对版本的 IDE 持久 Memory；必须经过公共审核才能准备云端导入。详见[职责、同一业务契约与版本证据](../development/harness-parity.md)。
+
+项目命令可显式选择 `--harness codebuddy`，安装到项目 `.codebuddy/settings.local.json`，项目设置和队列与另一宿主隔离；项目链接、暂停、来源控制和原队列同步使用同一公共服务。只读链接不获得 transcript 采集权限。
 
 ## 状态、更新和卸载
 

@@ -122,7 +122,7 @@ if mode=='onboard':
  print(json.dumps(release.update()),flush=True)
 else:
  client_startup.ClientReleases=lambda *args:release
- result=client_startup.startup('synthetic-unused','a'*64)
+ result=client_startup.startup('synthetic-unused','a'*64,harness='codex')
  sys.exit(result.get('exit_code',2))
 """.replace("ROOT", repr(str(ROOT)))
         self.driver = self.base / "driver.py"
@@ -292,7 +292,7 @@ else:
                 self.engine.serving_active()
 
     def test_installation_inspection_uses_snapshot_and_keeps_ownership_checks(self):
-        import agent_brain_client.adapters.harnesses.codex.installation as install
+        import agent_brain_client.adapters.installation.installation as install
         from agent_brain_client.adapters.platforms.filesystem import locked
 
         home, native = self.base / "home", self.base / "codex"

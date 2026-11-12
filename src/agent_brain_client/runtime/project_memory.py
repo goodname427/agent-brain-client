@@ -1,5 +1,6 @@
 """Compose project-scoped capture, recall and approved source operations."""
 
+
 import json
 import os
 from pathlib import Path
@@ -23,13 +24,27 @@ from agent_brain_client.adapters.platforms.filesystem import (
     locked,
 )
 from agent_brain_client.adapters.packages.layout import PYTHON_FILES as RUNTIME
-from agent_brain_client.adapters.harnesses.codex.project_configuration import (
-    load,
-    active,
-    project_settings,
-    install,
-    context,
-)
+from agent_brain_client.adapters.storage.project_settings import load, active, project_settings, project_harness
+
+
+def install(settings, path, pin):
+    if settings["harness"] == "codebuddy":
+        from agent_brain_client.adapters.harnesses.codebuddy.project_configuration import install as native_install
+    elif settings["harness"] == "codex":
+        from agent_brain_client.adapters.harnesses.codex.project_configuration import install as native_install
+    else:
+        raise ValueError("Explicit project Harness required")
+    return native_install(settings, path, pin)
+
+
+def context(settings, items):
+    if settings["harness"] == "codebuddy":
+        return "\n".join(item.get("content", "") for item in items)
+    if settings["harness"] == "codex":
+        from agent_brain_client.adapters.harnesses.codex.project_configuration import context as native_context
+        return native_context(settings, items)
+    raise ValueError("Explicit project Harness required")
+
 
 ROOT = Path(__file__).resolve().parents[3]
 ENTRY = ROOT / "src/agent_brain_client/interfaces/cli/project.py"
@@ -48,6 +63,7 @@ def setup(args):
         )
     value = {
         "schema": 1,
+        "harness": args.harness,
         "enabled": True,
         "project_root": str(project),
         "device_home": str(home),
@@ -58,7 +74,7 @@ def setup(args):
         "content_policy_sha256": r["content_policy_sha256"],
         "release_policy": m["release_policy"],
         "release_policy_sha256": m["release_policy_sha256"],
-        "cache": r["content_cache"],
+        "cache": r["content_cache"] if args.harness == "codex" else str(home / ".config/agent-brain-client/codebuddy/project-outboxes" / digest(str(project).encode())),
         "off_file": str(output.parent / "memory.off"),
         "query": args.query,
         "max_items": 3,
@@ -121,7 +137,7 @@ def enable(args):
     output = (
         canonical(args.output)
         if args.output
-        else project_settings(args.device_home, args.project_root)
+        else project_settings(args.device_home, args.project_root, harness=args.harness)
     )
     args.output = str(output)
     if output.exists():
@@ -131,6 +147,7 @@ def enable(args):
             value["project_root"] != str(canonical(args.project_root, existing=True))
             or value["device_home"] != str(canonical(args.device_home, existing=True))
             or args.server_bundle
+            or project_harness(value) != args.harness
         ):
             raise ValueError(
                 "Existing project scope preserved; use explicit setup for a new authorized bundle"
@@ -138,6 +155,7 @@ def enable(args):
         # Refresh only source pins, never destination, session scope or expiry.
         value = dict(
             value,
+            harness=args.harness,
             enabled=True,
             code_sha256={n: digest((ROOT / n).read_bytes()) for n in RUNTIME},
         )
@@ -167,6 +185,8 @@ def enable(args):
     if not active(p):
         raise ValueError("Source window closed; enabling does not renew it")
     result = install(p, str(output), pin)
+    from agent_brain_client.adapters.storage.project_settings import clear_host_stop
+    clear_host_stop(p["device_home"], p["project_root"], p["harness"])
     return dict(
         result,
         settings=str(output),
@@ -314,7 +334,7 @@ def recalled(p, session, query=None):
                 "device_id": client.device_id,
             }
             if "error" in result:
-                from agent_brain_client.adapters.harnesses.codex.content_limits import (
+                from agent_brain_client.adapters.storage.content_limits import (
                     OFFLINE_TRANSPORT_ERRORS,
                 )
 
@@ -388,13 +408,13 @@ def recalled(p, session, query=None):
     if "memory" not in profile["grant"]["artifact_types"]:
         raise ValueError("Existing Memory read grant required")
     client = HTTPSContentClient(p["profile"], p["profile_sha256"])
-    from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+    from agent_brain_client.adapters.storage.content_session import ContentSession
     from agent_brain_client.domain.content_policy import validate_policy
 
     content = private_json(p["content_policy"], p["content_policy_sha256"])
     validate_policy(content, client.grant)
-    adapter = CodexContentSession(
-        p["device_home"], p["cache"], content, client, codex_home=p["codex_home"]
+    adapter = ContentSession(
+        p["device_home"], p["cache"], content, client, host=project_content_host(p), native_home=p["codex_home"] if p["harness"] == "codex" else Path(p["device_home"]) / ".codebuddy"
     )
     query = adapter.invoke(
         {
@@ -411,7 +431,7 @@ def recalled(p, session, query=None):
     )
     offline = "error" in query
     if offline:
-        from agent_brain_client.adapters.harnesses.codex.content_limits import (
+        from agent_brain_client.adapters.storage.content_limits import (
             OFFLINE_TRANSPORT_ERRORS,
         )
 
@@ -485,12 +505,12 @@ def recalled(p, session, query=None):
 
 def capture(p, payload):
     from agent_brain_client.adapters.storage.pinned import pinned
-    from agent_brain_client.adapters.harnesses.codex.hooks import (
+    from agent_brain_client.adapters.storage.event_policy import (
         validate_hook_policy,
-        native_hook_fields,
+        normalized_hook_fields,
         hook_enabled,
     )
-    from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+    from agent_brain_client.adapters.storage.content_session import ContentSession
     from agent_brain_client.domain.content_policy import validate_policy
     from agent_brain_client.adapters.server.https import HTTPSContentClient
 
@@ -501,7 +521,7 @@ def capture(p, payload):
     )
     if not hook_enabled(policy):
         return {"status": "disabled", "data_transferred": False}
-    scope, turn, kind, text, key = native_hook_fields(policy, payload)
+    scope, turn, kind, text, key = normalized_hook_fields(policy, payload)
     blocked = canonical(Path(p["off_file"]).parent / ("excluded-" + key + ".json"))
     if blocked.exists():
         return {"status": "excluded-turn", "data_transferred": False}
@@ -515,8 +535,8 @@ def capture(p, payload):
     client = HTTPSContentClient(p["profile"], p["profile_sha256"])
     content = pinned(p["content_policy"], p["content_policy_sha256"])
     validate_policy(content, client.grant)
-    adapter = CodexContentSession(
-        p["device_home"], p["cache"], content, client, codex_home=p["codex_home"]
+    adapter = ContentSession(
+        p["device_home"], p["cache"], content, client, host=project_content_host(p), native_home=p["codex_home"] if p["harness"] == "codex" else Path(p["device_home"]) / ".codebuddy"
     )
     if kind == "Stop":
         staged = adapter._load("hook-turns/" + key + ".json")
@@ -560,7 +580,7 @@ def record(p, path):
         raise ValueError("Explicit note pair required")
     pass
     from agent_brain_client.domain.contract import event_identifier, text
-    from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+    from agent_brain_client.adapters.storage.content_session import ContentSession
     from agent_brain_client.domain.content_policy import validate_policy
     from agent_brain_client.adapters.server.https import HTTPSContentClient
 
@@ -582,8 +602,8 @@ def record(p, path):
     client = HTTPSContentClient(p["profile"], p["profile_sha256"])
     content = private_json(p["content_policy"], p["content_policy_sha256"])
     validate_policy(content, client.grant)
-    adapter = CodexContentSession(
-        p["device_home"], p["cache"], content, client, codex_home=p["codex_home"]
+    adapter = ContentSession(
+        p["device_home"], p["cache"], content, client, host=project_content_host(p), native_home=p["codex_home"] if p["harness"] == "codex" else Path(p["device_home"]) / ".codebuddy"
     )
     from datetime import datetime, timezone
 
@@ -642,6 +662,16 @@ def record(p, path):
     }
 
 
+def capture_enabled(settings):
+    """Validate the source's local permission before observing native bodies."""
+    if settings["capture_policy"] is None:
+        return False
+    from agent_brain_client.adapters.storage.event_policy import validate_hook_policy, hook_enabled
+    policy = validate_hook_policy(private_json(settings["capture_policy"], settings["capture_policy_sha256"]),
+        profile_sha256=settings["profile_sha256"], content_policy_sha256=settings["content_policy_sha256"])
+    return hook_enabled(policy)
+
+
 def hook_payload(p, *, settings_path=None, settings_sha256=None):
     if not active(p):
         return {}
@@ -650,6 +680,29 @@ def hook_payload(p, *, settings_path=None, settings_sha256=None):
     if len(raw) > 1048576:
         raise ValueError("Bounded native payload required")
     payload = json.loads(raw, object_pairs_hook=unique)
+    if p["harness"] == "codebuddy":
+        from agent_brain_client.adapters.harnesses.codebuddy import project_configuration as native
+        from agent_brain_client.adapters.harnesses.codebuddy.transcript import PendingTranscript
+        if payload.get("hook_event_name") == "Stop" and payload.get("stop_hook_active") is not False:
+            return {}
+        capture_authorized = capture_enabled(p)
+        if payload.get("hook_event_name") == "Stop" and capture_authorized:
+            if settings_path is None or settings_sha256 is None:
+                raise ValueError("Exact project completion registration required")
+            turn = native.register_completion(p, payload, settings_path, settings_sha256)
+            from agent_brain_client.runtime.delivery import schedule_project_final
+            try:
+                schedule_project_final(p["device_home"], turn, settings_path, settings_sha256)
+            except Exception:
+                pass  # The observed marker is recovered by the ordinary supervisor.
+        if capture_authorized:
+            try:
+                payload = native.normalize(p, payload)
+            except PendingTranscript:
+                return {}
+        else:
+            from agent_brain_client.adapters.harnesses.codebuddy.events import session_id
+            payload = dict(payload, session_id=session_id(payload.get("session_id")))
     if payload.get("cwd") != p["project_root"]:
         return {}
     event = payload.get("hook_event_name")
@@ -664,7 +717,13 @@ def hook_payload(p, *, settings_path=None, settings_sha256=None):
             # Registration failure follows the shared capture failure path,
             # which still permits current-question recall.
             schedule_project(p["device_home"], settings_path, settings_sha256, wake_worker=False)
-        return capture(p, payload)
+        if payload.get("_project_turn_skipped"):
+            return {"status": "project-turn-skipped", "data_transferred": False}
+        result = capture(p, payload)
+        if p["harness"] == "codebuddy":
+            from agent_brain_client.adapters.harnesses.codebuddy.project_configuration import complete_observation
+            complete_observation(payload, result)
+        return result
 
     def schedule():
         if p["capture_policy"] is not None:
@@ -675,7 +734,7 @@ def hook_payload(p, *, settings_path=None, settings_sha256=None):
     items, diagnostic = handle(event, prompt=payload.get("prompt", ""), stage=stage,
         schedule=schedule, recall=lambda query: recalled(p, payload.get("session_id"), query))
     diagnostic["timing_ms"]["adapter_total_ms"] = round((time.monotonic() - started) * 1000, 3)
-    print(json.dumps(dict(operation="native-lifecycle", harness="codex-project", **diagnostic)), file=sys.stderr)
+    print(json.dumps(dict(operation="native-lifecycle", harness=p["harness"] + "-project", **diagnostic)), file=sys.stderr)
     extra = context(p, items)
     return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": extra}} if extra else {}
 
@@ -693,7 +752,7 @@ def hook(p, *, settings_path=None, settings_sha256=None):
 
 
 def delivery_port(settings, sha):
-    from agent_brain_client.adapters.harnesses.codex.hooks import validate_hook_policy, hook_enabled
+    from agent_brain_client.adapters.storage.event_policy import validate_hook_policy, hook_enabled
     p = load(settings, sha)
     if not active(p) or p["capture_policy"] is None:
         raise ValueError("Project source inactive")
@@ -801,14 +860,14 @@ def daily_gate(p, client):
 
 def adapter_for(p):
     from agent_brain_client.adapters.server.https import HTTPSContentClient
-    from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+    from agent_brain_client.adapters.storage.content_session import ContentSession
     from agent_brain_client.domain.content_policy import validate_policy
 
     client = HTTPSContentClient(p["profile"], p["profile_sha256"])
     content = private_json(p["content_policy"], p["content_policy_sha256"])
     validate_policy(content, client.grant)
-    return client, CodexContentSession(
-        p["device_home"], p["cache"], content, client, codex_home=p["codex_home"]
+    return client, ContentSession(
+        p["device_home"], p["cache"], content, client, host=project_content_host(p), native_home=p["codex_home"] if p["harness"] == "codex" else Path(p["device_home"]) / ".codebuddy"
     )
 
 
@@ -1005,7 +1064,7 @@ def activate_bundle(args):
     if not args.activation or not args.activation_sha256 or not args.project_root:
         raise ValueError("Reviewed activation receipt and project required")
     imported = import_bundle(args)
-    output = project_settings(args.device_home, args.project_root)
+    output = project_settings(args.device_home, args.project_root, harness=args.harness)
     output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     old = output.read_bytes() if output.exists() else None
     if old is not None:
@@ -1119,7 +1178,7 @@ def connect_project(args):
         )
     ):
         raise ValueError("Project link metadata differs from authenticated Server")
-    output = project_settings(args.device_home, args.project_root)
+    output = project_settings(args.device_home, args.project_root, harness=args.harness)
     if output.exists():
         raise ValueError(
             "Existing project setup preserved; use another explicitly selected local project"
@@ -1161,3 +1220,35 @@ def connect_project(args):
         source_mode="recall-only",
         source_permissions_added=False,
     )
+
+
+def project_content_host(settings):
+    from agent_brain_client.runtime.harness_content import content_host
+    return content_host(settings["harness"])
+
+
+def finish_codebuddy_project(home, task):
+    from agent_brain_client.adapters.harnesses.codebuddy import transcript, project_configuration as native
+    p = load(task["settings"], task["settings_sha256"])
+    if p["device_home"] != str(home) or p["harness"] != "codebuddy":
+        raise ValueError("Exact CodeBuddy project completion binding required")
+    if not active(p) or not capture_enabled(p):
+        return False
+    file = Path(home) / ".config/agent-brain-client/codebuddy/turns" / (task["turn_id"] + ".json")
+    row = private_json(file, cache=True)
+    if row.get("project_delivery") != {"settings": task["settings"], "settings_sha256": task["settings_sha256"]}:
+        raise ValueError("Project completion reference changed")
+    if row["complete"] or row["excluded"]:
+        return False
+    payload = dict(row["binding"], hook_event_name="Stop", stop_hook_active=False)
+    if payload.get("path") is not None:
+        payload["transcript_path"] = payload.pop("path")
+    try:
+        payload = native.normalize(p, payload)
+    except transcript.PendingTranscript:
+        return True
+    result = capture(p, payload)
+    native.complete_observation(payload, result)
+    from agent_brain_client.runtime.delivery import schedule_project
+    schedule_project(home, task["settings"], task["settings_sha256"])
+    return not result.get("local_queue", {}).get("saved", False)

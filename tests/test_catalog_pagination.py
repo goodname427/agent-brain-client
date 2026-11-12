@@ -89,7 +89,7 @@ class CatalogPages(unittest.TestCase):
         import agent_brain_client.runtime.project_memory as project_memory
         self.assertEqual(self.f.adapter.refresh()['status'],'content-refreshed')
         self.f.cloud.offline=True
-        settings={'profile':'fictional-profile','profile_sha256':'a'*64,'content_policy':'fictional-content',
+        settings={'harness':'codex','profile':'fictional-profile','profile_sha256':'a'*64,'content_policy':'fictional-content',
             'content_policy_sha256':'b'*64,'recall_policy':None,'device_home':str(self.f.home),
             'cache':str(self.f.cache),'codex_home':str(self.f.home/'.codex'),'max_items':1}
         def private(path,pin):return {'grant':self.f.cloud.grant} if path=='fictional-profile' else fixture.POLICY
@@ -99,7 +99,7 @@ class CatalogPages(unittest.TestCase):
             return original(request)
         with patch.object(project_memory,'private_json',side_effect=private), \
                 patch('agent_brain_client.adapters.server.https.HTTPSContentClient',return_value=self.f.cloud), \
-                patch('agent_brain_client.adapters.harnesses.codex.content.CodexContentSession',return_value=self.f.adapter), \
+                patch('agent_brain_client.adapters.storage.content_session.ContentSession',return_value=self.f.adapter), \
                 patch.object(self.f.adapter,'invoke',side_effect=invoke):
             for query,pages in (('0',1),('599',3)):
                 with self.subTest(query=query),patch.object(self.f.adapter,'_offline_read',wraps=self.f.adapter._offline_read) as read:

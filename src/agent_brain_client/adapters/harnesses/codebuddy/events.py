@@ -7,7 +7,6 @@ relabelled, credential copied, history read or second memory engine created.
 from agent_brain_client.adapters.storage.bounded_json import digest, unique
 import agent_brain_client.adapters.harnesses.hook_output as hook_output
 import agent_brain_client.adapters.storage.metadata as metadata_io
-import agent_brain_client.adapters.storage.registration as registration_store
 import json
 from pathlib import Path
 
@@ -31,44 +30,7 @@ def admission(core, value, local, client, session):
 
 
 def open_queue(core, value, local):
-    """Reuse the shared outbox with a distinct CodeBuddy binding and cache."""
-    from agent_brain_client.application.queue.outbox import DurableOutbox
-    from agent_brain_client.domain.errors import CacheBlocked
-    from agent_brain_client.domain.scopes import digest as scope_digest
-    from agent_brain_client.adapters.storage.content import FileEventQueue
-
-    client = core.CollectionClient(value, local)
-    client.queue_identity = dict(client.queue_identity, host_adapter="codebuddy")
-    _, registered = registration_store.registration(value["device_home"])
-    runtime = registered["runtime"]
-    policy = metadata_io.private_json(
-        runtime["content_policy"], runtime["content_policy_sha256"]
-    )
-    cache = (
-        Path(value["device_home"])
-        / ".config/agent-brain-client/codebuddy/outboxes"
-        / scope_digest(local)
-    )
-    native = Path(runtime["codex_home"]).expanduser()
-    if not native.is_absolute() or native.is_symlink():
-        raise CacheBlocked()
-    queue = FileEventQueue(
-        value["device_home"],
-        cache,
-        policy,
-        client,
-        binding={
-            "device_home": str(Path(value["device_home"]).resolve()),
-            "codex_home": str(native.resolve()),
-        },
-        protected=[
-            Path(value["device_home"]) / name
-            for name in (".codex", ".agents", ".config/agent-brain-client/content")
-        ],
-    )
-    if not isinstance(queue, DurableOutbox):
-        raise ValueError("Shared Client 0.7 outbox required")
-    return client, queue
+    return core.build_delivery_queue(value, local, "codebuddy")
 
 
 def capture_messages(core, value, local, payload, messages, phase):
@@ -114,9 +76,20 @@ def hook(home, stream, *, core=None, defer=None, observe=None):
         "Stop",
     ):
         raise ValueError("Unsupported CodeBuddy hook event")
+    from agent_brain_client.adapters.storage.project_settings import source_active
+    if not source_active(home, payload.get("cwd"), "codebuddy"):
+        return {}, {"status": "retained-project-source-stopped", "data_transferred": False}
     local = core.eligible(value, payload.get("cwd"))
     if local is None:
         return {}, {"status": "outside-approved-source", "data_transferred": False}
+    # A bound project has its own pinned Hook and queue. Its presence is scoped
+    # to this host, so another host's project controls never suppress capture.
+    from agent_brain_client.adapters.storage.project_settings import project_settings, load as load_project
+    project_file = project_settings(home, payload["cwd"], harness="codebuddy")
+    if project_file.exists():
+        project = load_project(project_file, metadata_io.digest(project_file.read_bytes()))
+        if project["capture_policy"] is not None:
+            return {}, {"status": "project-source-delegated", "data_transferred": False}
     session = session_id(payload.get("session_id"))
     kind = payload["hook_event_name"]
     import agent_brain_client.adapters.harnesses.codebuddy.transcript as transcript
@@ -231,6 +204,9 @@ def resume_observed_assistant(home, core, turn_id):
     if row["complete"] or row["excluded"] or not row.get("stopped"):
         return False
     value = core.load(home)
+    from agent_brain_client.adapters.storage.project_settings import source_active
+    if not source_active(home, binding["cwd"], "codebuddy"):
+        return True
     local = core.eligible(value, binding["cwd"])
     if (not core.approved(value) or local is None
             or row.get("completion_scope_sha256", scope_digest(value["scope"])) != scope_digest(value["scope"])):

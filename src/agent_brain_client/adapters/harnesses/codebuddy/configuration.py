@@ -272,6 +272,9 @@ def refresh(home, source, *, check_only=False):
     )
     if receipt.get("removed"):
         return absent
+    # Check-only maintenance must report native drift just as an update does.
+    # No credential or backend call is needed to validate owned native images.
+    status(home, None, backend_check=lambda *args: (None, {"status": "native-ownership-only"}))
     from agent_brain_client.adapters.packages.layout import PYTHON_FILES
 
     pins = {name: digest((source / name).read_bytes()) for name in PYTHON_FILES}
@@ -314,28 +317,12 @@ def definitions(entry, home):
 
 
 def freeze(source, home, core):
-    from agent_brain_client.adapters.platforms.filesystem import private_directory
-    from agent_brain_client.adapters.storage.host_files import atomic
-
     from agent_brain_client.adapters.packages.layout import PYTHON_FILES
-
-    files = PYTHON_FILES
-    payload = {name: (source / name).read_bytes() for name in files}
-    pins = {name: digest(raw) for name, raw in payload.items()}
-    root = (
-        state_directory(home)
-        / "code"
-        / digest(json.dumps(pins, sort_keys=True).encode())
-    )
-    private_directory(root)
-    for name, raw in payload.items():
-        target = canonical(root / name)
-        if target.exists():
-            if digest(target.read_bytes()) != pins[name]:
-                raise ValueError("Frozen CodeBuddy adapter changed")
-        else:
-            private_directory(target.parent)
-            atomic(target, raw, 0o600)
+    from agent_brain_client.adapters.packages.frozen import freeze_code
+    # Source is an explicitly verified package. The shared freezer binds bytes
+    # from its executing immutable package; callers verify the same source pins.
+    pins = {name: digest((source / name).read_bytes()) for name in PYTHON_FILES}
+    root = freeze_code(state_directory(home), pins, source=source)
     metadata_io.write(root / "code.json", {"schema": 1, "files": pins})
     return root / "src/agent_brain_client/interfaces/cli/codebuddy.py"
 
@@ -393,7 +380,7 @@ def registration(file, journal, core):
         return metadata_io.private_json(file)
 
 
-def install(home, source, core, *, surface="both", remove=False):
+def install(home, source, core, *, surface="both", remove=False, enable_hooks=None):
     from agent_brain_client.adapters.platforms.filesystem import (
         locked,
         private_directory,
@@ -434,14 +421,19 @@ def install(home, source, core, *, surface="both", remove=False):
         entry = None if remove else freeze(source, home, core)
         mcp, hooks = definitions(entry, home) if not remove else (None, None)
         previous_mcp = receipt["mcp"] if receipt else None
-        previous_hooks = receipt["hooks"] if receipt else None
+        previous_hooks = receipt["hooks"] if receipt and receipt.get("hooks_enabled", True) else None
+        hooks_enabled = (receipt.get("hooks_enabled", True) if receipt else True) if enable_hooks is None else enable_hooks
         payload = {
             p: render_json(read_host(p), mcp, previous_mcp, remove=remove)
             for p in paths
         }
         settings = canonical(Path(home) / ".codebuddy/settings.json")
+        if receipt and receipt.get("hooks_enabled") is False:
+            current_hooks = Document(read_host(settings)).value.get("hooks", {})
+            if any(group in current_hooks.get(event, []) for event, group in receipt["hooks"].items()):
+                raise ValueError("Removed CodeBuddy Hook reappeared")
         payload[settings] = render_json(
-            read_host(settings), hooks, previous_hooks, hooks=True, remove=remove
+            read_host(settings), hooks if hooks_enabled else None, previous_hooks, hooks=True, remove=remove or not hooks_enabled
         )
         from agent_brain_client.adapters.storage.host_files import host_image
 
@@ -465,6 +457,7 @@ def install(home, source, core, *, surface="both", remove=False):
             "instruction_paths": [p.relative_to(canonical(Path(home) / ".codebuddy")).as_posix() for p in wanted_paths],
             "mcp": mcp,
             "hooks": hooks,
+            "hooks_enabled": hooks_enabled and not remove,
             "removed": remove,
         }
         payload[receipt_file] = (
@@ -493,9 +486,9 @@ def install(home, source, core, *, surface="both", remove=False):
         "native_changed": True,
         "surface": surface,
         "model_loaded": False,
-        "automatic_capture": "future-observed-turns",
+        "automatic_capture": "future-observed-turns" if hooks_enabled and not remove else "hooks-uninstalled",
         "assistant_capture": "current-generation-native-transcript",
-        "automatic_recall": True,
+        "automatic_recall": hooks_enabled and not remove,
         "permissions_changed": False,
         "backend_preserved": True,
     }
@@ -509,12 +502,12 @@ def status(home, core, *, backend_check):
         raise ValueError("Higher priority CodeBuddy MCP configuration changed")
     for file in receipt["mcp_paths"]:
         render_json(read_host(canonical(file)), receipt["mcp"], receipt["mcp"])
-    render_json(
-        read_host(Path(home) / ".codebuddy/settings.json"),
-        receipt["hooks"],
-        receipt["hooks"],
-        hooks=True,
-    )
+    if receipt.get("hooks_enabled", True):
+        render_json(read_host(Path(home) / ".codebuddy/settings.json"), receipt["hooks"], receipt["hooks"], hooks=True)
+    else:
+        configured = Document(read_host(Path(home) / ".codebuddy/settings.json")).value.get("hooks", {})
+        if any(group in configured.get(event, []) for event, group in receipt["hooks"].items()):
+            raise ValueError("Removed CodeBuddy Hook reappeared")
     for instructions in instruction_paths(home, receipt["surface"], receipt):
         guidance(instructions.read_text(), previous=True)
     _, checked = backend_check(home, core)
@@ -522,7 +515,9 @@ def status(home, core, *, backend_check):
         "status": "codebuddy-configured",
         "installed": True,
         "surface": receipt["surface"],
+        "collection_hooks_installed": receipt.get("hooks_enabled", True),
         "backend_status": checked["status"],
+        "service_enabled": checked.get("installed"),
         "model_loaded": False,
         "permissions_changed": False,
     }
@@ -558,7 +553,7 @@ def fresh_installation_payload(home):
     }
     settings = canonical(Path(home) / ".codebuddy/settings.json")
     payload[settings] = render_json(
-        read_host(settings), None, receipt["hooks"], hooks=True, remove=True
+        read_host(settings), None, receipt["hooks"] if receipt.get("hooks_enabled", True) else None, hooks=True, remove=True
     )
     for instructions in instruction_paths(home, receipt["surface"], receipt):
         payload[instructions] = guidance(

@@ -4,8 +4,6 @@ import json
 import os
 from pathlib import Path
 import sys
-import time
-from agent_brain_client.adapters.storage.registration import registration
 from agent_brain_client.adapters.storage.metadata import (
     canonical,
     digest,
@@ -19,196 +17,13 @@ from agent_brain_client.adapters.platforms.filesystem import (
     locked,
     command_line,
 )
-from agent_brain_client.adapters.packages.layout import PYTHON_FILES as RUNTIME
 
 ROOT = Path(__file__).resolve().parents[5]
 ENTRY = ROOT / "src/agent_brain_client/interfaces/cli/project.py"
 MARKER = "Agent Brain project memory"
 
 
-def load(path, sha):
-    p = private_json(path, sha)
-    fields = {
-        "schema",
-        "enabled",
-        "project_root",
-        "device_home",
-        "codex_home",
-        "profile",
-        "profile_sha256",
-        "content_policy",
-        "content_policy_sha256",
-        "release_policy",
-        "release_policy_sha256",
-        "cache",
-        "off_file",
-        "query",
-        "max_items",
-        "max_context_bytes",
-        "code_sha256",
-        "capture_policy",
-        "capture_policy_sha256",
-        "recall_policy",
-        "recall_policy_sha256",
-        "source_mode",
-    }
-    if (
-        not isinstance(p, dict)
-        or set(p) != fields
-        or p["schema"] != 1
-        or type(p["enabled"]) is not bool
-    ):
-        raise ValueError("Exact memory settings required")
-    if (
-        p["source_mode"]
-        not in (
-            "shared-memory",
-            "codex-hooks",
-            "codex-project",
-            "operator-notes",
-            "recall-only",
-        )
-        or type(p["max_items"]) is not int
-        or not 1 <= p["max_items"] <= 3
-        or type(p["max_context_bytes"]) is not int
-        or not 1024 <= p["max_context_bytes"] <= 16384
-        or not isinstance(p["query"], str)
-        or len(p["query"]) > 1024
-        or set(p["code_sha256"]) != set(RUNTIME)
-    ):
-        raise ValueError("Bounded project memory settings required")
-    for n, h in p["code_sha256"].items():
-        if digest(canonical(ROOT / n, existing=True).read_bytes()) != h:
-            raise ValueError("Memory code changed; refresh the owned project setup")
-    project = canonical(p["project_root"], existing=True)
-    if not project.is_dir():
-        raise ValueError("Existing project directory required")
-    canonical(p["off_file"])
-    m, policy = registration(p["device_home"])
-    r = policy["runtime"]
-    if (
-        m["release_policy"] != p["release_policy"]
-        or m["release_policy_sha256"] != p["release_policy_sha256"]
-        or r["https_profile"] != p["profile"]
-        or r["https_profile_sha256"] != p["profile_sha256"]
-        or r["content_policy"] != p["content_policy"]
-        or r["content_policy_sha256"] != p["content_policy_sha256"]
-        or r["content_cache"] != p["cache"]
-        or r["codex_home"] != p["codex_home"]
-    ):
-        raise ValueError("Existing identity/destination changed")
-    for name in ("capture_policy", "recall_policy"):
-        if bool(p[name]) != bool(p[name + "_sha256"]):
-            raise ValueError("Complete policy pin required")
-        if p[name]:
-            private_json(p[name], p[name + "_sha256"])
-    if p["source_mode"] == "shared-memory" and any(
-        p[n] is not None for n in ("capture_policy", "recall_policy")
-    ):
-        raise ValueError("Shared recall does not authorize conversation collection")
-    if p["source_mode"] == "recall-only" and (
-        p["capture_policy"] is not None or p["recall_policy"] is None
-    ):
-        raise ValueError("Read-only project link required")
-    if p["source_mode"] not in ("shared-memory", "recall-only") and (
-        p["capture_policy"] is None or p["recall_policy"] is None
-    ):
-        raise ValueError(
-            "Source collection needs an independently authorized complete Server bundle"
-        )
-    return p
-
-
-def active(p):
-    marker = Path(p["off_file"])
-    if not p["enabled"] or marker.exists() or marker.is_symlink():
-        return False
-    if p["recall_policy"]:
-        value = private_json(p["recall_policy"], p["recall_policy_sha256"])
-        if value.get("lifecycle") == "until-disabled":
-            return value["enabled"]
-        return value["not_before"] <= time.time() < value["expires_at"]
-    return True
-
-
-def retained_controls(home, references):
-    """Snapshot source stop metadata without executing old code or credentials."""
-    from agent_brain_client.domain.scopes import path as source_path
-
-    home = canonical(home)
-    base = canonical(home / ".config/agent-brain-client/project-memory")
-    files = (
-        {canonical(p): None for p in base.glob("*/settings.json")}
-        if base.exists()
-        else {}
-    )
-    ignored = set()
-    for row in references:
-        file = canonical(row["settings"])
-        source_path(row["root"])
-        if row["delegated"]:
-            files[file] = row["root"]
-        else:
-            # These project Hooks were intentionally handed over to global
-            # capture; their retired markers are not a user stop of that source.
-            ignored.add(file)
-    if len(files) > 256:
-        raise ValueError("Bounded original project controls required")
-    states, pins, blocked = [], {}, set()
-    for file, expected_root in sorted(files.items()):
-        if file in ignored:
-            continue
-        value = private_json(file)
-        if (
-            value.get("schema") != 1
-            or value.get("device_home") != str(home)
-            or type(value.get("enabled")) is not bool
-            or value.get("source_mode")
-            not in (
-                "shared-memory",
-                "codex-hooks",
-                "codex-project",
-                "operator-notes",
-                "recall-only",
-            )
-        ):
-            raise ValueError("Original project control scope required")
-        root = str(canonical(value["project_root"]))
-        source_path(root)
-        if expected_root is not None and source_path(root) != source_path(
-            expected_root
-        ):
-            raise ValueError("Original project routing changed")
-        off = canonical(value["off_file"])
-        stopped = off.exists()
-        pins[str(file)] = digest(file.read_bytes())
-        if stopped:
-            private_mode(off)
-            if not off.is_file() or off.stat().st_size > 1024:
-                raise ValueError("Bounded private project stop marker required")
-            pins[str(off)] = digest(off.read_bytes())
-        states.append(
-            {
-                "settings": str(file),
-                "root": root,
-                "enabled": value["enabled"],
-                "stopped": stopped,
-            }
-        )
-        if stopped or not value["enabled"]:
-            blocked.add(root)
-    if len(blocked) > 128:
-        raise ValueError("Retained project exclusions exceed source scope capacity")
-    return {"blocked_roots": sorted(blocked), "states": states, "source": pins}
-
-
-def project_settings(home, project):
-    return (
-        canonical(home)
-        / ".config/agent-brain-client/project-memory"
-        / digest(str(canonical(project, existing=True)).encode())[:24]
-        / "settings.json"
-    )
+from agent_brain_client.adapters.storage.project_settings import load as load, active as active, retained_controls as retained_controls, project_settings as project_settings
 
 
 def definitions(p, path, sha):
@@ -228,7 +43,7 @@ def definitions(p, path, sha):
             "-B",
             "-c",
             guard,
-            "hook",
+            "hook", "--harness", "codex",
             "--settings",
             str(path),
             "--settings-sha256",

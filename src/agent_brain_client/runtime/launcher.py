@@ -120,7 +120,7 @@ def serve_content(command, active, policy, status):
                 )
             except FreshMemoryVerificationRequired as error:
                 return error.result()
-            from agent_brain_client.adapters.harnesses.codex.installation import inspect
+            from agent_brain_client.adapters.installation.installation import inspect
 
             if not inspect(policy["runtime"]["device_home"]).get("installed"):
                 return {
@@ -163,6 +163,7 @@ def startup(
     installation_check=False,
     bootstrap_check=False,
     event_hook=None,
+    *, harness,
 ):
     releases = ClientReleases(policy_path, policy_sha256)
     if bootstrap_check:
@@ -272,7 +273,7 @@ def startup(
         HTTPS_CONTENT_CAPABILITIES,
     ):
         if not installation_check:
-            from agent_brain_client.adapters.harnesses.codex.installation import inspect
+            from agent_brain_client.adapters.installation.installation import inspect
 
             if not inspect(runtime["device_home"]).get("installed"):
                 return {
@@ -288,6 +289,8 @@ def startup(
                 Path(active["package"])
                 / "src/agent_brain_client/interfaces/mcp/content.py"
             ),
+            "--harness",
+            harness,
             "--client-version",
             active["version"],
         ]

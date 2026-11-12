@@ -1,4 +1,5 @@
 """SSH candidate reuses release/native recovery against a fake Mac home."""
+
 import copy
 import json
 import shutil
@@ -8,8 +9,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import test_content_install as fixtures
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 import agent_brain_client.adapters.packages.client as releases
-import agent_brain_client.adapters.harnesses.codex.installation as install
+import agent_brain_client.adapters.installation.installation as install
 import agent_brain_client.runtime.launcher as client_startup
 from dev.build.package import release as build
 from agent_brain_client.adapters.server.ssh import PREFIX,SSHChannel
@@ -34,7 +36,7 @@ class SSHInstall(unittest.TestCase):
             destination=self.f.fixture.publisher/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(out/name,destination)
         f=self.f.fixture;f.git(f.publisher,'add','--',*releases.SSH_CONTENT_CLIENT_FILES,'releases/manifest.json');f.git(f.publisher,'commit','-m','synthetic ssh content '+version);f.git(f.publisher,'push','origin','releases/stable')
 
-    def plan(self):return install.prepare(self.f.home,self.package,self.path,self.digest)
+    def plan(self):return install.prepare(self.f.home,self.package,self.path,self.digest, harness="codex")
 
     def test_install_protocol_gate_recovery_and_startup_without_signing_or_client_token(self):
         before=self.f.native_files();plan=self.plan();self.assertEqual(self.f.native_files(),before);calls=[]
@@ -45,7 +47,7 @@ class SSHInstall(unittest.TestCase):
         self.assertTrue(install.apply(plan,self.f.digest(plan),lambda p:None)['installed']);self.assertEqual(install.inspect(self.f.home)['installed_version'],'0.3.0')
         commands=[];fixed=SimpleNamespace(policy=self.policy,update=lambda:{'status':'current','active':self.active},verified_active=lambda:self.active)
         with patch.object(client_startup,'ClientReleases',return_value=fixed),patch.object(client_startup.subprocess,'run',side_effect=lambda argv,**kw:commands.append(argv) or SimpleNamespace(returncode=0)):
-            self.assertTrue(client_startup.startup(self.path,self.digest,installation_check=True)['served'])
+            self.assertTrue(client_startup.startup(self.path,self.digest,installation_check=True, harness="codex")['served'])
         self.assertIn('--ssh-profile',commands[-1]);self.assertNotIn('--signing-policy',commands[-1]);self.assertNotIn('--token-file',commands[-1]);self.assertNotIn('src/agent_brain_client/adapters/platforms/macos/native/DeviceComponent.swift',releases.SSH_CONTENT_CLIENT_FILES)
 
     def test_release_compatible_update_offline_health_rollback_and_capability_mixing(self):
@@ -69,13 +71,13 @@ class SSHInstall(unittest.TestCase):
 
     def test_owned_legacy_instruction_retirement_is_explicit_restorable_and_mapping_owned(self):
         from agent_brain_client.adapters.harnesses.codex.configuration import PERSONAL_MANAGED
-        from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+        from agent_brain_client.adapters.storage.content_session import ContentSession
         agents=self.f.native/'AGENTS.md';agents.write_text('Keep unrelated user instructions\n'+PERSONAL_MANAGED)
         old={'command':'synthetic-old-fixed-ssh'};self.f.config.write_text(self.f.config.read_text()+'\n[mcp_servers.'+install.NAME+']\ncommand="synthetic-old-fixed-ssh"\n')
         registry=self.f.home/'.config/agent-brain-client/codex-mcp.json';registry.parent.mkdir(parents=True,exist_ok=True,mode=0o700);old_receipt=self.base/'old-migration.json'
         registry.write_bytes(install.contract.encode({'schema':1,'native_mcp_name':install.NAME,'migration_receipt':str(old_receipt)}));registry.chmod(0o600)
         old_receipt.write_bytes(install.contract.encode({'installation_complete':True,'native_registered':True,'new_registration_path':str(registry),'after':{str(p):install.sha(p.read_bytes()) for p in (self.f.config,registry,agents)}}));old_receipt.chmod(0o600)
-        before=agents.read_bytes();plan=install.prepare(self.f.home,self.package,self.path,self.digest,True);self.assertEqual(len(plan['before']),3);self.assertIsNotNone(plan['legacy_agents']);calls=[]
+        before=agents.read_bytes();plan=install.prepare(self.f.home,self.package,self.path,self.digest,True, harness="codex");self.assertEqual(len(plan['before']),3);self.assertIsNotNone(plan['legacy_agents']);calls=[]
         def fail(p):
             calls.append(p)
             if len(calls)==2:raise ValueError('synthetic failed check')
@@ -84,7 +86,7 @@ class SSHInstall(unittest.TestCase):
         class Client:
             grant=self.f.grant
             def request(c,r):return {'request_id':r['request_id'],'result':{'content_api_version':1,'commit':'a'*40,'artifacts':[]}}
-        adapter=CodexContentSession(self.f.home,self.policy['runtime']['content_cache'],self.f.content_value,Client(),codex_home=self.f.native)
+        adapter=ContentSession(self.f.home,self.policy['runtime']['content_cache'],self.f.content_value,Client(),host=CodexContentPorts, native_home=self.f.native)
         self.assertEqual(adapter.refresh()['status'],'content-refreshed');self.assertTrue(install.inspect(self.f.home)['installed']);agents.write_text(agents.read_text()+'External user edit\n');self.assertFalse(install.inspect(self.f.home)['installed'])
 
     def test_preserved_legacy_registration_and_paused_hooks_need_both_pinned_preimages(self):
@@ -95,7 +97,7 @@ class SSHInstall(unittest.TestCase):
         self.assertNotIn(str(legacy),plan['before']);self.assertNotIn(str(hooks),plan['before']);self.assertTrue(install.apply(plan,self.f.digest(plan),lambda p:None)['installed']);self.assertEqual(legacy.read_bytes(),before)
         commands=[];fixed=SimpleNamespace(policy=self.policy,update=lambda:{'status':'current','active':self.active},verified_active=lambda:self.active)
         with patch.object(client_startup,'ClientReleases',return_value=fixed),patch.object(client_startup.subprocess,'run',side_effect=lambda argv,**kw:commands.append(argv) or SimpleNamespace(returncode=0)):
-            self.assertTrue(client_startup.startup(self.path,self.digest,installation_check=True)['served'])
+            self.assertTrue(client_startup.startup(self.path,self.digest,installation_check=True, harness="codex")['served'])
         self.assertNotIn('--legacy-binding-sha256',commands[-1]);hooks.write_text('{"unknown":"preserve"}')
         self.assertFalse(install.inspect(self.f.home)['installed']);self.assertEqual(legacy.read_bytes(),before)
 

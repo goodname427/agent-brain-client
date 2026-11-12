@@ -90,7 +90,7 @@ class MaintenancePorts:
     def load_registration(self):
         self.calls.append("registration")
         return RegisteredInstallation(
-            "synthetic-platform", True, {"registered_tool_count": 1}
+            "synthetic-platform", True, {"registered_tool_count": 1}, "codex"
         )
 
     def environment(self):

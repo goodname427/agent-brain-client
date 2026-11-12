@@ -10,8 +10,9 @@ from test_event_hook import accepted
 from agent_brain_client.application.memory.observations import stage_messages, resume_staging
 from agent_brain_client.application.queue.delivery import deliver_pending
 from agent_brain_client.adapters.harnesses.codex import collection, hooks
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
-from agent_brain_client.adapters.storage import metadata
+from agent_brain_client.adapters.storage.content_session import ContentSession
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
+from agent_brain_client.adapters.storage import metadata, event_policy
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.domain.scopes import digest
@@ -66,7 +67,7 @@ class CaptureRecovery(unittest.TestCase):
         text = '測試😀' * 5000
         policy = {'schema': 1, 'enabled': True, 'scopes': [{'cwd': str(self.home),
                   'project_id': 'synthetic-project', 'session_id': 'synthetic-session'}]}
-        p = {'device_home': str(self.home), 'cache': str(self.queue.cache),
+        p = {'harness': 'codex', 'device_home': str(self.home), 'cache': str(self.queue.cache),
              'codex_home': str(self.home / '.codex'), 'profile': 'synthetic',
              'profile_sha256': 'a' * 64, 'content_policy_sha256': 'b' * 64,
              'capture_policy': 'synthetic', 'capture_policy_sha256': 'c' * 64, 'content_policy': 'synthetic'}
@@ -75,11 +76,11 @@ class CaptureRecovery(unittest.TestCase):
             result = collection.submit_hook(self.value, self.local, self.payload(kind, text), services=self.services)
             self.assertEqual(self.captured(result['request_ids']), text)
             with patch('agent_brain_client.adapters.storage.pinned.pinned', return_value=policy), \
-                 patch.object(hooks, 'validate_hook_policy', return_value=policy), \
-                 patch.object(hooks, 'hook_enabled', return_value=True), \
+                 patch.object(event_policy, 'validate_hook_policy', return_value=policy), \
+                 patch.object(event_policy, 'hook_enabled', return_value=True), \
                  patch('agent_brain_client.adapters.server.https.HTTPSContentClient'), \
                  patch('agent_brain_client.domain.content_policy.validate_policy'), \
-                 patch('agent_brain_client.adapters.harnesses.codex.content.CodexContentSession', return_value=self.queue):
+                 patch('agent_brain_client.adapters.storage.content_session.ContentSession', return_value=self.queue):
                 result = project_memory.capture(p, self.payload(kind, text, 'project-turn'))
             self.assertEqual(self.captured(result['request_ids']), text)
         self.assertFalse(self.f.cloud.calls)
@@ -112,7 +113,7 @@ class CaptureRecovery(unittest.TestCase):
         self.assertEqual(self.queue.queue_status()['confirmed'], 2049)
         self.assertEqual(self.queue.queue_status()['pending'], 2)
         self.assertEqual(len(self.queue._queued()), 2051)
-        from agent_brain_client.adapters.harnesses.codex.lifecycle import queue_counts
+        from agent_brain_client.adapters.installation.lifecycle import queue_counts
         counts = queue_counts(self.queue)
         self.assertEqual(counts['confirmed'], 2049)
         self.assertEqual(counts['pending'], 2)
@@ -126,8 +127,8 @@ class CaptureRecovery(unittest.TestCase):
         for index, prefix in enumerate(('LocalOnly: ', 'do not share this: ') * 2):
             policy['schema'] = 1 if index < 2 else 2
             with patch('agent_brain_client.adapters.storage.pinned.pinned', return_value=policy), \
-                 patch.object(hooks, 'validate_hook_policy', return_value=policy), \
-                 patch.object(hooks, 'hook_enabled', return_value=True), \
+                 patch.object(event_policy, 'validate_hook_policy', return_value=policy), \
+                 patch.object(event_policy, 'hook_enabled', return_value=True), \
                  patch('agent_brain_client.adapters.server.https.HTTPSContentClient') as client:
                 for kind, text in [('UserPromptSubmit', prefix + 'x' * 9000),
                                    ('Stop', 'Synthetic derived assistant reply')]:
@@ -198,8 +199,8 @@ class CaptureRecovery(unittest.TestCase):
         for harness, base in [('codex', 'global-memory'), ('codebuddy', 'codebuddy')]:
             with self.subTest(harness=harness):
                 cache = self.home / '.config/agent-brain-client' / base / 'outboxes' / digest(self.local)
-                queue = CodexContentSession(self.home, cache, fixture.POLICY, self.f.cloud,
-                                           codex_home=self.home / '.codex')
+                queue = ContentSession(self.home, cache, fixture.POLICY, self.f.cloud,
+                                           host=CodexContentPorts, native_home=self.home / '.codex')
                 metadata.write(cache / 'origin.json', self.local, cache=True)
                 with patch.object(delivery, 'wake'):
                     delivery.schedule_delivery(self.home, harness, self.local)
@@ -214,8 +215,8 @@ class CaptureRecovery(unittest.TestCase):
                     spawn.assert_called_once()
 
     def test_project_route_is_persisted_before_capture_and_rediscovered(self):
-        from agent_brain_client.adapters.harnesses.codex import project_configuration
-        p = {'device_home': str(self.home), 'project_root': str(self.home),
+        from agent_brain_client.adapters.storage import project_settings as project_configuration
+        p = {'harness': 'codex', 'device_home': str(self.home), 'project_root': str(self.home),
              'cache': str(self.queue.cache), 'capture_policy': 'synthetic', 'source_mode': 'codex-project'}
         with patch.object(project_configuration, 'load', return_value=p), patch.object(delivery, 'wake') as wake:
             delivery.schedule_project(self.home, self.home / 'settings.json', 'a' * 64, wake_worker=False)
@@ -253,7 +254,7 @@ class CaptureRecovery(unittest.TestCase):
     def test_project_registration_failure_still_recalls_current_question(self):
         import sys
         import io
-        p = {'device_home': str(self.home), 'project_root': str(self.home),
+        p = {'harness': 'codex', 'device_home': str(self.home), 'project_root': str(self.home),
              'capture_policy': 'synthetic', 'source_mode': 'codex-project'}
         stream = SimpleNamespace(buffer=io.BytesIO(json.dumps(self.payload('UserPromptSubmit', 'Synthetic question')).encode()))
         with patch.object(sys, 'stdin', stream), \

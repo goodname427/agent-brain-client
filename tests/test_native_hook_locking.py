@@ -1,4 +1,6 @@
 """Native Stop versus a live MCP refresh; two isolated synthetic processes."""
+
+
 import json
 import os
 from pathlib import Path
@@ -20,9 +22,10 @@ root,base,role=map(Path,sys.argv[1:4])
 sys.path[:0]=[str(root),str(root/'tests'),str(root/'src')]
 from test_content_outbox import Cloud,POLICY
 from test_event_hook import accepted
-import agent_brain_client.adapters.harnesses.codex.content as content_cache
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
+import agent_brain_client.adapters.storage.content_session as content_cache
 import agent_brain_client.adapters.storage.content as brain_cache
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.interfaces.mcp.content import ContentServer
 from agent_brain_client.adapters.harnesses.codex.hooks import run_event_hook
 from agent_brain_client.adapters.platforms.filesystem import locked
@@ -40,7 +43,7 @@ class Remote(Cloud):
    if mode=='unknown':reply['unrecognized']=True
    return reply
   return super().request(request)
-cloud=Remote();adapter=CodexContentSession(base/'home',base/'cache',POLICY,cloud,codex_home=base/'native')
+cloud=Remote();adapter=ContentSession(base/'home',base/'cache',POLICY,cloud,host=CodexContentPorts, native_home=base/'native')
 with locked(base/'cache'/'.content-runtime.lock',shared=True):
  if str(role)=='worker':
   result=ContentServer(adapter,'0.4.0').handle({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'synthetic','version':'1'}}})

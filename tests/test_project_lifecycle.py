@@ -1,19 +1,22 @@
 """Project-scoped identity uses the same foreground lifecycle, with synthetic ports."""
+
+
 import io
 import json
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch, call
 
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 from agent_brain_client.runtime import project_memory as project
-from agent_brain_client.adapters.harnesses.codex import hooks
+from agent_brain_client.adapters.storage import event_policy as hooks
 import test_content_outbox as outbox_fixture
 
 
 class ProjectLifecycle(unittest.TestCase):
     def setUp(self):
         self.p = {'enabled': True, 'device_home': '/synthetic/home',
-                  'project_root': '/synthetic/project', 'source_mode': 'codex-project',
+                  'project_root': '/synthetic/project', 'harness':'codex','source_mode': 'codex-project',
                   'capture_policy': 'synthetic-capture', 'capture_policy_sha256': 'c' * 64,
                   'profile': 'synthetic-profile', 'profile_sha256': 'a' * 64,
                   'content_policy': 'synthetic-content', 'content_policy_sha256': 'b' * 64,
@@ -24,7 +27,7 @@ class ProjectLifecycle(unittest.TestCase):
 
     def hook(self, kind, *, stage, recall, schedule):
         payload = dict(self.payload, hook_event_name=kind)
-        stream = SimpleNamespace(buffer=io.BytesIO(json.dumps(payload).encode()))
+        stream = SimpleNamespace(harness="codex", buffer=io.BytesIO(json.dumps(payload).encode()))
         with (patch.object(project, 'active', return_value=True),
               patch.object(project.sys, 'stdin', stream),
               patch.object(project.sys, 'stderr', io.StringIO()),
@@ -93,10 +96,10 @@ class ProjectLifecycle(unittest.TestCase):
               patch.object(hooks, 'hook_enabled', return_value=True),
               patch('agent_brain_client.domain.content_policy.validate_policy'),
               patch('agent_brain_client.adapters.server.https.HTTPSContentClient', return_value=Mock()),
-              patch('agent_brain_client.adapters.harnesses.codex.content.CodexContentSession', return_value=queue),
+              patch('agent_brain_client.adapters.storage.content_session.ContentSession', return_value=queue),
               patch.object(fixture.cloud, 'request', side_effect=AssertionError('Foreground network')) as transport):
             for kind, role in [('UserPromptSubmit', 'user'), ('Stop', 'assistant')]:
-                with patch.object(hooks, 'native_hook_fields', return_value=(scope, 'turn', kind, 'Synthetic ' + role, 'key')):
+                with patch.object(hooks, 'normalized_hook_fields', return_value=(scope, 'turn', kind, 'Synthetic ' + role, 'key')):
                     result = project.capture(p, {})
                 self.assertEqual(result['local_queue']['state'], 'pending')
                 self.assertFalse(result['data_transferred'])

@@ -1,5 +1,8 @@
-import agent_brain_client.adapters.harnesses.codex.updates as codex_updates
-import agent_brain_client.adapters.harnesses.codex.launcher_update as launcher_update
+
+
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
+import agent_brain_client.adapters.installation.updates as codex_updates
+import agent_brain_client.adapters.installation.launcher_update as launcher_update
 import agent_brain_client.adapters.storage.private_files as adapters_storage_private_files
 import agent_brain_client.adapters.storage.install_state as adapters_storage_install_state
 import agent_brain_client.interfaces.cli.install as interfaces_cli_install
@@ -23,8 +26,8 @@ import unittest
 from unittest.mock import patch
 
 import agent_brain_client.adapters.storage.host_files as host
-import agent_brain_client.adapters.harnesses.codex.content as cache
-import agent_brain_client.adapters.harnesses.codex.installation as ci
+import agent_brain_client.adapters.storage.content_session as cache
+import agent_brain_client.adapters.installation.installation as ci
 import agent_brain_client.interfaces.mcp.content as content_mcp
 import agent_brain_client.runtime.collection as gm
 import agent_brain_client.adapters.harnesses.codex.collection_installation as hooks
@@ -77,7 +80,7 @@ def normal_retry(test, home, native):
     with (
         patch.object(Path, "home", return_value=home),
         patch.dict(os.environ, CODEX_HOME=str(native)),
-        patch.object(sys, "argv", ["agent_brain_client.runtime.installation.py"]),
+        patch.object(sys, "argv", ["agent_brain_client.runtime.installation.py", "--harness", "codex"]),
         patch.object(wizard, "native_platform", return_value="win32-amd64"),
         patch.object(
             access_install,
@@ -163,8 +166,8 @@ class MappingClosure(unittest.TestCase):
         self.addCleanup(self.patch.stop)
 
     def adapter(self):
-        return cache.CodexContentSession(
-            self.home, self.cache, self.policy, self.cloud, codex_home=self.native
+        return cache.ContentSession(
+            self.home, self.cache, self.policy, self.cloud, host=CodexContentPorts, native_home=self.native
         )
 
     def tear(self, file, raw):
@@ -375,7 +378,7 @@ class LauncherClosure(unittest.TestCase):
         policy.write_bytes(self.f.policy_path.read_bytes())
         policy.chmod(0o600)
         replacement = ci.prepare(self.f.home, self.f.package, policy,
-                                 self.f.policy_sha, replace_existing=True)
+                                 self.f.policy_sha, replace_existing=True, harness="codex")
         self.assertTrue(ci.apply(replacement, self.f.digest(replacement), lambda p: None)['installed'])
         self.meta = adapters_storage_private_files.private_json(self.f.home / '.config/agent-brain-client/codex-mcp.json')
         self.assertNotEqual(self.meta['plan_sha256'], value['plan_sha256'])

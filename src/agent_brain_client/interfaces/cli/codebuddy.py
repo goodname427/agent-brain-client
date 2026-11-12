@@ -79,7 +79,7 @@ def probe(home, core, runner=subprocess.run):
 
     command, _ = backend(home, core)
     result = runner(
-        [command["command"], *command["args"], "--installation-check"],
+        [command["command"], *command["args"], "--harness", "codebuddy", "--installation-check"],
         env=dict(os.environ, **command.get("env", {})),
         capture_output=True,
         timeout=120,
@@ -170,8 +170,8 @@ def main():
         if args.action == "probe":
             value = probe(home, core)
         elif args.action == "status":
-            value = host.status(home, core, backend_check=host_binding.backend)
-            value["source_enabled"] = core.approved(core.load(home))
+            value = host.status(home, core, backend_check=host_binding.inspect_backend)
+            value["source_enabled"] = value.get("collection_hooks_installed", value.get("automatic_recall", True)) and core.approved(core.load(home))
         else:
             if args.action == "install":
                 checked = probe(home, core)
@@ -185,7 +185,7 @@ def main():
             if args.action == "install":
                 value.update(checked)
                 value["status"] = "codebuddy-configured"
-                value["source_enabled"] = core.approved(core.load(home))
+                value["source_enabled"] = value.get("collection_hooks_installed", value.get("automatic_recall", True)) and core.approved(core.load(home))
         print(json.dumps(value, ensure_ascii=False))
         return 0
     except Exception as error:

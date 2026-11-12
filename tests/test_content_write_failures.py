@@ -1,5 +1,6 @@
 """Synthetic content write failures; no device credentials, real memories or network."""
 
+
 from contextlib import contextmanager, redirect_stderr
 import copy
 import io
@@ -8,12 +9,13 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 from agent_brain_client.adapters.platforms.filesystem import cache_locked as locked
 from agent_brain_client.interfaces.mcp.content import ContentServer
 from agent_brain_client.interfaces.mcp.framing import ContentParameterError, ContentToolUnavailable
 from agent_brain_client.application.tools.catalog import enabled_tools
 from agent_brain_client.domain.errors import CacheBlocked
-from agent_brain_client.adapters.harnesses.codex.content import CodexContentSession
+from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.application.control import RequestStopped
 import test_content_outbox as fixture
 
@@ -48,7 +50,7 @@ class WriteFailures(unittest.TestCase):
             with self.subTest(lock=filename):
                 with (
                     locked(self.f.cache / filename),
-                    patch("agent_brain_client.adapters.harnesses.codex.content.locked", short_lock),
+                    patch("agent_brain_client.adapters.storage.content_session.locked", short_lock),
                 ):
                     result = self.invoke()
                 self.assertEqual(
@@ -74,7 +76,7 @@ class WriteFailures(unittest.TestCase):
         stderr = io.StringIO()
         with (
             patch(
-                "agent_brain_client.adapters.harnesses.codex.content.os.fsync",
+                "agent_brain_client.adapters.storage.content_session.os.fsync",
                 side_effect=OSError("SYNTHETIC_PRIVATE_PATH_TOKEN_BODY"),
             ),
             redirect_stderr(stderr),
@@ -323,8 +325,8 @@ class CollectionCapacity(unittest.TestCase):
                 fixture.MEMORY, body=('Synthetic collection 中文\n' * 600) + str(index))
 
     def restart(self):
-        return CodexContentSession(self.f.home, self.f.cache, fixture.POLICY, self.f.cloud,
-                              codex_home=self.f.home / '.codex')
+        return ContentSession(self.f.home, self.f.cache, fixture.POLICY, self.f.cloud,
+                              host=CodexContentPorts, native_home=self.f.home / '.codex')
 
     def files(self):
         return {p.name: p.read_bytes() for p in

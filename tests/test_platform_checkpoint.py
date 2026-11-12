@@ -85,7 +85,7 @@ print(json.dumps({'stdlib_machine_empty':True,'fixed_checkpoint':Server(None,'0.
         check_platform_boundary('src/agent_brain_client/adapters/platforms/filesystem.py', 'import platform\nplatform.machine()')
 
 
-import agent_brain_client.adapters.harnesses.codex.installation as ci
+import agent_brain_client.adapters.installation.installation as ci
 from test_content_outbox import POLICY
 
 

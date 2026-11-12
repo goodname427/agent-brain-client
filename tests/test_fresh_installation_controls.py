@@ -1,5 +1,7 @@
 """Retain source pause/scope while discarding old device identity and approvals."""
 
+
+
 import copy
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import test_fresh_installation as fixture
+from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 from agent_brain_client.adapters.packages.layout import PYTHON_FILES
 from agent_brain_client.adapters.platforms.filesystem import private_directory
 from agent_brain_client.adapters.storage import metadata
@@ -46,8 +49,8 @@ class FreshControls(unittest.TestCase):
         self.assertTrue(f.profile.exists())
 
     def test_shared_gate_blocks_session_and_global_capture_before_credentials(self):
-        from agent_brain_client.adapters.harnesses.codex.content import (
-            CodexContentSession,
+        from agent_brain_client.adapters.storage.content_session import (
+            ContentSession,
         )
         from agent_brain_client.adapters.server.collection import CollectionClient
         from agent_brain_client.application.installation.fresh import (
@@ -67,8 +70,8 @@ class FreshControls(unittest.TestCase):
                 record["phase"] = phase
                 f.port.save(record)
                 with self.assertRaises(FreshMemoryVerificationRequired):
-                    CodexContentSession(
-                        f.home, f.cache, f.content, cloud, codex_home=f.native
+                    ContentSession(
+                        f.home, f.cache, f.content, cloud, host=CodexContentPorts, native_home=f.native
                     )
                 with self.assertRaises(FreshMemoryVerificationRequired):
                     CollectionClient({"device_home": str(f.home)})

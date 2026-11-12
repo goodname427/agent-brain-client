@@ -30,7 +30,7 @@ class Gateway(unittest.TestCase):
         self.assertEqual(result, 37)
         execute.assert_not_called()
         args, kwargs = runner.call_args
-        self.assertEqual(args, (['synthetic-python', '-I', 'synthetic-launcher.py'],))
+        self.assertEqual(args, (['synthetic-python', '-I', 'synthetic-launcher.py', '--harness', 'codebuddy'],))
         self.assertEqual(kwargs['env']['SYNTHETIC_CLIENT'], '1')
         self.assertFalse(kwargs['check'])
         self.assertEqual(set(kwargs), {'env', 'check'})

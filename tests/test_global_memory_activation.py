@@ -53,7 +53,7 @@ class GlobalMemoryActivation(unittest.TestCase):
                   'client':{'source_device_id':'c'*32}}
         response = {'result':{'source_registered':True,'source_device_id':'c'*32,
                              'global_profile_id':self.scope['profile_id'],'scope_sha256':digest(self.scope)}}
-        client = SimpleNamespace(device_id='c'*32, wire=Mock(side_effect=[
+        client = SimpleNamespace(harness="codex", device_id='c'*32, wire=Mock(side_effect=[
             {'error':{'code':'transport_unconfirmed','retryable':True}}, response]))
         before = copy.deepcopy(value)
         with (patch('agent_brain_client.adapters.server.collection.CollectionClient',return_value=client),
@@ -90,7 +90,7 @@ class GlobalMemoryActivation(unittest.TestCase):
                      {'result':{'schema':1, 'stopped':0}}]
         for response in responses:
             with self.subTest(response=response):
-                client = SimpleNamespace(wire=Mock(return_value=response))
+                client = SimpleNamespace(harness="codex", wire=Mock(return_value=response))
                 with patch.object(gm, 'CollectionClient', return_value=client):
                     result = gm.resume(self.value)
                 self.assertEqual(result['status'], 'global-memory-resume-unconfirmed')
@@ -101,7 +101,7 @@ class GlobalMemoryActivation(unittest.TestCase):
                 self.assertFalse(self.file.exists())
 
     def test_transport_exception_leaves_even_previously_running_source_fenced(self):
-        client = SimpleNamespace(wire=Mock(side_effect=OSError('Synthetic transport failure')))
+        client = SimpleNamespace(harness="codex", wire=Mock(side_effect=OSError('Synthetic transport failure')))
         with patch.object(gm, 'CollectionClient', return_value=client), self.assertRaises(OSError):
             gm.resume(self.value)
         self.assertTrue(self.off.exists())
@@ -109,7 +109,7 @@ class GlobalMemoryActivation(unittest.TestCase):
     def test_confirmed_resume_only_clears_local_fence_without_changing_scope(self):
         before = copy.deepcopy(self.value)
         self.off.touch()
-        client = SimpleNamespace(wire=Mock(return_value={'result':{'schema':1, 'stopped':False}}))
+        client = SimpleNamespace(harness="codex", wire=Mock(return_value={'result':{'schema':1, 'stopped':False}}))
         with patch.object(gm, 'CollectionClient', return_value=client): result = gm.resume(self.value)
         self.assertTrue(result['remote_confirmed'])
         self.assertTrue(result['collection_enabled'])
@@ -131,7 +131,7 @@ class GlobalMemoryActivation(unittest.TestCase):
                      legacy_projects=[{'settings':'synthetic-settings', 'settings_sha256':'b' * 64}])
         source = {'off_file':str(self.home / 'synthetic-project.off')}
         with (patch.object(gm, 'CollectionClient', side_effect=AssertionError('No global credentials')),
-              patch('agent_brain_client.adapters.harnesses.codex.project_configuration.load', return_value=source),
+              patch('agent_brain_client.adapters.storage.project_settings.load', return_value=source),
               patch('agent_brain_client.runtime.project_memory.daily_command', return_value={}) as command):
             result = gm.resume(value)
         command.assert_called_once_with(source, 'resume')
@@ -171,7 +171,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         value = dict(self.value, enabled=False, server_scope_sha256=None)
         status = {'result':{'source_registered':True, 'scope_sha256':digest(self.scope),
                             'global_profile_id':self.scope['profile_id'], 'source_device_id':'c' * 32}}
-        client = SimpleNamespace(device_id='c' * 32, wire=Mock(side_effect=[status, {'result':{}}]))
+        client = SimpleNamespace(harness="codex", device_id='c' * 32, wire=Mock(side_effect=[status, {'result':{}}]))
         with patch('agent_brain_client.adapters.server.collection.CollectionClient', return_value=client):
             result = operator.activate(value, self.scope)
         self.assertFalse(result['activated'])
@@ -181,9 +181,9 @@ class GlobalMemoryActivation(unittest.TestCase):
 
     def test_configuration_connection_failure_keeps_current_source_active(self):
         before = copy.deepcopy(self.value)
-        args = SimpleNamespace(device_home=str(self.home), include_root=[], isolate_root=[],
+        args = SimpleNamespace(harness="codex", device_home=str(self.home), include_root=[], isolate_root=[],
             exclude_root=[], non_project_root=[], all_projects=True, activate_packet=None)
-        client = SimpleNamespace(device_id='c'*32, wire=Mock(return_value={'error':{'code':'transport_unconfirmed'}}))
+        client = SimpleNamespace(harness="codex", device_id='c'*32, wire=Mock(return_value={'error':{'code':'transport_unconfirmed'}}))
         with patch('agent_brain_client.adapters.storage.collection.load', return_value=self.value), patch('agent_brain_client.adapters.server.collection.CollectionClient', return_value=client):
             result = operator.configure(args)
         self.assertEqual(result['status'], 'global-memory-connection-pending')
@@ -222,7 +222,7 @@ class AutomaticCapture(unittest.TestCase):
             if method == 'memory_global_resume':
                 return {'error':{'code':'transport_unconfirmed'}} if state['fail_resume'] else {'result':{'schema':1,'stopped':False}}
             self.fail('No model or history request: ' + method)
-        client = SimpleNamespace(device_id='c'*32, wire=wire)
+        client = SimpleNamespace(harness="codex", device_id='c'*32, wire=wire)
         def load(*args, **kwargs): return metadata.private_json(self.file)
         with (patch('agent_brain_client.adapters.storage.collection.load', side_effect=load),
               patch('agent_brain_client.adapters.server.collection.CollectionClient', return_value=client),
