@@ -121,10 +121,14 @@ def install(home, *, native=None, remove=False, enabled=None, check_only=False):
         wanted.setdefault("env", {})["CODEX_HOME"] = str(target)
         wanted["enabled"] = enabled if enabled is not None else (actual.get("enabled", True) if actual else True)
         if remove:
-            from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
-            before_hooks, _ = CodexContentPorts.remove_hooks(home, before, None)
-        else:
-            before_hooks = before
+            from agent_brain_client.adapters.harnesses.codex import collection_installation as hooks
+            if hooks.split_owned(before)[1] is not None:
+                from types import SimpleNamespace
+                hooks.uninstall(SimpleNamespace(device_home=str(home)))
+                before = read(config)
+                if not matches(entry(before), previous["mcp"]):
+                    raise ValueError("Owned Codex MCP entry changed during Hook removal")
+        before_hooks = before
         after = (toml_remove(before_hooks.decode(), [("mcp_servers", NAME)]) if remove else
                  toml_replace(before.decode(), ("mcp_servers", NAME), wanted)).encode()
         saved = {"schema": 1, "native_home": str(target), "mcp": wanted, "removed": remove}

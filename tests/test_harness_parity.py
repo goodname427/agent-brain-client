@@ -648,6 +648,8 @@ class IndependentHostControl(unittest.TestCase):
             session = ContentSession(f.home, cache, content, cloud, host=port, native_home=actual)
             self.assertEqual(session.refresh()["status"], "content-refreshed")
             sessions.append(session)
+        config = native / "config.toml"
+        config.write_bytes(config.read_bytes().replace(b"enabled = true", b"enabled = false"))
         with patch("agent_brain_client.adapters.packages.client.ClientReleases.verified_active", return_value={"version": "synthetic"}):
             result = uninstall(f.home, lambda message: "Continue")
         self.assertEqual(result["status"], "client-uninstalled", result)
@@ -657,6 +659,15 @@ class IndependentHostControl(unittest.TestCase):
         for session in sessions:
             self.assertFalse(session.mapping.owned_snapshot()["files"])
             self.assertTrue(session.cache.is_dir())
+        self.assertTrue(f.run_wizard()["installed"])
+        from agent_brain_client.runtime.installation_completion import complete
+        with patch("agent_brain_client.runtime.installation_completion.source_setup", return_value={"collection_enabled": True}):
+            result = complete(f.home, {"installed": True}, harness="codex",
+                              refresh=lambda *args: {"status": "content-current"})
+        self.assertTrue(result["local_setup_complete"], result)
+        self.assertFalse(binding.receipt(f.home)["removed"])
+        self.assertFalse(binding.status(f.home, policy["runtime"])["service_enabled"])
+        self.assertIn(b"Agent Brain global memory", (native / "config.toml").read_bytes())
 
 
 class NativeBindingTransaction(unittest.TestCase):

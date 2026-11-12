@@ -191,7 +191,9 @@ def complete(home, result, *, harness=None, choose=input, refresh=mapping_refres
         restore_native_bindings(home)
         if selected == "codex":
             from agent_brain_client.adapters.harnesses.codex import binding
-            stages["native_mcp"] = binding.install(home)
+            previous = binding.receipt(home)
+            stages["native_mcp"] = (binding.install(home, native=Path(previous["native_home"]), enabled=previous["mcp"]["enabled"])
+                                    if previous is not None and previous["removed"] else binding.install(home))
         if mcp.get("enabled") is False:
             stages.update(
                 mapping={"status": "paused"},
