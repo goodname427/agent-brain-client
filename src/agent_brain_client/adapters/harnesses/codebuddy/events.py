@@ -295,8 +295,7 @@ def hook(home, stream, *, core=None):
         try:
             import agent_brain_client.adapters.harnesses.codebuddy.transcript as transcript
 
-            transcript.observe(home, payload, core)
-            native_status = "current-turn-observed"
+            native_status = transcript.observe(home, payload, core)
         except Exception:
             pass  # Prompt capture and recall remain independently available.
         try:

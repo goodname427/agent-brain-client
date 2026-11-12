@@ -34,3 +34,16 @@ Windows 网关使用继承原始 stdio 的子进程并透传退出码，POSIX �
 ## 验证范围
 
 专项测试覆盖安装事务、配置冲突、共享 outbox、当前轮正文、敏感来源、长 Unicode 回复和断网重试。本地与 Actions 共用 `client_checks.py` 的清单，均包含 CodeBuddy 静态检查，Windows 清单也包含 CodeBuddy 专项和 PowerShell 入口解析。真实凭据 UI、IDE／CLI 模型加载与用户设备验收单列，不从合成测试推断。
+
+### Current IDE transcript boundary
+
+The CodeBuddy IDE native transcript can live below the OS-specific
+`CodeBuddyExtension/Data/<user>/<IDE>/[uid]/history/<workspace-MD5>/<session>/index.json`
+layout, in addition to the previously recognized CLI/native cache paths. The
+adapter accepts only the Hook-provided exact session path and generation; it
+never searches history to guess missing Hook fields. Only that generation's
+completed assistant message references are read. Missing/unrecognized transcript
+paths report `transcript-unavailable-direct-stop-only`, not transcript readiness.
+Windows native-source I/O supports long local paths without changing OS policy;
+link/reparse and hard-link rejection remain in effect. A synthetic regression is
+not proof that a particular installed IDE emitted its Hook payload correctly.
