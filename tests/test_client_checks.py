@@ -216,6 +216,7 @@ class LocalChecks(unittest.TestCase):
         self.assertIn("python: ['3.11', '3.13']", workflow)
         self.assertIn('ruff==0.14.0 mypy==1.18.2', workflow)
         self.assertIn('test_codebuddy', {item for command in cc.COMMANDS['windows'] for item in command})
+        self.assertIn('test_native_source_files', {item for command in cc.COMMANDS['windows'] for item in command})
         for name in ('bootstrap/windows/install.ps1', 'bin/memory.ps1', 'bootstrap/windows/codebuddy.ps1'):
             self.assertIn(name, cc.COMMANDS['windows'][-1][-1])
         self.assertTrue(any('src' in command and 'ruff' in command for command in cc.COMMANDS['source']))
