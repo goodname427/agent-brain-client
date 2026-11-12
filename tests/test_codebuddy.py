@@ -649,6 +649,8 @@ class Transcript(Hooks):
         # be made to read it while collecting this generation.
         (messages / 'current-assistant.json').write_text(json.dumps({'id': 'current-assistant', 'role': 'assistant', 'message': json.dumps({'role': 'assistant', 'content': [{'type': 'text', 'text': 'IDE actual final answer'}]})}))
         self.hook()
+        index['requests'][1]['state'] = 'complete'
+        path.write_text(json.dumps(index))
         _, result = self.stop()
         self.assertEqual(result['local_queue']['state'], 'confirmed')
         self.assertEqual(self.sent[-1]['params']['event']['messages'][0]['content'], 'IDE actual final answer')
@@ -698,12 +700,184 @@ class Transcript(Hooks):
         with self.assertRaises(ValueError):
             self.stop()
         path.write_text(json.dumps({'messages': [{'id': 'assistant', 'role': 'assistant', 'isComplete': True}],
-                                    'requests': [{'id': 'generation-1', 'messages': ['assistant']}]}))
+                                    'requests': [{'id': 'generation-1', 'state': 'complete', 'messages': ['assistant']}]}))
         messages = path.parent / 'messages'
         messages.mkdir()
         (messages / 'assistant.json').write_text(json.dumps({'id': 'assistant', 'role': 'assistant', 'message': {'content': 'Fully persisted IDE answer'}}))
         self.hook(hook_event_name='SessionStart')
         self.assertEqual(self.sent[-1]['params']['event']['messages'][0]['content'], 'Fully persisted IDE answer')
+
+    def completed_ide_fixture(self):
+        path = self.native_file('.json')
+        index = {'messages': [{'id': 'answer', 'role': 'assistant', 'isComplete': False}],
+                 'requests': [{'id': 'generation-1', 'state': 'running', 'messages': ['answer']}]}
+        path.write_text(json.dumps(index))
+        self.hook()
+        index['requests'][0]['state'] = 'complete'
+        path.write_text(json.dumps(index))
+        native = path.parent / 'messages/answer.json'
+        native.parent.mkdir()
+        native.write_text(json.dumps({'id': 'answer', 'role': 'assistant', 'message':
+                                     {'content': [{'type': 'text', 'text': 'Persisted terminal answer'},
+                                                  {'type': 'reasoning', 'text': 'Do not collect'}]}}))
+        return path, index, native
+
+    def test_ide_terminal_request_accepts_stale_message_completion_flag(self):
+        self.completed_ide_fixture()
+        _, result = self.stop()
+        self.assertEqual(result['local_queue']['state'], 'confirmed')
+        self.assertEqual(self.sent[-1]['params']['event']['messages'],
+                         [{'role': 'assistant', 'content': 'Persisted terminal answer'}])
+        self.stop()
+        self.assertEqual(len(self.sent), 2)
+
+    def test_ide_stop_before_finalize_retries_stale_flag_on_next_hook(self):
+        path, index, _ = self.completed_ide_fixture()
+        index['requests'][0]['state'] = 'running'
+        path.write_text(json.dumps(index))
+        with self.assertRaises(ValueError):
+            self.stop()
+        self.assertEqual(len(self.sent), 1)
+        index['requests'][0]['state'] = 'complete'
+        path.write_text(json.dumps(index))
+        self.hook(hook_event_name='SessionStart')
+        self.assertEqual(self.sent[-1]['params']['event']['messages'],
+                         [{'role': 'assistant', 'content': 'Persisted terminal answer'}])
+        self.hook(hook_event_name='SessionStart')
+        self.assertEqual(len(self.sent), 2)
+
+    def test_ide_nonterminal_request_rejects_even_complete_message(self):
+        path, index, _ = self.completed_ide_fixture()
+        index['messages'][0]['isComplete'] = True
+        for state in ('running', 'cancelled', 'failed', 'unknown', None):
+            index['requests'][0]['state'] = state
+            path.write_text(json.dumps(index))
+            with self.subTest(state=state), self.assertRaises(ValueError):
+                self.stop()
+            self.assertEqual(len(self.sent), 1)
+
+    def test_ide_terminal_request_requires_complete_bound_message_file(self):
+        _, _, native = self.completed_ide_fixture()
+        for body in ('{', json.dumps({'id': 'different', 'role': 'assistant'})):
+            native.write_text(body)
+            with self.assertRaises(ValueError):
+                self.stop()
+            self.assertEqual(len(self.sent), 1)
+        native.unlink()
+        with self.assertRaises(native_transcript.PendingTranscript):
+            self.stop()
+        self.assertEqual(len(self.sent), 1)
+
+    def test_ide_terminal_snapshot_changes_preserve_unconsumed_cursor(self):
+        path, index, native = self.completed_ide_fixture()
+        read = native_transcript.read_bound
+        def racing_read(target, **kwargs):
+            result = read(target, **kwargs)
+            if target == native:
+                index['requests'][0]['state'] = 'running'
+                path.write_text(json.dumps(index))
+            return result
+        with patch.object(native_transcript, 'read_bound', side_effect=racing_read), self.assertRaises(ValueError):
+            self.stop()
+        self.assertEqual(len(self.sent), 1)
+        row = metadata_io.private_json(native_transcript.marker(self.fixture.home, self.payload), cache=True)
+        self.assertFalse(row['complete'])
+
+    def test_ide_terminal_body_changes_preserve_unconsumed_cursor(self):
+        _, _, native = self.completed_ide_fixture()
+        read = native_transcript.read_bound
+        def racing_read(target, **kwargs):
+            result = read(target, **kwargs)
+            if target == native:
+                native.write_text(json.dumps({'id': 'answer', 'role': 'assistant',
+                                              'message': {'content': 'Still changing'}}))
+            return result
+        with patch.object(native_transcript, 'read_bound', side_effect=racing_read), self.assertRaises(ValueError):
+            self.stop()
+        self.assertEqual(len(self.sent), 1)
+
+    def test_stop_schedules_only_exact_pending_ide_turn_without_blocking(self):
+        path, index, _ = self.completed_ide_fixture()
+        index['requests'][0]['state'] = 'running'
+        path.write_text(json.dumps(index))
+        spawn = Mock()
+        _, result = cb.hook(self.fixture.home, io.BytesIO(json.dumps(dict(
+            self.payload, hook_event_name='Stop', stop_hook_active=False)).encode()),
+            core=self.core, defer=spawn)
+        self.assertEqual(result['status'], 'assistant-capture-deferred')
+        spawn.assert_called_once_with(native_transcript.marker(self.fixture.home, self.payload).stem)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_deferred_capture_finishes_without_another_hook_and_deduplicates(self):
+        path, index, _ = self.completed_ide_fixture()
+        index['requests'][0]['state'] = 'running'
+        path.write_text(json.dumps(index))
+        with self.assertRaises(ValueError):
+            self.stop()
+        def finalize(_):
+            index['requests'][0]['state'] = 'complete'
+            path.write_text(json.dumps(index))
+        turn = native_transcript.marker(self.fixture.home, self.payload).stem
+        result = cb.finish_deferred(self.fixture.home, self.core, turn, pause=finalize)
+        self.assertEqual(result['local_queue']['state'], 'confirmed')
+        cb.finish_deferred(self.fixture.home, self.core, turn, pause=lambda _: None)
+        self.assertEqual(len(self.sent), 2)
+
+    def test_deferred_expiry_and_revoked_source_never_transfer(self):
+        path, index, _ = self.completed_ide_fixture()
+        index['requests'][0]['state'] = 'running'
+        path.write_text(json.dumps(index))
+        with self.assertRaises(ValueError):
+            self.stop()
+        turn = native_transcript.marker(self.fixture.home, self.payload).stem
+        pause = Mock()
+        result = cb.finish_deferred(self.fixture.home, self.core, turn, pause=pause)
+        self.assertEqual(result['status'], 'assistant-capture-deferred-expired')
+        self.assertEqual(pause.call_count, 30)
+        def revoke(_):
+            self.value['enabled'] = False
+        result = cb.finish_deferred(self.fixture.home, self.core, turn, pause=revoke)
+        self.assertEqual(result['status'], 'assistant-capture-source-disabled')
+        self.assertEqual(len(self.sent), 1)
+
+    def test_deferred_never_retries_transport_or_queue_read_errors(self):
+        path, index, _ = self.completed_ide_fixture()
+        index['requests'][0]['state'] = 'running'
+        path.write_text(json.dumps(index))
+        with self.assertRaises(ValueError):
+            self.stop()
+        index['requests'][0]['state'] = 'complete'
+        path.write_text(json.dumps(index))
+        for error in (FileNotFoundError('synthetic'), json.JSONDecodeError('synthetic', '', 0)):
+            with self.subTest(error=type(error).__name__), patch.object(cb, 'capture_messages', side_effect=error) as capture:
+                result = cb.finish_deferred(self.fixture.home, self.core,
+                    native_transcript.marker(self.fixture.home, self.payload).stem,
+                    pause=lambda _: None)
+                self.assertEqual(result['status'], 'assistant-capture-review-required')
+                capture.assert_called_once()
+                spawn = Mock()
+                with self.assertRaises(type(error)):
+                    cb.hook(self.fixture.home, io.BytesIO(json.dumps(dict(
+                        self.payload, hook_event_name='Stop', stop_hook_active=False)).encode()),
+                        core=self.core, defer=spawn)
+                spawn.assert_not_called()
+
+    def test_deferred_cancelled_request_is_not_retried(self):
+        path, index, _ = self.completed_ide_fixture()
+        index['requests'][0]['state'] = 'running'
+        path.write_text(json.dumps(index))
+        with self.assertRaises(ValueError):
+            self.stop()
+        def cancel(_):
+            index['requests'][0]['state'] = 'cancelled'
+            path.write_text(json.dumps(index))
+        pause = Mock(side_effect=cancel)
+        result = cb.finish_deferred(self.fixture.home, self.core,
+                                    native_transcript.marker(self.fixture.home, self.payload).stem,
+                                    pause=pause)
+        self.assertEqual(result['status'], 'assistant-capture-review-required')
+        self.assertEqual(pause.call_count, 1)
+        self.assertEqual(len(self.sent), 1)
 
     def test_already_completed_ide_generation_is_not_a_future_capture_source(self):
         path = self.native_file('.json')
@@ -789,3 +963,26 @@ class Transcript(Hooks):
 
 if __name__ == '__main__':
     unittest.main()
+
+class DeferredProcess(unittest.TestCase):
+    def test_detached_entry_has_no_inherited_host_pipes(self):
+        import agent_brain_client.interfaces.cli.codebuddy as entry
+        for platform in ('darwin', 'win32'):
+            with self.subTest(platform=platform), \
+                    patch.object(entry.sys, 'platform', platform), \
+                    patch.object(entry.subprocess, 'DETACHED_PROCESS', 8, create=True), \
+                    patch.object(entry.subprocess, 'CREATE_NEW_PROCESS_GROUP', 512, create=True), \
+                    patch.object(entry.subprocess, 'Popen') as spawn:
+                entry.defer_turn(Path('/synthetic/home'), 'a' * 64)
+                command = spawn.call_args.args[0]
+                options = spawn.call_args.kwargs
+                self.assertEqual(command[:3], [sys.executable, '-I', '-B'])
+                self.assertEqual(command[-2:], ['--turn-id', 'a' * 64])
+                self.assertEqual(options['stdin'], entry.subprocess.DEVNULL)
+                self.assertEqual(options['stdout'], entry.subprocess.DEVNULL)
+                self.assertEqual(options['stderr'], entry.subprocess.DEVNULL)
+                self.assertTrue(options['close_fds'])
+                if platform == 'win32':
+                    self.assertEqual(options['creationflags'], 520)
+                else:
+                    self.assertTrue(options['start_new_session'])

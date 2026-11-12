@@ -40,7 +40,7 @@ sh bootstrap/macos/codebuddy.sh --server 'https://your-server.example'
 
 官方 Hooks 文档未承诺 Stop 最终正文；另外核对了官方 npm 包 `@tencent-ai/codebuddy-code` 2.180.0 的实际 Hook 输入转换代码，它会转发可用的 `last_assistant_message`，因此优先使用该字段，缺失再走原生正文读取。IDE 格式依据本机官方程序的 `HistoryStorage.getTranscriptPath`、`ConversationManager` 实现，JSONL 格式须匹配识别结构；均用合成文件验证，这不是实机模型验收。只接受 Hook 给出的 CodeBuddy 原生存储路径和安装后实际观察到的当前轮。不会扫描历史会话或读取旧消息正文；不采集工具输入输出、附件或推理内容。
 
-文件缺失、尚未写完、轮次交叠、轮换、未知格式、路径越界或来源停止时保留证据并给出内容无关诊断；查询、正常 MCP 写入和可用的召回不因助手正文缺失而被关闭。IDE 落盘晚于 Stop 时，后续 Hook 会重读先前实际观察到的该 generation，不把未完成正文冒称为完整回复。原生读取每次至多 4 MiB；超过边界明确失败，不截断后声称完整。没有 generation_id 的 IDE index 格式无法精确定位助手回复，保留 prompt 采集与召回并报告缺口。
+文件缺失、尚未写完、轮次交叠、轮换、未知格式、路径越界或来源停止时保留证据并给出内容无关诊断；查询、正常 MCP 写入和可用的召回不因助手正文缺失而被关闭。IDE 落盘晚于 Stop 时，Hook 不阻塞宿主：独立收尾进程最多等待 30 秒，只重读本轮已观察的 generation；总请求期限 45 秒，仍未完成则保留游标与内容无关诊断，后续正常 Hook 也可补齐。必须看到请求 `state=complete`，并核验消息身份及读取期间索引、正文未变；宿主对既有消息重写正文时可能保留旧 `isComplete=false`，不再以该字段单独拒收。取消、失败、授权撤销或范围变化不会继续后台采集。不会把未完成正文冒称为完整回复。原生读取每次至多 4 MiB；超过边界明确失败，不截断后声称完整。没有 generation_id 的 IDE index 格式无法精确定位助手回复，保留 prompt 采集与召回并报告缺口。
 
 CodeBuddy 按正常宿主流程审核 MCP/Hooks。CLI 文档要求在 `/hooks` 面板审核外部变更；IDE 的项目级设置可能覆盖用户级设置，需要在实际项目检查。安装不会修改信任或权限配置。IDE 使用支持 MCP 的 Agent/Craft 模式；旧 Ask 模式不承诺 MCP。SDK 默认不加载文件配置，需要其调用方明确设置 settingSources。
 
