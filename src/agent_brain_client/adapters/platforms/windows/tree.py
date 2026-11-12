@@ -155,3 +155,17 @@ class WindowsTree(VerifiedTreeFiles):
         for handle in reversed(self.handles):
             self.kernel.CloseHandle(handle)
         self.handles.clear()
+
+
+def native_source_path(path):
+    """Extended local paths without changing machine long-path policy."""
+    text = str(path)
+    if text.startswith("\\\\") or ".." in path.parts or not path.drive:
+        raise ValueError("Local unambiguous native source path required")
+    # Validate before extending: no streams, reserved devices, or DOS aliases.
+    for part in path.parts[1:]:
+        try:
+            WindowsTree._name(part)
+        except OSError as error:
+            raise ValueError("Unambiguous native source name required") from error
+    return Path("\\\\?\\" + text)

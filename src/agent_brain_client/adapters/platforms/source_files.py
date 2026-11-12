@@ -9,9 +9,9 @@ def _io_path(path):
     """Use extended local Win32 paths without requiring machine policy changes."""
     if os.name != "nt":
         return path
-    from agent_brain_client.adapters.platforms.windows.source_files import io_path
+    from agent_brain_client.adapters.platforms.windows.tree import native_source_path
 
-    return io_path(path)
+    return native_source_path(path)
 
 
 def canonical(path):
