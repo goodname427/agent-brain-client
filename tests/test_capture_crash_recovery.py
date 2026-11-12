@@ -70,6 +70,7 @@ class CaptureRecovery(unittest.TestCase):
              'codex_home': str(self.home / '.codex'), 'profile': 'synthetic',
              'profile_sha256': 'a' * 64, 'content_policy_sha256': 'b' * 64,
              'capture_policy': 'synthetic', 'capture_policy_sha256': 'c' * 64, 'content_policy': 'synthetic'}
+        p['off_file'] = str(self.home / 'memory.off')
         for kind in ('UserPromptSubmit', 'Stop'):
             result = collection.submit_hook(self.value, self.local, self.payload(kind, text), services=self.services)
             self.assertEqual(self.captured(result['request_ids']), text)
@@ -118,7 +119,8 @@ class CaptureRecovery(unittest.TestCase):
         p = {'profile_sha256': 'a' * 64, 'content_policy_sha256': 'b' * 64,
              'capture_policy': 'synthetic', 'capture_policy_sha256': 'c' * 64,
              'off_file': str(self.home / 'memory.off')}
-        for index, prefix in enumerate(('LocalOnly: ', 'do not share this: ')):
+        for index, prefix in enumerate(('LocalOnly: ', 'do not share this: ') * 2):
+            policy['schema'] = 1 if index < 2 else 2
             with patch('agent_brain_client.adapters.storage.pinned.pinned', return_value=policy), \
                  patch.object(hooks, 'validate_hook_policy', return_value=policy), \
                  patch.object(hooks, 'hook_enabled', return_value=True), \

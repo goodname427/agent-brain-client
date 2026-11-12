@@ -502,24 +502,23 @@ def capture(p, payload):
     if not hook_enabled(policy):
         return {"status": "disabled", "data_transferred": False}
     scope, turn, kind, text, key = native_hook_fields(policy, payload)
-    if policy.get("schema") == 2:
-        blocked = canonical(Path(p["off_file"]).parent / ("excluded-" + key + ".json"))
-        if blocked.exists():
-            return {"status": "excluded-turn", "data_transferred": False}
-        if private_content(text) or restricted(text):
-            write(
-                blocked,
-                {"schema": 1, "reason": "local-only-or-sensitive", "turn_sha256": key},
-                exclusive=True,
-            )
-            return {"status": "excluded-turn", "data_transferred": False}
+    blocked = canonical(Path(p["off_file"]).parent / ("excluded-" + key + ".json"))
+    if blocked.exists():
+        return {"status": "excluded-turn", "data_transferred": False}
+    if private_content(text) or restricted(text):
+        write(
+            blocked,
+            {"schema": 1, "reason": "local-only-or-sensitive", "turn_sha256": key},
+            exclusive=True,
+        )
+        return {"status": "excluded-turn", "data_transferred": False}
     client = HTTPSContentClient(p["profile"], p["profile_sha256"])
     content = pinned(p["content_policy"], p["content_policy_sha256"])
     validate_policy(content, client.grant)
     adapter = CodexContentSession(
         p["device_home"], p["cache"], content, client, codex_home=p["codex_home"]
     )
-    if policy.get("schema") == 2 and kind == "Stop":
+    if kind == "Stop":
         staged = adapter._load("hook-turns/" + key + ".json")
         if isinstance(staged, dict) and (private_content(staged.get("prompt", "")) or restricted(staged.get("prompt", ""))):
             blocked = canonical(
