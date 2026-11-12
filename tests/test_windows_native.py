@@ -475,7 +475,7 @@ class WindowsNative(unittest.TestCase):
             from test_windows_install_closure import torn_hook
             before_hook=torn_hook(self,self.home,native)
             self.assertFalse(content_install.inspect(self.home).get('registration_verified'))
-            with patch.object(Path,'home',return_value=self.home),patch.object(sys,'argv',['agent_brain_client.runtime.installation.py', "--harness", "codex"]),patch.object(installer,'run',side_effect=lambda *a,**k:content_install.inspect(self.home)),patch.object(installer,'finish_install',side_effect=lambda home,value:value),patch.object(sys,'stdout',io.StringIO()) as output:
+            with patch.object(Path,'home',return_value=self.home),patch.object(sys,'argv',['agent_brain_client.runtime.installation.py', "--harness", "codex"]),patch.object(installer,'run',side_effect=lambda *a,**k:content_install.inspect(self.home)),patch.object(installer,'finish_install',side_effect=lambda home,value,**kwargs:value),patch.object(sys,'stdout',io.StringIO()) as output:
                 self.assertEqual(interfaces_cli_install.main(),0,output.getvalue())
             self.assertEqual(config.read_bytes(),before_hook)
             hooks.install(args)

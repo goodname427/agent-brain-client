@@ -355,7 +355,7 @@ class FreshInstallation(unittest.TestCase):
             ),
             patch(
                 "agent_brain_client.runtime.installation.finish_install",
-                side_effect=lambda home, value: value,
+                side_effect=lambda home, value, **kwargs: value,
             ),
             patch(
                 "agent_brain_client.adapters.server.https.HTTPSContentClient", NewDevice

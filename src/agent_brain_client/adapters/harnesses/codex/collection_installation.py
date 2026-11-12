@@ -409,9 +409,12 @@ def recover_pending(home, native):
         meta = private_files.private_json(
             home / ".config/agent-brain-client/codex-mcp.json"
         )
-        _, _, _, registered_native = ci.registered_context(
-            home, meta, config_image=before
+        from agent_brain_client.adapters.harnesses.codex.binding import private_control
+        _, registered = registration_store.registration(home)
+        _, _, _, control = ci.registered_context(
+            home, meta, config_image=None if private_control(home, registered["runtime"]) else before
         )
+        registered_native = native_binding(home, registered)
         if registered_native != native:
             raise ValueError("Hook native binding changed")
         recover_record(file, receipt, record)
@@ -576,7 +579,7 @@ def install(args):
     value = prepare(args)
     _, registered = registration_store.registration(args.device_home)
     file = settings_path(args.device_home)
-    result = transact(Path(registered["runtime"]["codex_home"]), file.parent, block(value))
+    result = transact(native_binding(args.device_home, registered), file.parent, block(value))
     return dict(result, expanded_sources_enabled=approved(value), automatic_all_projects=True,
                 legacy_project_roots=[row["root"] for row in value["legacy_projects"]],
                 settings=str(file), model_calls=0)
@@ -588,7 +591,7 @@ def uninstall(args):
     _, registered = registration_store.registration(args.device_home)
     directory = settings_path(args.device_home).parent
     return transact(
-        Path(registered["runtime"]["codex_home"]), directory, "", remove=True
+        native_binding(args.device_home, registered), directory, "", remove=True
     )
 
 
@@ -596,7 +599,7 @@ def installation_status(value):
     from agent_brain_client.adapters.storage.collection import settings_path
 
     _, registered = registration_store.registration(value["device_home"])
-    native = Path(registered["runtime"]["codex_home"])
+    native = native_binding(value["device_home"], registered)
     receipt = settings_path(value["device_home"]).parent / "hook-install.json"
     if not receipt.exists():
         return False
@@ -627,14 +630,14 @@ def recover_update(home, *, check_only=False):
     with locked(directory / "code-refresh.lock"):
         recover_code(home)
         _, registered = registration_store.registration(home)
-        recover_pending(home, Path(registered["runtime"]["codex_home"]))
+        recover_pending(home, native_binding(home, registered))
     return True
 
 
 from agent_brain_client.adapters.packages.frozen import freeze_code
 
 
-def refresh(home, *, check_only=False):
+def refresh_hooks(home, *, check_only=False):
     """Refresh an already owned Hook; never choose, approve or resume sources."""
     from agent_brain_client.adapters.platforms.filesystem import locked
     from agent_brain_client.adapters.storage.host_files import (
@@ -664,7 +667,7 @@ def refresh(home, *, check_only=False):
     if json.loads(original, object_pairs_hook=metadata_io.unique) != value:
         raise ValueError("Global settings changed")
     _, registered = registration_store.registration(home)
-    native = Path(registered["runtime"]["codex_home"])
+    native = native_binding(home, registered)
     _, previous = split_owned((native / "config.toml").read_bytes())
     receipt = file.parent / "hook-install.json"
     if not receipt.exists():
@@ -755,6 +758,9 @@ def recovery_registration(home):
     if record.get("phase") != "applying":
         return None
     _, policy = registration(home)
+    from agent_brain_client.adapters.harnesses.codex.binding import private_control
+    if private_control(home, policy["runtime"]):
+        return None  # Native Hook edits cannot tear the separate shared registry.
     native = Path(policy["runtime"]["codex_home"])
     if set(record.get("host", {})) != {str(native / "config.toml")}:
         raise ValueError("Hook recovery binding changed")
@@ -763,3 +769,16 @@ def recovery_registration(home):
     meta = private_json(Path(home) / ".config/agent-brain-client/codex-mcp.json")
     policy, mcp, _, native = registered_context(home, meta, config_image=before)
     return policy, mcp, native
+
+
+def native_binding(home, registered):
+    from agent_brain_client.adapters.harnesses.codex.binding import native_home
+    return native_home(home, registered["runtime"])
+
+
+def refresh(home, *, check_only=False):
+    from agent_brain_client.adapters.harnesses.codex import binding
+    native = binding.install(home, check_only=check_only)
+    hooks = refresh_hooks(home, check_only=check_only)
+    return dict(hooks, native_changed=hooks["native_changed"] or native["native_changed"],
+                update_available=hooks["update_available"] or native["update_available"])

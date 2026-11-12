@@ -12,8 +12,8 @@ import json
 import os
 from agent_brain_client.adapters.storage.metadata import canonical, digest, private_json
 from agent_brain_client.adapters.platforms.filesystem import file_mode
-from agent_brain_client.adapters.storage.project_settings import load, active, project_settings, project_harness
-from agent_brain_client.runtime.project_memory import install, context
+from agent_brain_client.adapters.storage.project_settings import active, project_settings, project_harness
+from agent_brain_client.runtime.project_memory import load, install, context
 from agent_brain_client.runtime.project_memory import (
     setup,
     enable,

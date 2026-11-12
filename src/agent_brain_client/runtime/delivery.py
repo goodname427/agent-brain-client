@@ -40,7 +40,7 @@ def schedule_delivery(home, host_adapter, origin):
 
 
 def schedule_project(home, settings_path, settings_sha256, *, wake_worker=True):
-    from agent_brain_client.adapters.storage.project_settings import load
+    from agent_brain_client.runtime.project_memory import load
 
     value = load(settings_path, settings_sha256)
     if Path(value['device_home']) != Path(home):
@@ -208,7 +208,7 @@ def run(home, *, max_seconds=600, pause=time.sleep):
                                 pending = finish_codebuddy_project(home, task) or pending
                             elif task.get('harness') == 'codex-project':
                                 from agent_brain_client.runtime.project_memory import delivery_port
-                                from agent_brain_client.adapters.storage.project_settings import load
+                                from agent_brain_client.runtime.project_memory import load
 
                                 if set(task) != {'schema', 'harness', 'settings', 'settings_sha256'} or task['schema'] != 1:
                                     raise ValueError('Pinned project delivery required')
@@ -293,7 +293,7 @@ def discover_existing(home):
             task = metadata.private_json(task_file, cache=True)
             if task.get('harness') != 'codex-project':
                 continue
-            from agent_brain_client.adapters.storage.project_settings import load
+            from agent_brain_client.runtime.project_memory import load
 
             project = load(task['settings'], task['settings_sha256'])
             if Path(project['device_home']) == Path(home) and _has_work(project['cache']):

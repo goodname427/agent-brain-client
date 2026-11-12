@@ -385,8 +385,8 @@ def prepare_materials(
         from agent_brain_client.runtime.fresh_installation import retained_installation
 
         from agent_brain_client.runtime.harness_content import content_host
-        target_cache = home / ".config/agent-brain-client/codebuddy/content-cache" if harness == "codebuddy" else state / "content-cache"
-        retained_installation(home, native, target_host=content_host(harness)).restore_mapping(target_cache, content)
+        target_cache = home / ".config/agent-brain-client" / harness / "content-cache"
+        retained_installation(home, Path(fresh["native"]), target_host=content_host(harness)).restore_mapping(target_cache, content)
     runtime = {
         "https_profile": str(state / "https-profile.json"),
         "https_profile_sha256": profile_sha,
@@ -395,7 +395,7 @@ def prepare_materials(
         "content_policy_sha256": content_sha,
         "device_home": str(home),
         "codex_home": str(native),
-        "content_cache": str(home / ".config/agent-brain-client/codebuddy/content-cache") if harness == "codebuddy" else str(state / "content-cache"),
+        "content_cache": str(home / ".config/agent-brain-client" / harness / "content-cache") if native == home / ".config/agent-brain-client/shared-native" or harness == "codebuddy" else str(state / "content-cache"),
         "dependency_policy": str(state / "dependencies.json"),
         "dependency_policy_sha256": deps_sha,
     }
@@ -905,7 +905,7 @@ def run(
         }
 
 
-def finish_install(home, value):
+def finish_install(home, value, *, harness=None):
     from agent_brain_client.runtime.updates import manage_update
     from agent_brain_client.runtime.installation_completion import complete
 
@@ -921,7 +921,7 @@ def finish_install(home, value):
                 installation_complete=False,
                 next_action="Resume the public update entry to complete the trusted launcher handover before mapping or Hook setup.",
             )
-    return complete(home, value)
+    return complete(home, value, harness=harness)
 
 
 def recover_windows_setup(home, native):

@@ -13,6 +13,7 @@ PYTHON_FILES = (
     "src/agent_brain_client/adapters/harnesses/codebuddy/sources.py",
     "src/agent_brain_client/adapters/harnesses/codebuddy/transcript.py",
     "src/agent_brain_client/adapters/harnesses/codex/__init__.py",
+    "src/agent_brain_client/adapters/harnesses/codex/binding.py",
     "src/agent_brain_client/adapters/harnesses/codex/collection.py",
     "src/agent_brain_client/adapters/harnesses/codex/collection_installation.py",
     "src/agent_brain_client/adapters/harnesses/codex/configuration.py",

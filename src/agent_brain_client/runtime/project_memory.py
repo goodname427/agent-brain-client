@@ -24,7 +24,13 @@ from agent_brain_client.adapters.platforms.filesystem import (
     locked,
 )
 from agent_brain_client.adapters.packages.layout import PYTHON_FILES as RUNTIME
-from agent_brain_client.adapters.storage.project_settings import load, active, project_settings, project_harness
+from agent_brain_client.adapters.storage.project_settings import active, project_settings, project_harness
+
+
+def load(path, sha):
+    from agent_brain_client.adapters.storage.project_settings import load as read_settings
+    from agent_brain_client.runtime.harness_content import content_host
+    return read_settings(path, sha, locate=lambda home, runtime, harness: content_host(harness).location(home, runtime))
 
 
 def install(settings, path, pin):
@@ -55,6 +61,8 @@ def setup(args):
     project = canonical(args.project_root, existing=True)
     m, policy = registration(home)
     r = policy["runtime"]
+    from agent_brain_client.runtime.harness_content import content_host
+    native, cache = content_host(args.harness).location(home, r)
     output = canonical(args.output)
     private_directory(output.parent)
     if output.exists():
@@ -67,14 +75,14 @@ def setup(args):
         "enabled": True,
         "project_root": str(project),
         "device_home": str(home),
-        "codex_home": r["codex_home"],
+        "codex_home": str(native),
         "profile": r["https_profile"],
         "profile_sha256": r["https_profile_sha256"],
         "content_policy": r["content_policy"],
         "content_policy_sha256": r["content_policy_sha256"],
         "release_policy": m["release_policy"],
         "release_policy_sha256": m["release_policy_sha256"],
-        "cache": r["content_cache"] if args.harness == "codex" else str(home / ".config/agent-brain-client/codebuddy/project-outboxes" / digest(str(project).encode())),
+        "cache": str(cache) if args.harness == "codex" else str(home / ".config/agent-brain-client/codebuddy/project-outboxes" / digest(str(project).encode())),
         "off_file": str(output.parent / "memory.off"),
         "query": args.query,
         "max_items": 3,

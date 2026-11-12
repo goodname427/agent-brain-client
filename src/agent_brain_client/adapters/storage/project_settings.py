@@ -54,7 +54,7 @@ def project_harness(value):
             return value["harness"]
     raise ValueError("Exact project Harness record required")
 
-def load(path, sha):
+def load(path, sha, *, locate):
     p = private_json(path, sha)
     fields = FIELDS
     harness = project_harness(p)
@@ -94,6 +94,7 @@ def load(path, sha):
     canonical(p["off_file"])
     m, policy = registration(p["device_home"])
     r = policy["runtime"]
+    native, cache = locate(canonical(p["device_home"]), r, p["harness"])
     if (
         m["release_policy"] != p["release_policy"]
         or m["release_policy_sha256"] != p["release_policy_sha256"]
@@ -101,8 +102,8 @@ def load(path, sha):
         or r["https_profile_sha256"] != p["profile_sha256"]
         or r["content_policy"] != p["content_policy"]
         or r["content_policy_sha256"] != p["content_policy_sha256"]
-        or (r["content_cache"] if p["harness"] == "codex" else str(canonical(p["device_home"]) / ".config/agent-brain-client/codebuddy/project-outboxes" / digest(str(project).encode()))) != p["cache"]
-        or r["codex_home"] != p["codex_home"]
+        or (str(cache) if p["harness"] == "codex" else str(canonical(p["device_home"]) / ".config/agent-brain-client/codebuddy/project-outboxes" / digest(str(project).encode()))) != p["cache"]
+        or str(native) != p["codex_home"]
     ):
         raise ValueError("Existing identity/destination changed")
     for name in ("capture_policy", "recall_policy"):

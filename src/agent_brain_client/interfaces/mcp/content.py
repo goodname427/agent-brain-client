@@ -1146,10 +1146,10 @@ def main():
         return
     _STARTUP_STAGE = "content-adapter-start"
     from agent_brain_client.runtime.harness_content import content_host
-    native = args.codex_home if args.harness == "codex" else str(Path(args.device_home) / ".codebuddy")
-    cache = args.cache if args.harness == "codex" else str(Path(args.device_home) / ".config/agent-brain-client/codebuddy/content-cache")
+    host = content_host(args.harness)
+    native, cache = host.location(Path(args.device_home), {"codex_home": args.codex_home, "content_cache": args.cache})
     adapter = ContentSession(
-        args.device_home, cache, policy, client, host=content_host(args.harness), native_home=native
+        args.device_home, cache, policy, client, host=host, native_home=native
     )
     if args.mapping_refresh:
         result = adapter.refresh()

@@ -118,6 +118,11 @@ def secondary_projections(home, primary):
 
 def remove_secondary_entries(home):
     from agent_brain_client.runtime.host_maintenance import registered_hosts
+    if "codex" in registered_hosts(home):
+        from agent_brain_client.adapters.harnesses.codex import binding
+        file = Path(home) / ".config/agent-brain-client/codex-mcp.json"
+        if file.exists():
+            binding.install(home, remove=True)
     if "codebuddy" in registered_hosts(home):
         from agent_brain_client.adapters.harnesses.codebuddy import configuration
         file = configuration.state_directory(home) / "registration.json"
@@ -144,7 +149,7 @@ def status(home):
         if host is not None:
             row = result["host_installations"].setdefault(host.name, {})
             row["registered_client_verified"] = result.get("registration_verified", result.get("uninstall_verified", False))
-            if host.name == "codex":
+            if host.name == "codex" and "codex" not in result["hosts"]:
                 row["installed"] = result.get("registration_verified", False)
                 row["service_enabled"] = result.get("installed", False)
         result["host_content"] = {}

@@ -22,7 +22,8 @@ class CodexContentPorts:
 
     @staticmethod
     def location(home, runtime):
-        return Path(runtime["codex_home"]), Path(runtime["content_cache"])
+        from agent_brain_client.adapters.harnesses.codex.binding import location
+        return location(home, runtime)
 
     @staticmethod
     def remove_hooks(home, raw, platform):

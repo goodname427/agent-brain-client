@@ -87,7 +87,12 @@ def hook(home, stream, *, core=None, defer=None, observe=None):
     from agent_brain_client.adapters.storage.project_settings import project_settings, load as load_project
     project_file = project_settings(home, payload["cwd"], harness="codebuddy")
     if project_file.exists():
-        project = load_project(project_file, metadata_io.digest(project_file.read_bytes()))
+        from agent_brain_client.adapters.harnesses.codebuddy.content_ports import CodeBuddyContentPorts
+        def locate(home, runtime, harness):
+            if harness != "codebuddy":
+                raise ValueError("CodeBuddy project binding required")
+            return CodeBuddyContentPorts.location(home, runtime)
+        project = load_project(project_file, metadata_io.digest(project_file.read_bytes()), locate=locate)
         if project["capture_policy"] is not None:
             return {}, {"status": "project-source-delegated", "data_transferred": False}
     session = session_id(payload.get("session_id"))

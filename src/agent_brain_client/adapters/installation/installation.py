@@ -430,7 +430,10 @@ def prepare(home, package, policy_path, policy_sha, replace_existing=False, *, h
         if fresh is not None and fresh["phase"] == "ready":
             if type(fresh.get("service_enabled")) is not bool:
                 raise InstallBlocked("Retained MCP pause state required")
-            mcp["enabled"] = fresh["service_enabled"]
+            # A moved registry separates former native pause from shared control.
+            # The native adapter restores that pause from registered_surfaces.
+            separate = native == Path(home) / ".config/agent-brain-client/shared-native" and fresh["native"] != str(native)
+            mcp["enabled"] = True if separate else fresh["service_enabled"]
     registered = raw(registration)
     legacy_agents = None
     if old:

@@ -56,12 +56,14 @@ def installed_adapter(home, *, harness=None):
         runtime["https_profile"], runtime["https_profile_sha256"]
     )
     content = private_json(runtime["content_policy"], runtime["content_policy_sha256"])
+    port = content_host(harness)
+    native, cache = port.location(home, runtime)
     return ContentSession(
         home,
-        runtime["content_cache"] if harness == "codex" else home / ".config/agent-brain-client/codebuddy/content-cache",
+        cache,
         content,
         client,
-        host=content_host(harness), native_home=runtime["codex_home"] if harness == "codex" else home / ".codebuddy",
+        host=port, native_home=native,
     )
 
 

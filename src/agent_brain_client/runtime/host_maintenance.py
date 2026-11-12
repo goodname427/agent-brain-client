@@ -30,7 +30,9 @@ def host_errors(operation):
 def registered_hosts(home):
     base = Path(home) / ".config/agent-brain-client"
     hosts = []
-    if (base / "global-memory/hook-install.json").exists():
+    codex = base / "codex/registration.json"
+    if ((codex.exists() and metadata.private_json(codex).get("removed") is not True)
+            or not codex.exists() and (base / "global-memory/hook-install.json").exists()):
         hosts.append("codex")
     buddy = base / "codebuddy/registration.json"
     if buddy.exists() and metadata.private_json(buddy).get("removed") is not True:
@@ -45,8 +47,15 @@ def install_sources(args):
     meta, _ = registration(home)
     _, command, _, _ = registered_context(home, meta)
     argv = command["args"]
-    harness = argv[argv.index("--harness") + 1]
+    harness = getattr(args, "harness", None) or argv[argv.index("--harness") + 1]
     if harness == "codex":
+        from agent_brain_client.adapters.storage.reinstallation import read_journal
+        fresh = read_journal(home)
+        retained = fresh["mapping"].get("registered_surfaces", {}).get("codex") if fresh and fresh["phase"] == "complete" else None
+        if retained is not None and not retained["hooks_enabled"]:
+            value = prepare(args)
+            freeze_code(settings_path(home).parent, value["code_sha256"])
+            return {"status": "retained-codex-hooks-paused", "native_changed": False, "harness": harness}
         from agent_brain_client.adapters.harnesses.codex.collection_installation import install
         return install(args)
     if harness != "codebuddy":
@@ -60,6 +69,8 @@ def install_sources(args):
 
 def recover_pending(home, native):
     if "codex" in registered_hosts(home):
+        from agent_brain_client.adapters.harnesses.codex import binding
+        binding.recover(home)
         from agent_brain_client.adapters.harnesses.codex.collection_installation import recover_pending as recover
         recover(home, native)
     if "codebuddy" in registered_hosts(home):
@@ -86,6 +97,12 @@ class HostMaintenance:
                 recover_code(self.home)
         for host in self.hosts():
             if host == "codex":
+                from agent_brain_client.adapters.harnesses.codex import binding
+                transaction = binding.directory(self.home) / "transaction.json"
+                active = transaction.exists() and metadata.private_json(transaction).get("phase") == "applying"
+                pending = active or pending
+                if active and not check_only:
+                    binding.recover(self.home)
                 from agent_brain_client.adapters.harnesses.codex.collection_installation import recover_update
                 pending = recover_update(self.home, check_only=check_only) or pending
             else:

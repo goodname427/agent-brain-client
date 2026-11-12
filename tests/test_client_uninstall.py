@@ -158,8 +158,9 @@ class ClientUninstall(unittest.TestCase):
                 path.write_bytes(before + b'\nSYNTHETIC_DRIFT')
                 with patch.object(self.f.backend, 'load', side_effect=AssertionError('Credential access forbidden')):
                     code, result = self.connection_cli(execute=False)
-                self.assertEqual((code, result['status']), (2, 'connection-recovery-review-required'))
-                self.assertFalse(result['credential_accessed'])
+                expected = 'first-install-review-or-resume-required' if path in (policy_path, lifecycle.journal_path(self.home)) else 'connection-recovery-review-required'
+                self.assertEqual((code, result['status']), (2, expected))
+                self.assertFalse(result.get('credential_accessed', False))
                 self.assertEqual(path.read_bytes(), before + b'\nSYNTHETIC_DRIFT')
             path.write_bytes(before)
 

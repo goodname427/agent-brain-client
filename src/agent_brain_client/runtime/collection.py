@@ -163,10 +163,14 @@ def host_status(value):
     home = Path(value["device_home"])
     hosts = {}
     codex_receipt = settings_path(home).parent / "hook-install.json"
-    if codex_receipt.exists():
+    if codex_receipt.exists() or (home / ".config/agent-brain-client/codex/registration.json").exists():
         from agent_brain_client.adapters.harnesses.codex.collection_installation import installation_status
         try:
-            hosts["codex"] = {"installed": installation_status(value)}
+            from agent_brain_client.adapters.harnesses.codex import binding
+            from agent_brain_client.adapters.storage.registration import registration
+            _, policy = registration(home)
+            native = binding.status(home, policy["runtime"])
+            hosts["codex"] = dict(native, mcp_installed=native["installed"], installed=installation_status(value))
         except Exception as error:
             hosts["codex"] = {"installed": False, "status": "review-required", "error_type": type(error).__name__}
     buddy = home / ".config/agent-brain-client/codebuddy/registration.json"

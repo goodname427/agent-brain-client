@@ -23,7 +23,7 @@ ENTRY = ROOT / "src/agent_brain_client/interfaces/cli/project.py"
 MARKER = "Agent Brain project memory"
 
 
-from agent_brain_client.adapters.storage.project_settings import load as load, active as active, retained_controls as retained_controls, project_settings as project_settings
+from agent_brain_client.adapters.storage.project_settings import active as active, retained_controls as retained_controls, project_settings as project_settings
 
 
 def definitions(p, path, sha):
@@ -202,3 +202,13 @@ def context(p, rows):
                 break
         output += raw
     return output if output != prefix else ""
+
+
+def load(path, sha):
+    from agent_brain_client.adapters.storage.project_settings import load as read_settings
+    from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
+    def locate(home, runtime, harness):
+        if harness != "codex":
+            raise ValueError("Codex project binding required")
+        return CodexContentPorts.location(home, runtime)
+    return read_settings(path, sha, locate=locate)

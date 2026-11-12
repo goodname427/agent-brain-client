@@ -10,7 +10,6 @@ if __package__ in (None, ""):
 
 import argparse
 import json
-import os
 from agent_brain_client.adapters.platforms.filesystem import require_platform
 from agent_brain_client.domain.service import endpoint_check
 
@@ -61,12 +60,10 @@ def lifecycle_exit(action, value):
 
 
 def selected_native(home, harness):
-    if harness == "codebuddy":
-        from agent_brain_client.interfaces.cli.codebuddy import backend_home
-        return backend_home(home)
-    if harness == "codex":
-        return Path(os.environ.get("CODEX_HOME", str(home / ".codex"))).absolute()
-    raise ValueError("Install and reinstall require an explicit --harness")
+    if harness not in ("codex", "codebuddy"):
+        raise ValueError("Install and reinstall require an explicit --harness")
+    from agent_brain_client.adapters.storage.registration import registry_home
+    return registry_home(home)
 
 
 def main():
@@ -133,7 +130,7 @@ def main():
                     memory_accessibility={"status": "review-or-resume-required"},
                     next_action="Rerun reinstall with the same Server/account; preserve the retained archive. Mapping and Hook setup wait for readable retained memories. Old queues are never replayed.",
                 )
-        return finish_install(Path.home().resolve(), value)
+        return finish_install(Path.home().resolve(), value, harness=args.harness)
 
     try:
         require_platform("first-install")
@@ -182,7 +179,9 @@ def main():
             )
             from agent_brain_client.adapters.storage.reinstallation import read_journal
 
-            native = selected_native(home, args.harness)
+            selected_native(home, args.harness)  # Validate the explicit host.
+            from agent_brain_client.adapters.storage.registration import registry_home
+            native = registry_home(home, retained=True)
             port = retained_installation(home, native)
             with port.lease():
                 prepared = prepare_fresh_installation(

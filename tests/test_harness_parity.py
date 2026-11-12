@@ -499,7 +499,7 @@ finally:
         self.assertEqual(result["status"], "fresh-install-ready")
         record = f.port.load()
         self.assertEqual(record["mapping"]["additional_projections"]["codebuddy"]["mapping"]["owned"], original)
-        self.assertEqual(record["mapping"]["registered_surfaces"], {"codebuddy": {"surface": "cli", "hooks_enabled": False}})
+        self.assertEqual(record["mapping"]["registered_surfaces"]["codebuddy"], {"surface": "cli", "hooks_enabled": False})
         f.port.restore_mapping(f.cache, f.content)
         self.assertEqual(metadata.private_json(buddy_cache / "owned.json", cache=True), original)
         self.assertFalse(old_queue.exists())
@@ -546,3 +546,142 @@ finally:
                 patch.object(cli.sys, "stdout", output):
             self.assertEqual(cli.main(["global-sync"]), 2)
         self.assertEqual(json.loads(output.getvalue())["status"], "global-queue-sync-incomplete")
+
+
+@unittest.skipUnless(sys.platform == "darwin", "Native Mac installation contract")
+class IndependentHostControl(unittest.TestCase):
+    def shared_install(self, harness):
+        from test_mac_first_install import FirstInstall
+        f = FirstInstall("test_first_install_prepared_environment_and_exact_native_transaction")
+        f.setUp()
+        self.addCleanup(f.doCleanups)
+        f.fixture()
+        f.harness = harness
+        f.native = f.home / ".config/agent-brain-client/shared-native"
+        private_directory(f.native)
+        f.config = f.native / "config.toml"
+        self.assertTrue(f.run_wizard()["installed"])
+        return f
+
+    def test_both_install_orders_keep_native_pause_and_removal_out_of_shared_control(self):
+        from types import SimpleNamespace
+        from agent_brain_client.adapters.harnesses.codex import binding
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration
+        from agent_brain_client.adapters.storage.registration import registration
+        from agent_brain_client.runtime.host_maintenance import install_sources
+        from agent_brain_client.runtime.host_binding import backend
+        from agent_brain_client.interfaces.cli.install import selected_native
+        for first in ("codex", "codebuddy"):
+            with self.subTest(first=first):
+                f = self.shared_install(first)
+                native = f.home / "selected-codex-profile"
+                if first == "codex":
+                    binding.install(f.home, native=native)
+                install_sources(SimpleNamespace(device_home=str(f.home), profile_id=None,
+                                                 operator=None, operator_sha256=None, harness=first))
+                configuration.install(f.home, ROOT, None, surface="cli")
+                if first == "codebuddy":
+                    self.assertFalse(native.exists())
+                    binding.install(f.home, native=native)
+                    install_sources(SimpleNamespace(device_home=str(f.home), profile_id=None,
+                                                     operator=None, operator_sha256=None, harness="codex"))
+                _, policy = registration(f.home)
+                runtime = policy["runtime"]
+                codex_native, codex_cache = content_host("codex").location(f.home, runtime)
+                buddy_native, buddy_cache = content_host("codebuddy").location(f.home, runtime)
+                self.assertEqual(codex_native, native)
+                self.assertEqual(buddy_native, f.home / ".codebuddy")
+                self.assertNotEqual(codex_cache, buddy_cache)
+                self.assertEqual(selected_native(f.home, "codex"), f.native)
+                self.assertEqual(selected_native(f.home, "codebuddy"), f.native)
+                project = f.home / "synthetic-project"
+                project.mkdir()
+                from agent_brain_client.runtime import project_memory
+                from agent_brain_client.adapters.storage.metadata import private_json
+                for harness in ("codex", "codebuddy"):
+                    prepared = project_memory.setup(SimpleNamespace(device_home=str(f.home), project_root=str(project),
+                        output=str(f.home / ".config/agent-brain-client/project-memory" / harness / "settings.json"),
+                        harness=harness, query="Synthetic", server_bundle=None))
+                    settings = project_memory.load(prepared["settings"], prepared["settings_sha256"])
+                    self.assertEqual(settings["codex_home"], str(native if harness == "codex" else buddy_native))
+                    self.assertEqual(private_json(prepared["settings"])["harness"], harness)
+                shared_before = f.config.read_bytes()
+                config = native / "config.toml"
+                config.write_bytes(config.read_bytes().replace(b"enabled = true", b"enabled = false"))
+                with patch("agent_brain_client.adapters.packages.client.ClientReleases.verified_active", return_value={"version": "synthetic"}):
+                    self.assertTrue(backend(f.home, None)[1]["installed"])
+                self.assertFalse(binding.status(f.home, runtime)["service_enabled"])
+                binding.install(f.home)
+                self.assertFalse(binding.status(f.home, runtime)["service_enabled"])
+                self.assertEqual(f.config.read_bytes(), shared_before)
+                # A removed/edited native profile is a host repair issue. The
+                # other host still authenticates against private shared control.
+                config.unlink()
+                with patch("agent_brain_client.adapters.packages.client.ClientReleases.verified_active", return_value={"version": "synthetic"}):
+                    self.assertTrue(backend(f.home, None)[1]["installed"])
+                self.assertEqual(f.config.read_bytes(), shared_before)
+                self.assertFalse((f.home / ".codex").exists())
+
+    def test_private_control_uninstall_detaches_both_native_entries_and_retains_data(self):
+        from types import SimpleNamespace
+        from agent_brain_client.adapters.harnesses.codex import binding
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration
+        from agent_brain_client.adapters.storage.registration import registration
+        from agent_brain_client.runtime.host_maintenance import install_sources
+        from agent_brain_client.runtime.client_lifecycle import uninstall
+        f = self.shared_install("codebuddy")
+        native = f.home / "selected-codex-profile"
+        binding.install(f.home, native=native)
+        install_sources(SimpleNamespace(device_home=str(f.home), profile_id=None,
+                                         operator=None, operator_sha256=None, harness="codex"))
+        configuration.install(f.home, ROOT, None, surface="cli")
+        _, policy = registration(f.home)
+        cloud = Cloud()
+        cloud.grant = copy.deepcopy(f.fixture_grant)
+        from agent_brain_client.adapters.storage.metadata import private_json
+        content = private_json(policy["runtime"]["content_policy"], policy["runtime"]["content_policy_sha256"])
+        cloud.records = {("memory", "synthetic-memory"): MEMORY}
+        sessions = []
+        for harness in ("codex", "codebuddy"):
+            port = content_host(harness)
+            actual, cache = port.location(f.home, policy["runtime"])
+            session = ContentSession(f.home, cache, content, cloud, host=port, native_home=actual)
+            self.assertEqual(session.refresh()["status"], "content-refreshed")
+            sessions.append(session)
+        with patch("agent_brain_client.adapters.packages.client.ClientReleases.verified_active", return_value={"version": "synthetic"}):
+            result = uninstall(f.home, lambda message: "Continue")
+        self.assertEqual(result["status"], "client-uninstalled", result)
+        self.assertNotIn(b"agent_brain_server", (native / "config.toml").read_bytes())
+        self.assertNotIn(b"Agent Brain global memory", (native / "config.toml").read_bytes())
+        self.assertTrue(binding.receipt(f.home)["removed"])
+        for session in sessions:
+            self.assertFalse(session.mapping.owned_snapshot()["files"])
+            self.assertTrue(session.cache.is_dir())
+
+
+class NativeBindingTransaction(unittest.TestCase):
+    def test_native_codex_transaction_preserves_pause_and_unrelated_toml(self):
+        from agent_brain_client.adapters.harnesses.codex import binding
+        from agent_brain_client.adapters.storage import registration
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            native = home / "native-profile"
+            private_directory(native)
+            file = native / "config.toml"
+            file.write_text('model = "synthetic"\n[mcp_servers.other]\ncommand = "preserve"\n')
+            file.chmod(0o600)
+            policy = {"runtime": {"codex_home": str(home / ".config/agent-brain-client/shared-native")}}
+            command = {"command": str(Path(sys.executable).resolve()), "args": ["--harness", "codebuddy"],
+                       "env": {}, "enabled": True}
+            with patch.object(registration, "registration", return_value=({}, policy)), patch(
+                "agent_brain_client.adapters.installation.installation.registered_context", return_value=(policy, command, None, None)):
+                binding.install(home, native=native)
+                raw = file.read_bytes().replace(b"enabled = true", b"enabled = false")
+                file.write_bytes(raw)
+                binding.install(home)
+                self.assertIn(b"enabled = false", file.read_bytes())
+                self.assertIn(b'command = "preserve"', file.read_bytes())
+                self.assertIn(b'model = "synthetic"', file.read_bytes())
+                binding.install(home, remove=True)
+                self.assertNotIn(b"agent_brain_server", file.read_bytes())
+                self.assertIn(b'command = "preserve"', file.read_bytes())
