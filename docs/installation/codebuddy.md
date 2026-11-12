@@ -30,7 +30,7 @@ sh bootstrap/macos/codebuddy.sh --server 'https://your-server.example'
 | IDE MCP | 用户级 `~/.codebuddy/mcp.json` 的 `mcpServers.agent_brain_server`；路径依据本机官方 IDE 的 MCP dispatcher 实现核对 |
 | CLI MCP | 按官方优先级使用首个已有 `.codebuddy/.mcp.json`、`.codebuddy/mcp.json`、`.codebuddy.json`；均不存在则创建首项 |
 | Hooks | `.codebuddy/settings.json` 增加 SessionStart、UserPromptSubmit、Stop；保留其他 Hook 和权限 |
-| 上下文 | `.codebuddy/CODEBUDDY.md` 的自有说明块，以及 Hook 的 `additionalContext` |
+| 上下文 | IDE 使用 `~/.codebuddy/rules/agent-brain-client.md` 的自有说明块；CLI 使用 `~/.codebuddy/CODEBUDDY.md`；两端另有 Hook 的 `additionalContext` |
 | 查询与写入 | 原验证后 MCP 启动链及完整工具集；CAS、幂等键、回执、队列与 Server 同原 Client |
 | 自动召回 | SessionStart 和 UserPromptSubmit，复用原全局召回、来源证据检查、预算及离线标识 |
 | 用户消息采集 | UserPromptSubmit 的实际 prompt；generation_id 可用时去重，不合并两次独立的相同提问 |
@@ -58,7 +58,9 @@ python3 -I -B src/agent_brain_client/interfaces/cli/codebuddy.py uninstall
 
 `uninstall` 只移除自有 CodeBuddy 绑定、Hook 与说明块，保留其他配置、共享后端、系统凭据和所有待传事件。配置漂移时不覆盖；中断事务按原 host-file 前后像恢复。已启动的 MCP 需按宿主正常流程结束；不终止用户进程。
 
-更新先沿现有共享 Client 的 `check-update`／`update` 流程，再从同一新版官方 checkout 运行 CodeBuddy `install` 刷新适配器快照。也可运行 Mac `sh bootstrap/macos/codebuddy.sh --action update` 或 Windows `& ./bootstrap/windows/codebuddy.ps1 -Action update`。保持原渠道和来源设置；更新适配器不是重新配对。只在 worker 与活动版本实际不同时正常重载对应 MCP。
+更新沿现有共享 Client 的 `check-update`／`update` 流程，从已验证的 active package 同步刷新共享运行时和已登记 surface 的 CodeBuddy 适配器快照，不依赖旧安装器 checkout 的源码。仅在配置冲突或刷新未完成时保留现场，按正常检查／重绑流程处理。也可运行 Mac `sh bootstrap/macos/codebuddy.sh --action update` 或 Windows `& ./bootstrap/windows/codebuddy.ps1 -Action update`。保持原渠道和来源设置；更新适配器不是重新配对。只在 worker 与活动版本实际不同时正常重载对应 MCP。
+
+Git、局部 `P4CONFIG`／`.p4config`、`.uproject` 及 UE Engine 标记组合可用于识别工程，仍受原 scope 和 exclude 限制。普通非项目目录仍需原有 `non_project_roots` 授权，不会放行整个宽盘符。
 
 ## 官方依据
 
@@ -67,3 +69,5 @@ python3 -I -B src/agent_brain_client/interfaces/cli/codebuddy.py uninstall
 - [CLI MCP 优先级与 JSONC](https://www.codebuddy.cn/docs/cli/mcp)
 - [CLI Hook 字段及输出](https://www.codebuddy.cn/docs/cli/hooks)
 - [SDK 配置隔离](https://www.codebuddy.cn/docs/cli/sdk)
+
+普通更新会同时刷新已登记的 CodeBuddy 冻结入口与原生 Hook，保留原 IDE/CLI 范围，不自动安装新宿主或恢复暂停。旧 IDE 说明块迁移到宿主实际读取的用户 rules 路径；首次生成的托管规则使用 `alwaysApply: true`，后续更新保留用户改过的 header（包括 `enabled: false`）；已有其他规则（包括禁用的旧 `agent-brain.md`）不变。新托管路径若已有非托管内容，或原 MCP/Hook 被用户更改，更新保留现场并要求复核，不覆盖或重新启用。安装成功不代表当前模型已加载新规则，仍需宿主实际会话验收。

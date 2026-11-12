@@ -119,8 +119,7 @@ def main():
 
         require_platform("codebuddy-host")
         if args.action == "serve":
-            host_binding.execute_mcp(home, core)
-            return 0
+            return host_binding.execute_mcp(home, core)
         if args.action == "hook":
             output, state = runtime.hook(home, sys.stdin.buffer, core=core)
             print(json.dumps(output, ensure_ascii=False))

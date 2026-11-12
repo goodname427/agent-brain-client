@@ -145,6 +145,7 @@ COMMANDS = {
             "test_host_config.WindowsBoundary",
             "test_install_plan",
             "test_source_paths",
+            "test_non_git_origins",
             "test_access_install",
             "test_bootstrap_main",
             "test_platform_checkpoint",
@@ -177,6 +178,7 @@ COMMANDS = {
             "test_layered_recall",
             "test_runtime_reload",
             "test_codebuddy",
+            "test_codebuddy_gateway",
         ],
         [
             "pwsh",
