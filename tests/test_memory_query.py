@@ -3,12 +3,13 @@
 import unittest
 from unittest.mock import patch
 from agent_brain_client.interfaces.mcp.content import ContentServer, ProtocolError
-from test_windows_acceptance_repairs import WindowsAcceptanceRepairs
+import test_windows_acceptance_repairs as acceptance_fixture
 
 
 class MemoryQueryClient(unittest.TestCase):
     def setUp(self):
-        self.f = WindowsAcceptanceRepairs()
+        # Keep the reusable TestCase out of this module's discovery namespace.
+        self.f = acceptance_fixture.WindowsAcceptanceRepairs()
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
 
