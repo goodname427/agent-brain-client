@@ -50,7 +50,7 @@ def registry_home(home, *, retained=False):
     from agent_brain_client.adapters.storage.reinstallation import read_journal
     home = canonical(home)
     fresh = read_journal(home)
-    if fresh is not None:
+    if fresh is not None and fresh["phase"] != "complete":
         if retained or fresh["phase"] not in ("ready", "complete"):
             return canonical(Path(fresh["native"]))
         return home / ".config/agent-brain-client/shared-native"

@@ -28,7 +28,7 @@ def retained_installation(home, native, *, target_host=None):
         host = projection_host(home, native)
         from agent_brain_client.adapters.storage.reinstallation import read_journal
         record = read_journal(home)
-        if record is not None:
+        if record is not None and record["phase"] != "complete":
             binding = record["mapping"]["owned"]["binding"]
             return Path(binding.get("native_home", binding.get("codex_home"))), Path(cache)
         from agent_brain_client.adapters.storage.metadata import private_json
@@ -54,7 +54,7 @@ def retained_installation(home, native, *, target_host=None):
         from agent_brain_client.adapters.storage.reinstallation import read_journal
         from agent_brain_client.adapters.storage.metadata import private_json
         saved = read_journal(home)
-        if saved is not None:
+        if saved is not None and saved["phase"] != "complete":
             if "registered_surfaces" in saved["mapping"]:
                 snapshot["registered_surfaces"] = saved["mapping"]["registered_surfaces"]
             return snapshot
@@ -199,7 +199,7 @@ def projection_host(home, native):
     from agent_brain_client.runtime.harness_content import content_host
     root = Path(home) / ".config/agent-brain-client"
     record = read_journal(home)
-    if record is not None:
+    if record is not None and record["phase"] != "complete":
         binding = record["mapping"]["owned"]["binding"]
     else:
         if (root / "codex-mcp.json").exists():

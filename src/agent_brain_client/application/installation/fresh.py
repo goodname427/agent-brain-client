@@ -61,14 +61,16 @@ def prepare_fresh_installation(
     server: str | None = None,
 ) -> dict:
     record = port.load()
-    if record is None:
+    new_transaction = record is None or record["phase"] == "complete"
+    if record is None or record["phase"] == "complete":
+        require_verified_memory(record)
         record = port.plan()
     if server is not None:
         from agent_brain_client.domain.service import endpoint_check
 
         if endpoint_check(server) != endpoint_check(record["endpoint"]):
             raise ValueError("Reconnect the SAME Server to preserve memory access")
-    if port.load() is None:
+    if new_transaction:
         if (
             confirm(
                 "Disconnect affected Agent Brain MCP services and let active Hooks finish; keep unrelated Clients and the IDE open. Retain old files and unsent queues in the reported archive; "
