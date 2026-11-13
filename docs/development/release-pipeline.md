@@ -14,7 +14,7 @@ Windows 保留 `refs/heads/releases/personal-https-windows-stable`。Mac 保留�
 
 ## 正常操作
 
-功能源码合入后，先对最终 main 手动运行完整 **Client checks**；PR 与普通 main push 的快速绿色不能作为发布证据。完整检查通过后，在 main 的 **Client release** 工作流填精确源码 SHA，版本默认 `auto`、targets 默认 `all`。默认只准备；选择 `publish` 才进入独立写权限 job。局部绿色检查不能证明可发布，必要时先对最终 main 手动运行完整检查。准备 job 不持有发布凭据；发布 job 使用既有 GitHub Actions 临时身份，只申请 contents:write/actions:read，不创建 token 或环境。
+功能源码合入后，先对最终 main 手动运行完整 **Client checks**；PR 与普通 main push 的快速绿色不能作为发布证据。完整检查启动后，可同时在 main 的 **Client release** 工作流填精确源码 SHA，版本默认 `auto`、targets 默认 `all`。默认只准备；选择 `publish` 才进入独立写权限 job。局部绿色检查不能证明可发布，必要时先对最终 main 手动运行完整检查。Actions 准备使用 `prepare-artifacts`，保留四架构打包、公开扫描、manifest／源码字节核验与包 self-check，复用同树完整检查，不再第二次运行整套单元测试。发布仍在写入任何 tag／Release／渠道前核验源码和执行工具的完整 CI；只对已存在、官方 main 手动触发、精确同树且仍在排队／执行的检查最多等待 30 分钟，成功即继续，失败、取消、缺失或错树即拒绝，不再触发另一轮。准备 job 不持有发布凭据；发布 job 使用既有 GitHub Actions 临时身份，只申请 contents:write/actions:read，不创建 token 或环境。
 
 工作流分别固定产品源码和执行工具的提交。工具来自本次工作流的 main SHA；产品源码可为已合入、已通过完整 CI 的历史精确 SHA，以便补齐已发布版本的另一平台。两份 checkout 均要求官方 origin、干净工作区和 Git blob 原始字节；发布前分别核验源码与执行工具的完整 CI、main 祖先关系。它不会从新工具目录把额外文件带入旧产品包。
 
@@ -26,7 +26,7 @@ python3 -B "$RELEASE_TOOLS/dev/release/client.py" publish --source-root "$SOURCE
 python3 -B "$RELEASE_TOOLS/dev/release/client.py" verify --source-root "$SOURCE_CHECKOUT" --output "$RELEASE_OUTPUT"
 ```
 
-prepare 不访问网络、凭据或设备，不推送、不安装；先正常 fetch 渠道快照。它冻结源码树、执行工具、各渠道前像、版本、平台、安装器 tag 和确定性资产，运行完整隔离测试、源码／公开扫描及 diff 检查。审阅输出的 plan.json、release-notes.md 和检查日志后再发布。本地 publish 仅消费已有授权会话的 GH_TOKEN 和原 Git 推送身份；没有授权时停止，不另建凭据。
+prepare 不访问网络、凭据或设备，不推送、不安装；先正常 fetch 渠道快照。它冻结源码树、执行工具、各渠道前像、版本、平台、安装器 tag 和确定性资产，运行完整隔离测试、源码／公开扫描及 diff 检查。`prepare-artifacts` 仅准备资产，不产生全量成功声明；默认本地 `prepare` 和 `prepare-local` 继续完整检查。审阅输出的 plan.json、release-notes.md 和检查日志后再发布。本地 publish 仅消费已有授权会话的 GH_TOKEN 和原 Git 推送身份；没有授权时停止，不另建凭据。
 
 ## 每版更新日志
 
@@ -54,6 +54,8 @@ python3.12 -B dev/release/client.py prepare-local \
 py -3.11 -B dev/checks/client.py windows --record --output C:\private\checks-3.11
 py -3.13 -B dev/checks/client.py windows --record --output C:\private\checks-3.13
 ```
+
+Actions Windows 两个 Python 版本各使用两个独立 HOME／USERPROFILE／CODEX_HOME 的测试进程，并行执行原清单的全部测试 selector；公开／架构扫描和 PowerShell 解析仍执行。本地回执入口保留原命令与串行语义。Actions 日志输出每条命令及每个模块耗时，供后续定位。
 
 Windows 命令复用原生凭据／DACL、生命周期、安装／离线恢复、路径、MCP、队列、写失败、召回／重载回归与两个 PowerShell 脚本解析检查。仅在 Windows 对应 Python 版本生成回执；不能在 Mac 用被跳过的 Windows 测试补造证据。既有测试对当前 token 无权核验的个别 Windows 安全描述符仍可能跳过，应检查原始日志；不通过提升 token 权限消除跳过。架构包是源码归档，四架构构建和 self-check 不代表四架构硬件、真实凭据 UI 或用户验收。
 

@@ -61,6 +61,23 @@ class Classification(unittest.TestCase):
 
 
 class FocusedTests(unittest.TestCase):
+    def test_parallel_runner_executes_dotted_selectors_and_retains_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'test_synthetic.py').write_text(
+                'import unittest\nclass Checks(unittest.TestCase):\n'
+                ' def test_pass(self): pass\n def test_fail(self): self.fail("synthetic")\n')
+            env = dict(os.environ, PYTHONPATH=str(root), CI_TESTS='[]')
+            command = [sys.executable, '-B', str(ci.ROOT / 'dev/checks/tests.py'),
+                       '--workers', '2', '--modules', 'test_synthetic.Checks.test_pass']
+            passed = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(passed.returncode, 0, passed.stdout + passed.stderr)
+            failed = subprocess.run(command + ['test_synthetic.Checks.test_fail'],
+                                    cwd=root, env=env, capture_output=True, text=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn('test_synthetic.Checks.test_pass:', failed.stdout)
+            self.assertIn('test_synthetic.Checks.test_fail:', failed.stdout)
+
     def test_parallel_worker_isolates_homes_and_preserves_failure(self):
         import dev.checks.tests as run_ci_tests
         result = subprocess.CompletedProcess([], 7, 'synthetic failure')

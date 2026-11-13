@@ -19,6 +19,7 @@ import os
 import platform
 import subprocess
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[2]
 ORIGIN = "https://github.com/goodname427/agent-brain-client"
@@ -280,6 +281,33 @@ def run_checks(scope, output, record=False, *, ci=False):
         for name in ("GH_TOKEN", "GITHUB_TOKEN", "PYTHONHOME", "PYTHONSTARTUP"):
             env.pop(name, None)
         commands = COMMANDS[scope]
+        if ci and scope == "windows":
+            # Same selectors on both Python versions; independent process homes
+            # permit two native workers without sharing synthetic device state.
+            selectors = list(
+                dict.fromkeys(
+                    test
+                    for command in commands
+                    if command[:4] == ["python", "-B", "-m", "unittest"]
+                    for test in command[4:]
+                )
+            )
+            commands = [
+                [
+                    "python",
+                    "-B",
+                    "dev/checks/tests.py",
+                    "--workers",
+                    "2",
+                    "--modules",
+                    *selectors,
+                ],
+                *(
+                    command
+                    for command in commands
+                    if command[:4] != ["python", "-B", "-m", "unittest"]
+                ),
+            ]
         if ci and scope == "macos":
             commands = [
                 ["python", "-B", "dev/checks/tests.py", "--workers", "2"],
@@ -304,6 +332,7 @@ def run_checks(scope, output, record=False, *, ci=False):
                 flush=True,
             )
             with log_path.open("xb") as log:
+                started = time.monotonic()
                 result = subprocess.run(
                     actual,
                     cwd=ROOT,
@@ -312,10 +341,22 @@ def run_checks(scope, output, record=False, *, ci=False):
                     stderr=subprocess.STDOUT,
                     timeout=1800,
                 )
+            seconds = round(time.monotonic() - started, 3)
+            print(
+                f"{scope}: command {index + 1} took {seconds}s, exit {result.returncode}",
+                flush=True,
+            )
+            if "dev/checks/tests.py" in command:
+                # Module timings are useful in Actions; detailed fixture output
+                # stays in the log unless a check fails.
+                for line in log_path.read_text(errors="replace").splitlines():
+                    if line.startswith("test_") and "s, exit " in line:
+                        print(line, flush=True)
             results.append(
                 {
                     "command": command,
                     "exit_code": result.returncode,
+                    "seconds": seconds,
                     "log": log_path.name,
                     "sha256": sha(log_path.read_bytes()),
                 }

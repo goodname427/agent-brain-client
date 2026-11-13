@@ -41,10 +41,14 @@ def run_group(modules):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workers", type=int, choices=(1, 2), default=1)
+    parser.add_argument(
+        "--modules", nargs="+", help="Explicit native-platform test selectors"
+    )
     args = parser.parse_args()
-    tests = json.loads(os.environ.get("CI_TESTS", "[]"))
+    tests = args.modules or json.loads(os.environ.get("CI_TESTS", "[]"))
     if not isinstance(tests, list) or any(
-        not isinstance(t, str) or not re.fullmatch(r"test_[A-Za-z0-9_]+", t)
+        not isinstance(t, str)
+        or not re.fullmatch(r"test_[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*", t)
         for t in tests
     ):
         raise ValueError("Expected a JSON list of test module names")
