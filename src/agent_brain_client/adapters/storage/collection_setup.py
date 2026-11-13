@@ -70,6 +70,10 @@ def prepare(args, *, locate):
         for candidate in base.glob("*/settings.json"):
             try:
                 pin = metadata_io.digest(candidate.read_bytes())
+                record = metadata_io.private_json(candidate, pin)
+                if (project_sources.project_harness(record) != "codex"
+                        or record["source_mode"] != "codex-project"):
+                    continue
                 source = project_sources.load(candidate, pin, locate=locate)
                 if source["source_mode"] != "codex-project" or source["harness"] != "codex":
                     continue
