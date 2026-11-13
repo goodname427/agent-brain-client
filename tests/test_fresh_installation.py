@@ -1068,9 +1068,9 @@ class ReinstallRuntime(unittest.TestCase):
     setUp = FreshInstallation.setUp
     prepare = FreshInstallation.prepare
 
-    def snapshot(self):
+    def snapshot(self, *, exclude=()):
         return {str(p.relative_to(self.home)): p.read_bytes()
-                for p in self.home.rglob('*') if p.is_file()}
+                for p in self.home.rglob('*') if p.is_file() and p not in exclude}
 
     def test_check_does_not_create_locks_or_touch_identity_queue_or_host(self):
         before = self.snapshot()
@@ -1098,6 +1098,9 @@ with locked(Path(sys.argv[1]), shared=sys.argv[2]=='shared', cache=True):
     print('ready', flush=True)
     sys.stdin.readline()
 '''
+        with locked(path, cache=True):
+            pass
+        lock_body = path.read_bytes()
         for mode in ('shared', 'exclusive'):
             with self.subTest(mode=mode):
                 worker = subprocess.Popen([sys.executable, '-B', '-c', script, str(path), mode],
@@ -1105,7 +1108,10 @@ with locked(Path(sys.argv[1]), shared=sys.argv[2]=='shared', cache=True):
                                           stderr=subprocess.PIPE, text=True)
                 try:
                     self.assertEqual(worker.stdout.readline().strip(), 'ready')
-                    before = self.snapshot()
+                    # Windows byte locks prohibit even the test observer's read.
+                    # Compare business/configuration state while held; verify the
+                    # persistent lock bytes only after the child releases it.
+                    before = self.snapshot(exclude=(path,))
                     result = self.port.runtime_status()
                     row = next(r for r in result['locks'] if r['path'] == str(path))
                     self.assertEqual(row['state'], 'busy')
@@ -1114,11 +1120,12 @@ with locked(Path(sys.argv[1]), shared=sys.argv[2]=='shared', cache=True):
                     self.assertIn(worker.pid, [r['pid'] for r in users['processes']])
                     self.assertFalse(users['lock_ownership_proven'])
                     self.assertIsNone(worker.poll())
-                    self.assertEqual(self.snapshot(), before)
+                    self.assertEqual(self.snapshot(exclude=(path,)), before)
                 finally:
                     worker.communicate('\n', timeout=10)
                 self.assertEqual(worker.returncode, 0)
                 self.assertEqual(lock_probe(path), 'free')
+                self.assertEqual(path.read_bytes(), lock_body)
 
     def test_only_exact_busy_lease_blocks_and_mutation_rechecks_after_idle_snapshot(self):
         self.assertEqual(self.port.runtime_status()['status'], 'fresh-install-runtime-idle')
@@ -1136,7 +1143,11 @@ with locked(Path(sys.argv[1]), shared=sys.argv[2]=='shared', cache=True):
         # Another directory-related operation is not one of the mutation leases.
         with locked(self.cache / 'unrelated.lock', cache=True):
             self.assertEqual(self.port.runtime_status()['status'], 'fresh-install-runtime-idle')
-            self.assertEqual(self.prepare()['status'], 'fresh-install-ready')
+            with self.port.old_runtime_lease(self.port.load()):
+                pass
+        # The runtime gate ignores unrelated leases. Windows still requires
+        # ordinary open file handles to close before its archive directory move.
+        self.assertEqual(self.prepare()['status'], 'fresh-install-ready')
 
     def test_access_error_is_review_required_not_a_busy_worker(self):
         path = self.cache / '.content-runtime.lock'

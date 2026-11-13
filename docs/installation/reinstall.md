@@ -37,9 +37,9 @@
 
 ## 占用证据与自动协调的边界
 
-`locks` 给出精确路径及 `absent`／`free`／`busy`；重装遇到竞争时给出 `blocked_lock`。`fresh-install-runtime-idle` 只是瞬时检查结果，不是全部迁移前置条件已满足的声明；重装仍逐把取得原有独占租约，不能用一次检查绕过运行中保护。权限、路径／所有权异常会进入 review，而不伪称 worker 占用。
+`locks` 给出精确路径及 `absent`／`free`／`busy`；重装遇到竞争时给出 `blocked_lock`。`fresh-install-runtime-idle` 只是瞬时检查结果，不是全部迁移前置条件已满足的声明；重装仍逐把取得原有独占租约，不能用一次检查绕过运行中保护。权限、路径／所有权异常会进入 review，而不伪称 worker 占用。Windows 仍可能因其他文件的打开句柄而拒绝归档移动；这类文件操作失败也须保留现场、处理具体句柄，不能由租约空闲推断归档一定成功。
 
-仅在租约繁忙时查询其文件使用者。Windows 使用 [Restart Manager 的资源查询](https://learn.microsoft.com/en-us/windows/win32/rstmgr/using-restart-manager-with-a-primary-installer)，输出 PID、系统报告的名称和进程启动时间；Mac 使用系统 `lsof` 查询同一文件，输出 PID 与名称。`resource_users` 是文件使用者候选，不等同于内核字节锁所有权证明，不能证明其 Harness、版本或可安全终止；结果明确保留 `lock_ownership_proven:false`。无结果、受限或查询失败标为 unknown，绝不把空列表当成空闲。PID 也不能作为之后发信号的授权。查询不读取命令行、环境、会话内容或凭据；不调用 Restart Manager 的 shutdown/restart，不发进程信号。
+仅在租约繁忙时查询其文件使用者。Windows 使用 [Restart Manager 的资源查询](https://learn.microsoft.com/en-us/windows/win32/rstmgr/using-restart-manager-with-a-primary-installer)，输出 PID、系统报告的名称和进程启动时间；Mac 使用系统 `lsof` 查询同一文件，输出 PID 与名称。`resource_users` 是文件使用者候选，不等同于内核字节锁所有权证明，不能证明其 Harness、版本或可安全终止；结果明确保留 `lock_ownership_proven:false`。受限或查询失败标为 unknown；成功查询也可能没有可报告的候选，绝不把空列表当成空闲。PID 也不能作为之后发信号的授权。查询不读取命令行、环境、会话内容或凭据；不调用 Restart Manager 的 shutdown/restart，不发进程信号。
 
 **0.8.6／0.8.15 没有安装器可调用的实例级退出协议。** 新版官方入口可以诊断旧租约，不能给旧 worker 补上端点，也不能保证在不使用宿主服务管理接口的情况下让它退出。禁止用目录匹配的进程清单、强杀、删锁或改 pin 代替。此次 patch 实现的是精确诊断与按服务断开的流程，不宣称已经实现无需宿主接口的全自动温和退出。
 
