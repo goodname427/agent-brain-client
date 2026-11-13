@@ -23,6 +23,7 @@ import re
 import subprocess
 import tarfile
 import tempfile
+import time
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
@@ -844,6 +845,10 @@ class NoRedirect(HTTPRedirectHandler):
         raise ValueError("Authenticated API redirect rejected")
 
 
+class ChecksPending(ValueError):
+    """An official same-tree full validation is still running."""
+
+
 class GitHub:
     def request(self, path, method="GET", value=None, raw=None, upload=False):
         token = os.environ.get("GH_TOKEN")
@@ -888,12 +893,23 @@ class GitHub:
         raise ValueError("Release pagination limit reached")
 
     def ci(self, plan):
+        pending = False
         for page in range(1, 11):
             result = self.request(
                 f"/actions/workflows/client-checks.yml/runs?per_page=100&page={page}"
             )
             for row in result["workflow_runs"]:
                 head = row["head_sha"]
+                if (
+                    row.get("status")
+                    in ("queued", "in_progress", "waiting", "pending", "requested")
+                    and row.get("event") == "workflow_dispatch"
+                    and row.get("head_branch") == "main"
+                    and (row.get("head_repository") or {}).get("full_name")
+                    == REPOSITORY
+                ):
+                    candidate = self.request("/git/commits/" + head)
+                    pending |= candidate["tree"]["sha"] == plan["source_tree"]
                 if (
                     row["conclusion"] != "success"
                     or (row.get("head_repository") or {}).get("full_name") != REPOSITORY
@@ -934,9 +950,28 @@ class GitHub:
                 }
             if len(result["workflow_runs"]) < 100:
                 break
+        if pending:
+            raise ChecksPending(
+                "Official full Client checks for this exact tree are still running"
+            )
         raise ValueError(
             "Successful full Client checks for the exact source tree required (PR, main or manual main run)"
         )
+
+    def wait_ci(self, plan, seconds):
+        deadline = time.monotonic() + seconds
+        while True:
+            try:
+                return self.ci(plan)
+            except ChecksPending:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                print(
+                    "Waiting for existing same-tree full validation; no new run triggered",
+                    flush=True,
+                )
+                time.sleep(min(15, remaining))
 
     def full_ci_jobs(self, row):
         jobs = self.attempt_jobs(row)
@@ -1184,7 +1219,7 @@ def verify(output, api, plan):
     )
 
 
-def publish(output, api, plan, *, local_checks=(), hybrid_checks=False):
+def publish(output, api, plan, *, local_checks=(), hybrid_checks=False, wait_for_ci=0):
     git("fetch", "--no-tags", "origin", "main")
     git("merge-base", "--is-ancestor", plan["source"], "FETCH_HEAD")
     if plan.get("schema") == 2:
@@ -1199,9 +1234,12 @@ def publish(output, api, plan, *, local_checks=(), hybrid_checks=False):
 
         ci = release_evidence(local_checks, plan)
     else:
-        ci = api.ci(plan)
+        check_ci = (
+            (lambda value: api.wait_ci(value, wait_for_ci)) if wait_for_ci else api.ci
+        )
+        ci = check_ci(plan)
         if plan.get("schema") == 2 and plan["executor_tree"] != plan["source_tree"]:
-            ci["executor"] = api.ci({"source_tree": plan["executor_tree"]})
+            ci["executor"] = check_ci({"source_tree": plan["executor_tree"]})
     (output / "ci.json").write_bytes(encoded(ci))
     notes = (output / "release-notes.md").read_bytes()
     require_publishable({"release-notes.md": notes})
@@ -1301,7 +1339,8 @@ def main():
     global ROOT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "action", choices=("prepare", "prepare-local", "publish", "verify")
+        "action",
+        choices=("prepare", "prepare-artifacts", "prepare-local", "publish", "verify"),
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source", help="Exact 40-character source SHA (prepare only)")
@@ -1334,6 +1373,12 @@ def main():
     )
     parser.add_argument("--allow-publish", action="store_true")
     parser.add_argument(
+        "--wait-for-ci",
+        type=int,
+        default=0,
+        help="Publish only: bounded wait for an existing exact-tree full run; never dispatch checks",
+    )
+    parser.add_argument(
         "--local-check",
         type=Path,
         action="append",
@@ -1346,12 +1391,14 @@ def main():
         help="Explicitly combine local documentation/source/macOS receipts with official same-tree Windows CI jobs",
     )
     args = parser.parse_args()
-    if args.installation_mode != "upgrade" and args.action not in (
-        "prepare",
-        "prepare-local",
+    prepare_actions = ("prepare", "prepare-artifacts", "prepare-local")
+    if args.wait_for_ci < 0 or (
+        args.wait_for_ci and (args.action != "publish" or args.local_check)
     ):
+        parser.error("--wait-for-ci requires CI publication and a nonnegative timeout")
+    if args.installation_mode != "upgrade" and args.action not in prepare_actions:
         parser.error("installation mode is frozen in the prepared bundle")
-    if args.action in ("prepare", "prepare-local"):
+    if args.action in prepare_actions:
         if args.release_notes_file is None:
             parser.error("prepare requires --release-notes-file")
         release_notes = args.release_notes_file.read_text(encoding="utf-8")
@@ -1381,13 +1428,13 @@ def main():
         parser.error(
             "--hybrid-checks requires publish and local documentation/source/macOS receipts"
         )
-    if args.action in ("prepare", "prepare-local") and not re.fullmatch(
+    if args.action in prepare_actions and not re.fullmatch(
         r"[a-f0-9]{40}", args.source or ""
     ):
         parser.error("prepare requires --source with an exact 40-character SHA")
     with locked(output):
         try:
-            if args.action in ("prepare", "prepare-local"):
+            if args.action in prepare_actions:
                 prepare_fn = (
                     prepare_local
                     if args.action == "prepare-local"
@@ -1400,6 +1447,11 @@ def main():
                     args.targets,
                     installation_mode=args.installation_mode,
                     release_notes=release_notes,
+                    **(
+                        {"validate_source": False}
+                        if args.action == "prepare-artifacts"
+                        else {}
+                    ),
                 )
             else:
                 plan = load_bundle(output)
@@ -1410,6 +1462,7 @@ def main():
                         plan,
                         local_checks=args.local_check,
                         hybrid_checks=args.hybrid_checks,
+                        wait_for_ci=args.wait_for_ci,
                     )
                 else:
                     verify(output, GitHub(), plan)

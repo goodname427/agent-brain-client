@@ -221,6 +221,22 @@ class LocalChecks(unittest.TestCase):
             self.assertIn(name, cc.COMMANDS['windows'][-1][-1])
         self.assertTrue(any('src' in command and 'ruff' in command for command in cc.COMMANDS['source']))
 
+    def test_windows_parallel_ci_keeps_every_selector_and_non_test_command(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(cc, 'check_host'), \
+                patch.object(cc.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+            cc.run_checks('windows', Path(tmp) / 'checks', ci=True)
+        actual = [call.args[0] for call in run.call_args_list]
+        original = cc.COMMANDS['windows']
+        expected_tests = [test for command in original
+                          if command[:4] == ['python', '-B', '-m', 'unittest'] for test in command[4:]]
+        selectors = actual[0][actual[0].index('--modules') + 1:]
+        self.assertEqual(selectors, list(dict.fromkeys(expected_tests)))
+        self.assertEqual(actual[0][3:6], ['--workers', '2', '--modules'])
+        expected_other = [command for command in original
+                          if command[:4] != ['python', '-B', '-m', 'unittest']]
+        self.assertEqual(actual[1:], [[cc.sys.executable if i == 0 and item == 'python' else item
+                                     for i, item in enumerate(command)] for command in expected_other])
+
     def test_focused_ci_cannot_be_recorded_as_complete_local_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesRegex(ValueError, 'complete local'):

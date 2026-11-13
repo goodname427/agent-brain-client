@@ -115,6 +115,58 @@ class ReleasePipeline(unittest.TestCase):
             with patch.object(rc, 'ROOT', root), patch.object(rc.subprocess, 'run', side_effect=execute):
                 rc.validate(output)
 
+    def test_artifact_preparation_defers_only_source_suite_and_workflow_reuses_full_ci(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'notes.md'
+            path.write_text('Synthetic public changelog')
+            for action in ('prepare', 'prepare-local', 'prepare-artifacts'):
+                args = ['client.py', action, '--output', tmp, '--source', '1' * 40,
+                        '--release-notes-file', str(path)]
+                with patch.object(rc.sys, 'argv', args), patch.object(rc, 'prepare_platforms') as prepare, \
+                        patch.object(rc, 'prepare_local') as local:
+                    self.assertEqual(rc.main(), 0)
+                    selected = local if action == 'prepare-local' else prepare
+                    self.assertEqual(selected.call_args.kwargs.get('validate_source', True),
+                                     action != 'prepare-artifacts')
+        workflow = (rc.TOOL_ROOT / '.github/workflows/client-release.yml').read_text()
+        self.assertIn('client.py prepare-artifacts ', workflow)
+        self.assertIn('--allow-publish --wait-for-ci 1800', workflow)
+
+    def test_wait_reuses_only_pending_official_manual_main_exact_tree(self):
+        plan, _ = fixture()
+        api = rc.GitHub()
+        row = {'id': 12, 'run_attempt': 1, 'head_sha': 'b' * 40, 'status': 'in_progress',
+               'conclusion': None, 'event': 'workflow_dispatch', 'head_branch': 'main',
+               'head_repository': {'full_name': rc.REPOSITORY}, 'html_url': 'https://example.invalid/12'}
+        def request(path):
+            if '/jobs?' in path:
+                return {'jobs': [{'name': name, 'conclusion': 'success'} for name in rc.FULL_CI_JOBS]}
+            return {'workflow_runs': [row]} if '/actions/' in path else {'tree': {'sha': plan['source_tree']}}
+        def complete(_):
+            row.update(status='completed', conclusion='success')
+        with patch.object(api, 'request', side_effect=request), patch.object(rc.time, 'sleep', side_effect=complete) as sleep:
+            self.assertEqual(api.wait_ci(plan, 100)['run_id'], 12)
+            sleep.assert_called_once()
+            for changes in ({'conclusion': 'failure', 'status': 'completed'},
+                            {'head_branch': 'other'}, {'event': 'push'},
+                            {'head_repository': {'full_name': 'synthetic/fork'}}):
+                bad = dict(row, status='in_progress', conclusion=None)
+                bad.update(changes)
+                with patch.object(api, 'request', return_value={'workflow_runs': [bad]}):
+                    with self.assertRaises(ValueError) as error:
+                        api.wait_ci(plan, 100)
+                    self.assertNotIsInstance(error.exception, rc.ChecksPending)
+            sleep.reset_mock()
+            row.update(status='queued', conclusion=None)
+            with self.assertRaises(rc.ChecksPending):
+                api.wait_ci(plan, 0)
+            sleep.assert_not_called()
+            with patch.object(api, 'request', side_effect=lambda path: {'workflow_runs': [row]} if '/actions/' in path
+                              else {'tree': {'sha': 'f' * 40}}):
+                with self.assertRaises(ValueError) as error:
+                    api.wait_ci(plan, 100)
+                self.assertNotIsInstance(error.exception, rc.ChecksPending)
+
     def test_archives_are_identical_and_preserve_exact_payload(self):
         payload = {'z/file.py': b'print("fixture")\n', 'a.txt': b'LF\n'}
         first = rc.archive(payload, 'fixture')
