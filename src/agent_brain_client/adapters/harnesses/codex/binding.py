@@ -23,18 +23,8 @@ def private_control(home, runtime):
 
 
 def receipt(home):
-    file = directory(home) / "registration.json"
-    if not file.exists():
-        return None
-    value = io.private_json(file)
-    if (set(value) != {"schema", "native_home", "mcp", "removed"}
-            or value["schema"] != 1 or type(value["removed"]) is not bool
-            or not isinstance(value["mcp"], dict)):
-        raise ValueError("Exact Codex native registration required")
-    native = io.canonical(Path(value["native_home"]))
-    if not native.is_absolute() or native == directory(home).parent / "shared-native":
-        raise ValueError("Separate Codex native home required")
-    return value
+    from agent_brain_client.adapters.storage.registration import codex_registration
+    return codex_registration(home)
 
 
 def native_home(home, runtime):
@@ -47,10 +37,8 @@ def native_home(home, runtime):
 
 
 def location(home, runtime):
-    native = native_home(home, runtime)
-    cache = (directory(home) / "content-cache" if private_control(home, runtime)
-             else Path(runtime["content_cache"]))
-    return native, cache
+    from agent_brain_client.adapters.storage.registration import content_location
+    return content_location(home, runtime, "codex")
 
 
 def entry(raw):

@@ -176,7 +176,7 @@ def main(argv=None):
             2
             if failed_activation
             or result.get("status")
-            in ("global-memory-activation-required", "global-memory-resume-unconfirmed", "global-queue-sync-incomplete")
+            in ("global-memory-activation-required", "global-memory-stop-unconfirmed", "global-memory-resume-unconfirmed", "global-queue-sync-incomplete")
             else 0
         )
     except Exception as error:

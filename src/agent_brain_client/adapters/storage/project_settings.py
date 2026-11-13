@@ -130,7 +130,9 @@ def load(path, sha, *, locate):
 
 def active(p):
     marker = Path(p["off_file"])
-    if not p["enabled"] or marker.exists() or marker.is_symlink():
+    global_marker = marker.with_name("global-memory.off")
+    if (not p["enabled"] or marker.exists() or marker.is_symlink()
+            or global_marker.exists() or global_marker.is_symlink()):
         return False
     if p["recall_policy"]:
         value = private_json(p["recall_policy"], p["recall_policy_sha256"])
