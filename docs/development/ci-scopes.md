@@ -1,60 +1,21 @@
-# 按变更范围运行 Client 检查
+# Client 检查分层
 
-> 当前维护；Client 0.6 开发。核对日期：2026-11-05。
+核对日期：2026-11-13。
 
-普通 PR 和 main push 都启动 [Client checks](../../.github/workflows/client-checks.yml)，由 [分类器](../../dev/checks/scope.py) 选择 job。没有工作流级 paths 过滤；文档标点改动不会申请 Mac 或 Windows runner。轻量检查包括全仓文档链接／锚点、文档检查器与 CI 分类／汇总回归、diff 格式。它不证明代码或平台已完整验证。
+PR、main push 和 merge queue 只运行快速阻塞检查。它们始终启动工作流并保留稳定的 `Client checks required` 汇总；失败、取消、缺失输出或跳过必需任务都不能成功。checkout 固定事件 SHA，检查 PR 合并后的树；范围从本地 Git 完整历史取得，不依赖 API 文件列表分页。
 
-| 变更 | 轻量文档检查 | 源码检查／lint／类型 | Mac 完整标准库测试与 helper 自检 | Windows 原生合同（3.11、3.13） |
-| --- | --- | --- | --- | --- |
-| 根目录 `.md` 正文修改、docs 下 `.md`（含删除／改名） | 是 | 跳过 | 跳过 | 跳过 |
-| 根目录 Markdown 文件新增／删除／改名，涉及固定包或入口集合 | 是 | 是 | 是 | 是 |
-| 明确的 Mac 专用文件：三个 native Swift、helper 构建器、install-mac.sh、memory.sh | 是 | 是 | 是 | 跳过 |
-| 明确的 Windows 专用文件：brain_windows.py、access_windows.py、三个 PowerShell 入口、test_windows_native.py | 是 | 是 | 跳过 | 是 |
-| 公共代码、fixture、依赖、构建／发布、工作流、固定 JSON 或未知路径 | 是 | 是 | 是 | 是 |
-| 混合改动／跨平台改名 | 是 | 按范围并集 | 按范围并集 | 按范围并集 |
-| 仅修改顶层 `tests/test_*.py`，可带普通文档 | 是 | 是 | 仅所改模块与引用它们的测试，不构建未变 helper | 命中已有 Windows 合同时保留两版本原生合同，否则跳过 |
-| 仅 CI 分类器／文档检查器及它们的测试，可带普通文档 | 是（含对应回归） | 是 | 跳过 | 跳过 |
-| 手动 Run workflow、merge queue、基准缺失／不可判定 | 是 | 是 | 是 | 是 |
+| 阶段 | 检查 | 完整发布证据 |
+| --- | --- | --- |
+| PR / main push / merge queue | 文档链接及 CI 合同回归、所有 tracked Python 语法、已提交 diff 空白、架构边界及范围映射中的短回归 | 否 |
+| 发布前手动 Client checks | 原有完整测试、lint/type、平台原生及跨仓检查 | 全部任务真实成功后才是 |
+| 发布准备及发布 | 现有完整包验证、精确源码树／attempt、不可变资产和回读门禁 | 仍全部必需 |
 
-平台专用路径是短小的精确白名单，新增文件默认走全量，确认边界和测试覆盖后才加入白名单。`src/agent_brain_client/interfaces/cli/install.py` 同时承接两平台安装，因此归公共代码；`windows_install_complete.py` 及 POSIX 故障注入 fixture 同样保守覆盖两端。依赖和 CI 配置不按目录名猜测。docs 下的连接 JSON 是合同，仍跑全量。根目录 Markdown 的文件集合改变一律走全量，保护 README／BOOTSTRAP／PROTOCOL／ADAPTERS 等固定包文件；仅改标点不改变集合。Markdown 变成可执行文件、符号链接或子模块等特殊变更走全量。
+快速入口为 [quick.py](../../dev/checks/quick.py)。定向清单 `TARGETS` 随代码维护：CI 工具改动运行对应回归；发布工具改动运行发布门禁回归；Client 主机入口／采集控制和 Server 身份／回执合同改动另运行对应短回归。未映射的功能改动仍执行语法及架构检查，完整行为验证留在发布阶段；快速绿色不能声称该功能已经完整验收。任一定向测试失败或超时都失败，绝不转成跳过或成功。无法解析 diff 也失败，不能冒充完成检查。
 
-## 基准和结果
+普通事件的 `full=false`；Client 原生平台任务明确 skipped，Server 使用 Linux 执行快速检查。工作流手动 `workflow_dispatch` 无条件强制原有完整范围，不能用 PR 绿色代替。发布前在 **Client checks → Run workflow** 选择最终 main，等本次完整任务成功，再使用原有发布入口。不要在每个 PR 或普通 main push 重复运行全量。
 
-分类 job 完整 fetch Git 历史，不使用 GitHub 路径过滤或有数量限制的 PR 文件 API。PR 比较事件 base 与 head 的 merge-base 到 head，覆盖整个 PR；main push 比较事件 before 到 after，覆盖多提交合并。强推前像不在祖先链、新分支零前像、找不到对象、空 diff 或解析失败均走全量。Git NUL 分隔保留空格／换行路径，禁用 rename 检测，把删除旧路径和新增新路径一起分类，防止代码改名成 Markdown 后漏测。文档 job 每次检查全仓链接，所以删除目标或改名留下断链会失败。
+发布证据门禁仍要求同次 attempt 中原有全部任务真实成功，包含 `Client full validation`。快速结果不能产生该标记。Server candidate 仅在手动完整检查成功后继续原有构建和包验证；普通 main 的快速运行不会构建候选。Client release 的 prepare/publish 权限隔离及所有平台证据要求保持原合同。
 
-所有 checkout 固定 `github.sha`：PR 测试当次合成 merge，push／手动运行测试当次提交；不会在排队时跟随移动分支。分类范围针对 PR 自身，测试对象仍是合并后的代码。
+本地完整入口 [client.py](../../dev/checks/client.py) 保留。Actions 不可用时，Client 使用既有 local/hybrid 回执与原生 Windows 双版本证据，Server 使用既有 prepare-local；它们仍运行完整检查，不伪造 Actions 成功。详细命令见原发布文档。范围分类器的 `plan` / `tests` 命令保留供本地诊断，它们描述可选的旧范围计划，不是日常 Actions 的分层策略。
 
-`Client checks required` 始终运行，要求分类和文档成功、每个选中的 job 实际成功、未选中的 job 明确跳过。失败、取消或缺失分类结果都不能让汇总变绿。摘要里的 false／skipped 表示未验证该范围。`Client full validation` 只有两端完整测试及源码检查全部成功才成功，局部检查时明确跳过。
-
-2026-11-03 的仓库 API 核对：main `protected:false`，required status contexts 为空，rulesets 为空；本变更不增加审批或调整保护。需要将来配置必需 check 时使用稳定的 `Client checks required`，不要要求条件运行的单个平台 job 或 `Client full validation`，也不要给整个工作流增加 paths-ignore，否则可能永久 pending。[GitHub 的路径过滤说明](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onpushpull_requestpull_request_targetpathspaths-ignore)解释了这种 pending 行为。
-
-## 完整验证、发布与封板
-
-在 Actions 的 **Client checks → Run workflow** 选择目标 ref，可强制所有检查；不需要额外审批输入。手动运行固定当次 ref 的 SHA。正式发布／阶段封板必须记录对应最终源码树的完整验证证据；文档合入后的绿色局部 CI 不可冒充封板。若最终提交只有文档变化，先对该提交运行全量 Client checks，再执行独立授权的发布／封板。
-
-[发布工具](../../dev/release/client.py)继续核对精确源码树与 PR 合成合并语义，并读取同一次 run attempt 的实际 jobs：分类、文档、源码、Mac、Windows 两版本、汇总和完整标记必须全部 success；任何 skipped、cancelled、failure、缺失或重复证据均拒绝。它允许 main push、main 手动全量以及满足既有树条件的 PR，不凭祖先提交的绿色状态替代当前树。更早的无完整标记工作流也不能作为新的发布证据。发布准备自身的完整离线测试和现有不可变资产／渠道校验继续执行。
-
-合成 Git 历史、各类路径／改名／删除／混合、失败汇总与发布证据回归见 [test_ci_scope.py](../../tests/test_ci_scope.py) 和 [test_release_pipeline.py](../../tests/test_release_pipeline.py)。平台原生检查仍以 GitHub 对应 runner 的实际结果为准；合成测试不证明真实桌面、设备或生产验收。
-
-
-本地与 Actions 均直接执行 `dev/checks/client.py` 的同一份 `COMMANDS`；工作流不再复制测试／lint／类型清单。CodeBuddy 的静态检查、Windows 专项及安装入口解析都包含在共用清单中。
-
-## 日常增量检查
-
-Mac 测试在同一个 runner 的两个独立进程执行，每个进程分别隔离 HOME／USERPROFILE／CODEX_HOME；模块按队列交给空闲进程，每个模块单独隔离并输出耗时；全部结果汇总后任一失败均失败。完整测试仍执行全部模块，helper 自检保留；本地正式发布的原串行全量入口继续可用。
-
-同一 PR 新提交会取消已被替代的旧检查；main、手动完整验证不会因此互相取消。仅测试模式通过 AST 导入和测试名称引用求传递闭包，避免漏掉引用所改测试 fixture 的模块。删除测试、嵌套 fixture、生产源码混改或解析失败仍走原完整路径。仅测试结果始终 `full=false`，不能作为发布全量证据。CI 自身的新执行器／工作流改动仍跑全量，分类器与文档检查器已有专门回归。
-
-本地可先查看实际 Git 范围，再复用同一测试选择。以下只执行测试；其他检查按 `plan` 结果使用现有本地入口，发布继续要求完整证据：
-
-```sh
-python3 -B dev/checks/scope.py plan origin/main HEAD
-TEST_ROOT=$(mktemp -d)
-mkdir -p "$TEST_ROOT/home" "$TEST_ROOT/codex"
-export HOME="$TEST_ROOT/home" CODEX_HOME="$TEST_ROOT/codex"
-export PYTHONPATH=scripts:adapters/codex:installer:tools:tests
-export CI_TESTS="$(python3 -B dev/checks/scope.py tests origin/main HEAD)"
-python3 -B dev/checks/tests.py
-```
-
-`CI_TESTS` 只接受 JSON 测试模块列表，不作为 shell 命令拼接；空列表执行完整 discover。耗时比较应区分测试执行、runner 设置与等待／调度时间，不能把减少检查数量当作实测耗时。
+实际耗时必须区分排队、runner 设置及执行时间；减少工作量不是实测加速数据。CI 自身变更用定向合同／发布拒绝用例验证，之后首次发布仍必须取得最终树的完整证据。此改动不创建版本、tag 或改动任何设备功能。
