@@ -27,13 +27,12 @@ class CodexContentPorts:
 
     @staticmethod
     def remove_hooks(home, raw, platform):
-        from agent_brain_client.adapters.harnesses.codex.collection_installation import split_owned, same_owned
+        from agent_brain_client.adapters.harnesses.codex.collection_installation import split_owned, same_owned, read_receipt
         from agent_brain_client.adapters.storage.collection import settings_path
-        from agent_brain_client.adapters.storage.metadata import private_json
         outside, block = split_owned(raw)
         if block is None:
             return raw, None
-        receipt = private_json(settings_path(home).parent / "hook-install.json")
+        receipt = read_receipt(settings_path(home).parent / "hook-install.json")
         if receipt.get("phase") != "complete" or not same_owned(receipt.get("block"), block):
             raise ValueError("Hook ownership changed")
         return outside.encode(), block
