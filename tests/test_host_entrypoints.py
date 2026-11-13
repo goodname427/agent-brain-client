@@ -54,7 +54,7 @@ class HostEntries(unittest.TestCase):
                 self.run_probe("projects", harness)
 
     def test_real_stop_failures_and_mixed_source_isolation(self):
-        modes = ("mixed-current", "mixed-legacy", "resume-codex", "resume-codebuddy", "stop-partial-codex", "stop-partial-codebuddy")
+        modes = ("mixed-current", "mixed-legacy", "resume-codex", "resume-codebuddy", "stop-partial-codex", "stop-partial-codebuddy", "approved-codex", "approved-codebuddy")
         for mode in modes:
             with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="synthetic-stop-source-") as tmp:
                 home = Path(tmp) / "home"

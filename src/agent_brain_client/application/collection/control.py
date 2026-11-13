@@ -9,7 +9,8 @@ class CollectionControlPorts(Protocol):
     def clear_fence(self, value: dict) -> None: ...
     def admission(self, value: dict) -> dict: ...
     def remote(self, value: dict, method: str) -> dict: ...
-    def fence_project(self, row: dict) -> None: ...
+    def fence_project(self, row: dict, *, global_only: bool = False) -> None: ...
+    def clear_project_fence(self, row: dict) -> None: ...
     def stop_project(self, row: dict) -> None: ...
     def resume_project(self, row: dict) -> None: ...
     def save_settings(self, value: dict) -> None: ...
@@ -28,7 +29,7 @@ class CollectionControl:
             project = {"root": row["root"], "local_stop_fence": False,
                        "remote_confirmed": False}
             try:
-                self.ports.fence_project(row)
+                self.ports.fence_project(row, global_only=bool(value["server_scope_sha256"]))
             except Exception as error:
                 project.update(error_stage="local-stop", error_type=type(error).__name__)
             else:
@@ -145,6 +146,22 @@ class CollectionControl:
                 "local_stop_fence": True,
                 "next_action": "Inspect global-status --check-server and the existing Server source; preserve the local stop fence.",
             }
+        projects = []
+        # Approved global control never stopped each project's remote source.
+        # Lift only the separate local fences created for that global stop;
+        # independently stopped or migrated project markers stay untouched.
+        for row in value.get("legacy_projects", []):
+            try:
+                self.ports.clear_project_fence(row)
+            except Exception as error:
+                projects.append({"root": row["root"], "local_stop_fence": True,
+                                 "error_type": type(error).__name__})
+            else:
+                projects.append({"root": row["root"], "local_stop_fence": False})
+        if any(project["local_stop_fence"] for project in projects):
+            return {"status": "global-memory-resume-unconfirmed",
+                    "collection_enabled": False, "remote_confirmed": True,
+                    "local_stop_fence": True, "projects": projects}
         self.ports.clear_fence(value)
         return {
             "status": "global-memory-resumed",
