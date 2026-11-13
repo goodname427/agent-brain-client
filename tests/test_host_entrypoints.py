@@ -204,11 +204,17 @@ def probe(mode, harness):
             setup = project_memory.setup(args)
             loaded = project_memory.load(output, setup["settings_sha256"])
             assert loaded["harness"] == harness
+            # Foreign-host metadata must not activate its runtime adapter.
+            foreign = project_settings(home, project, harness=other)
+            foreign.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            metadata.write(foreign, dict(loaded, harness=other))
+            foreign_bytes = foreign.read_bytes()
             # Real shared setup path with a nonempty project directory.
             result = host_maintenance.install_sources(SimpleNamespace(device_home=str(home), harness="codebuddy", profile_id=None, operator=None, operator_sha256=None))
             assert result["status"] == "shared-source-runtime-prepared", result
             shared = metadata.private_json(settings_path(home))
             assert shared["legacy_projects"] == [] and shared["enabled"] is False
+            assert foreign.read_bytes() == foreign_bytes
             # Retain old schema-1 Codex records and a real pinned source grant.
             cap, recall = home / "capture.json", home / "recall.json"
             cap_pin = metadata.write(cap, {"synthetic": True})
@@ -221,7 +227,7 @@ def probe(mode, harness):
             from agent_brain_client.adapters.storage.collection_setup import prepare
             prepared = prepare(args, locate=lambda home, runtime, host: content_host(host).location(home, runtime))
             assert len(prepared["legacy_projects"]) == (1 if harness == "codex" and os.name != "nt" else 0), prepared
-            value = dict(shared, legacy_projects=[{"settings": str(output), "settings_sha256": pin}], server_scope_sha256=None)
+            value = dict(shared, legacy_projects=[{"root": str(project), "settings": str(output), "settings_sha256": pin}], server_scope_sha256=None)
             calls = []
             class ControlClient:
                 def request(self, request):
@@ -251,7 +257,61 @@ def probe(mode, harness):
                 with patch.object(project_memory, "adapter_for", side_effect=OSError("Synthetic remote unavailable")), patch.object(sys, "stdout", io.StringIO()):
                     assert collection.main(["global-resume", "--device-home", str(home)]) == 2
                 assert (settings_path(home).parent / "global.off").exists()
-            assert calls == ["memory_stop", "memory_resume", "memory_stop"], calls
+            second = home / "synthetic-second-project"
+            second.mkdir()
+            second_output = project_settings(home, second, harness=harness)
+            second_args = SimpleNamespace(**dict(vars(args), project_root=str(second), output=str(second_output)))
+            second_setup = project_memory.setup(second_args)
+            second_record = project_memory.load(second_output, second_setup["settings_sha256"])
+            second_record.update(source_mode="codex-project", capture_policy=str(cap), capture_policy_sha256=cap_pin,
+                                 recall_policy=str(recall), recall_policy_sha256=recall_pin)
+            second_pin = metadata.write(second_output, second_record)
+            second_row = {"root": str(second), "settings": str(second_output), "settings_sha256": second_pin}
+            original_row = value["legacy_projects"][0]
+            for outcomes in ((False, False), (False, True), (True, False), (True, True), "malformed", "missing", "error", "transport"):
+                for reversed_order in (False, True):
+                    metadata.write(Path(loaded["off_file"]), {})
+                    metadata.write(Path(second_record["off_file"]), {})
+                    metadata.write(settings_path(home).parent / "global.off", {})
+                    value["legacy_projects"] = [second_row, original_row] if reversed_order else [original_row, second_row]
+                    clients = []
+                    class AdmissionClient:
+                        def __init__(self, settings):
+                            self.settings = settings
+                        def request(self, request):
+                            clients.append(self.settings["project_root"])
+                            if self.settings["project_root"] == str(second):
+                                return {"result": {"schema": 2, "lifecycle": "until-disabled", "model_admitted": True, "source_admitted": True}}
+                            if outcomes == "transport":
+                                raise OSError("Synthetic transport failure")
+                            if outcomes == "missing":
+                                return {}
+                            if outcomes == "error":
+                                return {"error": {"code": "synthetic-denial"}}
+                            if outcomes == "malformed":
+                                return {"result": {"schema": 2}}
+                            return {"result": {"schema": 2, "lifecycle": "until-disabled", "model_admitted": outcomes[0], "source_admitted": outcomes[1]}}
+                    with patch.object(collection.core, "load", return_value=value), patch.object(project_memory, "adapter_for", side_effect=lambda p: (AdmissionClient(p), None)):
+                        out = io.StringIO()
+                        with patch.object(sys, "stdout", out):
+                            rc = collection.main(["global-resume", "--device-home", str(home), "--harness", harness])
+                    result = json.loads(out.getvalue())
+                    confirmed = outcomes == (True, True)
+                    assert rc == (0 if confirmed else 2), result
+                    assert result["remote_confirmed"] is confirmed, result
+                    assert Path(loaded["off_file"]).exists() is not confirmed
+                    assert not Path(second_record["off_file"]).exists()
+                    assert (settings_path(home).parent / "global.off").exists() is not confirmed
+                    assert set(clients) == {str(project), str(second)} and len(clients) == 2, clients
+                    assert all(row["remote_confirmed"] == (confirmed or row["root"] == str(second)) for row in result["projects"]), result
+                    assert metadata.private_json(output) == loaded
+            # Legacy routing still requires the full identity and code pins.
+            from agent_brain_client.adapters.storage.collection_setup import prepare
+            metadata.write(output, dict(loaded, profile_sha256="0" * 64))
+            metadata.write(settings_path(home), dict(shared, legacy_projects=[]))
+            checked = prepare(args, locate=lambda home, runtime, host: content_host(host).location(home, runtime))
+            assert all(row["root"] != str(project) for row in checked["legacy_projects"])
+            assert len(checked["legacy_projects"]) == (1 if harness == "codex" and os.name != "nt" else 0)
     else:
         raise AssertionError(mode)
     assert not attempts, attempts
