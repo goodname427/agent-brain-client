@@ -143,6 +143,68 @@ def worker(mode):
         # These are real pinned settings and the public collection/project CLI load paths.
         for row in rows:
             assert project_memory.load(row["settings"], row["settings_sha256"])["enabled"]
+        if mode.startswith("approved-"):
+            from agent_brain_client.domain.scopes import digest as scope_digest
+            scope = dict(settings["scope"], include_roots=[{"root": str(home), "sharing": "personal"}])
+            approved = dict(settings, enabled=True, scope=scope,
+                            approved_scope_sha256=scope_digest(scope), server_scope_sha256=scope_digest(scope))
+            metadata.write(file, approved)
+            sentinels = [Path(p["off_file"]).with_name("global-memory.off") for p in records]
+            outcome, resume_reply = "success", {"result": {"schema": 1, "stopped": True}}
+            class GlobalControl:
+                def __init__(self, value):
+                    pass
+                def wire(self, method, params):
+                    if method == "memory_global_stop":
+                        assert all(p.exists() for p in sentinels), "Remote global stop before local project fences"
+                        if outcome == "transport":
+                            raise OSError("Synthetic global transport unavailable")
+                        return {"result": {"schema": 1, "stopped": True}}
+                    assert method == "memory_global_resume"
+                    return resume_reply
+            def cli(action):
+                out = io.StringIO()
+                with patch.object(collection.core, "CollectionClient", GlobalControl), patch.object(sys, "stdout", out):
+                    rc = collection.main([action, "--device-home", str(home)])
+                return rc, json.loads(out.getvalue())
+            for outcome in ("success", "transport"):
+                for record in records:
+                    Path(record["off_file"]).unlink(missing_ok=True)
+                metadata.write(Path(records[0]["off_file"]), {"synthetic": "independent-project-stop"})
+                original = Path(records[0]["off_file"]).read_bytes()
+                rc, value = cli("global-stop")
+                assert rc == (0 if outcome == "success" else 2), value
+                assert all(p.exists() for p in sentinels)
+                assert not any(ps.active(p) for p in records)
+                resume_reply = {"result": {"schema": 1, "stopped": True}}
+                rc, value = cli("global-resume")
+                assert rc == 2 and not value["remote_confirmed"], value
+                assert all(p.exists() for p in sentinels)
+                # A separate project stop made during the global stop survives
+                # the later global resume as well as a stop that predated it.
+                if outcome == "transport":
+                    with patch.object(sys, "argv", ["project.py", "stop", "--harness", records[1]["harness"], "--settings", rows[1]["settings"], "--settings-sha256", rows[1]["settings_sha256"]]), patch.object(sys, "stdout", io.StringIO()):
+                        assert project_cli.main() == 0
+                resume_reply = {"result": {"schema": 1, "stopped": False}}
+                rc, value = cli("global-resume")
+                assert rc == 0 and value["collection_enabled"], value
+                assert not any(p.exists() for p in sentinels)
+                assert Path(records[0]["off_file"]).read_bytes() == original
+                assert ps.active(records[1]) == (outcome == "success")
+            # If source reconfiguration returns to legacy control, confirmed
+            # project resume must also release a previous global-only fence.
+            for sentinel in sentinels:
+                metadata.write(sentinel, {"schema": 1, "control": "global-stop"})
+            metadata.write(file, settings)
+            rc, value = cli("global-resume")
+            assert rc == 0 and value["legacy_capture_resumed"] and not any(p.exists() for p in sentinels), value
+            metadata.write(file, approved)
+            metadata.write(sentinels[1], {"synthetic": "unknown-marker"})
+            before = sentinels[1].read_bytes()
+            rc, value = cli("global-resume")
+            assert rc == 2 and value["remote_confirmed"] and not value["collection_enabled"], value
+            assert sentinels[1].read_bytes() == before and (file.parent / "global.off").exists()
+            return {"mode": mode, "global_stop_resume_restored": True, "independent_stops_preserved": True}
         if mode.startswith("resume"):
             for failure in ((False, False), (False, True), (True, False), (True, True), "malformed", "missing", "error", "transport"):
                 for reverse in (False, True):

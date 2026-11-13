@@ -29,8 +29,11 @@ class ControlPorts:
         self.calls.append(method)
         return self.reply
 
-    def fence_project(self, row):
+    def fence_project(self, row, *, global_only=False):
         self.calls.append("fence-" + row["root"])
+
+    def clear_project_fence(self, row):
+        self.calls.append("unfence-" + row["root"])
 
     def stop_project(self, row):
         self.calls.append("stop-" + row["root"])
@@ -79,7 +82,7 @@ class CollectionControlContract(unittest.TestCase):
 
     def test_local_failure_does_not_skip_other_local_or_remote_stops(self):
         ports = ControlPorts()
-        def fence(row):
+        def fence(row, *, global_only=False):
             ports.calls.append("fence-" + row["root"])
             if row["root"] == "delegated":
                 raise OSError("Synthetic write denied")
@@ -118,7 +121,7 @@ class CollectionControlContract(unittest.TestCase):
             self.assertEqual(ports.fenced, not confirmed)
             self.assertEqual(
                 ports.calls,
-                ["fence", "memory_global_resume"] + (["clear"] if confirmed else []),
+                ["fence", "memory_global_resume"] + (["unfence-delegated", "unfence-migrated", "clear"] if confirmed else []),
             )
 
     def test_resume_does_not_expand_unapproved_scope_and_skips_migrated_projects(self):

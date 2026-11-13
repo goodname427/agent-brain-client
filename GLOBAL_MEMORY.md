@@ -67,7 +67,9 @@ Global stop writes every retained project's local stop marker before contacting
 the Server, then attempts each original remote stop independently. An incomplete
 stop returns `global-memory-stop-unconfirmed` with exit code 2 and per-project
 local/remote results; successful local stops stay in place while failed remote
-stops can be retried explicitly. Existing stop markers are preserved.
+stops can be retried explicitly. Existing stop markers are preserved. Approved global sources use separate local
+project fences, so confirmed global resume restores their delegated routes while
+preserving independent project stops made before or during the global stop.
 
 Run recall from an approved context. It returns native-configured L1 results per namespace, independently assembled
 L2/L3 and no L0, retaining provenance and source applicability. Recognized transport failures may return scope-bound
