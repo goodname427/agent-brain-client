@@ -20,6 +20,7 @@ POLICY = {"schema": 1, "adapter": "codex", "kinds": ["memory", "rule", "skill"],
           "dependencies": {"commands": [], "python_modules": []}}
 
 
+@unittest.skipUnless(sys.platform in ("darwin", "win32"), "Native Client entry contracts require macOS or Windows")
 class HostEntries(unittest.TestCase):
     def run_probe(self, mode, harness):
         with tempfile.TemporaryDirectory(prefix="synthetic-entry-home-") as tmp:
@@ -51,6 +52,18 @@ class HostEntries(unittest.TestCase):
         for harness in ("codex", "codebuddy"):
             with self.subTest(harness=harness):
                 self.run_probe("projects", harness)
+
+    def test_real_stop_failures_and_mixed_source_isolation(self):
+        modes = ("mixed-current", "mixed-legacy", "resume-codex", "resume-codebuddy", "stop-partial-codex", "stop-partial-codebuddy")
+        for mode in modes:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="synthetic-stop-source-") as tmp:
+                home = Path(tmp) / "home"
+                home.mkdir(mode=0o700)
+                result = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "tests/stop_source_probe.py"), mode],
+                    env=dict(os.environ, HOME=str(home), USERPROFILE=str(home), CODEX_HOME=str(home / ".codex")),
+                    capture_output=True, text=True, timeout=40)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["mode"], mode)
 
 
 def probe(mode, harness):
@@ -253,7 +266,7 @@ def probe(mode, harness):
                 marker.unlink()
                 with patch.object(metadata, "write", side_effect=OSError("Synthetic marker write failure")), patch.object(sys, "stdout", io.StringIO()):
                     assert collection.main(["global-stop", "--device-home", str(home)]) == 2
-                assert calls == ["memory_stop", "memory_resume", "memory_stop"], calls
+                assert calls == ["memory_stop", "memory_resume", "memory_stop", "memory_stop"], calls
                 with patch.object(project_memory, "adapter_for", side_effect=OSError("Synthetic remote unavailable")), patch.object(sys, "stdout", io.StringIO()):
                     assert collection.main(["global-resume", "--device-home", str(home)]) == 2
                 assert (settings_path(home).parent / "global.off").exists()

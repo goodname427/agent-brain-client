@@ -63,6 +63,12 @@ sh bin/memory.sh global-resume
 sh bin/memory.sh global-uninstall
 ```
 
+Global stop writes every retained project's local stop marker before contacting
+the Server, then attempts each original remote stop independently. An incomplete
+stop returns `global-memory-stop-unconfirmed` with exit code 2 and per-project
+local/remote results; successful local stops stay in place while failed remote
+stops can be retried explicitly. Existing stop markers are preserved.
+
 Run recall from an approved context. It returns native-configured L1 results per namespace, independently assembled
 L2/L3 and no L0, retaining provenance and source applicability. Recognized transport failures may return scope-bound
 cached items marked offline/unconfirmed. Sync retries the original admitted

@@ -7,6 +7,40 @@ from agent_brain_client.adapters.storage.metadata import private_json, canonical
 from pathlib import Path
 
 
+def codex_registration(home):
+    """Read the public native binding record without loading a host adapter."""
+    directory = canonical(Path(home) / ".config/agent-brain-client/codex")
+    file = directory / "registration.json"
+    if not file.exists():
+        return None
+    value = private_json(file)
+    if (set(value) != {"schema", "native_home", "mcp", "removed"}
+            or value["schema"] != 1 or type(value["removed"]) is not bool
+            or not isinstance(value["mcp"], dict)):
+        raise ValueError("Exact Codex native registration required")
+    native = canonical(Path(value["native_home"]))
+    if not native.is_absolute() or native == directory.parent / "shared-native":
+        raise ValueError("Separate Codex native home required")
+    return value
+
+
+def content_location(home, runtime, harness):
+    """Resolve authenticated persisted locations; never initialize a Harness."""
+    home = canonical(home)
+    base = home / ".config/agent-brain-client"
+    if harness == "codebuddy":
+        return home / ".codebuddy", base / "codebuddy/content-cache"
+    if harness != "codex":
+        raise ValueError("Explicit supported content Harness required")
+    if Path(runtime["codex_home"]) != base / "shared-native":
+        # Original enrolled schema retains its authenticated direct locations.
+        return canonical(Path(runtime["codex_home"])), Path(runtime["content_cache"])
+    receipt = codex_registration(home)
+    if receipt is None:
+        raise ValueError("Explicit Codex native binding required")
+    return canonical(Path(receipt["native_home"])), base / "codex/content-cache"
+
+
 def registry_home(home, *, retained=False):
     """Locate shared control data independently of any installed native host.
 

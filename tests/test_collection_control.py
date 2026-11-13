@@ -29,6 +29,9 @@ class ControlPorts:
         self.calls.append(method)
         return self.reply
 
+    def fence_project(self, row):
+        self.calls.append("fence-" + row["root"])
+
     def stop_project(self, row):
         self.calls.append("stop-" + row["root"])
         if self.project_failure:
@@ -53,31 +56,53 @@ class CollectionControlContract(unittest.TestCase):
             ],
         }
 
-    def test_stop_sets_local_fence_before_remote_and_keeps_it_on_uncertainty(self):
+    def test_stop_fences_every_project_before_global_remote(self):
         for reply in ({"result": {}}, {"error": {"code": "unconfirmed"}}):
             ports = ControlPorts()
             ports.reply = reply
-            if "error" in reply:
-                with self.assertRaises(ValueError):
-                    CollectionControl(ports).stop(self.value())
-            else:
-                self.assertTrue(
-                    CollectionControl(ports).stop(self.value())["remote_confirmed"]
-                )
-            self.assertEqual(ports.calls, ["fence", "memory_global_stop"])
+            result = CollectionControl(ports).stop(self.value())
+            self.assertEqual(result["remote_confirmed"], "error" not in reply)
+            self.assertEqual(result["status"], "global-memory-stop-unconfirmed" if "error" in reply else "global-memory-stopped")
+            self.assertEqual(ports.calls, ["fence", "fence-delegated", "fence-migrated", "memory_global_stop"])
             self.assertTrue(ports.fenced)
 
-    def test_project_stop_preserves_existing_all_rows_behavior_and_fence_on_error(self):
+    def test_project_stop_attempts_every_local_fence_then_every_remote(self):
+        for failed in (False, True):
+            ports = ControlPorts()
+            ports.project_failure = failed
+            result = CollectionControl(ports).stop(self.value(False))
+            self.assertEqual(ports.calls, ["fence", "fence-delegated", "fence-migrated", "stop-delegated", "stop-migrated"])
+            self.assertEqual(result["remote_confirmed"], not failed)
+            self.assertEqual(result["status"], "global-memory-stop-unconfirmed" if failed else "global-memory-stopped")
+            self.assertTrue(ports.fenced)
+            self.assertTrue(all(p["local_stop_fence"] for p in result["projects"]))
+
+    def test_local_failure_does_not_skip_other_local_or_remote_stops(self):
         ports = ControlPorts()
+        def fence(row):
+            ports.calls.append("fence-" + row["root"])
+            if row["root"] == "delegated":
+                raise OSError("Synthetic write denied")
+        ports.fence_project = fence
         result = CollectionControl(ports).stop(self.value(False))
-        self.assertEqual(ports.calls, ["fence", "stop-delegated", "stop-migrated"])
-        self.assertTrue(result["remote_confirmed"])
+        self.assertEqual(ports.calls, ["fence", "fence-delegated", "fence-migrated", "stop-delegated", "stop-migrated"])
+        self.assertEqual(result["status"], "global-memory-stop-unconfirmed")
+        self.assertEqual(result["projects"][0]["error_stage"], "local-stop")
+        self.assertFalse(result["projects"][0]["local_stop_fence"])
+        self.assertTrue(result["projects"][1]["local_stop_fence"])
+
+    def test_unexpected_remote_failure_is_reported_and_remaining_projects_attempted(self):
         ports = ControlPorts()
-        ports.project_failure = True
-        with self.assertRaises(OSError):
-            CollectionControl(ports).stop(self.value(False))
-        self.assertTrue(ports.fenced)
-        self.assertEqual(ports.calls, ["fence", "stop-delegated"])
+        def stop(row):
+            ports.calls.append("stop-" + row["root"])
+            if row["root"] == "delegated":
+                raise RuntimeError("Synthetic unexpected remote failure")
+        ports.stop_project = stop
+        result = CollectionControl(ports).stop(self.value(False))
+        self.assertEqual(ports.calls[-2:], ["stop-delegated", "stop-migrated"])
+        self.assertEqual(result["status"], "global-memory-stop-unconfirmed")
+        self.assertEqual(result["projects"][0]["remote_error_type"], "RuntimeError")
+        self.assertTrue(result["projects"][1]["remote_confirmed"])
 
     def test_resume_clears_fence_only_after_confirmed_server_response(self):
         for reply in (
