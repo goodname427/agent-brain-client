@@ -58,7 +58,7 @@ class HostEntries(unittest.TestCase):
         for mode in modes:
             with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="synthetic-stop-source-") as tmp:
                 home = Path(tmp) / "home"
-                home.mkdir(mode=0o700)
+                # The Client creates HOME with the exact native owner/DACL.
                 result = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "tests/stop_source_probe.py"), mode],
                     env=dict(os.environ, HOME=str(home), USERPROFILE=str(home), CODEX_HOME=str(home / ".codex")),
                     capture_output=True, text=True, timeout=40)
