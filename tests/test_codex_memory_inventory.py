@@ -462,12 +462,31 @@ class CodexMemoryInventory(unittest.TestCase):
         helper.setUp();self.addCleanup(helper.doCleanups)
         memories=helper.home/'.codex/memories';memories.mkdir(parents=True)
         source=memories/'changing.md';source.write_text('Synthetic version 0')
-        for version in range(1030):
+        # Exercise real native inventory/read/review transitions, then seed the
+        # historical ledger at its actual capacity. Repeating 1,030 full native
+        # transactions only reconstructs the same superseded-row condition.
+        for version in range(3):
             inventory=helper.adapter.sources.inventory_memory_sources()
             row=next(item for item in inventory['sources'] if item['status']=='not-checked')
             helper.adapter.sources.read_memory_source(row['source_id'],row['source_fingerprint'])
             helper.adapter.sources.review_memory_source(row['source_id'],row['source_fingerprint'],'shareable','safe-cross-project-personal-summary')
             source.write_text(f'Synthetic version {version+1}')
+        saved = helper.adapter._load('memory-inventory.json')
+        reviews = helper.adapter._load('memory-reviews.json')
+        prior = next(iter(saved['sources'].values()))
+        review = next(iter(reviews['items'].values()))
+        saved['sources'] = {}
+        reviews['items'] = {}
+        for version in range(1024):
+            fingerprint = content_cache.sha(f'Synthetic retired version {version}'.encode())
+            key = content_cache.sha(contract.encode([prior['source_id'], fingerprint]))
+            saved['sources'][key] = dict(prior, source_fingerprint=fingerprint)
+            reviews['items'][key] = dict(review, source_fingerprint=fingerprint)
+        saved['cursor'] = content_cache.sha(contract.encode(list(saved['sources'].values())))
+        helper.adapter._save('memory-inventory.json', saved)
+        helper.adapter._save('memory-reviews.json', reviews)
+        self.assertEqual(len(helper.adapter._load('memory-inventory.json')['sources']), 1024)
+        self.assertEqual(len(helper.adapter._load('memory-reviews.json')['items']), 1024)
         inventory=helper.adapter.sources.inventory_memory_sources()
         self.assertEqual(len(inventory['sources']),1)
         saved=helper.adapter._load('memory-inventory.json')
