@@ -90,6 +90,7 @@ def main():
         choices=(
             "install",
             "reinstall",
+            "reinstall-check",
             "status",
             "repair",
             "uninstall",
@@ -106,6 +107,7 @@ def main():
     parser.add_argument("--expected-connection-sha256")
     args = parser.parse_args()
     fresh_requested = args.action == "reinstall"
+    from agent_brain_client.adapters.storage.reinstallation import RuntimeInUse
     fresh_stage = "retention"
 
     def finish_result(value):
@@ -142,6 +144,15 @@ def main():
     try:
         require_platform("first-install")
         home = Path.home().resolve()
+        if args.action == "reinstall-check":
+            if args.server or args.connection or args.expected_connection_sha256:
+                raise ValueError("Reinstall check uses the original local registration only")
+            from agent_brain_client.runtime.fresh_installation import retained_installation
+            from agent_brain_client.adapters.storage.registration import registry_home
+
+            value = retained_installation(home, registry_home(home, retained=True)).runtime_status()
+            print(json.dumps(value))
+            return 0 if value["status"] == "fresh-install-runtime-idle" else 2
         if args.action in ("check-update", "update"):
             if (
                 args.server is not None
@@ -340,18 +351,23 @@ def main():
         value = finish_result(installation_follow_up(value))
         print(json.dumps(value))
         return lifecycle_exit("install", value)
+    except RuntimeInUse as error:
+        print(json.dumps(error.result()))
+        return 2
     except Exception as error:
         print(
             json.dumps(
                 {
-                    "status": "fresh-install-review-or-resume-required"
+                    "status": "fresh-install-runtime-review-required"
+                    if args.action == "reinstall-check"
+                    else "fresh-install-review-or-resume-required"
                     if fresh_requested
                     else "first-install-review-or-resume-required",
                     "installed": False,
                     "native_changed": None if fresh_requested else False,
                     **(
                         {
-                            "next_action": "Close all old host workers, preserve the retained files and rerun the SAME reinstall command. Review any configuration drift; do not delete state or edit pins.",
+                            "next_action": "Run reinstall-check to identify exact busy leases. Disconnect only affected Agent Brain MCP services and allow active Hooks to finish, then rerun the SAME reinstall command. Preserve files and review configuration drift; do not kill processes, delete locks or edit pins.",
                             "stage": fresh_stage,
                             "reason": type(error).__name__,
                         }

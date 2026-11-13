@@ -71,7 +71,7 @@ def prepare_fresh_installation(
     if port.load() is None:
         if (
             confirm(
-                "Close Codex and CodeBuddy first. Retain old files and unsent queues in the reported archive; "
+                "Disconnect affected Agent Brain MCP services and let active Hooks finish; keep unrelated Clients and the IDE open. Retain old files and unsent queues in the reported archive; "
                 "connect a NEW device to the SAME Server/account. Existing pause states, source scope and exclusions/isolation are retained. Old queues will NOT resume. Type FRESH to continue."
             )
             != "FRESH"
