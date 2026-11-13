@@ -253,7 +253,7 @@ def probe(mode, harness):
                 marker.unlink()
                 with patch.object(metadata, "write", side_effect=OSError("Synthetic marker write failure")), patch.object(sys, "stdout", io.StringIO()):
                     assert collection.main(["global-stop", "--device-home", str(home)]) == 2
-                assert calls == ["memory_stop", "memory_resume", "memory_stop"], calls
+                assert calls == ["memory_stop", "memory_resume", "memory_stop", "memory_stop"], calls
                 with patch.object(project_memory, "adapter_for", side_effect=OSError("Synthetic remote unavailable")), patch.object(sys, "stdout", io.StringIO()):
                     assert collection.main(["global-resume", "--device-home", str(home)]) == 2
                 assert (settings_path(home).parent / "global.off").exists()

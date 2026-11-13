@@ -25,7 +25,7 @@ class CollectionControlIO:
     def remote(self, value, method):
         return self.client(value).wire(method, {})
 
-    def stop_project(self, row):
+    def fence_project(self, row):
         source = self.project_load(row["settings"], row["settings_sha256"])
         marker = Path(source["off_file"])
         if not marker.exists():
@@ -35,6 +35,9 @@ class CollectionControlIO:
                 metadata.write(marker, {}, exclusive=True)
             except FileExistsError:
                 pass  # A concurrent stop remains fenced; preserve its marker.
+
+    def stop_project(self, row):
+        source = self.project_load(row["settings"], row["settings_sha256"])
         self.project_command(source, "stop")
 
     def resume_project(self, row):

@@ -74,7 +74,7 @@ def prepare(args, *, locate):
                 if (project_sources.project_harness(record) != "codex"
                         or record["source_mode"] != "codex-project"):
                     continue
-                source = project_sources.load(candidate, pin, locate=locate)
+                source = project_sources.load(candidate, pin, locate=registration_store.content_location)
                 if source["source_mode"] != "codex-project" or source["harness"] != "codex":
                     continue
                 recall = metadata_io.private_json(

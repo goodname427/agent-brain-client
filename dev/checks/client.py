@@ -120,6 +120,7 @@ COMMANDS = {
             "test_harness_core",
             "test_harness_parity",
             "test_host_entrypoints",
+            "test_stop_and_source_isolation",
             "test_runtime_boundaries",
             "test_rule_fallback",
         ],
