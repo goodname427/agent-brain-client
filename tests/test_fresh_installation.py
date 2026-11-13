@@ -1072,6 +1072,103 @@ class ReinstallRuntime(unittest.TestCase):
         return {str(p.relative_to(self.home)): p.read_bytes()
                 for p in self.home.rglob('*') if p.is_file() and p not in exclude}
 
+    def completed_history(self):
+        record = self.port.plan()
+        record.update(phase='complete', native=str(self.home / 'previous-native'),
+                      cache_relative='previous-install/content-cache',
+                      endpoint='https://previous.invalid',
+                      old_profile_sha256='a' * 64,
+                      new_profile_sha256=self.old_profile_sha,
+                      memory_accessibility={'status': 'known-memory-readable', 'verified_records': 1})
+        record['mapping']['owned']['binding']['codex_home'] = record['native']
+        private_directory(Path(record['archive']))
+        atomic(Path(record['archive']) / 'old-queue.json', b'SYNTHETIC_HISTORY_QUEUE', 0o600)
+        with self.port.lease():
+            self.port.save(record)
+        return record
+
+    def test_completed_history_checks_current_registration_and_busy_lease_read_only(self):
+        history = self.completed_history()
+        from agent_brain_client.adapters.storage.registration import registry_home
+        self.assertEqual(registry_home(self.home, retained=True), self.native)
+        for busy in (False, True):
+            with self.subTest(busy=busy):
+                path = self.cache / '.content-runtime.lock'
+                with locked(path, cache=True):
+                    pass
+                with (locked(path, shared=True, cache=True) if busy else nullcontext()):
+                    before = self.snapshot(exclude=(path,))
+                    output = streamio.StringIO()
+                    with (patch.object(Path, 'home', return_value=self.home),
+                          patch.object(sys, 'argv', ['install.py', '--action', 'reinstall-check']),
+                          patch('builtins.input', side_effect=AssertionError('No prompt')),
+                          patch('sys.stdout', output)):
+                        self.assertEqual(_install_cli.main(), 2 if busy else 0)
+                    result = json.loads(output.getvalue())
+                    self.assertEqual(result['status'], 'fresh-install-runtime-in-use' if busy else 'fresh-install-runtime-idle')
+                    row = next(r for r in result['locks'] if r['path'] == str(path))
+                    self.assertEqual(row['state'], 'busy' if busy else 'free')
+                    self.assertEqual(self.snapshot(exclude=(path,)), before)
+                    self.assertEqual(read_journal(self.home), history)
+
+    def test_completed_history_cancel_preserves_journal_and_current_installation(self):
+        self.completed_history()
+        before = self.snapshot()
+        self.assertEqual(self.prepare(lambda _: '')['status'], 'fresh-install-cancelled')
+        self.assertEqual(self.snapshot(), before)
+
+    def test_completed_history_starts_new_archive_and_rechecks_current_lease(self):
+        history = self.completed_history()
+        before = self.config.read_bytes()
+        with locked(self.cache / '.content-runtime.lock', shared=True, cache=True):
+            with self.assertRaises(RuntimeInUse):
+                self.prepare()
+        record = read_journal(self.home)
+        self.assertNotEqual(record['id'], history['id'])
+        self.assertEqual(record['native'], str(self.native))
+        self.assertEqual(record['cache_relative'], 'first-install/content-cache')
+        self.assertEqual(record['mapping']['owned'], self.owned)
+        self.assertEqual(record['endpoint'], self.old_profile['endpoint'])
+        self.assertEqual(record['phase'], 'detaching')
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertTrue(self.old_queue.exists())
+        result = self.prepare(lambda _: self.fail('Resume does not reconfirm'))
+        self.assertEqual(result['archive'], record['archive'])
+        self.assertEqual((Path(result['archive']) / self.old_queue.relative_to(self.root)).read_bytes(),
+                         b'SYNTHETIC_UNSENT_OLD_QUEUE_DO_NOT_REPLAY')
+        self.assertEqual((Path(history['archive']) / 'old-queue.json').read_bytes(), b'SYNTHETIC_HISTORY_QUEUE')
+        saved = io.private_json(self.home / '.config/agent-brain-reinstallation/completed' / (history['id'] + '.json'))
+        self.assertEqual(saved, history)
+
+    def test_unfinished_journals_keep_same_transaction_and_resume_gate(self):
+        record = self.port.plan()
+        for phase in ('prepared', 'detaching', 'archiving', 'ready'):
+            with self.subTest(phase=phase):
+                record['phase'] = phase
+                with self.port.lease():
+                    self.port.save(record)
+                result = self.port.runtime_status()
+                self.assertEqual(result['status'], 'fresh-install-runtime-idle' if phase in ('prepared', 'detaching') else 'fresh-install-resume-required')
+                with (patch.object(self.port, 'plan', side_effect=AssertionError('No new transaction')),
+                      patch.object(self.port, 'detach'), patch.object(self.port, 'archive')):
+                    self.prepare(lambda _: self.fail('Resume does not reconfirm'))
+                self.assertEqual(read_journal(self.home)['id'], record['id'])
+
+    def test_invalid_completion_proof_and_unfinished_transaction_cannot_be_replaced(self):
+        history = self.completed_history()
+        for phase in ('complete', 'ready'):
+            with self.subTest(phase=phase):
+                record = dict(history, phase=phase, memory_accessibility={})
+                self.port.save(record)
+                before = self.snapshot()
+                with (patch.object(self.port, 'plan', side_effect=AssertionError('No new transaction')),
+                      self.assertRaisesRegex(ValueError, 'memory-verification-required')):
+                    if phase == 'complete':
+                        self.prepare(lambda _: self.fail('No confirmation'))
+                    else:
+                        self.port.save(dict(record, id='f' * 32))
+                self.assertEqual(self.snapshot(), before)
+
     def test_check_does_not_create_locks_or_touch_identity_queue_or_host(self):
         before = self.snapshot()
         result = self.port.runtime_status()

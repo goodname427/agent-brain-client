@@ -34,6 +34,8 @@
 
 新安装只是重新连接客户端；Server 存储迁移及其备份由 Server 的正式发布流程负责。这里的自动核验只覆盖新设备能读取的已知记忆和保留的本地投影，不会擅自改变 Server 数据或权限。
 
+已 `complete` 的重装记录是历史事务：`reinstall-check` 读取当前登记并检查当前租约；再次明确执行 `reinstall` 会重新规划、确认并建立新归档，原完成记录保留在 `~/.config/agent-brain-reinstallation/completed/<实例标识>.json`，原归档不改动。`prepared`／`detaching` 继续检查该事务的原租约，`archiving`／`ready` 返回 `fresh-install-resume-required`，重跑相同入口恢复原事务，不创建另一个归档。完成记录的记忆验证证明损坏时仍停止，不以新事务绕过验证。
+
 
 ## 占用证据与自动协调的边界
 

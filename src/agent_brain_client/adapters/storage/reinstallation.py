@@ -146,13 +146,26 @@ class RetainedInstallation:
 
     def load(self):
         value = read_journal(self.home)
-        if value and value["native"] != str(self.native):
+        if value and value["phase"] != "complete" and value["native"] != str(self.native):
             raise ValueError("Fresh-install host changed")
         return value
 
     def save(self, record):
         if len(contract.encode(record)) > 8 * 1048576:
             raise ValueError("Bounded retention journal required")
+        previous = read_journal(self.home)
+        if previous is not None and previous["id"] != record["id"]:
+            from agent_brain_client.application.installation.fresh import require_verified_memory
+
+            require_verified_memory(previous)
+            directory = journal_path(self.home).parent / "completed"
+            private_directory(directory)
+            path = io.canonical(directory / (previous["id"] + ".json"))
+            if path.exists():
+                if io.private_json(path) != previous:
+                    raise ValueError("Completed fresh-install history changed")
+            else:
+                io.write(path, previous)
         io.write(journal_path(self.home), record)
 
     def plan(self):
@@ -307,10 +320,10 @@ class RetainedInstallation:
 
     def runtime_status(self):
         record = self.load()
-        if record is not None and record["phase"] not in ("prepared", "detaching"):
+        if record is not None and record["phase"] in ("archiving", "ready"):
             return {"status": "fresh-install-resume-required", "native_changed": False,
                     "next_action": "Rerun the SAME reinstall command to resume its retained transaction."}
-        if record is None:
+        if record is None or record["phase"] == "complete":
             registration = self.read_registration(self.home)
             meta = registration["metadata"]
             policy_path = io.canonical(Path(meta["release_policy"]))
