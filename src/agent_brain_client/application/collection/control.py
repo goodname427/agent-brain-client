@@ -27,7 +27,7 @@ class CollectionControl:
         # local stops before credentials or a slow/failing remote are accessed.
         for row in value["legacy_projects"]:
             project = {"root": row["root"], "local_stop_fence": False,
-                       "remote_confirmed": False}
+                       "remote_confirmed": False, "remote_attempted": False}
             try:
                 self.ports.fence_project(row, global_only=bool(value["server_scope_sha256"]))
             except Exception as error:
@@ -48,6 +48,7 @@ class CollectionControl:
                 remote_confirmed = True
         else:
             for row, project in zip(value["legacy_projects"], projects):
+                project["remote_attempted"] = True
                 try:
                     self.ports.stop_project(row)
                 except Exception as error:

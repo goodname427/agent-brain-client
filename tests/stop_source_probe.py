@@ -191,6 +191,14 @@ def worker(mode):
                 assert not any(p.exists() for p in sentinels)
                 assert Path(records[0]["off_file"]).read_bytes() == original
                 assert ps.active(records[1]) == (outcome == "success")
+            # If source reconfiguration returns to legacy control, confirmed
+            # project resume must also release a previous global-only fence.
+            for sentinel in sentinels:
+                metadata.write(sentinel, {"schema": 1, "control": "global-stop"})
+            metadata.write(file, settings)
+            rc, value = cli("global-resume")
+            assert rc == 0 and value["legacy_capture_resumed"] and not any(p.exists() for p in sentinels), value
+            metadata.write(file, approved)
             metadata.write(sentinels[1], {"synthetic": "unknown-marker"})
             before = sentinels[1].read_bytes()
             rc, value = cli("global-resume")

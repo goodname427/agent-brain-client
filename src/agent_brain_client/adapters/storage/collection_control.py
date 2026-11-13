@@ -53,6 +53,7 @@ class CollectionControlIO:
     def resume_project(self, row):
         source = self.project_load(row["settings"], row["settings_sha256"])
         self.project_command(source, "resume")
+        self.clear_project_fence(row)
 
     def save_settings(self, value):
         metadata.write(self.settings_path(value["device_home"]), value)
