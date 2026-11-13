@@ -52,6 +52,18 @@ class HostEntries(unittest.TestCase):
             with self.subTest(harness=harness):
                 self.run_probe("projects", harness)
 
+    def test_real_stop_failures_and_mixed_source_isolation(self):
+        modes = ("mixed-current", "mixed-legacy", "resume-codex", "resume-codebuddy", "stop-partial-codex", "stop-partial-codebuddy")
+        for mode in modes:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="synthetic-stop-source-") as tmp:
+                home = Path(tmp) / "home"
+                home.mkdir(mode=0o700)
+                result = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "tests/stop_source_probe.py"), mode],
+                    env=dict(os.environ, HOME=str(home), USERPROFILE=str(home), CODEX_HOME=str(home / ".codex")),
+                    capture_output=True, text=True, timeout=40)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["mode"], mode)
+
 
 def probe(mode, harness):
     sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests"), str(ROOT)]

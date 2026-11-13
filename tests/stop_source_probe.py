@@ -7,7 +7,6 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -217,22 +216,6 @@ def worker(mode):
                 "new_events_after_stop": 0, "delivery_admitted": False, "network_disabled": True}
 
 
-class StopAndSourceIsolation(unittest.TestCase):
-    def test_real_entry_synthetic_failures_and_recovery(self):
-        modes = ("mixed-current", "mixed-legacy", "resume-codex", "resume-codebuddy", "stop-partial-codex", "stop-partial-codebuddy")
-        for mode in modes:
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="synthetic-stop-source-") as tmp:
-                home = Path(tmp) / "home"
-                home.mkdir(mode=0o700)
-                result = subprocess.run([sys.executable, "-I", "-B", __file__, mode],
-                    env=dict(os.environ, HOME=str(home), USERPROFILE=str(home), CODEX_HOME=str(home / ".codex")),
-                    capture_output=True, text=True, timeout=40)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(json.loads(result.stdout)["mode"], mode)
-
 
 if __name__ == "__main__":
-    if len(sys.argv) == 2 and sys.argv[1].startswith(("mixed-", "resume-", "stop-")):
-        print(json.dumps(worker(sys.argv[1])))
-    else:
-        unittest.main()
+    print(json.dumps(worker(sys.argv[1])))
