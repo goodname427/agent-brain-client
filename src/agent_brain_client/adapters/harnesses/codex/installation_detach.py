@@ -5,7 +5,7 @@ from pathlib import Path
 from agent_brain_client.adapters.storage import metadata as io
 from agent_brain_client.adapters.installation import registry_format as config
 from agent_brain_client.adapters.installation.installation import registered_mcp_digest
-from agent_brain_client.adapters.harnesses.codex.collection_installation import split_owned, same_owned
+from agent_brain_client.adapters.harnesses.codex.collection_installation import split_owned, same_owned, read_receipt
 from agent_brain_client.adapters.installation.lifecycle import remove_table
 
 
@@ -22,7 +22,7 @@ def detach_payload(home, native, metadata, *, installed=True):
         raise ValueError("Uninstalled registration has a new native entry; preserve it")
     outside, block = split_owned(before)
     if block is not None:
-        receipt = io.private_json(
+        receipt = read_receipt(
             home / ".config/agent-brain-client/global-memory/hook-install.json"
         )
         if receipt.get("phase") != "complete" or not same_owned(
