@@ -36,6 +36,8 @@
 
 已 `complete` 的重装记录是历史事务：`reinstall-check` 读取当前登记并检查当前租约；再次明确执行 `reinstall` 会重新规划、确认并建立新归档，原完成记录保留在 `~/.config/agent-brain-reinstallation/completed/<实例标识>.json`，原归档不改动。`prepared`／`detaching` 继续检查该事务的原租约，`archiving`／`ready` 返回 `fresh-install-resume-required`，重跑相同入口恢复原事务，不创建另一个归档。完成记录的记忆验证证明损坏时仍停止，不以新事务绕过验证。
 
+Hook 回执包含原生配置的完整前后像，可能超过通用元数据的 256 KiB 上限。重装与入口移除使用 Hook 所有者已有的专用读取器，仍要求私有、无链接、单链接、无重复字段且不超过 4 MiB；未完成回执或当前 Hook 定义与回执不符时停止。原回执逐字节归档，不截断或改写摘要。旧策略文件清单与当前布局不符时，`status` 以 `client-layout-reinstall-required` 提示明确重装；这不是旧运行包已通过核验，也不允许改文件清单、改 pin 或原地运行旧布局。
+
 
 ## 占用证据与自动协调的边界
 

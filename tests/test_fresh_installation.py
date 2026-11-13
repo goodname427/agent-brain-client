@@ -1064,6 +1064,146 @@ class FreshInstallation(unittest.TestCase):
                 verify_memory_access(Client(), identities)
 
 
+class RetainedHookData(unittest.TestCase):
+    setUp = FreshInstallation.setUp
+    prepare = FreshInstallation.prepare
+
+    def old_hook_receipt(self):
+        from agent_brain_client.adapters.harnesses.codex import collection_installation as hooks
+        from agent_brain_client.adapters.storage.host_files import host_plan
+
+        fixture = json.loads((Path(__file__).parent / 'fixtures/retained-0.8.6-windows-files.json').read_text())
+        self.assertEqual(len(fixture['files']), 154)
+        self.policy.update(schema=1, adapter='codex', platform=native_platform(),
+                           origin='https://github.com/goodname427/agent-brain-client.git',
+                           ref='refs/heads/releases/personal-https-windows-stable',
+                           anchor_commit=fixture['source_commit'], channel='stable',
+                           core_api=1, state_schema=1, file_prefixes=fixture['files'],
+                           repository=str(self.root / 'old-source'), cache=str(self.root / 'old-packages'))
+        io.write(self.root / 'first-install/release-policy.json', self.policy)
+        self.metadata.update(content_candidate=True, release_policy_sha256=io.digest(
+            (self.root / 'first-install/release-policy.json').read_bytes()))
+        io.write(self.root / 'codex-mcp.json', self.metadata)
+        pins = {name: 'a' * 64 for name in fixture['files'] if name.endswith('.py')}
+        block = hooks.block({'device_home': str(self.home), 'code_sha256': pins})
+        import base64
+        original = self.config.read_bytes()
+        row = host_plan({self.config: original})[str(self.config)]
+
+        def images(padding):
+            before = original + b'\n# SYNTHETIC_RETAINED_EDITOR_STATE ' + b'x' * padding + b'\n'
+            target = (before.decode().rstrip() + '\n\n' + block).encode()
+            record = {'schema': 2, 'phase': 'complete', 'block': block, 'previous_block': None,
+                      'before_sha256': io.digest(before), 'after_sha256': io.digest(target),
+                      'host': {str(self.config): dict(row,
+                          before=base64.b64encode(before).decode(), target=base64.b64encode(target).decode(),
+                          before_sha=io.digest(before), target_sha=io.digest(target))}}
+            raw = (json.dumps(record, ensure_ascii=False, sort_keys=True, indent=2) + '\n').encode()
+            return before, target, record, raw
+
+        lower, upper = 0, 300000
+        while lower < upper:
+            middle = (lower + upper + 1) // 2
+            if len(images(middle)[3]) <= 707862:
+                lower = middle
+            else:
+                upper = middle - 1
+        before, target, record, raw = images(lower)
+        self.assertLess(707862 - len(raw), 8)
+        atomic(self.config, before, 0o600)
+        self.assertEqual(host_plan({self.config: target}), record['host'])
+        private_directory(self.root / 'global-memory')
+        receipt = self.root / 'global-memory/hook-install.json'
+        io.write(receipt, record)
+        raw = receipt.read_bytes()
+        self.assertLessEqual(len(raw), 707862)
+        atomic(receipt, raw + b' ' * (707862 - len(raw)), 0o600)
+        atomic(self.config, target, 0o600)
+        self.assertEqual(hooks.read_receipt(receipt), record)
+        with self.assertRaisesRegex(ValueError, 'Private owned metadata required'):
+            io.private_json(receipt)
+        scope = {'schema': 1, 'profile_id': '1' * 32, 'include_roots': [],
+                 'exclude_roots': [str(self.home / 'private')], 'non_project_roots': [],
+                 'recall_personal': False, 'all_projects': False}
+        io.write(self.root / 'global-memory/settings.json', {
+            'schema': 1, 'enabled': False, 'device_home': str(self.home), 'scope': scope,
+            'approved_scope_sha256': None, 'server_scope_sha256': None, 'legacy_projects': [],
+            'code_sha256': pins, 'operator': None, 'operator_sha256': None})
+        atomic(self.root / 'global-memory/global.off', b'', 0o600)
+        return receipt, record
+
+    def test_real_sized_old_receipt_and_file_layout_archive_without_executing_old_code(self):
+        receipt, record = self.old_hook_receipt()
+        before = receipt.read_bytes()
+        self.assertEqual(len(before), 707862)
+        history = ReinstallRuntime.completed_history(self)
+        from agent_brain_client.adapters.packages.client import policy_file, UpdateBlocked
+        with self.assertRaisesRegex(UpdateBlocked, 'Client release file scope changed'):
+            policy_file(self.root / 'first-install/release-policy.json', self.metadata['release_policy_sha256'])
+        with patch('subprocess.run', side_effect=AssertionError('Never execute old code or use credentials')):
+            result = self.prepare()
+        archive = Path(result['archive'])
+        self.assertEqual((archive / receipt.relative_to(self.root)).read_bytes(), before)
+        self.assertEqual((archive / self.old_queue.relative_to(self.root)).read_bytes(),
+                         b'SYNTHETIC_UNSENT_OLD_QUEUE_DO_NOT_REPLAY')
+        self.assertEqual(io.private_json(archive / 'first-install/https-profile.json'), self.old_profile)
+        retained = read_journal(self.home)
+        self.assertNotEqual(retained['id'], history['id'])
+        self.assertFalse(retained['routing']['enabled'])
+        self.assertTrue(retained['routing']['global_off'])
+        self.assertFalse(retained['routing']['all_projects'])
+        self.assertEqual(retained['routing']['exclude_roots'], [str(self.home / 'private')])
+        self.assertEqual((Path(history['archive']) / 'old-queue.json').read_bytes(), b'SYNTHETIC_HISTORY_QUEUE')
+        self.assertNotIn('agent_brain_server', self.config.read_text())
+        self.assertNotIn(record['block'], self.config.read_text())
+        self.assertIn('[mcp_servers.other]', self.config.read_text())
+        self.assertEqual(self.native_memory.read_bytes(), b'SYNTHETIC_NATIVE_MEMORY_NOT_UPLOADED')
+
+    def test_hook_removal_uses_same_bounded_receipt_reader(self):
+        receipt, record = self.old_hook_receipt()
+        from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
+        raw = self.config.read_bytes()
+        outside, block = CodexContentPorts.remove_hooks(self.home, raw, native_platform())
+        self.assertEqual(block, record['block'])
+        self.assertIn(b'agent_brain_server', outside)
+        self.assertEqual(receipt.stat().st_size, 707862)
+
+    def test_incomplete_changed_duplicate_and_oversized_receipts_preserve_everything(self):
+        receipt, record = self.old_hook_receipt()
+        before = self.config.read_bytes()
+        invalid = [contract.encode(dict(record, phase='applying')),
+                   contract.encode(dict(record, block=None)),
+                   b'{"phase":"complete","phase":"complete"}',
+                   receipt.read_bytes() + b' ' * (4 * 1048576 + 1 - receipt.stat().st_size)]
+        for raw in invalid:
+            with self.subTest(size=len(raw)):
+                atomic(receipt, raw, 0o600)
+                with self.assertRaises(ValueError):
+                    self.port.plan()
+                self.assertEqual(receipt.read_bytes(), raw)
+                self.assertEqual(self.config.read_bytes(), before)
+                self.assertTrue(self.old_queue.exists())
+                self.assertIsNone(read_journal(self.home))
+
+    def test_status_identifies_old_layout_without_loading_old_runtime_or_changing_state(self):
+        receipt, _ = self.old_hook_receipt()
+        before = {str(p): p.read_bytes() for p in self.home.rglob('*') if p.is_file()}
+        output = streamio.StringIO()
+        with (patch.object(Path, 'home', return_value=self.home),
+              patch.object(sys, 'argv', ['install.py', '--action', 'status']),
+              patch('subprocess.run', side_effect=AssertionError('Read-only old layout status')),
+              patch('sys.stdout', output)):
+            self.assertEqual(_install_cli.main(), 2)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result['reason'], 'client-layout-reinstall-required')
+        self.assertTrue(result['installation_present'])
+        self.assertFalse(result['installed'])
+        self.assertFalse(result['native_changed'])
+        self.assertIn('reinstall-check', result['next_action'])
+        self.assertEqual({str(p): p.read_bytes() for p in self.home.rglob('*') if p.is_file()}, before)
+        self.assertEqual(receipt.stat().st_size, 707862)
+
+
 class ReinstallRuntime(unittest.TestCase):
     setUp = FreshInstallation.setUp
     prepare = FreshInstallation.prepare

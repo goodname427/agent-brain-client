@@ -376,6 +376,10 @@ def tool_discovery(home, metadata, active):
 
 
 INSPECTION_REASONS = {
+    "Client release file scope changed": (
+        "client-layout-reinstall-required",
+        "The pinned file layout differs from this installer. Preserve registration, profiles, queues and receipts. Run the official reinstall-check, then explicit reinstall to retain old data and reconnect; do not rewrite file lists, digests or credential pins. This status does not verify the old runtime or permit an in-place update.",
+    ),
     "Verified package tool contract unavailable": (
         "package-tool-contract-unavailable",
         "Preserve the registered table and immutable packages. Retry the official update entry with the existing supported Python; do not replace the tool whitelist or its digest manually.",
