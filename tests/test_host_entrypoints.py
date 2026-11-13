@@ -245,7 +245,8 @@ def probe(mode, harness):
             class ControlClient:
                 def request(self, request):
                     calls.append(request["method"])
-                    return {"result": {"schema": 2, "lifecycle": "until-disabled", "model_admitted": True, "source_admitted": True}}
+                    admitted = request["method"] != "memory_stop"
+                    return {"result": {"schema": 2, "lifecycle": "until-disabled", "model_admitted": admitted, "source_admitted": admitted}}
             with patch.object(collection.core, "load", return_value=value), patch.object(project_memory, "adapter_for", return_value=(ControlClient(), None)):
                 for action in ("stop", "resume"):
                     out = io.StringIO()

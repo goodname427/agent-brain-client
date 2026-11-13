@@ -40,7 +40,15 @@ class CollectionControl:
         if value["server_scope_sha256"]:
             try:
                 response = self.ports.remote(value, "memory_global_stop")
-                if "error" in response:
+                result = response.get("result") if isinstance(response, dict) else None
+                if (
+                    not isinstance(response, dict)
+                    or "error" in response
+                    or not isinstance(result, dict)
+                    or type(result.get("schema")) is not int
+                    or result.get("schema") != 1
+                    or result.get("stopped") is not True
+                ):
                     raise ValueError("Remote global control unconfirmed")
             except Exception as error:
                 remote_error = {"error_stage": "remote-stop", "error_type": type(error).__name__}
