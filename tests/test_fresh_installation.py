@@ -5,6 +5,7 @@ import copy
 import io as streamio
 import json
 import os
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -18,6 +19,8 @@ from agent_brain_client.adapters.platforms.filesystem import (
     private_directory,
     native_platform,
     locked,
+    lock_probe,
+    lock_resource_users,
 )
 from agent_brain_client.adapters.packages.client import HTTPS_CONTENT_CAPABILITIES
 from agent_brain_client.adapters.installation.installation import (
@@ -29,7 +32,8 @@ from agent_brain_client.application.installation.fresh import (
     verify_memory_access,
 )
 from agent_brain_client.runtime.fresh_installation import retained_installation
-from agent_brain_client.adapters.storage.reinstallation import read_journal
+from agent_brain_client.adapters.storage.reinstallation import read_journal, RuntimeInUse
+from agent_brain_client.interfaces.cli import install as _install_cli
 
 MEMORY = {
     "title": "Retained preference",
@@ -1058,6 +1062,150 @@ class FreshInstallation(unittest.TestCase):
         for identities in ([], ["personal-owner"]):
             with self.assertRaises(Exception):
                 verify_memory_access(Client(), identities)
+
+
+class ReinstallRuntime(unittest.TestCase):
+    setUp = FreshInstallation.setUp
+    prepare = FreshInstallation.prepare
+
+    def snapshot(self, *, exclude=()):
+        return {str(p.relative_to(self.home)): p.read_bytes()
+                for p in self.home.rglob('*') if p.is_file() and p not in exclude}
+
+    def test_check_does_not_create_locks_or_touch_identity_queue_or_host(self):
+        before = self.snapshot()
+        result = self.port.runtime_status()
+        self.assertEqual(result['status'], 'fresh-install-runtime-idle')
+        self.assertTrue(all(r['state'] == 'absent' for r in result['locks']))
+        self.assertFalse(result['automatic_shutdown_supported'])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_empty_persistent_lock_is_not_rewritten_and_absent_is_not_created(self):
+        path = self.cache / '.content-runtime.lock'
+        path.touch(mode=0o600)
+        self.assertEqual(lock_probe(path), 'free')
+        self.assertEqual(path.read_bytes(), b'')
+        absent = self.cache / 'absent.lock'
+        self.assertEqual(lock_probe(absent), 'absent')
+        self.assertFalse(absent.exists())
+
+    def test_shared_and_exclusive_live_workers_are_identified_without_stopping_them(self):
+        path = self.cache / '.content-runtime.lock'
+        script = '''import sys
+from pathlib import Path
+from agent_brain_client.adapters.platforms.filesystem import locked
+with locked(Path(sys.argv[1]), shared=sys.argv[2]=='shared', cache=True):
+    print('ready', flush=True)
+    sys.stdin.readline()
+'''
+        with locked(path, cache=True):
+            pass
+        lock_body = path.read_bytes()
+        for mode in ('shared', 'exclusive'):
+            with self.subTest(mode=mode):
+                worker = subprocess.Popen([sys.executable, '-B', '-c', script, str(path), mode],
+                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE, text=True)
+                try:
+                    self.assertEqual(worker.stdout.readline().strip(), 'ready')
+                    # Windows byte locks prohibit even the test observer's read.
+                    # Compare business/configuration state while held; verify the
+                    # persistent lock bytes only after the child releases it.
+                    before = self.snapshot(exclude=(path,))
+                    result = self.port.runtime_status()
+                    row = next(r for r in result['locks'] if r['path'] == str(path))
+                    self.assertEqual(row['state'], 'busy')
+                    users = row['resource_users']
+                    self.assertEqual(users['status'], 'observed')
+                    self.assertIn(worker.pid, [r['pid'] for r in users['processes']])
+                    self.assertFalse(users['lock_ownership_proven'])
+                    self.assertIsNone(worker.poll())
+                    self.assertEqual(self.snapshot(exclude=(path,)), before)
+                finally:
+                    worker.communicate('\n', timeout=10)
+                self.assertEqual(worker.returncode, 0)
+                self.assertEqual(lock_probe(path), 'free')
+                self.assertEqual(path.read_bytes(), lock_body)
+
+    def test_only_exact_busy_lease_blocks_and_mutation_rechecks_after_idle_snapshot(self):
+        self.assertEqual(self.port.runtime_status()['status'], 'fresh-install-runtime-idle')
+        path = self.cache / '.content-runtime.lock'
+        before = self.config.read_bytes()
+        with locked(path, shared=True, cache=True):
+            with self.assertRaises(RuntimeInUse) as caught:
+                self.prepare()
+            self.assertEqual(caught.exception.path, path)
+            result = caught.exception.result()
+            self.assertEqual(result['blocked_lock'], str(path))
+            self.assertFalse(result['native_changed'])
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertTrue(self.old_queue.exists())
+        # Another directory-related operation is not one of the mutation leases.
+        with locked(self.cache / 'unrelated.lock', cache=True):
+            self.assertEqual(self.port.runtime_status()['status'], 'fresh-install-runtime-idle')
+            with self.port.old_runtime_lease(self.port.load()):
+                pass
+        # The runtime gate ignores unrelated leases. Windows still requires
+        # ordinary open file handles to close before its archive directory move.
+        self.assertEqual(self.prepare()['status'], 'fresh-install-ready')
+
+    def test_access_error_is_review_required_not_a_busy_worker(self):
+        path = self.cache / '.content-runtime.lock'
+        path.touch(mode=0o600)
+        with patch('agent_brain_client.adapters.platforms.filesystem.cache_mode', side_effect=ValueError('denied')):
+            with self.assertRaises(ValueError):
+                lock_probe(path)
+        self.assertEqual(path.read_bytes(), b'')
+
+    def test_unknown_users_never_make_a_busy_lock_safe(self):
+        path = self.cache / '.content-runtime.lock'
+        unknown = {'status': 'unknown', 'processes': [], 'lock_ownership_proven': False}
+        with (locked(path, shared=True, cache=True),
+              patch('agent_brain_client.adapters.storage.reinstallation.lock_resource_users', return_value=unknown)):
+            result = self.port.runtime_status()
+            self.assertEqual(result['status'], 'fresh-install-runtime-in-use')
+            self.assertFalse(result['automatic_shutdown_supported'])
+            with self.assertRaises(RuntimeInUse):
+                self.prepare()
+        self.assertTrue(self.old_queue.exists())
+
+    def test_cli_check_uses_local_registration_without_finish_install_or_prompt(self):
+        before = self.snapshot()
+        output = streamio.StringIO()
+        with (patch.object(Path, 'home', return_value=self.home),
+              patch.object(sys, 'argv', ['install.py', '--action', 'reinstall-check']),
+              patch('builtins.input', side_effect=AssertionError('No prompt')),
+              patch('agent_brain_client.runtime.installation.finish_install', side_effect=AssertionError('No setup')),
+              patch('agent_brain_client.runtime.installation.resolve_connection', side_effect=AssertionError('No identity')),
+              patch('sys.stdout', output)):
+            self.assertEqual(_install_cli.main(), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result['status'], 'fresh-install-runtime-idle')
+        self.assertFalse(result['device_credentials_accessed'])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_cli_reinstall_reports_exact_lock_before_native_change(self):
+        path = self.cache / '.content-runtime.lock'
+        before = self.config.read_bytes()
+        output = streamio.StringIO()
+        with (locked(path, shared=True, cache=True),
+              patch.object(Path, 'home', return_value=self.home),
+              patch.object(sys, 'argv', ['install.py', '--action', 'reinstall', '--harness', 'codex']),
+              patch('builtins.input', return_value='FRESH'), patch('sys.stdout', output)):
+            self.assertEqual(_install_cli.main(), 2)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result['status'], 'fresh-install-runtime-in-use')
+        self.assertEqual(result['blocked_lock'], str(path))
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertTrue(self.old_queue.exists())
+
+    @unittest.skipUnless(os.name != 'nt', 'macOS diagnostic fallback')
+    def test_resource_query_failure_is_unknown_and_never_runs_shutdown(self):
+        with patch('subprocess.run', side_effect=OSError('not available')) as run:
+            self.assertEqual(lock_resource_users(self.cache / '.content-runtime.lock')['status'], 'unknown')
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0][0], '/usr/sbin/lsof')
+
 
 
 if __name__ == "__main__":

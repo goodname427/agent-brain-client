@@ -153,7 +153,7 @@ entry=Path(args[2]);sys.path[:0]=[str(entry.parents[4]/"src"),str(entry.parents[
 from agent_brain_client.runtime import collection as core
 home=Path(os.environ["HOME"]);mode=os.environ["SYNTHETIC_CONTROL_MODE"]
 core.settings_path(home).parent.mkdir(parents=True,exist_ok=True)
-value={"device_home":str(home),"server_scope_sha256":"a"*64 if mode.startswith("server") else None,"legacy_projects":[] if mode.startswith("server") else [{"settings":"synthetic","settings_sha256":"b"*64}]}
+value={"device_home":str(home),"server_scope_sha256":"a"*64 if mode.startswith("server") else None,"legacy_projects":[] if mode.startswith("server") else [{"root":str(home),"settings":"synthetic","settings_sha256":"b"*64}]}
 core.load=lambda *a,**k:value
 trace=[]
 def record(kind):
@@ -163,7 +163,9 @@ class Client:
  def __init__(self,value):pass
  def wire(self,method,params):
   record(method)
-  return {"error":{"code":"synthetic-unconfirmed"}} if mode=="server-error" else {"result":{"stopped":True}}
+  if mode=="server-error":return {"error":{"code":"synthetic-unconfirmed"}}
+  if mode=="server-missing-schema":return {"result":{"stopped":True}}
+  return {"result":{"schema":1,"stopped":mode!="server-admitted"}}
 core.CollectionClient=Client
 from agent_brain_client.adapters.storage import project_settings
 project_settings.load=lambda *a,**k:{"off_file":str(home/"project.off")}
@@ -172,7 +174,7 @@ project_memory.daily_command=lambda source,action:record("project-"+action)
 sys.argv=[str(entry),*args[3:]]
 runpy.run_path(str(entry),run_name="__main__")
 """
-        for mode in ("server-stop", "server-error", "project-stop"):
+        for mode in ("server-stop", "server-error", "server-missing-schema", "server-admitted", "project-stop"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 home = Path(directory).resolve()
                 injection = home / "native-bindings.py"
@@ -198,18 +200,20 @@ runpy.run_path(str(entry),run_name="__main__")
                     text=True,
                     timeout=20,
                 )
+                unconfirmed = mode in ("server-error", "server-missing-schema", "server-admitted")
                 self.assertEqual(
                     result.returncode,
-                    2 if mode == "server-error" else 0,
+                    2 if unconfirmed else 0,
                     result.stdout + result.stderr,
                 )
                 value = json.loads(result.stdout)
                 self.assertEqual(
                     value["status"],
-                    "global-memory-review-required"
-                    if mode == "server-error"
+                    "global-memory-stop-unconfirmed"
+                    if unconfirmed
                     else "global-memory-stopped",
                 )
+                self.assertEqual(value["remote_confirmed"], not unconfirmed)
                 trace = json.loads((home / "trace.json").read_text())
                 self.assertEqual(len(trace), 1)
                 self.assertTrue(trace[0]["global_fence"])

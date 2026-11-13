@@ -293,3 +293,87 @@ def locked(path, timeout=20, shared=False, cancel_check=None, *, cache=False):
 
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         handle.close()
+
+
+def lock_probe(path):
+    """Probe an existing exact lease without creating, truncating or resetting it.
+
+    A free snapshot is advisory only. Mutations must still acquire their leases.
+    Access/ownership failures are not evidence of an active worker.
+    """
+    path = Path(path)
+    require_platform("private-lock")
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise ValueError("Canonical lock path required")
+    try:
+        handle = path.open("r+b")
+    except FileNotFoundError:
+        return "absent"
+    try:
+        cache_mode(path, owner=True)
+        if os.name == "nt":
+            from agent_brain_client.adapters.platforms.windows.native import file_lock
+
+            def acquire():
+                file_lock(handle)
+
+            def release():
+                file_lock(handle, release=True)
+        else:
+            import fcntl
+
+            def acquire():
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            def release():
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        try:
+            acquire()
+        except OSError as error:
+            # Lock contention only; access/I/O errors remain review-required.
+            import errno
+
+            if (os.name == "nt" and (getattr(error, "winerror", None) == 33 or error.errno == 33)
+                    or os.name != "nt" and error.errno in (errno.EACCES, errno.EAGAIN)):
+                return "busy"
+            raise
+        release()
+        return "free"
+    finally:
+        handle.close()
+
+
+def lock_resource_users(path):
+    """Diagnostic resource users, never authority to signal or shut down a PID.
+
+    APIs list open resource users, not byte-lock ownership or Harness identity.
+    No command arguments, environment, ancestry scan, shutdown or restart calls.
+    """
+    require_platform("private-lock")
+    try:
+        if os.name == "nt":
+            from agent_brain_client.adapters.platforms.windows.filesystem import resource_users
+
+            return {"status": "observed", "source": "windows-restart-manager",
+                    "processes": resource_users(path), "lock_ownership_proven": False}
+        import subprocess
+
+        value = subprocess.run(
+            ["/usr/sbin/lsof", "-nP", "-Fpc", "--", str(path)],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=5,
+        )
+        if value.returncode not in (0, 1) or len(value.stdout) > 65536:
+            raise ValueError("Bounded resource report required")
+        rows = []
+        for line in value.stdout.decode("utf-8", errors="replace").splitlines():
+            if line.startswith("p") and line[1:].isdigit():
+                rows.append({"pid": int(line[1:])})
+            elif line.startswith("c") and rows:
+                rows[-1]["name"] = line[1:][:256]
+        if len(rows) > 256:
+            raise ValueError("Bounded resource users required")
+        return {"status": "observed", "source": "macos-lsof",
+                "processes": [r for r in rows if r["pid"] != os.getpid()],
+                "lock_ownership_proven": False}
+    except Exception:
+        return {"status": "unknown", "processes": [], "lock_ownership_proven": False}

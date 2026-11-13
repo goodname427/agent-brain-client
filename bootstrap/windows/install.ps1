@@ -1,7 +1,7 @@
 # Native Windows entry. Uses normal per-user Python/Git and Codex hook review.
 [CmdletBinding()]
 param(
-    [ValidateSet('install','reinstall','status','repair','uninstall','check-update','update')]
+    [ValidateSet('install','reinstall','reinstall-check','status','repair','uninstall','check-update','update')]
     [string]$Action = 'install',
     [ValidateSet('codex','codebuddy')]
     [string]$Harness = 'codex',

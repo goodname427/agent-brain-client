@@ -135,7 +135,7 @@ def worker(mode):
                 if failure == "malformed": return {"result": {"schema": 2}}
                 model, source = failure
             else:
-                model, source = True, True
+                model = source = request["method"] != "memory_stop"
             return {"result": {"schema": 2, "lifecycle": "until-disabled", "model_admitted": model, "source_admitted": source}}
     cloud = Cloud()
     result_rows = []
