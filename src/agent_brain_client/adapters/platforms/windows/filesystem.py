@@ -315,3 +315,57 @@ def command_line(argv):
     return (
         "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " + encoded
     )
+
+
+def resource_users(path):
+    """Read exact-file users using Restart Manager; never call RmShutdown.
+
+    PID + process start time is an observation, not proof of Agent Brain identity.
+    Session cleanup also runs on API errors and changing process lists.
+    """
+    from agent_brain_client.adapters.platforms.windows.native import canonical
+
+    path = canonical(path)
+
+    class Process(C.Structure):
+        _fields_ = [("pid", W.DWORD), ("started", W.FILETIME)]
+
+    class Info(C.Structure):
+        _fields_ = [("process", Process), ("name", W.WCHAR * 256),
+                    ("service", W.WCHAR * 64), ("kind", C.c_int),
+                    ("status", W.ULONG), ("session", W.DWORD), ("restartable", W.BOOL)]
+
+    api = C.WinDLL("rstrtmgr", use_last_error=True)
+    api.RmStartSession.argtypes = [C.POINTER(W.DWORD), W.DWORD, W.LPWSTR]
+    api.RmRegisterResources.argtypes = [W.DWORD, W.UINT, C.POINTER(W.LPCWSTR),
+                                      W.UINT, C.POINTER(Process), W.UINT, C.POINTER(W.LPCWSTR)]
+    api.RmGetList.argtypes = [W.DWORD, C.POINTER(W.UINT), C.POINTER(W.UINT),
+                             C.POINTER(Info), C.POINTER(W.DWORD)]
+    api.RmEndSession.argtypes = [W.DWORD]
+    for function in (api.RmStartSession, api.RmRegisterResources, api.RmGetList, api.RmEndSession):
+        function.restype = W.DWORD
+    session = W.DWORD()
+    key = C.create_unicode_buffer(33)
+    if api.RmStartSession(C.byref(session), 0, key):
+        raise OSError("Resource session unavailable")
+    try:
+        files = (W.LPCWSTR * 1)(str(path))
+        if api.RmRegisterResources(session, 1, files, 0, None, 0, None):
+            raise OSError("Resource registration unavailable")
+        capacity = 0
+        for _ in range(3):
+            needed, count, reason = W.UINT(), W.UINT(capacity), W.DWORD()
+            rows = (Info * capacity)() if capacity else None
+            code = api.RmGetList(session, C.byref(needed), C.byref(count), rows, C.byref(reason))
+            if code == 234 and 0 < needed.value <= 256:
+                capacity = needed.value
+                continue
+            if code or count.value > capacity:
+                raise OSError("Resource list unavailable")
+            return [{"pid": row.process.pid, "name": row.name,
+                     "process_start_filetime": (row.process.started.dwHighDateTime << 32)
+                     | row.process.started.dwLowDateTime}
+                    for row in (rows or ())[:count.value] if row.process.pid != os.getpid()]
+        raise OSError("Resource list changed repeatedly")
+    finally:
+        api.RmEndSession(session)

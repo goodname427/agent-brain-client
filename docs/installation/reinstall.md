@@ -4,20 +4,24 @@
 
 本流程会建立新的设备连接。**旧身份和未同步队列不会自动接续或发送**；旧队列可能含有尚未上传的内容，它们只保留在归档中，不能声称已迁移到 Server。原 profile、pin、系统凭据项和旧文件不清理。Server 中已经保存的记忆不删除，原生 Codex 持久记忆留在原位置，不扫描或补传历史。
 
-1. 退出旧 Codex 和 CodeBuddy，让旧 MCP worker 与 Hook 结束。保留当前用户配置和锁文件，不要删除它们来跳过“运行中”检查。
-2. 从正式官方 main checkout 执行对应入口，并使用**原 Server、原账号**。安装器会在本机解释归档与重新连接行为；确认已退出旧宿主后输入 `FRESH`。
+1. 从正式官方 main checkout 运行 `reinstall-check`（命令见下方）。它只检查当前登记指向的精确安装／内容租约，不要求所有 Client、IDE 或目录相关进程退出。不联网、不访问凭据、不创建锁文件、不修改原生配置。
+2. 检查报告为 `fresh-install-runtime-in-use` 时，在对应宿主的 MCP 管理中**只断开 Agent Brain 服务 `agent_brain_server`**，并让正在执行的 Hook／事务自然完成；保留 IDE、其他 Client 和无关 MCP。Agent 可以使用已获授权、确实可用的宿主 MCP 管理接口完成这一步；安装器本身没有这种宿主控制接口。如果宿主不能单独断开该服务、占用者未知或旧 worker 不退出，保留现场并报告阻碍，不扩大到关闭全部宿主。再次运行检查；空闲后执行对应 `reinstall`，使用**原 Server、原账号**。安装器解释归档与重新连接行为后输入 `FRESH`。
 
    ```sh
-   # Mac（Apple Silicon / Intel）
+   # Mac（Apple Silicon / Intel）：先检查，再明确重装
+   sh bootstrap/macos/install.sh --action reinstall-check
    sh bootstrap/macos/install.sh --action reinstall --server 'https://your-server.example'
    # CodeBuddy IDE / CLI
+   sh bootstrap/macos/codebuddy.sh --action reinstall-check
    sh bootstrap/macos/codebuddy.sh --action reinstall --server 'https://your-server.example'
    ```
 
    ```powershell
-   # 原生 Windows（amd64 / arm64）
+   # 原生 Windows（amd64 / arm64）：先检查，再明确重装
+   & ./bootstrap/windows/install.ps1 -Action reinstall-check
    & ./bootstrap/windows/install.ps1 -Action reinstall -Server 'https://your-server.example'
    # CodeBuddy IDE / CLI
+   & ./bootstrap/windows/codebuddy.ps1 -Action reinstall-check
    & ./bootstrap/windows/codebuddy.ps1 -Action reinstall -Server 'https://your-server.example'
    ```
 
@@ -29,3 +33,14 @@
 中断后重跑**同一个入口、同一个 Server**。归档移动和宿主入口修改有独立恢复记录；不会再次归档半成品或重新发送旧队列。运行中 worker、原生配置外部改动、陌生入口、损坏的回执或未完成原生映射事务会要求处理具体冲突；保留原始文件，不能通过删数据、改摘要或套用示例配置继续。
 
 新安装只是重新连接客户端；Server 存储迁移及其备份由 Server 的正式发布流程负责。这里的自动核验只覆盖新设备能读取的已知记忆和保留的本地投影，不会擅自改变 Server 数据或权限。
+
+
+## 占用证据与自动协调的边界
+
+`locks` 给出精确路径及 `absent`／`free`／`busy`；重装遇到竞争时给出 `blocked_lock`。`fresh-install-runtime-idle` 只是瞬时检查结果，不是全部迁移前置条件已满足的声明；重装仍逐把取得原有独占租约，不能用一次检查绕过运行中保护。权限、路径／所有权异常会进入 review，而不伪称 worker 占用。
+
+仅在租约繁忙时查询其文件使用者。Windows 使用 [Restart Manager 的资源查询](https://learn.microsoft.com/en-us/windows/win32/rstmgr/using-restart-manager-with-a-primary-installer)，输出 PID、系统报告的名称和进程启动时间；Mac 使用系统 `lsof` 查询同一文件，输出 PID 与名称。`resource_users` 是文件使用者候选，不等同于内核字节锁所有权证明，不能证明其 Harness、版本或可安全终止；结果明确保留 `lock_ownership_proven:false`。无结果、受限或查询失败标为 unknown，绝不把空列表当成空闲。PID 也不能作为之后发信号的授权。查询不读取命令行、环境、会话内容或凭据；不调用 Restart Manager 的 shutdown/restart，不发进程信号。
+
+**0.8.6／0.8.15 没有安装器可调用的实例级退出协议。** 新版官方入口可以诊断旧租约，不能给旧 worker 补上端点，也不能保证在不使用宿主服务管理接口的情况下让它退出。禁止用目录匹配的进程清单、强杀、删锁或改 pin 代替。此次 patch 实现的是精确诊断与按服务断开的流程，不宣称已经实现无需宿主接口的全自动温和退出。
+
+如果要让未来实例由 Agent 完全自动协调，最小协议还需：每个持租约实例登记随机实例标识、版本、Harness、PID 与启动时间、精确 cache/lease；通过本机受保护的控制端点接收绑定本次重装的 quiesce 请求；所有 MCP、Hook、后台投递及其启动入口共同执行持久维护闸门，停止接受新工作并阻止宿主自动拉起。已开始的持久写入自然完成，保留原请求 ID、待上传队列和游标，再释放租约并回执。安装器仍必须取得全部受影响的独占租约后才能归档，超时／未知旧实例则停止，取消与中断由同一事务恢复。仅加一个 PID 文件或向某个 Python 子进程发送退出信号不足以覆盖这些边界。旧版不提供兼容层，旧实例仍使用宿主正常的服务断开能力。

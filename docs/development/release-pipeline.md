@@ -110,6 +110,6 @@ Actions 重跑 publish job 复用同次 prepare artifact。重跑整个 prepare 
 
 工作流对应 `installation_mode: reinstall`；`publish` 仍默认关闭。Release 正文明确标注 `REINSTALLATION REQUIRED`。旧布局无法原地更新，旧客户端应保留原活动包并报告 review-required。新安装使用当前入口。已有安装必须保留本地 Memory、Server 数据、身份、凭据、待发送队列和安装回执；不得删除配置目录、清空队列、重置设备身份或改写 pin 来获得安装成功。
 
-旧 Windows profile 的摘要绑定旧凭据源；新版继续拒绝旧 pin。结构切换使用显式 `reinstall` action：在正常关闭旧 Codex/CodeBuddy 后，仅移除回执核验一致的 Agent Brain 入口，将旧 Client 状态移动到独立保留目录，再由用户通过隐藏输入重新连接同一 Server/账号。新 profile 有独立 instance_id，原系统凭据项与旧 pin 不改写、不清理；旧身份和旧队列不接续。已确认的本地记忆投影由 mapping 所有者验证并复制，原生持久记忆保持原位置；新连接读取已知原记忆进行核验。具体命令和恢复步骤见[0.8 重装](../installation/reinstall.md)。
+旧 Windows profile 的摘要绑定旧凭据源；新版继续拒绝旧 pin。结构切换使用显式 `reinstall` action：在通过精确租约检查、由宿主正常断开受影响的 Agent Brain MCP 服务并等待活动 Hook／事务结束后，仅移除回执核验一致的 Agent Brain 入口，将旧 Client 状态移动到独立保留目录，再由用户通过隐藏输入重新连接同一 Server/账号。新 profile 有独立 instance_id，原系统凭据项与旧 pin 不改写、不清理；旧身份和旧队列不接续。已确认的本地记忆投影由 mapping 所有者验证并复制，原生持久记忆保持原位置；新连接读取已知原记忆进行核验。具体命令和恢复步骤见[0.8 重装](../installation/reinstall.md)。
 
 Mac 安装器按原生架构选择 Python 3.12.15 的固定归档，ARM 与 Intel 分别独立校验 SHA256。摘要来自 [上游 20261009 正式发布](https://github.com/astral-sh/python-build-standalone/releases/tag/20261009) 的 asset digest；已具备 Python 3.11+ 时复用现有解释器。Windows 继续使用已验证的本机 Python，不引入下载或系统 Python 替换。

@@ -19,12 +19,39 @@ from agent_brain_client.adapters.platforms.filesystem import (
     private_directory,
     private_mode,
     locked,
+    LockTimeout,
+    lock_probe,
+    lock_resource_users,
 )
 from agent_brain_client.adapters.platforms.retention import (
     item_identity,
     retain_item,
     retention_root,
 )
+
+
+RUNTIME_NEXT_ACTION = (
+    "Disconnect only the affected Agent Brain MCP service (agent_brain_server) in its independently identified host, "
+    "and let its active Hook/transaction finish; keep the IDE and unrelated Clients open. "
+    "Resource users are diagnostic candidates, not permission to stop a PID. "
+    "If that host cannot disconnect this service or an old worker remains, stop and report it; "
+    "do not kill processes, delete locks, change pins or replay queues. Rerun reinstall-check, then the SAME reinstall command."
+)
+
+
+class RuntimeInUse(LockTimeout):
+    def __init__(self, path):
+        super().__init__("An exact Agent Brain installation lease is in use")
+        self.path = Path(path)
+
+    def result(self):
+        return {
+            "status": "fresh-install-runtime-in-use", "installed": False,
+            "native_changed": False, "blocked_lock": str(self.path),
+            "resource_users": lock_resource_users(self.path),
+            "automatic_shutdown_supported": False,
+            "next_action": RUNTIME_NEXT_ACTION,
+        }
 
 
 def journal_path(home):
@@ -259,40 +286,70 @@ class RetainedInstallation:
             self.save(record)
             host_apply(record["host"], lambda: self.save(record))
 
+    def runtime_paths(self, record):
+        # This exact set is shared by preflight and the authoritative mutation
+        # gate. A process merely using another file in the directory is irrelevant.
+        paths = []
+        for name in ("access-bootstrap", "first-install", "codebuddy", "global-memory"):
+            directory = io.canonical(self.root / name)
+            if directory.exists():
+                paths.append((directory / (
+                    "hook-install.lock" if name == "global-memory" else
+                    "install.lock" if name == "codebuddy" else "first-install.lock"
+                ), False))
+        cache = io.canonical(self.root / record["cache_relative"])
+        if self.root not in cache.parents:
+            raise ValueError("Device-local runtime cache required")
+        if cache.exists():
+            paths.extend((cache / name, True) for name in (
+                ".content-runtime.lock", "content.lock", "outbox-enqueue.lock"))
+        return [(io.canonical(path), cache) for path, cache in paths]
+
+    def runtime_status(self):
+        record = self.load()
+        if record is not None and record["phase"] not in ("prepared", "detaching"):
+            return {"status": "fresh-install-resume-required", "native_changed": False,
+                    "next_action": "Rerun the SAME reinstall command to resume its retained transaction."}
+        if record is None:
+            registration = self.read_registration(self.home)
+            meta = registration["metadata"]
+            policy_path = io.canonical(Path(meta["release_policy"]))
+            if self.root not in policy_path.parents:
+                raise ValueError("Device-local release policy required")
+            policy = io.private_json(policy_path, meta["release_policy_sha256"])
+            runtime = policy["runtime"]
+            if runtime["device_home"] != str(self.home):
+                raise ValueError("Original device required")
+            cache = io.canonical(Path(runtime["content_cache"]), existing=True)
+            if self.root not in cache.parents:
+                raise ValueError("Device-local runtime cache required")
+            record = {"cache_relative": cache.relative_to(self.root).as_posix()}
+        rows = []
+        for path, _ in self.runtime_paths(record):
+            state = lock_probe(path)
+            row = {"path": str(path), "state": state}
+            if state == "busy":
+                row["resource_users"] = lock_resource_users(path)
+            rows.append(row)
+        busy = any(row["state"] == "busy" for row in rows)
+        return {"status": "fresh-install-runtime-in-use" if busy else "fresh-install-runtime-idle",
+                "native_changed": False, "device_credentials_accessed": False,
+                "network_used": False, "locks": rows,
+                "automatic_shutdown_supported": False,
+                "snapshot_only": True,
+                "next_action": RUNTIME_NEXT_ACTION if busy else
+                "Run the explicit reinstall command; it rechecks exclusive leases before detaching. No host-wide exit is required."}
+
     @contextmanager
     def old_runtime_lease(self, record):
         with ExitStack() as stack:
-            for name in (
-                "access-bootstrap",
-                "first-install",
-                "codebuddy",
-                "global-memory",
-            ):
-                directory = io.canonical(self.root / name)
-                if directory.exists():
-                    stack.enter_context(
-                        locked(
-                            directory
-                            / (
-                                "hook-install.lock"
-                                if name == "global-memory"
-                                else "install.lock"
-                                if name == "codebuddy"
-                                else "first-install.lock"
-                            ),
-                            timeout=0,
-                        )
-                    )
-            cache = self.root / record["cache_relative"]
-            if cache.exists():
-                for name in (
-                    ".content-runtime.lock",
-                    "content.lock",
-                    "outbox-enqueue.lock",
-                ):
-                    stack.enter_context(
-                        locked(io.canonical(cache / name), timeout=0, cache=True)
-                    )
+            for path, cache in self.runtime_paths(record):
+                try:
+                    stack.enter_context(locked(path, timeout=0, cache=cache))
+                except LockTimeout:
+                    if lock_probe(path) != "busy":
+                        raise  # Access failure or a changed snapshot is not an identified worker.
+                    raise RuntimeInUse(path) from None
             yield
 
     def archive(self, record):
