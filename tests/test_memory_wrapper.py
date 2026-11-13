@@ -163,7 +163,9 @@ class Client:
  def __init__(self,value):pass
  def wire(self,method,params):
   record(method)
-  return {"error":{"code":"synthetic-unconfirmed"}} if mode=="server-error" else {"result":{"stopped":True}}
+  if mode=="server-error":return {"error":{"code":"synthetic-unconfirmed"}}
+  if mode=="server-missing-schema":return {"result":{"stopped":True}}
+  return {"result":{"schema":1,"stopped":mode!="server-admitted"}}
 core.CollectionClient=Client
 from agent_brain_client.adapters.storage import project_settings
 project_settings.load=lambda *a,**k:{"off_file":str(home/"project.off")}
@@ -172,7 +174,7 @@ project_memory.daily_command=lambda source,action:record("project-"+action)
 sys.argv=[str(entry),*args[3:]]
 runpy.run_path(str(entry),run_name="__main__")
 """
-        for mode in ("server-stop", "server-error", "project-stop"):
+        for mode in ("server-stop", "server-error", "server-missing-schema", "server-admitted", "project-stop"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 home = Path(directory).resolve()
                 injection = home / "native-bindings.py"
@@ -198,18 +200,20 @@ runpy.run_path(str(entry),run_name="__main__")
                     text=True,
                     timeout=20,
                 )
+                unconfirmed = mode in ("server-error", "server-missing-schema", "server-admitted")
                 self.assertEqual(
                     result.returncode,
-                    2 if mode == "server-error" else 0,
+                    2 if unconfirmed else 0,
                     result.stdout + result.stderr,
                 )
                 value = json.loads(result.stdout)
                 self.assertEqual(
                     value["status"],
                     "global-memory-stop-unconfirmed"
-                    if mode == "server-error"
+                    if unconfirmed
                     else "global-memory-stopped",
                 )
+                self.assertEqual(value["remote_confirmed"], not unconfirmed)
                 trace = json.loads((home / "trace.json").read_text())
                 self.assertEqual(len(trace), 1)
                 self.assertTrue(trace[0]["global_fence"])
