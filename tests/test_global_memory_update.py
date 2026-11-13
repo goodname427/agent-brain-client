@@ -29,7 +29,37 @@ from agent_brain_client.adapters.installation.updates import RegisteredClientIns
 
 
 class GlobalMemoryUpdate(unittest.TestCase):
+    # These cases exercise host edits/journal recovery, not runtime imports.
+    # Keep real freezing, pin validation, ACLs and atomic writes with one source
+    # file. Package upgrades, isolated imports, tampering and linked caches below
+    # retain the complete production manifest.
+    NARROW_RUNTIME = {
+        "test_refresh_migrates_owned_async_stop_without_removing_pending_data",
+        "test_approved_paused_sources_routes_operator_and_off_switch_are_preserved",
+        "test_host_trust_tables_survive_refresh_without_becoming_owned",
+        "test_third_party_tables_inside_markers_survive_check_refresh_and_removal",
+        "test_multiline_foreign_data_and_quoted_headers_preserve_toml_scope",
+        "test_trailing_host_state_is_preserved_when_tables_move",
+        "test_interrupted_settings_write_is_recovered_before_retry",
+        "test_outside_settings_edit_after_interruption_is_preserved",
+        "test_recognized_torn_settings_write_recovers_original_then_retries",
+        "test_arbitrary_events_same_event_groups_and_dotted_keys_are_preserved",
+        "test_inline_hooks_and_marker_looking_string_data_are_semantic",
+        "test_inline_event_assignment_lifecycle",
+        "test_dotted_inline_event_assignment_lifecycle",
+        "test_foreign_command_inside_owned_group_survives_refresh_and_removal",
+        "test_concurrent_unrelated_edit_reloads_and_merges_without_losing_pause",
+        "test_concurrent_managed_edit_is_preserved_and_names_exact_field",
+        "test_concurrent_edit_at_commit_discards_stale_journal_and_retries",
+    }
+
     def setUp(self):
+        if self._testMethodName in self.NARROW_RUNTIME:
+            files = ("src/agent_brain_client/runtime/collection.py",)
+            for module in (hooks, source_policy):
+                replacement = patch.object(module, "FILES", files)
+                replacement.start()
+                self.addCleanup(replacement.stop)
         temp = tempfile.TemporaryDirectory(prefix="synthetic-hook-update-")
         self.addCleanup(temp.cleanup)
         self.home = private_directory(Path(temp.name).resolve() / "fixture")

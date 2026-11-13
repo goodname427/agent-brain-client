@@ -21,8 +21,9 @@ import test_content_outbox as fixture
 
 
 @contextmanager
-def short_lock(path):
-    with locked(path, timeout=0.01) as handle:
+def short_lock(path, **options):
+    options["timeout"] = 0.01
+    with locked(path, **options) as handle:
         yield handle
 
 
@@ -51,6 +52,9 @@ class WriteFailures(unittest.TestCase):
                 with (
                     locked(self.f.cache / filename),
                     patch("agent_brain_client.adapters.storage.content_session.locked", short_lock),
+                    # operation_lock is defined in content, so patch its lookup
+                    # too; patching the re-export leaves two real 20s waits.
+                    patch("agent_brain_client.adapters.storage.content.locked", short_lock),
                 ):
                     result = self.invoke()
                 self.assertEqual(
@@ -319,10 +323,11 @@ class CollectionCapacity(unittest.TestCase):
         self.f = fixture.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
-        # Individually small, valid records; the complete collection is >1 MiB.
-        for index in range(96):
+        # Preserve aggregate byte limits with fewer native files/ACL operations.
+        # Each record remains below 64 KiB; the collection still exceeds 1 MiB.
+        for index in range(32):
             self.f.cloud.records['memory', 'synthetic-large-' + str(index)] = dict(
-                fixture.MEMORY, body=('Synthetic collection 中文\n' * 600) + str(index))
+                fixture.MEMORY, body=('Synthetic collection 中文\n' * 1800) + str(index))
 
     def restart(self):
         return ContentSession(self.f.home, self.f.cache, fixture.POLICY, self.f.cloud,

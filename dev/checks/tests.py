@@ -29,7 +29,7 @@ def run_group(modules):
         )
         start = time.monotonic()
         result = subprocess.run(
-            [sys.executable, "-B", "-m", "unittest", *modules],
+            [sys.executable, "-B", "-m", "dev.checks.timing", *modules],
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

@@ -109,7 +109,27 @@ runpy.run_path(entry, run_name='__main__')
 
 @unittest.skipUnless(sys.platform in ('darwin', 'win32'), 'Native Client filesystem required')
 class Installation(unittest.TestCase):
+    # Configuration ownership/rollback needs real pinned files, but no runtime
+    # import closure. The frozen-runtime/subprocess/drift tests use all files.
+    NARROW_RUNTIME = {
+        "test_existing_binding_or_edited_owned_hook_is_not_overwritten",
+        "test_ide_rule_migrates_legacy_receipt_and_preserves_user_rules",
+        "test_ide_rule_is_automatic_on_creation_and_keeps_user_disabled_header",
+        "test_outside_line_ending_change_to_managed_rule_is_preserved_for_review",
+        "test_rule_collision_and_disabled_binding_are_not_overwritten",
+        "test_legacy_receipt_owner_repair_requires_the_original_private_journal",
+        "test_failure_and_interrupted_transaction_restore_all_images",
+        "test_linked_native_config_is_rejected",
+    }
+
     def setUp(self):
+        if self._testMethodName in self.NARROW_RUNTIME:
+            replacement = patch(
+                "agent_brain_client.adapters.packages.layout.PYTHON_FILES",
+                ("src/agent_brain_client/interfaces/cli/codebuddy.py",),
+            )
+            replacement.start()
+            self.addCleanup(replacement.stop)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.home = Path(temp.name).resolve() / 'home'
