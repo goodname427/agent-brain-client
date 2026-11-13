@@ -17,6 +17,8 @@ import subprocess
 import tempfile
 import time
 
+from dev.checks.timing import summaries
+
 
 def run_group(modules):
     # Each process gets its own homes, just as separate CI jobs would.
@@ -29,7 +31,7 @@ def run_group(modules):
         )
         start = time.monotonic()
         result = subprocess.run(
-            [sys.executable, "-B", "-m", "unittest", *modules],
+            [sys.executable, "-B", str(Path(__file__).with_name("timing.py")), *modules],
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -81,6 +83,8 @@ def main():
         results = list(pool.map(run_group, groups))
     for module, (code, log, seconds) in zip(modules, results):
         print(f"{module}: {seconds}s, exit {code}", flush=True)
+        for line in summaries(log):
+            print(line, flush=True)
         print(log, end="", flush=True)
     raise SystemExit(1 if any(code for code, _, _ in results) else 0)
 
