@@ -347,10 +347,12 @@ def run_checks(scope, output, record=False, *, ci=False):
                 flush=True,
             )
             if "dev/checks/tests.py" in command:
-                # Module timings are useful in Actions; detailed fixture output
-                # stays in the log unless a check fails.
+                # Expose phase totals and the three slowest cases per selector;
+                # complete per-case output stays in the worker log.
                 for line in log_path.read_text(errors="replace").splitlines():
-                    if line.startswith("test_") and "s, exit " in line:
+                    if (line.startswith("test_") and "s, exit " in line) or line.startswith(
+                        ("TEST_PHASE_TOTALS ", "TEST_SLOW_CASE ")
+                    ):
                         print(line, flush=True)
             results.append(
                 {

@@ -3,7 +3,7 @@ import io
 import json
 import unittest
 
-from dev.checks.timing import TimingRunner
+from dev.checks.timing import TimingRunner, summaries
 
 
 class TimingContract(unittest.TestCase):
@@ -41,3 +41,17 @@ class TimingContract(unittest.TestCase):
             if not row['id'].endswith('test_skip'):
                 self.assertEqual(set(row) - {'id'}, {'setup', 'test', 'teardown', 'cleanup'})
                 self.assertTrue(all(value >= 0 for key, value in row.items() if key != 'id'))
+
+
+    def test_phase_summary_counts_skips_and_bounds_slow_case_output(self):
+        log = "\n".join(".TEST_PHASES " + json.dumps({
+            "id": "test_synthetic.Sample.test_" + str(index),
+            "setup": 0.1, "test": index, "teardown": 0.2, "cleanup": 0.3,
+        }) for index in range(5))
+        lines = list(summaries(log))
+        self.assertEqual(len(lines), 4)
+        total = json.loads(lines[0].split(" ", 1)[1])
+        self.assertEqual(total["count"], 5)
+        self.assertEqual(total["test"], 10)
+        self.assertEqual(total["setup"], 0.5)
+        self.assertEqual(json.loads(lines[1].split(" ", 1)[1])["test"], 4)
