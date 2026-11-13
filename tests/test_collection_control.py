@@ -60,14 +60,32 @@ class CollectionControlContract(unittest.TestCase):
         }
 
     def test_stop_fences_every_project_before_global_remote(self):
-        for reply in ({"result": {}}, {"error": {"code": "unconfirmed"}}):
-            ports = ControlPorts()
-            ports.reply = reply
-            result = CollectionControl(ports).stop(self.value())
-            self.assertEqual(result["remote_confirmed"], "error" not in reply)
-            self.assertEqual(result["status"], "global-memory-stop-unconfirmed" if "error" in reply else "global-memory-stopped")
-            self.assertEqual(ports.calls, ["fence", "fence-delegated", "fence-migrated", "memory_global_stop"])
-            self.assertTrue(ports.fenced)
+        success = {"result": {"schema": 1, "stopped": True}}
+        replies = [
+            success, {}, None, [], {"result": None}, {"result": []},
+            {"result": {}}, {"error": {"code": "unconfirmed"}},
+            dict(success, error={"code": "denied"}),
+            {"result": {"schema": 999, "stopped": True}},
+            {"result": {"schema": True, "stopped": True}},
+            {"result": {"schema": 1.0, "stopped": True}},
+            {"result": {"stopped": True}},
+            *({"result": {"schema": 1, "stopped": state}}
+              for state in (False, None, 0, 1, "true")),
+            {"result": {"schema": 1}},
+        ]
+        for index, reply in enumerate(replies):
+            with self.subTest(reply=reply):
+                ports = ControlPorts()
+                ports.reply = reply
+                result = CollectionControl(ports).stop(self.value())
+                confirmed = index == 0
+                self.assertEqual(result["remote_confirmed"], confirmed)
+                self.assertEqual(result["status"], "global-memory-stopped" if confirmed else "global-memory-stop-unconfirmed")
+                self.assertEqual(ports.calls, ["fence", "fence-delegated", "fence-migrated", "memory_global_stop"])
+                self.assertTrue(ports.fenced)
+                self.assertTrue(all(p["local_stop_fence"] for p in result["projects"]))
+                if not confirmed:
+                    self.assertEqual(result["error_stage"], "remote-stop")
 
     def test_project_stop_attempts_every_local_fence_then_every_remote(self):
         for failed in (False, True):
