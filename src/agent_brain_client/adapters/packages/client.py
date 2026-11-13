@@ -255,10 +255,9 @@ def validate_release_policy(policy):
         else CLIENT_FILES
     )
     allowed_file_policies = [list(files)]
-    if (
-        policy["channel"] != "stable"
-        or policy["file_prefixes"] not in allowed_file_policies
-    ):
+    if policy["channel"] != "stable":
+        raise UpdateBlocked("Stable release channel required")
+    if policy["file_prefixes"] not in allowed_file_policies:
         raise UpdateBlocked("Client release file scope changed")
     origin = policy["origin"]
     parsed = urlsplit(origin)
