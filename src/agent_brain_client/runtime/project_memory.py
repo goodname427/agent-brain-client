@@ -845,6 +845,7 @@ def daily_status(
         return value
     if (
         not isinstance(value, dict)
+        or type(value.get("schema")) is not int
         or value.get("schema") != 2
         or value.get("lifecycle") != "until-disabled"
         or type(value.get("model_admitted")) is not bool
@@ -1009,7 +1010,10 @@ def daily_command(p, action, *, event_id=None, session_id=None):
         return daily_status(p, client, event_id=event_id, session_id=session_id)
     client, adapter = adapter_for(p)
     if action in ("stop", "revoke"):
-        return daily_status(p, client, action=action)
+        result = daily_status(p, client, action=action)
+        if result["model_admitted"] is not False or result["source_admitted"] is not False:
+            raise ValueError("Persistent memory stop unconfirmed; local source marker preserved")
+        return result
     if action == "server-status":
         return daily_status(p, client, event_id=event_id, session_id=session_id)
     if action == "sync":

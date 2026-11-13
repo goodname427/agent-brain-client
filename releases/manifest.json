@@ -105,7 +105,7 @@
     "src/agent_brain_client/adapters/storage/toml_document.py": "667a57ebaadd4f157bf8fe85efbeeb2255acd5b04174373d2d581e3f7b5a74ab",
     "src/agent_brain_client/application/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/application/collection/__init__.py": "4a2ece43811ba08aed12c0c46c93194c9380df94eacbff8903d2c96ea2f31d98",
-    "src/agent_brain_client/application/collection/control.py": "491a543f3a30357d4e5ecec3278d22f46da0d6f0691d244cd73d67334c374a10",
+    "src/agent_brain_client/application/collection/control.py": "8ce509e93d69ddac6ec0a952e2f77fe1bf1e0f531ffef1ae2affd76abfbe394c",
     "src/agent_brain_client/application/collection/routing.py": "d93a03da07448dadac877ee108f794f2d543b5dcab1190cc0a01f5bfe9180f26",
     "src/agent_brain_client/application/content/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/application/content/management.py": "ea32a11b98940a4dbf7e629e788484317d985cedc4a75f0aeee99baec4ea3b40",
@@ -189,7 +189,7 @@
     "src/agent_brain_client/runtime/installation.py": "765bf8d80fd8e6926b5be76d3cf6cab3daf10748fc902506109b57ca1d6bfb03",
     "src/agent_brain_client/runtime/installation_completion.py": "a5855f6b02b8c273ae6d020ffc5b7499c6f04af00a8c548f159569b29216ba23",
     "src/agent_brain_client/runtime/launcher.py": "8d0dc3641960032a36ea33b923b4a5c0d7dc907eeb73d684ac88d17842014e0b",
-    "src/agent_brain_client/runtime/project_memory.py": "c781b91942f4d2faa6396b6ef30c3568c75e75d425b1d3711fdedf2d4685896f",
+    "src/agent_brain_client/runtime/project_memory.py": "8bf615b52b9e9c6356ae1d05ae316274821edc2bc3a98db362fd222a3d08374d",
     "src/agent_brain_client/runtime/source_enrollment.py": "ec22eaa8f5a2112144c6de4e95729f277f1d7b6d7ac7f4b0651c7036027060f4",
     "src/agent_brain_client/runtime/updates.py": "9103d1ffa93a7211292bc185f8f805cb94e2c9a2116ced751710afa237403947"
   },
@@ -197,5 +197,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.8.14"
+  "version": "0.8.15"
 }
