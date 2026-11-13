@@ -14,7 +14,7 @@ Windows 保留 `refs/heads/releases/personal-https-windows-stable`。Mac 保留�
 
 ## 正常操作
 
-功能源码合入并通过完整 **Client checks** 后，在 main 的 **Client release** 工作流填精确源码 SHA，版本默认 `auto`、targets 默认 `all`。默认只准备；选择 `publish` 才进入独立写权限 job。局部绿色检查不能证明可发布，必要时先对最终 main 手动运行完整检查。准备 job 不持有发布凭据；发布 job 使用既有 GitHub Actions 临时身份，只申请 contents:write/actions:read，不创建 token 或环境。
+功能源码合入后，先对最终 main 手动运行完整 **Client checks**；PR 与普通 main push 的快速绿色不能作为发布证据。完整检查通过后，在 main 的 **Client release** 工作流填精确源码 SHA，版本默认 `auto`、targets 默认 `all`。默认只准备；选择 `publish` 才进入独立写权限 job。局部绿色检查不能证明可发布，必要时先对最终 main 手动运行完整检查。准备 job 不持有发布凭据；发布 job 使用既有 GitHub Actions 临时身份，只申请 contents:write/actions:read，不创建 token 或环境。
 
 工作流分别固定产品源码和执行工具的提交。工具来自本次工作流的 main SHA；产品源码可为已合入、已通过完整 CI 的历史精确 SHA，以便补齐已发布版本的另一平台。两份 checkout 均要求官方 origin、干净工作区和 Git blob 原始字节；发布前分别核验源码与执行工具的完整 CI、main 祖先关系。它不会从新工具目录把额外文件带入旧产品包。
 
@@ -36,7 +36,7 @@ prepare 将这份日志放在 Release 正文顶部，保留后面的源码、运
 
 ## Actions 额度耗尽时
 
-实际工作流只有 `client-checks.yml` 与 `client-release.yml`。检查工作流的文档、源码扫描、固定版本 lint/type check、Mac 全量测试／Swift helper self-check、Windows 原生矩阵在 [client_checks.py](../../dev/checks/client.py) 有完整本地对应命令，回归测试逐项核对工作流中的命令未被遗漏；原 Actions 配置保持不变。发布工作流的 prepare、publish、verify 仍使用同一个 [release_client.py](../../dev/release/client.py)。分类及汇总是 Actions 调度逻辑，本地正式发布总是要求全部检查，不把文档或单平台绿色当全量。GitHub 仓库、refs、Release 和既有授权仍须可访问；这不是全站离线模式。
+实际工作流只有 `client-checks.yml` 与 `client-release.yml`。检查工作流的文档、源码扫描、固定版本 lint/type check、Mac 全量测试／Swift helper self-check、Windows 原生矩阵在 [client_checks.py](../../dev/checks/client.py) 有完整本地对应命令，回归测试逐项核对工作流中的命令未被遗漏；日常 Actions 只运行快速阻塞检查，手动发布前运行完整清单。发布工作流的 prepare、publish、verify 仍使用同一个 [release_client.py](../../dev/release/client.py)。分类及汇总是 Actions 调度逻辑，本地正式发布总是要求全部检查，不把文档或单平台绿色当全量。GitHub 仓库、refs、Release 和既有授权仍须可访问；这不是全站离线模式。
 
 在独立、干净、官方 origin 的已提交 Client checkout 中操作。用隔离 Python 环境安装 `ruff==0.14.0 mypy==1.18.2`，Mac 准备使用 Python 3.12 和现有 Swift 工具链。输出保存在 Git 外私有目录；日志可能含本机路径，不上传为公开附件。所有检查子进程隔离 HOME、USERPROFILE、CODEX_HOME，移除发布 token，不安装／升级真实设备、不访问 Keychain 密钥或执行模型调用。
 

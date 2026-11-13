@@ -303,3 +303,38 @@ class WorkflowContract(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class EventTier(unittest.TestCase):
+    def test_only_release_dispatch_produces_full_evidence(self):
+        for event in ("pull_request", "push", "merge_group"):
+            plan = ci.tier_event(event, {})
+            self.assertFalse(plan["full"])
+        self.assertTrue(ci.tier_event("workflow_dispatch", {})["full"])
+        with self.assertRaises(ValueError):
+            ci.tier_event("unknown", {})
+
+    def test_quick_regressions_are_explicit_and_scope_directed(self):
+        from dev.checks.quick import selected_tests
+        self.assertEqual(selected_tests(["README.md"]), ["test_architecture"])
+        self.assertIn("test_release_pipeline", selected_tests(["dev/release/client.py"]))
+
+    def test_quick_failure_and_syntax_error_never_become_success(self):
+        from dev.checks import quick
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            event = root / "event.json"
+            event.write_text(json.dumps({"before": "a" * 40, "after": "b" * 40}))
+            env = {"GITHUB_EVENT_PATH": str(event), "GITHUB_EVENT_NAME": "push"}
+            error = subprocess.CalledProcessError(1, ["synthetic-regression"])
+            with patch.dict(os.environ, env), patch.object(quick.scope, "git", return_value=b""), \
+                    patch.object(quick.subprocess, "run", side_effect=error):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    quick.main()
+            (root / "broken.py").write_text("invalid syntax !")
+            def git(*args, **kwargs):
+                return b"broken.py\0" if args[0] == "ls-files" else b""
+            with patch.dict(os.environ, env), patch.object(quick, "ROOT", root), \
+                    patch.object(quick.scope, "git", side_effect=git):
+                with self.assertRaises(SyntaxError):
+                    quick.main()

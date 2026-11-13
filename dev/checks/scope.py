@@ -257,6 +257,20 @@ def plan_event(event_name, event, root=ROOT):
         )
 
 
+
+def tier_event(event_name, event, root=ROOT):
+    """Only an explicit release validation dispatch may certify full checks.
+
+    PR, main push and merge queue use basic blocking checks. Unknown/damaged
+    events fail rather than silently certifying a reduced or full result.
+    """
+    if event_name == "workflow_dispatch":
+        return selection(reason="explicit release full validation")
+    if event_name not in ("pull_request", "push", "merge_group"):
+        raise ValueError("Unsupported checks event")
+    return dict(code=True, mac=False, windows=False, full=False, tests=[], reason="fast blocking checks; full validation deferred to release")
+
+
 def verify_results(needs):
     """A required check fails on missing outputs, failed selection or cancelled jobs."""
     for job in ("changes", "documentation"):
@@ -303,7 +317,7 @@ def main():
         return
     with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as source:
         event = json.load(source)
-    plan = plan_event(os.environ["GITHUB_EVENT_NAME"], event)
+    plan = tier_event(os.environ["GITHUB_EVENT_NAME"], event)
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         output.write("tests=" + json.dumps(plan.get("tests", [])) + "\n")
         for key in ("code", "mac", "windows", "full"):
