@@ -62,14 +62,31 @@ class CollectionControl:
             # Preserve the original per-project control path; it cannot activate
             # the unapproved expanded scope on this device.
             self.ports.set_fence(value)
+            projects = []
             for row in legacy_sources:
-                self.ports.resume_project(row)
+                try:
+                    self.ports.resume_project(row)
+                except (ValueError, OSError):
+                    projects.append({"root": row["root"], "remote_confirmed": False})
+                else:
+                    projects.append({"root": row["root"], "remote_confirmed": True})
+            if not all(project["remote_confirmed"] for project in projects):
+                return {
+                    "status": "global-memory-resume-unconfirmed",
+                    "collection_enabled": False,
+                    "legacy_capture_resumed": False,
+                    "remote_confirmed": False,
+                    "local_stop_fence": True,
+                    "projects": projects,
+                    "next_action": "Inspect unconfirmed project admission and retry explicit global-resume; preserve the local stop fence.",
+                }
             self.ports.clear_fence(value)
             return {
                 "status": "global-memory-legacy-resumed",
                 "collection_enabled": False,
                 "legacy_capture_resumed": True,
                 "remote_confirmed": True,
+                "projects": projects,
                 "next_action": self.ports.admission(value)["next_action"],
             }
         state = self.ports.admission(value)

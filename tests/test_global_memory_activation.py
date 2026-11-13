@@ -128,7 +128,7 @@ class GlobalMemoryActivation(unittest.TestCase):
     def test_legacy_resume_keeps_original_project_control_and_no_expanded_source_claim(self):
         value = dict(self.value, enabled=False, approved_scope_sha256=None,
                      server_scope_sha256=None,
-                     legacy_projects=[{'settings':'synthetic-settings', 'settings_sha256':'b' * 64}])
+                     legacy_projects=[{'root':'synthetic-project', 'settings':'synthetic-settings', 'settings_sha256':'b' * 64}])
         source = {'off_file':str(self.home / 'synthetic-project.off')}
         with (patch.object(gm, 'CollectionClient', side_effect=AssertionError('No global credentials')),
               patch('agent_brain_client.adapters.storage.project_settings.load', return_value=source),
