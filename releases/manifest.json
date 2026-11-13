@@ -82,7 +82,7 @@
     "src/agent_brain_client/adapters/storage/bounded_json.py": "eb23e1b5eb687b981e016fe92edba59fde9a2b16745c52feac60a20e0a19cd41",
     "src/agent_brain_client/adapters/storage/collection.py": "efed3e4d1cad975e457d74cbf19d308585e8ad424fa96211fa59ded5891df92a",
     "src/agent_brain_client/adapters/storage/collection_control.py": "6e18632dc5906e44958e2295dab4048e080de0ec3ec1f7b1346ae20250ee5b1f",
-    "src/agent_brain_client/adapters/storage/collection_setup.py": "a791a2c3504b210aa4e550821f6955e090aedd03848b30bb9d74c57435b6e1f2",
+    "src/agent_brain_client/adapters/storage/collection_setup.py": "2b009b6ba036e593126f5e811bdc59d9bf87030ce290b80d38745528aebc6121",
     "src/agent_brain_client/adapters/storage/content.py": "65cc64627ae6b3fe24e6d7ed2d491a0c3c4cbce91e3379e650b2f9baca143768",
     "src/agent_brain_client/adapters/storage/content_limits.py": "e9ef777d5783492c25b662256232e8feefec31514d60cb40d79108f062b1442a",
     "src/agent_brain_client/adapters/storage/content_session.py": "d3ac089687b49d7c5a75c03819aec8b360987ab21d42037e478651d416b4547b",
@@ -104,7 +104,7 @@
     "src/agent_brain_client/adapters/storage/toml_document.py": "667a57ebaadd4f157bf8fe85efbeeb2255acd5b04174373d2d581e3f7b5a74ab",
     "src/agent_brain_client/application/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/application/collection/__init__.py": "4a2ece43811ba08aed12c0c46c93194c9380df94eacbff8903d2c96ea2f31d98",
-    "src/agent_brain_client/application/collection/control.py": "8eee4034646856d136fbf08afe18994783f0acceb9662d27f49f6524f6861d3d",
+    "src/agent_brain_client/application/collection/control.py": "241562e95b8ce831fabbea0af93d0c9c6df41e3939cab3541787f4d3f4f06a84",
     "src/agent_brain_client/application/collection/routing.py": "d93a03da07448dadac877ee108f794f2d543b5dcab1190cc0a01f5bfe9180f26",
     "src/agent_brain_client/application/content/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/application/content/management.py": "ea32a11b98940a4dbf7e629e788484317d985cedc4a75f0aeee99baec4ea3b40",
@@ -188,7 +188,7 @@
     "src/agent_brain_client/runtime/installation.py": "765bf8d80fd8e6926b5be76d3cf6cab3daf10748fc902506109b57ca1d6bfb03",
     "src/agent_brain_client/runtime/installation_completion.py": "a5855f6b02b8c273ae6d020ffc5b7499c6f04af00a8c548f159569b29216ba23",
     "src/agent_brain_client/runtime/launcher.py": "8d0dc3641960032a36ea33b923b4a5c0d7dc907eeb73d684ac88d17842014e0b",
-    "src/agent_brain_client/runtime/project_memory.py": "1c22a9543eb3339dbffb2d8def11b60fc4afdebbdeb4b1cfeb06d1ea578543bc",
+    "src/agent_brain_client/runtime/project_memory.py": "c781b91942f4d2faa6396b6ef30c3568c75e75d425b1d3711fdedf2d4685896f",
     "src/agent_brain_client/runtime/source_enrollment.py": "ec22eaa8f5a2112144c6de4e95729f277f1d7b6d7ac7f4b0651c7036027060f4",
     "src/agent_brain_client/runtime/updates.py": "9103d1ffa93a7211292bc185f8f805cb94e2c9a2116ced751710afa237403947"
   },
@@ -196,5 +196,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.8.12"
+  "version": "0.8.13"
 }

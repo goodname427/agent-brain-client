@@ -832,7 +832,7 @@ def daily_status(
     result = client.request(request)
     if "error" in result:
         raise ValueError("Persistent memory admission unavailable")
-    value = result["result"]
+    value = result.get("result")
     if diagnostic:
         if not isinstance(value, dict) or not isinstance(
             value.get("capture_extraction"), dict
@@ -1016,6 +1016,9 @@ def daily_command(p, action, *, event_id=None, session_id=None):
         return daily_status(p, client, action="sync")
     if action == "resume":
         result = daily_status(p, client, resume=p["source_mode"] != "recall-only")
+        if (result["model_admitted"] is not True
+                or (p["source_mode"] != "recall-only" and result["source_admitted"] is not True)):
+            raise ValueError("Persistent memory resume unconfirmed; local source marker preserved")
         marker = canonical(p["off_file"])
         if marker.exists():
             if not marker.is_file() or (
