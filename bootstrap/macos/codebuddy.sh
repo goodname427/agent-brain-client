@@ -15,7 +15,7 @@ for ARGUMENT in "$@"; do
     fi
 done
 case "$REQUESTED_ACTION" in
-    install|reinstall|update) ;;
+    install|reinstall|reinstall-check|update) ;;
     *) echo '{"status":"codebuddy-action-required","next_action":"Use bootstrap/codebuddy.py for status, probe or uninstall."}'; exit 2 ;;
 esac
 # The frozen Server device protocol keeps its enrolled adapter name. A fresh
@@ -30,4 +30,5 @@ if [ "$EXISTING_BACKEND" = true ] && [ "$REQUESTED_ACTION" = install ]; then
     CODEX_HOME="$NATIVE_BACKEND" sh "$HERE/bootstrap/macos/install.sh" --action check-update
     CODEX_HOME="$NATIVE_BACKEND" sh "$HERE/bootstrap/macos/install.sh" --action update
 fi
+if [ "$REQUESTED_ACTION" = reinstall-check ]; then exit 0; fi
 exec /usr/bin/python3 -I -B "$HERE/bootstrap/codebuddy.py" install

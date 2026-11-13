@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Server,
-    [ValidateSet('install','reinstall','update')][string]$Action = 'install'
+    [ValidateSet('install','reinstall','reinstall-check','update')][string]$Action = 'install'
 )
 $ErrorActionPreference = 'Stop'
 $Action = $Action.ToLowerInvariant()
@@ -25,6 +25,7 @@ try {
         & (Join-Path $PSScriptRoot 'install.ps1') -Action update
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
+    if ($Action -eq 'reinstall-check') { exit 0 }
     & $python -X utf8 -I -B (Join-Path $root 'bootstrap/codebuddy.py') install
     exit $LASTEXITCODE
 } finally {
