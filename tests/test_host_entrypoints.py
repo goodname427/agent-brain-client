@@ -20,6 +20,7 @@ POLICY = {"schema": 1, "adapter": "codex", "kinds": ["memory", "rule", "skill"],
           "dependencies": {"commands": [], "python_modules": []}}
 
 
+@unittest.skipUnless(sys.platform in ("darwin", "win32"), "Native Client entry contracts require macOS or Windows")
 class HostEntries(unittest.TestCase):
     def run_probe(self, mode, harness):
         with tempfile.TemporaryDirectory(prefix="synthetic-entry-home-") as tmp:
