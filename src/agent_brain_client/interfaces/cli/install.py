@@ -103,6 +103,7 @@ def main():
         "--server",
         help="Your selected credential-free HTTPS Server origin; access key is requested only in the local hidden input.",
     )
+    parser.add_argument("--access-key-file", type=Path, help="Read a user-selected local key file without interactive input; never pass the key itself.")
     parser.add_argument("--connection", type=Path)
     parser.add_argument("--expected-connection-sha256")
     args = parser.parse_args()
@@ -142,6 +143,12 @@ def main():
         return finish_install(Path.home().resolve(), value, harness=args.harness)
 
     try:
+        if args.access_key_file is not None and (args.action not in ("install", "reinstall") or args.connection or args.expected_connection_sha256):
+            raise ValueError("Access key file requires address-based install or reinstall")
+        key_options = {}
+        if args.access_key_file is not None:
+            from agent_brain_client.interfaces.cli.access import file_key_input
+            key_options["key_input"] = file_key_input(args.access_key_file)
         require_platform("first-install")
         home = Path.home().resolve()
         if args.action == "reinstall-check":
@@ -308,7 +315,7 @@ def main():
         ):
             from agent_brain_client.interfaces.cli.access import run_address_install
 
-            value = run_address_install(home, native, args.server, harness=args.harness)
+            value = run_address_install(home, native, args.server, harness=args.harness, **key_options)
             from agent_brain_client.application.installation.follow_up import (
                 installation_follow_up,
             )
@@ -323,7 +330,7 @@ def main():
         except ConnectionRequired:
             from agent_brain_client.interfaces.cli.access import run_address_install
 
-            value = run_address_install(home, native, args.server, harness=args.harness)
+            value = run_address_install(home, native, args.server, harness=args.harness, **key_options)
             from agent_brain_client.application.installation.follow_up import (
                 installation_follow_up,
             )
