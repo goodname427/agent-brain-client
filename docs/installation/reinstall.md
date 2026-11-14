@@ -41,6 +41,10 @@ Hook 回执包含原生配置的完整前后像，可能超过通用元数据的
 
 ## 占用证据与自动协调的边界
 
+归档发生 OS 错误时，`fresh-install-archive-blocked` 输出具体操作、源／目标、系统提供的失败路径、`errno`／`winerror`、事务 ID 和已归档项。拒绝访问不能单独证明 ACL 错误或哪个进程持锁；不自动改权限、强杀、删锁或复制覆盖。真实原因要根据该输出继续核实。
+
+部分归档后的 `reinstall-check` 返回 `fresh-install-resume-required` 是恢复状态，不是新的锁清单。保留 `current.json`、原归档和剩余源文件，从新的官方 checkout 重跑同一 `reinstall --harness codex --server <原地址>`（Windows 使用 `-Action reinstall -Harness codex -Server <原地址>`）。未完成事务不会再提示 FRESH、不会重新规划或重复移除入口；已移动但进度尚未落盘的项目依据原对象身份确认后继续。源和目标同时存在、对象身份改变或原生配置偏离已移除后的记录时停止，不能手动合并、回搬或删除。归档全部完成后才进入原 Server／账号的隐藏输入和新连接阶段。
+
 `locks` 给出精确路径及 `absent`／`free`／`busy`；重装遇到竞争时给出 `blocked_lock`。`fresh-install-runtime-idle` 只是瞬时检查结果，不是全部迁移前置条件已满足的声明；重装仍逐把取得原有独占租约，不能用一次检查绕过运行中保护。权限、路径／所有权异常会进入 review，而不伪称 worker 占用。Windows 仍可能因其他文件的打开句柄而拒绝归档移动；这类文件操作失败也须保留现场、处理具体句柄，不能由租约空闲推断归档一定成功。
 
 仅在租约繁忙时查询其文件使用者。Windows 使用 [Restart Manager 的资源查询](https://learn.microsoft.com/en-us/windows/win32/rstmgr/using-restart-manager-with-a-primary-installer)，输出 PID、系统报告的名称和进程启动时间；Mac 使用系统 `lsof` 查询同一文件，输出 PID 与名称。`resource_users` 是文件使用者候选，不等同于内核字节锁所有权证明，不能证明其 Harness、版本或可安全终止；结果明确保留 `lock_ownership_proven:false`。受限或查询失败标为 unknown；成功查询也可能没有可报告的候选，绝不把空列表当成空闲。PID 也不能作为之后发信号的授权。查询不读取命令行、环境、会话内容或凭据；不调用 Restart Manager 的 shutdown/restart，不发进程信号。
