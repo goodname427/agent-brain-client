@@ -164,21 +164,41 @@ def finish_fresh_installation(
     return result
 
 
+class FreshConnectionMismatch(ValueError):
+    """A validated connection does not cover the retained account/scope.
+
+    Reasons are fixed labels only: never serialize account IDs, grants or keys.
+    """
+
+    def __init__(self, reasons):
+        super().__init__("Reconnect the SAME Server/account with access to retained scope")
+        self.reasons = reasons
+
+
 def validate_reconnection(expected: dict, connection: dict) -> None:
     from agent_brain_client.domain.content_policy import validate_policy
+    from agent_brain_client.domain.authorization import normalized_scopes, scope_subset
 
     old, new = expected["grant"], connection["grant"]
-    if (
-        connection["endpoint"] != expected["endpoint"]
-        or new["actor"] != old["actor"]
-        or not set(old["scopes"]) <= set(new["scopes"])
-    ):
-        raise ValueError(
-            "Reconnect the SAME Server/account with the original capabilities"
-        )
-    try:
-        validate_policy(expected["content"], new)
-    except Exception:
-        raise ValueError(
-            "Reconnect the SAME Server/account with access to retained memory scope"
-        ) from None
+    # An invalid retained policy is a local integrity error, not a wrong account.
+    validate_policy(expected["content"])
+    reasons = []
+    if connection["endpoint"] != expected["endpoint"]:
+        reasons.append("server-origin")
+    if new["actor"] != old["actor"]:
+        reasons.append("account-actor")
+    # Use the same permission semantics as every runtime request. In particular,
+    # the protocol's write alias must not look like loss of put capability.
+    if not normalized_scopes(old["scopes"]) <= normalized_scopes(new["scopes"]):
+        reasons.append("capability-scopes")
+    content = expected["content"]
+    if "read" not in new["scopes"]:
+        reasons.append("content-read")
+    if set(content["kinds"]) - set(new["artifact_types"]):
+        reasons.append("content-kinds")
+    if not scope_subset(content["ids"], new["ids"]):
+        reasons.append("content-ids")
+    if reasons:
+        raise FreshConnectionMismatch(reasons)
+    # Keep the canonical containment validator as the final authority.
+    validate_policy(content, new)
