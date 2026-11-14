@@ -25,7 +25,7 @@
    & ./bootstrap/windows/codebuddy.ps1 -Action reinstall -Server 'https://your-server.example'
    ```
 
-3. 在本机隐藏输入中重新填写该 Server/账号的长期接入密钥。不要把密钥放进聊天、命令行、环境变量或文件。安装器从该 Server 正常取得授权与发行信任信息；不会复用旧设备身份、伪造 pin、创建访问密钥或修改 Server 授权。账号或授权范围与原记忆不符时停止，不创建替代设备掩盖问题。
+3. 在本机隐藏输入中重新填写该 Server/账号的长期接入密钥。不要把密钥内容放进聊天、命令行或环境变量。已获授权的本机 Key 文件可通过 `--access-key-file`（Windows `-AccessKeyFile`）传入路径，免手动输入。安装器从该 Server 正常取得授权与发行信任信息；不会复用旧设备身份、伪造 pin、创建访问密钥或修改 Server 授权。账号或授权范围与原记忆不符时停止，不创建替代设备掩盖问题。
 4. 核对输出中的 `retained_archive`、`memory_accessibility` 和 `installation_stages`。旧业务状态保留在 `~/.config/agent-brain-retained/<实例标识>/`；Python 和官方源码 checkout 等准备环境仍保留供当前安装使用。不要删除归档；其中的旧队列不由新安装自动读取或重放。
 5. `known-memory-readable` 表示新设备已读取原来已知的记忆；没有旧的受管记忆 ID 时，`memory-catalog-readable` 仅表示新设备可读取记忆目录，不是完整性或 Onboard 覆盖率声明。已核验的本地 Memory/Rule 投影与受管文件归属由各自所有者保留并恢复，原生记忆文件不变。记忆缺失、网络失败或账号不符时保留现场，并按同一命令恢复，不能将失败当成迁移成功。核验结果按新 profile 摘要持久记录；在成功前，重启宿主、直接运行 MCP、映射命令或 Hook 都不能越过同一闸门产生映射或采集。
 6. 原 MCP 暂停状态、采集启停开关、`global.off` 停止标记、`all_projects` 范围、排除目录、项目隔离／共享规则、非项目目录选择及个人记忆 recall 开关都会保留。旧单项目的 `memory.off` 或关闭状态会转为新设备的项目根目录排除项，包含其子目录；不复制旧项目身份、队列或可执行配置。限制落盘前，新采集由恢复记录阻止，中断后重跑同一安装入口恢复。原本暂停或停止的采集不会自动恢复，原窄范围不会扩展为所有项目。需要恢复某个旧停止项目时，明确配置新的来源范围，按原流程确认排除项变更；`global-resume` 不会清除该项目排除项。旧设备批准摘要和身份不复制，已启用的原范围由新设备通过正常流程登记。逐项完成 Mapping、未来项目采集与宿主 Hook trust 检查；只在观察到 worker 版本与活动包不一致时正常重载 Agent Brain MCP。模型加载与全量记忆覆盖仍单独报告。

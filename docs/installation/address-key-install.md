@@ -2,7 +2,7 @@
 
 > 状态：当前维护。适用：Mac／Windows 正常首次接入与原身份恢复。文档核对日期：2026-11-03；验收范围见 [0.5 交付状态](../releases/0.5-status.md)。
 
-正常首次安装只填写两个值：你选择的 Server HTTPS 地址，以及 Server 生成的长期接入密钥。地址可由本机终端询问或 `--server`（Windows `-Server`）指定；密钥只能由本机隐藏输入填写，不传给聊天或执行 Agent。Mac 使用独立 login Keychain 项，Windows 使用当前用户 Credential Manager；没有明文落盘、命令行或环境变量回退。没有本机交互能力时停止，不能改为聊天收集密钥。
+正常首次安装只填写两个值：你选择的 Server HTTPS 地址，以及 Server 生成的长期接入密钥。地址可由本机终端询问或 `--server`（Windows `-Server`）指定；默认使用本机隐藏输入；用户已授权 Agent 使用本机 Key 文件时，可传 `--access-key-file`（Windows `-AccessKeyFile`）指定文件路径，无需手动输入。Mac 使用独立 login Keychain 项，Windows 使用当前用户 Credential Manager；没有明文落盘、命令行或环境变量回退。没有本机交互能力时使用获授权的本机文件，不通过聊天收集密钥。文件只含 UTF-8 密钥，可有 BOM 和末尾换行，最大 4 KiB；不接受链接、目录、JSON 或其他文本。文件读取失败会明确停止，不回退为隐藏窗口。已有有效 OS 凭据仍复用，不因提供文件而替换。安装器不删除用户文件、不修改其权限、不记录文件内容，用户负责文件的保存和清理。
 
 从干净官方 main 运行 [Mac](mac.md) 或 [Windows](windows.md) 的正常入口。执行 Agent 先检查 status：已安装就按原策略 check-update/update；已卸载就恢复原身份；状态异常时保留事务和队列。首次无参数运行会在本机询问地址和密钥。服务发行者须先启用 Server 的地址／密钥协议，并通过其既有安全渠道交付密钥；公开仓库不含实际服务地址、用户密钥或管理员入口。
 
@@ -31,3 +31,5 @@
 Windows 原生隐藏输入使用通用应用凭据对话框（固定 Agent Brain 用户名标签、禁用 CredUI 自行持久化），密钥随后仅由专用 Credential Manager 项保存；不是 Windows 登录／管理员密码。API 依据：[Microsoft CredUIPromptForCredentialsW](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-creduipromptforcredentialsw)。原生 UI 不可用时停止，没有终端回显回退。
 
 安装器 0.5.2 修复正常 Windows checkout 缓存的首次路由，以及 registration 已写入但 applying 回执尚未提交的中断恢复。此阶段重跑同一入口会先核验原连接、绑定、计划和 journal 前后像，再沿原设备认证与安装事务恢复；不会重新 bootstrap、索取 legacy 文件或新密钥。外部编辑或绑定漂移会停止并保留现场。
+
+中断时先使用当前认证窗口的 Cancel 正常结束等待安装，确认原安装进程退出和租约释放，再沿同一 `ready` 事务运行 `reinstall` 并传文件路径。若旧窗口不可见，先定位确切安装实例，不并发重装、不批量关闭 Client 或删除锁。新 Windows 隐藏输入有任务栏 owner，切走后可选择该窗口返回；真实桌面体验仍需单独验收。

@@ -102,6 +102,64 @@ class AddressInstall(unittest.TestCase):
         options.update(kwargs)
         return access.run_address_install(self.home, self.native, endpoint, **options, harness="codex")
 
+    def test_file_key_reuses_shared_auth_for_both_harnesses(self):
+        for harness in ("codex", "codebuddy"):
+            with self.subTest(harness=harness):
+                key_file = self.home / "synthetic-key.txt"
+                key_file.write_bytes(b"\xef\xbb\xbf" + KEY.encode() + b"\r\n")
+                self.backend.record = None
+                result = access.run_address_install(
+                    self.home, self.native, "https://synthetic.invalid", harness=harness,
+                    key_input=access.file_key_input(key_file), transport=self.peer,
+                    store_factory=lambda *a: self.store, dependency_preparer=lambda *a: {},
+                    install=self.install,
+                )
+                self.assertTrue(result["installed"])
+                self.assertEqual(self.peer.bootstrap.call_args.args[0], KEY)
+                self.assertEqual(self.install.call_args.kwargs["harness"], harness)
+                self.assertEqual(key_file.read_bytes(), b"\xef\xbb\xbf" + KEY.encode() + b"\r\n")
+
+    def test_bad_file_does_not_prompt_or_leak(self):
+        for raw in (b"secret-not-valid", b"A" * 4097, KEY.encode() + b"\nextra", b"\xff"):
+            key_file = self.home / "synthetic-key.txt"
+            key_file.write_bytes(raw)
+            result = self.run_install(key_input=access.file_key_input(key_file))
+            self.assertEqual(result["status"], "access-key-file-review-required")
+            self.assertNotIn(raw.decode("utf8", errors="replace"), json.dumps(result))
+            self.assertIsNone(self.backend.record)
+            self.prompts.assert_not_called()
+            self.peer.bootstrap.assert_not_called()
+
+    def test_file_missing_directory_and_saved_key(self):
+        for path in (self.home / "absent", self.home):
+            result = self.run_install(key_input=access.file_key_input(path))
+            self.assertEqual(result["status"], "access-key-file-review-required")
+        self.run_install()
+        self.assertTrue(self.run_install(key_input=access.file_key_input(self.home / "absent"))["installed"])
+
+    def test_file_cli_forwards_provider_and_rejects_maintenance(self):
+        key_file = self.home / "synthetic-key.txt"
+        key_file.write_text(KEY)
+        for harness in ("codex", "codebuddy"):
+            with patch.object(Path, "home", return_value=self.home), patch.object(
+                interfaces_cli_install, "selected_native", return_value=self.native
+            ), patch.object(sys, "argv", ["install", "--harness", harness, "--server", "https://synthetic.invalid", "--access-key-file", str(key_file)]), patch.object(
+                access, "run_address_install", return_value={"status": "access-input-cancelled", "installed": False}
+            ) as run, patch.object(sys, "stdout", io.StringIO()):
+                self.assertEqual(interfaces_cli_install.main(), 2)
+                self.assertEqual(run.call_args.kwargs["key_input"](self.store), KEY)
+                self.assertEqual(run.call_args.kwargs["harness"], harness)
+        with patch.object(sys, "argv", ["install", "--action", "status", "--access-key-file", str(key_file)]), patch.object(sys, "stdout", io.StringIO()):
+            self.assertEqual(interfaces_cli_install.main(), 2)
+
+    def test_windows_file_argument_survives_both_bootstrap_layers(self):
+        root = Path(__file__).resolve().parents[1]
+        entry = (root / "bootstrap/windows/install.ps1").read_text()
+        self.assertIn("@('--access-key-file', $AccessKeyFile)", entry)
+        self.assertIn("-Server $Server -AccessKeyFile $AccessKeyFile", entry)
+        buddy = (root / "bootstrap/windows/codebuddy.ps1").read_text()
+        self.assertIn("-Harness codebuddy -Server $Server -AccessKeyFile $AccessKeyFile", buddy)
+
     def test_only_address_and_hidden_key_no_public_secret_and_no_false_success(self):
         self.assertTrue(self.run_install()["installed"])
         self.prompts.assert_called_once()
@@ -524,3 +582,59 @@ class ApplyingAccessEntry(unittest.TestCase):
         self.assertFalse(json.loads(output.getvalue())["installed"])
         self.assertEqual(f.config.read_bytes(), before)
         self.assertEqual((state / "content-install-receipt.json").read_bytes(), journal)
+
+"""Synthetic owner lifecycle tests; no real credentials or dialogs."""
+import ctypes
+import unittest
+from unittest.mock import Mock, patch
+
+from agent_brain_client.adapters.platforms.windows import access as windows_access
+
+
+class OwnerTests(unittest.TestCase):
+    def test_owner_is_visible_and_destroyed_after_modal_error(self):
+        api = Mock()
+        api.CreateWindowExW.return_value = 123
+        with patch.object(windows_access.sys, "platform", "win32"), patch.object(
+            ctypes, "WinDLL", return_value=api, create=True
+        ):
+            with self.assertRaisesRegex(RuntimeError, "synthetic"):
+                with windows_access.dialog_owner() as owner:
+                    self.assertEqual(owner, 123)
+                    api.ShowWindow.assert_called_once_with(123, 5)
+                    raise RuntimeError("synthetic")
+        api.DestroyWindow.assert_called_once_with(123)
+        self.assertEqual(api.CreateWindowExW.call_args.args[0], 0x40000)
+
+    def test_failed_owner_does_not_open_unowned_dialog(self):
+        api = Mock()
+        api.CreateWindowExW.return_value = None
+        with patch.object(windows_access.sys, "platform", "win32"), patch.object(
+            ctypes, "WinDLL", return_value=api, create=True
+        ):
+            with self.assertRaisesRegex(ValueError, "owner window unavailable"):
+                with windows_access.dialog_owner():
+                    self.fail("Must not yield a missing owner")
+        api.DestroyWindow.assert_not_called()
+
+    def test_cancel_uses_owner_and_cleans_it(self):
+        from contextlib import contextmanager
+        events = []
+
+        @contextmanager
+        def owner():
+            events.append("open")
+            try:
+                yield 123
+            finally:
+                events.append("close")
+
+        def prompt(info, *args):
+            self.assertEqual(info._obj.hwndParent, 123)
+            return 1223
+
+        with patch.object(windows_access, "dialog_api", return_value=prompt), patch.object(
+            windows_access, "dialog_owner", owner
+        ):
+            self.assertIsNone(windows_access.secure_input("https://synthetic.invalid"))
+        self.assertEqual(events, ["open", "close"])
