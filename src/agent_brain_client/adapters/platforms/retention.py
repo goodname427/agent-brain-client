@@ -8,6 +8,21 @@ from agent_brain_client.adapters.platforms.filesystem import (
 )
 
 
+class RetentionFailure(OSError):
+    """Keep the original OS evidence without inferring a lock or ACL cause."""
+
+    def __init__(self, error, operation, source, destination):
+        super().__init__(error.errno, error.strerror, error.filename)
+        self.details = {
+            "operation": operation, "source": str(source),
+            "destination": str(destination), "failed_path": str(error.filename) if error.filename else None,
+            "failed_path2": str(error.filename2) if error.filename2 else None,
+            "error_type": type(error).__name__, "errno": error.errno,
+            "winerror": getattr(error, "winerror", None), "os_message": error.strerror,
+            "cause": "unknown",
+        }
+
+
 def canonical(path, *, existing=False):
     path = Path(path)
     if os.name == "nt":
@@ -36,17 +51,26 @@ def item_identity(path):
 
 
 def retain_item(source, destination, identity):
-    source, destination = canonical(source), canonical(destination)
-    private_mode(destination.parent, directory=True, owner=True)
-    if destination.exists():
-        if source.exists() or item_identity(destination) != identity:
-            raise ValueError("Retention destination changed")
-        return
-    if item_identity(source) != identity:
-        raise ValueError("Retention source changed")
-    os.rename(source, destination)
-    sync_directory(source.parent)
-    sync_directory(destination.parent)
+    operation = "validate-paths"
+    try:
+        source, destination = canonical(source), canonical(destination)
+        operation = "validate-destination-parent"
+        private_mode(destination.parent, directory=True, owner=True)
+        operation = "validate-item-identity"
+        if destination.exists():
+            if source.exists() or item_identity(destination) != identity:
+                raise ValueError("Retention destination changed")
+            return
+        if item_identity(source) != identity:
+            raise ValueError("Retention source changed")
+        operation = "rename"
+        os.rename(source, destination)
+        operation = "sync-source-parent"
+        sync_directory(source.parent)
+        operation = "sync-destination-parent"
+        sync_directory(destination.parent)
+    except OSError as error:
+        raise RetentionFailure(error, operation, source, destination) from error
 
 
 def retention_root(path):
