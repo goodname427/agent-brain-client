@@ -181,6 +181,28 @@ def hidden_input(store):
     return secure_input(store.endpoint)
 
 
+class AccessKeyFileError(ValueError):
+    """A local credential file could not be read; never expose its contents."""
+
+
+def file_key_input(path):
+    """Read only when authentication needs a key; never replace saved credentials."""
+    path = Path(path).expanduser().absolute()
+
+    def read_key(store):
+        try:
+            from agent_brain_client.adapters.platforms.filesystem import read_regular_file
+            raw = read_regular_file(path, 4096)
+            key = raw.decode("utf-8-sig").rstrip("\r\n")
+            if not valid_secret(key):
+                raise AccessKeyFileError()
+            return key
+        except (OSError, UnicodeError, ValueError):
+            raise AccessKeyFileError("Access key file unavailable or invalid") from None
+
+    return read_key
+
+
 def run_address_install(
     home,
     native,
@@ -326,6 +348,13 @@ def run_address_install(
                 access_mode=True,
                 harness=harness,
             )
+    except AccessKeyFileError:
+        return {
+            "status": "access-key-file-review-required",
+            "installed": False,
+            "native_changed": False,
+            "next_action": "Select a readable regular UTF-8 file containing only the original Server access key. No hidden-input fallback was attempted; preserve the current transaction and retry with the same Server/account.",
+        }
     except EOFError:
         return {
             "status": "access-input-cancelled",
