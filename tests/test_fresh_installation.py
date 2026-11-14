@@ -745,6 +745,8 @@ class FreshInstallation(unittest.TestCase):
             )
         self.assertEqual(result["status"], "access-install-resume-required")
         self.assertNotIn("mismatch_fields", result)
+        self.assertEqual(result["stage"], "retained-connection-validation")
+        self.assertEqual(result["reason"], "validation-failed")
         self.assertIsNotNone(backend["record"])
         install.assert_not_called()
 
