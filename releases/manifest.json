@@ -156,7 +156,7 @@
     "src/agent_brain_client/domain/validation.py": "f1376469a87c6a4d3ebb209048ed44d57d0821628c5ddb9b033501a3570a7ec0",
     "src/agent_brain_client/interfaces/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/interfaces/cli/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "src/agent_brain_client/interfaces/cli/access.py": "45b2a02bb7401e5c93a8c3a9b94719f9fe8c578c64fa73b09ac24e9e7fc26970",
+    "src/agent_brain_client/interfaces/cli/access.py": "5fb0fbdc0361aa10842ed4fa1e28913e278f97e4665ffbdccefe128197bfc61b",
     "src/agent_brain_client/interfaces/cli/codebuddy.py": "5237968fd1236117118efc74ee34901359953afdd6ce31c44245fd471705567c",
     "src/agent_brain_client/interfaces/cli/collection.py": "0bd5bb57866ef7a12af160cf4020d1af467205bde682fb00992f25c1bad1be52",
     "src/agent_brain_client/interfaces/cli/delivery.py": "ffce327c4545cddedf9db4ce071ef4247024f8113b5754a902fb7ab32cbf1115",
@@ -197,5 +197,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.8.21"
+  "version": "0.8.22"
 }
