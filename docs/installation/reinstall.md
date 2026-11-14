@@ -63,3 +63,25 @@ Hook 回执包含原生配置的完整前后像，可能超过通用元数据的
 真实权限减少、账号变化和保留内容范围越界仍会停止。
 本地恢复记录或保留策略损坏属于恢复检查失败，不伪装成账号不符。
 遇到失败时保留原事务和归档，报告具体分类，不重放旧队列或修改账号校验。
+
+
+### 地址安装续接诊断
+
+`access-install-resume-required` 是地址安装入口的异常兜底，不代表账号不符，
+也不能证明账号检查已经通过。`mismatch_fields` 缺失时不要猜测为权限别名问题。
+新安装器给出固定标签 `stage`、`reason` 和 `credential_accessed`；不输出异常文本、
+文件路径、账号或 Key。`reason` 为 `file-missing`、`permission-denied`、`timeout`、
+`io-error`、`validation-failed` 或 `unexpected-error`。这些是分类，不是现场根因证明。
+`stage` 区分恢复状态／地址校验、租约、依赖、凭据、Server bootstrap、连接校验、
+保留账号范围校验、连接落盘与安装交接。安装内部返回的状态仍由原事务负责。
+
+已有失败报告先离线审阅，不为取诊断盲目重跑安装。只需安装器版本／源码提交、
+退出码、status、已有的 stage/reason/mismatch_fields、事务 phase，以及“事务 ID、
+归档是否与此前一致”的布尔结论。不要发送 Key、完整 connection/grant、账号 ID、
+本机路径或整个 journal。旧报告缺少字段时明确标记缺失；新版本不能追溯旧异常。
+已有 stderr 若包含异常，应在本机删去密钥、路径、账号和地址后，仅提供固定错误类别。
+
+复核具体阶段后，再确认原安装进程已退出、锁已正常释放；使用正式补丁 checkout 的
+`reinstall-check` 确认原事务／归档和 ready 阶段未变，随后才以原 Server、原 Key 文件
+及原 Harness 续接。同一状态再次失败即停止，报告脱敏分类。不得新建 FRESH、
+删除锁、改权限、手改 connection/binding/journal 或重放旧队列。

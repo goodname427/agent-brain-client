@@ -102,6 +102,51 @@ class AddressInstall(unittest.TestCase):
         options.update(kwargs)
         return access.run_address_install(self.home, self.native, endpoint, **options, harness="codex")
 
+    def test_resume_diagnostics_classify_failures_without_exception_payload(self):
+        poison = KEY + " /private/synthetic/account-id"
+        cases = [
+            ("dependency-preparation", {"dependency_preparer": Mock(side_effect=PermissionError(poison))}, "permission-denied", False),
+            ("credential-store-preparation", {"store_factory": Mock(side_effect=OSError(poison))}, "io-error", False),
+            ("server-bootstrap", {"transport": SimpleNamespace(bootstrap=Mock(side_effect=ValueError(poison)))}, "validation-failed", True),
+            ("installation", {"install": Mock(side_effect=RuntimeError(poison))}, "unexpected-error", True),
+        ]
+        for stage, options, reason, accessed in cases:
+            with self.subTest(stage=stage):
+                result = self.run_install(**options)
+                self.assertEqual(result["status"], "access-install-resume-required")
+                self.assertEqual(result["stage"], stage)
+                self.assertEqual(result["reason"], reason)
+                self.assertEqual(result["credential_accessed"], accessed)
+                self.assertFalse(result["installed"])
+                self.assertNotIn(KEY, json.dumps(result))
+                self.assertNotIn("/private/synthetic", json.dumps(result))
+                self.assertNotIn("mismatch_fields", result)
+        self.assertIsNotNone(self.backend.record)
+
+    def test_connection_drift_preserves_pins_and_reports_persistence_stage(self):
+        # A successful bootstrap does not permit replacing a prior local pin,
+        # even when the account/scope is identical and the release moves.
+        self.assertTrue(self.run_install()["installed"])
+        path = self.home / ".config/agent-brain-client/access-bootstrap/connection.json"
+        before = path.read_bytes()
+        self.peer.bootstrap.return_value["release"]["anchor_commit"] = "b" * 40
+        self.install.reset_mock()
+        result = self.run_install()
+        self.assertEqual(result["stage"], "connection-persistence")
+        self.assertEqual(result["reason"], "validation-failed")
+        self.assertFalse(result["installed"])
+        self.assertEqual(path.read_bytes(), before)
+        self.assertIsNotNone(self.backend.record)
+        self.install.assert_not_called()
+
+    def test_reason_categories_never_serialize_custom_exception_names(self):
+        class SensitiveAccountName(ValueError):
+            pass
+        for error, reason in [(FileNotFoundError(KEY), "file-missing"),
+                              (TimeoutError(KEY), "timeout"),
+                              (SensitiveAccountName(KEY), "validation-failed")]:
+            self.assertEqual(access.access_failure_reason(error), reason)
+
     def test_file_key_reuses_shared_auth_for_both_harnesses(self):
         for harness in ("codex", "codebuddy"):
             with self.subTest(harness=harness):
