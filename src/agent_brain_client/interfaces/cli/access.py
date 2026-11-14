@@ -320,19 +320,22 @@ def run_address_install(
                 retained_installation,
             )
 
+            from agent_brain_client.application.installation.fresh import FreshConnectionMismatch
+
             try:
                 retained_installation(home, native).validate_connection(connection)
-            except ValueError:
+            except FreshConnectionMismatch as error:
                 # Only this fresh attempt's separate origin-key item is removed;
                 # no old device item, Server credential or authorization changes.
                 with store.lease():
                     store.clear(record)
                 return {
                     "status": "fresh-install-account-mismatch",
+                    "mismatch_fields": error.reasons,
                     "installed": False,
                     "credential_accessed": True,
                     "old_queue_replayed": False,
-                    "next_action": "Use the original Server/account access key in the hidden local prompt. The retained memory/archive was not changed.",
+                    "next_action": "Review mismatch_fields against the original Server/account authorization. Do not reset the transaction or replay old queues. The retained memory/archive was not changed; this result does not prove the key is invalid.",
                 }
             # Persist authenticated metadata before the existing transaction. Its
             # canonical digest is a local drift check, never an external trust claim.

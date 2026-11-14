@@ -726,9 +726,27 @@ class FreshInstallation(unittest.TestCase):
             install=install,
          harness="codex", )
         self.assertEqual(result["status"], "fresh-install-account-mismatch")
+        self.assertEqual(result["mismatch_fields"], ["account-actor"])
         install.assert_not_called()
         self.assertIsNone(backend["record"])
         self.assertEqual(read_journal(self.home)["phase"], "ready")
+
+        # Local journal/metadata failure must not blame the account or clear a
+        # credential that the server has already accepted.
+        failing_port = SimpleNamespace(validate_connection=Mock(side_effect=ValueError("local integrity")))
+        with patch("agent_brain_client.runtime.fresh_installation.retained_installation", return_value=failing_port):
+            result = access.run_address_install(
+                self.home, self.native, connection["endpoint"],
+                store_factory=lambda *args: store,
+                dependency_preparer=lambda *args: {},
+                transport=SimpleNamespace(bootstrap=lambda *args: connection),
+                key_input=lambda *args: "SYNTHETIC_ACCESS_KEY_" + "x" * 40,
+                install=install, harness="codex",
+            )
+        self.assertEqual(result["status"], "access-install-resume-required")
+        self.assertNotIn("mismatch_fields", result)
+        self.assertIsNotNone(backend["record"])
+        install.assert_not_called()
 
     def test_old_completed_uninstall_can_archive_and_reconnect_without_native_entry(
         self,
