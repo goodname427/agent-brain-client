@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 import os
+import stat
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import time
 import platform
@@ -377,3 +378,19 @@ def lock_resource_users(path):
                 "lock_ownership_proven": False}
     except Exception:
         return {"status": "unknown", "processes": [], "lock_ownership_proven": False}
+
+
+def read_regular_file(path, limit):
+    """Bounded explicit local input; refuse links and non-regular files."""
+    path = Path(path)
+    if not stat.S_ISREG(path.lstat().st_mode):
+        raise ValueError("Regular file required")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(path, flags), "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("Regular file required")
+        raw = stream.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError("File limit exceeded")
+    return raw

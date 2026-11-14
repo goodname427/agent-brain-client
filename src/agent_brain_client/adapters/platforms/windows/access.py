@@ -4,6 +4,8 @@ This generic application credential prompt never requests Windows/admin logon,
 never persists through CredUI and has no terminal/plaintext fallback.
 """
 
+from contextlib import contextmanager, nullcontext
+
 import ctypes as C
 import re
 import sys
@@ -39,6 +41,43 @@ def dialog_api():
     return api
 
 
+@contextmanager
+def dialog_owner():
+    """Give the modal credential dialog a discoverable taskbar owner.
+
+    CredUI runs its modal message loop on this thread. Selecting the owner's
+    taskbar entry therefore returns to its active popup; no focus polling or
+    always-on-top window is needed. Cancel remains the credential dialog's
+    normal Cancel action.
+    """
+    if sys.platform != "win32":
+        raise ValueError("Native Windows access-key UI required")
+    user = C.WinDLL("user32", use_last_error=True)
+    create = user.CreateWindowExW
+    create.argtypes = [C.c_uint32, C.c_wchar_p, C.c_wchar_p, C.c_uint32,
+                       C.c_int, C.c_int, C.c_int, C.c_int, C.c_void_p,
+                       C.c_void_p, C.c_void_p, C.c_void_p]
+    create.restype = C.c_void_p
+    show = user.ShowWindow
+    show.argtypes = [C.c_void_p, C.c_int]
+    show.restype = C.c_int
+    destroy = user.DestroyWindow
+    destroy.argtypes = [C.c_void_p]
+    destroy.restype = C.c_int
+    # Built-in STATIC class needs no callback registration. WS_EX_APPWINDOW
+    # and an unowned top-level caption ensure a visible taskbar entry.
+    owner = create(0x00040000, "STATIC", "Agent Brain Server access",
+                   0x00C00000 | 0x00080000, 100, 100, 480, 120,
+                   None, None, None, None)
+    if not owner:
+        raise ValueError("Windows access-key owner window unavailable")
+    try:
+        show(owner, 5)
+        yield owner
+    finally:
+        destroy(owner)
+
+
 def secure_input(endpoint, *, prompt=None):
     from agent_brain_client.domain.service import endpoint_check
 
@@ -60,18 +99,20 @@ def secure_input(endpoint, *, prompt=None):
     # no credential lookup shortcut, no CredUI persistence or save checkbox.
     flags = 0x40000 | 0x00080 | 0x00002 | 0x100000
     try:
-        status = api(
-            C.byref(info),
-            "Agent Brain access: " + endpoint,
-            None,
-            0,
-            username,
-            len(username),
-            password,
-            len(password),
-            C.byref(save),
-            flags,
-        )
+        with (dialog_owner() if prompt is None else nullcontext(None)) as owner:
+            info.hwndParent = owner
+            status = api(
+                C.byref(info),
+                "Agent Brain access: " + endpoint,
+                None,
+                0,
+                username,
+                len(username),
+                password,
+                len(password),
+                C.byref(save),
+                flags,
+            )
         if status == 1223:
             return None
         if status != 0:

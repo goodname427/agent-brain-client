@@ -16,7 +16,7 @@ CodeBuddy IDE／CLI 接入使用 [CodeBuddy 安装入口](docs/installation/code
    & ./bootstrap/windows/install.ps1 -Action update
    ```
 
-4. `status` 明确为 `client-not-installed` 时，运行平台安装入口。首次只提供用户明确选择的 **HTTPS Server 地址**，并让用户在本机隐藏输入中填写 Server 生成的长期接入密钥。Mac：`sh bootstrap/macos/install.sh --server 'https://your-server.example'`；Windows：`& ./bootstrap/windows/install.ps1 -Server 'https://your-server.example'`。省略地址时脚本会在本机询问地址。地址仅定位服务；密钥不得进入聊天、参数、环境变量或文件。Server 认证后自动返回适配平台的授权配置和发行信任锚，再完成发行校验、安全保存设备身份及本地安装事务。正常流程不要求 connection 文件、摘要、ready 回执或邀请码。服务尚未启用新协议时保留状态并报告，不拼接离线包绕过。中断重跑同一入口恢复；`client-uninstalled` 复用原身份重装，不申请新密钥。
+4. `status` 明确为 `client-not-installed` 时，运行平台安装入口。首次只提供用户明确选择的 **HTTPS Server 地址**，并让用户在本机隐藏输入中填写 Server 生成的长期接入密钥。Mac：`sh bootstrap/macos/install.sh --server 'https://your-server.example'`；Windows：`& ./bootstrap/windows/install.ps1 -Server 'https://your-server.example'`。省略地址时脚本会在本机询问地址。地址仅定位服务；密钥内容不得进入聊天、参数或环境变量。用户授权后可用 `--access-key-file`（Windows `-AccessKeyFile`）传入本机 Key 文件路径，复用同一认证流程，不必手动输入。Server 认证后自动返回适配平台的授权配置和发行信任锚，再完成发行校验、安全保存设备身份及本地安装事务。正常流程不要求 connection 文件、摘要、ready 回执或邀请码。服务尚未启用新协议时保留状态并报告，不拼接离线包绕过。中断重跑同一入口恢复；`client-uninstalled` 复用原身份重装，不申请新密钥。
 5. 状态为 `review-required`、归属不明或有未完成事务时，保留原文件和回执，按对应文档的 status／repair 流程处理；不能将异常当作未安装而清理、重装或重置身份。
 6. 安装／更新后先调用现有 MCP 工具，比较 `client_runtime` 的 worker 与活动包版本及 commit；一致无需重载，不一致才正常重载 `agent_brain_server`。无法观察则报告 unknown，不因更新动作本身要求重启。核实后继续既有 Onboard 流程。分别报告已验证活动包、成功检查的渠道版本和可观察的 worker 版本；未观察模型加载时报告 unknown。安装与更新默认开启本设备所有项目的今后会话采集，复用已有服务与设备身份，不补传历史；Hook trust 由宿主按正常流程处理。关闭、限制或不启用用户要求的功能前先确认。
 

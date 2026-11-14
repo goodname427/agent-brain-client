@@ -9,7 +9,7 @@
 
 使用当前用户的普通 PowerShell。准备 Python 3.11+、Git 和 Codex；没有依赖时可从它们的官方安装器安装，或用已安装的 winget 安装 Python.Python.3.12 和 Git.Git。安装完成后重新打开终端。无需管理员运行，不更改执行策略、沙箱或 Hook 信任设置。
 
-首次安装只需要服务发行者提供的 HTTPS 地址和长期接入密钥。密钥仅在本机Windows 原生凭据窗口的隐藏密码框中输入，保存在用户 Credential Manager；不能发送到聊天或放入命令行、环境变量、配置文件。Windows 更新继续使用独立的 `releases/personal-https-windows-stable` 渠道。
+首次安装只需要服务发行者提供的 HTTPS 地址和长期接入密钥。密钥默认在本机 Windows 原生凭据窗口的隐藏密码框中输入，也可用 `-AccessKeyFile` 指定用户授权的本机 Key 文件路径（Codex 和 CodeBuddy 相同），保存在用户 Credential Manager；不能发送到聊天或以密钥明文放入命令行、环境变量、配置文件。文件格式与错误处理见 [地址与密钥安装](address-key-install.md)。Windows 更新继续使用独立的 `releases/personal-https-windows-stable` 渠道。
 
 ```powershell
 $checkout = Join-Path $env:TEMP ('agent-brain-client-' + [guid]::NewGuid())

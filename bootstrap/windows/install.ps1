@@ -6,6 +6,7 @@ param(
     [ValidateSet('codex','codebuddy')]
     [string]$Harness = 'codex',
     [string]$Server,
+    [string]$AccessKeyFile,
     [string]$Connection,
     [string]$ExpectedConnectionSha256
 )
@@ -22,13 +23,14 @@ try {
     $python = Resolve-AgentBrainPython
     $arguments = @('--action', $Action, '--harness', $Harness)
     if ($Server) { $arguments += @('--server', $Server) }
+    if ($AccessKeyFile) { $arguments += @('--access-key-file', $AccessKeyFile) }
     if ($Connection) { $arguments += @('--connection', $Connection) }
     if ($ExpectedConnectionSha256) { $arguments += @('--expected-connection-sha256', $ExpectedConnectionSha256) }
     if ($Action -in @('install', 'reinstall')) {
         $checkout = & $python -X utf8 -I -B (Join-Path $root 'bootstrap/source_checkout.py') --ensure
         if ($LASTEXITCODE -ne 0) { throw 'Fresh official checkout could not be verified; preserve existing installation.' }
         if ($checkout -ne $root) {
-            & (Join-Path $checkout 'bootstrap/windows/install.ps1') -Action $Action -Harness $Harness -Server $Server -Connection $Connection -ExpectedConnectionSha256 $ExpectedConnectionSha256
+            & (Join-Path $checkout 'bootstrap/windows/install.ps1') -Action $Action -Harness $Harness -Server $Server -AccessKeyFile $AccessKeyFile -Connection $Connection -ExpectedConnectionSha256 $ExpectedConnectionSha256
             exit $LASTEXITCODE
         }
     }
