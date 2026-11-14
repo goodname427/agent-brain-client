@@ -27,6 +27,7 @@ from agent_brain_client.adapters.platforms.retention import (
     item_identity,
     retain_item,
     retention_root,
+    RetentionFailure,
 )
 
 
@@ -322,7 +323,11 @@ class RetainedInstallation:
         record = self.load()
         if record is not None and record["phase"] in ("archiving", "ready"):
             return {"status": "fresh-install-resume-required", "native_changed": False,
-                    "next_action": "Rerun the SAME reinstall command to resume its retained transaction."}
+                    "phase": record["phase"], "transaction_id": record["id"],
+                    "retained_archive": record["archive"], "archived_items": record["archived"],
+                    "pending_items": [name for name in record["children"] if name not in record["archived"]],
+                    "snapshot_only": True,
+                    "next_action": "Preserve both remaining source files and the archive. Rerun the SAME reinstall command with the SAME Server/account from the current official checkout to resume this transaction. This is recovery state, not a new lock inventory; do not create another transaction, remove records or close all hosts."}
         if record is None or record["phase"] == "complete":
             registration = self.read_registration(self.home)
             meta = registration["metadata"]
@@ -367,7 +372,10 @@ class RetainedInstallation:
 
     def archive(self, record):
         for name, row in record["host"].items():
-            _, target_image, current = host_row(Path(name), row)
+            try:
+                _, target_image, current = host_row(Path(name), row)
+            except OSError as error:
+                raise RetentionFailure(error, "verify-detached-host", name, record["archive"]) from error
             if current != target_image:
                 raise ValueError("Native configuration changed after detachment")
         target = io.canonical(Path(record["archive"]))
@@ -376,7 +384,10 @@ class RetainedInstallation:
             or target.name != record["id"]
         ):
             raise ValueError("Retention scope changed")
-        private_directory(target)
+        try:
+            private_directory(target)
+        except OSError as error:
+            raise RetentionFailure(error, "prepare-archive-directory", self.root, target) from error
         allowed = set(record["children"]) | set(record["keep"])
         if any(p.name not in allowed for p in self.root.iterdir()):
             raise ValueError("Installation changed before retention")
@@ -386,7 +397,10 @@ class RetainedInstallation:
             retain_item(self.root / name, target / name, identity)
             if name not in record["archived"]:
                 record["archived"].append(name)
-                self.save(record)
+                try:
+                    self.save(record)
+                except OSError as error:
+                    raise RetentionFailure(error, "persist-archive-progress", self.root / name, target / name) from error
 
     def validate_connection(self, connection):
         record = self.load()

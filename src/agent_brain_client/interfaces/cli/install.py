@@ -197,7 +197,14 @@ def main():
             )
             from agent_brain_client.adapters.storage.reinstallation import read_journal
 
-            selected_native(home, args.harness)  # Validate the explicit host.
+            pending = read_journal(home)
+            if pending is not None and pending["phase"] != "complete":
+                if args.harness not in ("codex", "codebuddy"):
+                    raise ValueError("Reinstall recovery requires an explicit --harness")
+                # Recovery is bound to its journal and verified detached images,
+                # not a new host enrollment against partly archived metadata.
+            else:
+                selected_native(home, args.harness)
             from agent_brain_client.adapters.storage.registration import registry_home
             native = registry_home(home, retained=True)
             port = retained_installation(home, native)
@@ -355,6 +362,19 @@ def main():
         print(json.dumps(error.result()))
         return 2
     except Exception as error:
+        from agent_brain_client.adapters.platforms.retention import RetentionFailure
+        if fresh_requested and isinstance(error, RetentionFailure):
+            from agent_brain_client.adapters.storage.reinstallation import read_journal
+            record = read_journal(home)
+            print(json.dumps({
+                "status": "fresh-install-archive-blocked", "installed": False,
+                "native_changed": None, "stage": "archiving", "reason": type(error.__cause__).__name__,
+                "transaction_id": record["id"], "retained_archive": record["archive"],
+                "phase": record["phase"], "archived_items": record["archived"],
+                "archive_error": error.details,
+                "next_action": "Preserve this journal, archive and remaining source files. Review the exact operation/path and OS codes; access denied does not prove an ACL problem or a lock owner. Resolve only an independently identified blocker through its normal owner, then rerun the SAME reinstall command and Server/account to continue this transaction. Do not delete locks, change permissions/pins, replay queues or close all Clients. No new FRESH confirmation or re-archiving is needed for this unfinished transaction.",
+            }))
+            return 2
         print(
             json.dumps(
                 {
@@ -370,6 +390,9 @@ def main():
                             "next_action": "Run reinstall-check to identify exact busy leases. Disconnect only affected Agent Brain MCP services and allow active Hooks to finish, then rerun the SAME reinstall command. Preserve files and review configuration drift; do not kill processes, delete locks or edit pins.",
                             "stage": fresh_stage,
                             "reason": type(error).__name__,
+                            **({"os_error": {"errno": error.errno, "winerror": getattr(error, "winerror", None),
+                                              "failed_path": error.filename, "failed_path2": error.filename2}}
+                               if isinstance(error, OSError) else {}),
                         }
                         if fresh_requested
                         else {}

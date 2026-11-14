@@ -1064,6 +1064,140 @@ class FreshInstallation(unittest.TestCase):
                 verify_memory_access(Client(), identities)
 
 
+class ArchiveRecovery(unittest.TestCase):
+    setUp = FreshInstallation.setUp
+    prepare = FreshInstallation.prepare
+
+    def global_data(self):
+        directory = self.root / 'global-memory'
+        private_directory(directory)
+        atomic(directory / 'pending.json', b'SYNTHETIC_PENDING_PRESERVED', 0o600)
+        return directory
+
+    def test_cli_reports_os_evidence_and_resumes_same_partial_archive(self):
+        directory = self.global_data()
+        from agent_brain_client.adapters.platforms import retention
+        rename = retention.os.rename
+
+        def deny(source, destination):
+            if source == directory:
+                error = PermissionError(13, 'Synthetic sharing denial', str(source))
+                error.winerror = 32
+                raise error
+            return rename(source, destination)
+
+        output = streamio.StringIO()
+        with (patch.object(Path, 'home', return_value=self.home),
+              patch.object(sys, 'argv', ['install.py', '--action', 'reinstall', '--harness', 'codex']),
+              patch('builtins.input', return_value='FRESH'), patch('sys.stdout', output),
+              patch.object(retention.os, 'rename', side_effect=deny)):
+            self.assertEqual(_install_cli.main(), 2)
+        result = json.loads(output.getvalue())
+        record = read_journal(self.home)
+        self.assertEqual(result['status'], 'fresh-install-archive-blocked')
+        self.assertEqual(record['phase'], 'archiving')
+        self.assertEqual(result['transaction_id'], record['id'])
+        self.assertEqual(result['archive_error']['operation'], 'rename')
+        self.assertEqual(result['archive_error']['source'], str(directory))
+        self.assertEqual(result['archive_error']['winerror'], 32)
+        self.assertEqual(result['archive_error']['errno'], 13)
+        self.assertEqual(result['archive_error']['cause'], 'unknown')
+        self.assertNotIn('agent_brain_server', self.config.read_text())
+        self.assertTrue(record['archived'])
+        archive = Path(record['archive'])
+        identities = {name: (archive / name).stat().st_ino for name in record['archived']}
+        state = self.port.runtime_status()
+        self.assertEqual(state['transaction_id'], record['id'])
+        self.assertIn('global-memory', state['pending_items'])
+        with (patch.object(self.port, 'plan', side_effect=AssertionError('No new plan')),
+              patch.object(self.port, 'detach', side_effect=AssertionError('Already detached'))):
+            output = streamio.StringIO()
+            with (patch.object(Path, 'home', return_value=self.home),
+                  patch.object(sys, 'argv', ['install.py', '--action', 'reinstall', '--harness', 'codex']),
+                  patch('builtins.input', side_effect=AssertionError('No FRESH on resume')),
+                  patch.object(_install_cli, 'selected_native', side_effect=AssertionError('No new enrollment preflight')),
+                  patch('agent_brain_client.runtime.fresh_installation.retained_installation', return_value=self.port),
+                  patch('agent_brain_client.runtime.installation.recover_windows_setup', return_value=None),
+                  patch('agent_brain_client.interfaces.cli.access.run_address_install', return_value={'status': 'synthetic-reconnect-boundary', 'installed': False}),
+                  patch('sys.stdout', output)):
+                self.assertEqual(_install_cli.main(), 2)
+        self.assertEqual(read_journal(self.home)['phase'], 'ready')
+        self.assertEqual(read_journal(self.home)['id'], record['id'])
+        self.assertEqual({name: (archive / name).stat().st_ino for name in identities}, identities)
+        self.assertEqual((archive / 'global-memory/pending.json').read_bytes(), b'SYNTHETIC_PENDING_PRESERVED')
+        self.assertEqual((archive / self.old_queue.relative_to(self.root)).read_bytes(), b'SYNTHETIC_UNSENT_OLD_QUEUE_DO_NOT_REPLAY')
+
+    def test_move_then_sync_failure_and_destination_conflict_preserve_data(self):
+        from agent_brain_client.adapters.platforms import retention
+        directory = self.global_data()
+        with (patch.object(retention, 'sync_directory', side_effect=PermissionError(13, 'Synthetic sync failure')),
+              self.assertRaises(retention.RetentionFailure) as caught):
+            self.prepare()
+        self.assertEqual(caught.exception.details['operation'], 'sync-source-parent')
+        record = read_journal(self.home)
+        archive = Path(record['archive'])
+        self.assertEqual(record['phase'], 'archiving')
+        self.assertTrue(any((archive / name).exists() and name not in record['archived'] for name in record['children']))
+        # A competing source at an already moved destination must never be merged/deleted.
+        moved = next(name for name in record['children'] if (archive / name).exists())
+        source = self.root / moved
+        if (archive / moved).is_dir():
+            private_directory(source)
+        else:
+            atomic(source, b'OUTSIDE_ITEM', 0o600)
+        with self.assertRaisesRegex(ValueError, 'Retention destination changed'):
+            self.prepare(lambda _: self.fail('No new confirmation'))
+        self.assertTrue(source.exists())
+        self.assertTrue((archive / moved).exists())
+        self.assertTrue(directory.exists())
+
+    def test_progress_write_failure_after_move_recovers_exact_destination(self):
+        from agent_brain_client.adapters.platforms.retention import RetentionFailure
+        save = self.port.save
+
+        def fail_progress(record):
+            if record['phase'] == 'archiving' and record['archived']:
+                raise PermissionError(13, 'Synthetic journal write failure', str(self.home / '.config/agent-brain-reinstallation/current.json'))
+            return save(record)
+
+        with patch.object(self.port, 'save', side_effect=fail_progress), self.assertRaises(RetentionFailure) as caught:
+            self.prepare()
+        self.assertEqual(caught.exception.details['operation'], 'persist-archive-progress')
+        record = read_journal(self.home)
+        result = self.prepare(lambda _: self.fail('Resume only'))
+        self.assertEqual(result['archive'], record['archive'])
+        self.assertEqual((Path(result['archive']) / self.old_queue.relative_to(self.root)).read_bytes(), b'SYNTHETIC_UNSENT_OLD_QUEUE_DO_NOT_REPLAY')
+
+    @unittest.skipUnless(os.name == 'nt', 'Native Windows delete-sharing semantics')
+    def test_windows_open_child_blocks_move_then_same_transaction_resumes(self):
+        import ctypes
+        from ctypes import wintypes
+        from agent_brain_client.adapters.platforms.retention import RetentionFailure
+        directory = self.global_data()
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        unrelated = directory / 'unrelated.lock'
+        atomic(unrelated, b'SYNTHETIC_UNRELATED_HANDLE', 0o600)
+        handle = kernel.CreateFileW(str(unrelated), 0x80000000, 3, None, 3, 0, None)
+        self.assertNotEqual(handle, wintypes.HANDLE(-1).value)
+        try:
+            self.assertEqual(self.port.runtime_status()['status'], 'fresh-install-runtime-idle')
+            with self.assertRaises(RetentionFailure) as caught:
+                self.prepare()
+            self.assertEqual(caught.exception.details['operation'], 'rename')
+            self.assertIn(caught.exception.details['winerror'], (5, 32))
+            self.assertEqual(caught.exception.details['cause'], 'unknown')
+            record = read_journal(self.home)
+            self.assertEqual(record['phase'], 'archiving')
+        finally:
+            kernel.CloseHandle(handle)
+        result = self.prepare(lambda _: self.fail('Resume only'))
+        self.assertEqual(result['archive'], record['archive'])
+        self.assertEqual((Path(result['archive']) / 'global-memory/pending.json').read_bytes(), b'SYNTHETIC_PENDING_PRESERVED')
+
+
 class RetainedHookData(unittest.TestCase):
     setUp = FreshInstallation.setUp
     prepare = FreshInstallation.prepare
