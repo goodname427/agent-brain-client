@@ -203,6 +203,21 @@ def file_key_input(path):
     return read_key
 
 
+def access_failure_reason(error):
+    """Fixed categories only; exception text, paths and subclasses are untrusted."""
+    if isinstance(error, FileNotFoundError):
+        return "file-missing"
+    if isinstance(error, PermissionError):
+        return "permission-denied"
+    if isinstance(error, TimeoutError):
+        return "timeout"
+    if isinstance(error, OSError):
+        return "io-error"
+    if isinstance(error, ValueError):
+        return "validation-failed"
+    return "unexpected-error"
+
+
 def run_address_install(
     home,
     native,
@@ -217,6 +232,8 @@ def run_address_install(
     key_input=hidden_input,
 ):
     state = Path(home) / ".config/agent-brain-client/access-bootstrap"
+    stage = "retained-state-validation"
+    credential_accessed = False
     try:
         # A new address cannot replace an existing install or unfinished legacy transaction.
         root = Path(home) / ".config/agent-brain-client"
@@ -244,6 +261,7 @@ def run_address_install(
                     allowed.add("access-bootstrap")
             if any(p.name not in allowed for p in root.iterdir()):
                 raise ValueError("Existing installation materials preserved")
+        stage = "endpoint-validation"
         if marker.exists():
             saved_endpoint = wizard.private_json(owned(marker))
             if (
@@ -268,15 +286,22 @@ def run_address_install(
             endpoint = endpoint_check(endpoint)
         # Serialize bootstrap and local install together. The existing install also
         # leases first-install separately; no key-store lock is held during apply.
+        stage = "bootstrap-lease"
         with install_state.private_lease(state):
+            stage = "endpoint-persistence"
             install_state.same_private(marker, {"schema": 1, "endpoint": endpoint})
             print("Agent Brain Server: " + endpoint, file=sys.stderr)
+            stage = "dependency-preparation"
             materials = dependency_preparer(Path(home))
+            stage = "credential-store-preparation"
             store = store_factory(home, endpoint, materials)
             peer = transport or AccessHTTPS(endpoint)
+            stage = "credential-load"
             with store.lease():
+                credential_accessed = True
                 record = store.load()
                 if record is None:
+                    stage = "key-input"
                     key = key_input(store)
                     if key is None:
                         return {
@@ -291,7 +316,9 @@ def run_address_install(
                             "native_changed": False,
                         }
                     record = {"schema": 1, "endpoint": endpoint, "key": key}
+                    stage = "credential-persistence"
                     store.save(record, None)
+                stage = "credential-validation"
                 if (
                     not isinstance(record, dict)
                     or set(record) != {"schema", "endpoint", "key"}
@@ -301,6 +328,7 @@ def run_address_install(
                     or not valid_secret(record["key"])
                 ):
                     raise ValueError("Access credential binding changed")
+                stage = "server-bootstrap"
                 try:
                     connection = peer.bootstrap(record["key"], native_platform())
                 except AccessDenied:
@@ -313,6 +341,7 @@ def run_address_install(
                         "native_changed": False,
                         "next_action": "Rerun with a valid Server access key in the hidden local input. Existing device credentials and offline queues are preserved.",
                     }
+            stage = "connection-validation"
             connection = wizard.connection_value(connection)
             if connection["endpoint"] != endpoint:
                 raise ValueError("Selected Server identity changed")
@@ -322,11 +351,13 @@ def run_address_install(
 
             from agent_brain_client.application.installation.fresh import FreshConnectionMismatch
 
+            stage = "retained-connection-validation"
             try:
                 retained_installation(home, native).validate_connection(connection)
             except FreshConnectionMismatch as error:
                 # Only this fresh attempt's separate origin-key item is removed;
                 # no old device item, Server credential or authorization changes.
+                stage = "rejected-credential-removal"
                 with store.lease():
                     store.clear(record)
                 return {
@@ -339,7 +370,9 @@ def run_address_install(
                 }
             # Persist authenticated metadata before the existing transaction. Its
             # canonical digest is a local drift check, never an external trust claim.
+            stage = "connection-persistence"
             install_state.same_private(state / "connection.json", connection)
+            stage = "installation"
             return install(
                 home,
                 native,
@@ -371,12 +404,15 @@ def run_address_install(
             "installed": False,
             "native_changed": None,
         }
-    except Exception:
+    except Exception as error:
         return {
             "status": "access-install-resume-required",
+            "stage": stage,
+            "reason": access_failure_reason(error),
+            "credential_accessed": credential_accessed,
             "installed": False,
             "native_changed": None,
-            "next_action": "Retry the same Server address. Preserve the system credentials, authenticated metadata and installation receipts; authentication alone does not complete installation.",
+            "next_action": "Review stage and reason before retrying the same Server/account. Preserve the original transaction, archive, system credentials, authenticated metadata and installation receipts. Do not reset bindings or replay old queues; authentication alone does not complete installation.",
         }
 
 
