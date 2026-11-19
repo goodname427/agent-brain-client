@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[5]
 def submit_hook(value, local, payload, *, services):
     from agent_brain_client.adapters.harnesses.codex.hooks import (
         native_hook_fields,
+        stage_hook_messages,
     )
 
     selected = select(value["scope"], local)
@@ -54,10 +55,24 @@ def submit_hook(value, local, payload, *, services):
             }
         ],
     }
-    _, _, kind, text, key = native_hook_fields(cap, payload)
+    scope, turn, kind, text, key = native_hook_fields(cap, payload)
     blocked = directory / ("excluded-" + key + ".json")
     if blocked.exists():
         return {"status": "excluded-turn", "data_transferred": False}
+
+    def exclude():
+        cache_directory(directory)
+        try:
+            metadata_io.write(
+                blocked,
+                {"schema": 1, "reason": "local-only-or-sensitive"},
+                exclusive=True,
+                cache=True,
+            )
+        except FileExistsError:
+            pass
+        return {"status": "excluded-local-only-or-sensitive", "data_transferred": False}
+
     file = directory / "hook-turns" / (key + ".json")
     staged = metadata_io.private_json(file, cache=True) if file.exists() else None
     if (
@@ -68,26 +83,15 @@ def submit_hook(value, local, payload, *, services):
             or restricted(staged.get("prompt", ""))
         )
     ):
-        cache_directory(directory)
-        metadata_io.write(
-            blocked,
-            {"schema": 1, "reason": "local-only-or-sensitive"},
-            exclusive=True,
-            cache=True,
-        )
-        return {"status": "excluded-local-only-or-sensitive", "data_transferred": False}
-    client, queue = services.adapter(value, local)
+        return exclude()
+    _, queue = services.adapter(value, local)
     metadata_io.write(queue.cache / "origin.json", local, cache=True)
-    from agent_brain_client.application.memory.observations import stage_messages
-
-    scope, turn, _, text, _ = native_hook_fields(cap, payload)
     previous = queue._load("outbox/agentbrain_event_" + key + ".json")
     if previous is not None:
         return dict(queue._queue_result(previous), status="retained-paired-event")
-    return stage_messages(
-        queue, project_id=scope["project_id"], session_id=scope["session_id"],
-        operation_id=turn, phase="prompt" if kind == "UserPromptSubmit" else "assistant",
-        messages=[{"role": "user" if kind == "UserPromptSubmit" else "assistant", "content": text}],
+    return stage_hook_messages(
+        queue, scope, turn, kind, text, payload, exclude=exclude,
+        native_home=lambda: registration_store.content_location(value["device_home"], r, "codex")[0],
     )
 
 

@@ -12,6 +12,74 @@ def native_hook_fields(policy, payload):
     return normalized_hook_fields(policy, payload)
 
 
+def stage_hook_messages(queue, scope, turn, kind, text, payload, *, native_home, exclude):
+    """Keep the first prompt's existing identity and reconcile additions on Stop."""
+    from agent_brain_client.adapters.harnesses.codex import transcript
+    from agent_brain_client.application.memory.observations import (
+        prompt_fingerprint,
+        stage_messages,
+    )
+    from agent_brain_client.domain import privacy
+    from agent_brain_client.domain.errors import CacheBlocked
+    from agent_brain_client.domain.scopes import digest, restricted
+
+    source = {key: scope[key] for key in ("project_id", "session_id")}
+    if kind == "UserPromptSubmit":
+        # A form envelope includes model-authored questions. Stop can verify
+        # the current form and extract only what the user submitted.
+        if transcript.form_reply(text):
+            return {"status": "deferred-to-stop", "data_transferred": False}
+        return stage_messages(
+            queue, **source, operation_id=turn, phase="prompt",
+            messages=[{"role": "user", "content": text}],
+            defer_changed_prompt=bool(payload.get("transcript_path")),
+        )
+
+    additions = []
+    diagnostic = {}
+    if payload.get("transcript_path"):
+        try:
+            first = prompt_fingerprint(queue, **source, operation_id=turn)
+            if first is not None:
+                messages = transcript.user_messages(native_home(), payload)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError, CacheBlocked):
+            diagnostic["same_turn_capture"] = "unavailable"
+        else:
+            if first is not None:
+                if any(
+                    privacy.private_content(body) or restricted(body)
+                    for _, original, content in messages for body in (original, content)
+                ):
+                    return exclude()
+                for index, (_, original, _) in enumerate(messages):
+                    if digest([{"role": "user", "content": original}]) == first:
+                        # Anchor to the earliest matching message so equal-body
+                        # additions stay distinct and earlier history stays out.
+                        additions = messages[index + 1:]
+                        break
+                else:
+                    diagnostic["same_turn_capture"] = "prompt-unmatched"
+
+    # Seal the direct final even if a supplemental message cannot be staged.
+    result = stage_messages(
+        queue, **source, operation_id=turn, phase="assistant",
+        messages=[{"role": "assistant", "content": text}],
+    )
+    staged = 0
+    for message_id, _, content in additions:
+        try:
+            stage_messages(
+                queue, **source, operation_id="codex-user-" + digest([turn, message_id]),
+                phase="prompt", messages=[{"role": "user", "content": content}],
+            )
+            staged += 1
+        except (OSError, ValueError, KeyError, CacheBlocked) as error:
+            diagnostic["same_turn_capture_error_type"] = type(error).__name__
+    if additions:
+        diagnostic["same_turn_user_messages"] = staged
+    return dict(result, **diagnostic)
+
+
 def run_event_hook(adapter, policy, payload, *, clock=None, source_gate=None):
     """One native hook through the official Client outbox; no history reads.
 

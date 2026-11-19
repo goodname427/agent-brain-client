@@ -58,7 +58,18 @@ def _chunks(content):
         start = end
 
 
-def stage_messages(queue, *, project_id, session_id, operation_id, phase, messages, occurred_at=None):
+def _operation_key(project_id, session_id, operation_id, phase):
+    return digest(["observed-v1", project_id, session_id, operation_id, phase])
+
+
+def prompt_fingerprint(queue, *, project_id, session_id, operation_id):
+    key = _operation_key(project_id, session_id, operation_id, "prompt")
+    marker = queue._load("observed-operations/" + key + ".json")
+    return marker["content_sha256"] if marker is not None else None
+
+
+def stage_messages(queue, *, project_id, session_id, operation_id, phase, messages,
+                   occurred_at=None, defer_changed_prompt=False):
     contract.event_identifier(session_id)
     contract.event_identifier(project_id)
     contract.event_identifier(operation_id)
@@ -83,13 +94,15 @@ def stage_messages(queue, *, project_id, session_id, operation_id, phase, messag
             batch.append(item)
     if batch:
         batches.append(batch)
-    operation_key = digest(["observed-v1", project_id, session_id, operation_id, phase])
+    operation_key = _operation_key(project_id, session_id, operation_id, phase)
     fingerprint = digest(messages)
     # Freeze timestamps once under the short enqueue lock; never wait on transport.
     with queue._outbox_lock(queue.cache / "observed-messages.lock", "capture-stage-lock"):
         marker = "observed-operations/" + operation_key + ".json"
         previous = queue._load(marker)
         if previous is not None and previous.get("content_sha256") != fingerprint:
+            if phase == "prompt" and defer_changed_prompt:
+                return {"status": "deferred-to-stop", "data_transferred": False}
             raise ValueError("Observed operation changed; preserve queued event")
         if previous is None:
             queue._save(marker, {"schema": 1, "content_sha256": fingerprint})
