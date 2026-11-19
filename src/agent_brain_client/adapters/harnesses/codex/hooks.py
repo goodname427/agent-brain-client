@@ -219,10 +219,7 @@ def _stage_hook_messages(queue, name, completion, scope, source, turn, kind, tex
                 "same_turn_capture": "form-privacy-unverified" if form_wait else "unavailable"}
 
     result = {"status": "awaiting-native-identity", "data_transferred": False}
-    if is_stop and not replaying:
-        # Seal the final independently of failures in supplemental staging.
-        result = stage(turn, "assistant", text)
-    elif first_prompt:
+    if first_prompt:
         if observed is not None:
             # Preserve the pre-submit boundary even if staging is interrupted.
             queue._save(name, dict(
@@ -240,13 +237,15 @@ def _stage_hook_messages(queue, name, completion, scope, source, turn, kind, tex
         result = stage(turn, "prompt", text)
         first = first_sha
     if observed is None:
+        if is_stop:
+            result = stage(turn, "assistant", text)
         return dict(result, **diagnostic)
 
     first_pending = pending["first_pending"] if replaying else state["first_pending"]
     if first_pending and first is None:
         first = prompt_fingerprint(queue, **source, operation_id=turn)
     only_forms = pending["only_forms"] if replaying else not bound
-    failed = False
+    supplements = []
     for offset, message_id, original, content, message_is_form in observed.messages:
         if snap.observed_cursor is not None and offset < snap.observed_cursor:
             continue
@@ -260,6 +259,21 @@ def _stage_hook_messages(queue, name, completion, scope, source, turn, kind, tex
             first_pending = False
             if matches_first:
                 continue
+        supplements.append((message_id, original, content))
+
+    if is_stop and not replaying and supplements:
+        # The verified slice must be recoverable before either the final or
+        # any supplemental observation reaches the outbox.
+        pending = dict(_completion(scope, payload, state, snap),
+                       until=snap.end, forms=forms, assistant_first=True)
+        queue._save(completion, pending)
+        replaying = True
+    assistant_first = is_stop and (not replaying or pending.get("assistant_first", False))
+    if assistant_first:
+        result = stage(turn, "assistant", text)
+
+    failed = False
+    for message_id, original, content in supplements:
         try:
             saved = stage("codex-user-" + digest([turn, message_id]), "prompt", content)
             if not is_stop and original == text:
@@ -267,12 +281,15 @@ def _stage_hook_messages(queue, name, completion, scope, source, turn, kind, tex
         except (OSError, ValueError, KeyError, CacheBlocked) as error:
             failed = True
             diagnostic["same_turn_capture_error_type"] = type(error).__name__
+            if is_stop:
+                break  # Recovery must finish this observation before later user messages.
     if replaying:
         if failed or snap.more:
             if not failed:
                 queue._save(completion, dict(pending, start=snap.end, first_pending=first_pending))
             return dict(result, status="capture-unconfirmed", **diagnostic)
-        result = stage(turn, "assistant", text)
+        if not assistant_first:
+            result = stage(turn, "assistant", text)
         if bound:
             queue._save(name, dict(state, cursor=snap.end, first_pending=first_pending, forms=forms))
         queue._discard_staging(completion)

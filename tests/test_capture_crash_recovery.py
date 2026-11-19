@@ -492,26 +492,100 @@ class CaptureRecovery(unittest.TestCase):
         self.assertEqual(self.submit("UserPromptSubmit", addition, path)["status"], "staged")
         self.assertEqual(self.queue._queued(), original)
 
-    def test_codex_supplement_interruption_retains_final_and_recovers_without_another_hook(self):
-        prompt, addition = "Synthetic prompt", "Synthetic steer"
+    def test_codex_stop_recovers_supplements_at_each_durable_boundary(self):
+        targets = (
+            ("checkpoint", "_save", "codex-completions/"),
+            ("final", "_save", "observed-staging/"),
+            ("first", "_save", "observed-staging/"),
+            ("middle", "_save", "observed-staging/"),
+            ("cursor", "_save", "codex-rollouts/"),
+            ("cleanup", "_discard_staging", "codex-completions/"),
+        )
+        for target, method, prefix in targets:
+            for side in ("before", "after"):
+                with self.subTest(target=target, side=side):
+                    turn = f"synthetic-{target}-{side}"
+                    path = self.rollout(turn=turn)
+                    bodies = {label: f"{turn} {label}"
+                              for label in ("prompt", "final", "first", "middle", "last")}
+                    older = {row["request"]["request_id"] for row in self.queue._queued()}
+
+                    def submit(kind, label):
+                        payload = dict(self.payload(kind, bodies[label], turn=turn), transcript_path=path)
+                        return collection.submit_hook(self.value, self.local, payload, services=self.services)
+
+                    def current_messages():
+                        return [message["content"] for row in self.queue._queued()
+                                if row["request"]["request_id"] not in older
+                                for message in row["request"]["params"]["event"]["messages"]]
+
+                    submit("UserPromptSubmit", "prompt")
+                    for label in ("prompt", "first", "middle", "last"):
+                        kind, row = self.native_user("msg-" + label, bodies[label])
+                        row["internal_chat_message_metadata_passthrough"]["turn_id"] = turn
+                        self.append_rollout(path, (kind, row))
+
+                    operation = getattr(self.queue, method)
+                    reached = False
+
+                    def interrupted(name, *args):
+                        nonlocal reached
+                        if not name.startswith(prefix):
+                            return operation(name, *args)
+                        if prefix == "observed-staging/":
+                            messages = args[0]["requests"][0]["params"]["event"]["messages"]
+                            if messages[0]["content"] != bodies[target]:
+                                return operation(name, *args)
+                        reached = True
+                        if side == "after":
+                            operation(name, *args)
+                        raise OSError("Synthetic Stop interruption")
+
+                    with patch.object(self.queue, method, side_effect=interrupted):
+                        if target in ("first", "middle"):
+                            result = submit("Stop", "final")
+                            self.assertEqual(result["status"], "capture-unconfirmed")
+                            self.assertEqual(result["same_turn_capture_error_type"], "OSError")
+                        else:
+                            with self.assertRaises(OSError):
+                                submit("Stop", "final")
+                    self.assertTrue(reached)
+                    self.queue = self.f.restart()
+
+                    if target == "checkpoint" and side == "before":
+                        # A crash before the first durable write needs native
+                        # redelivery. Nothing from Stop entered the outbox.
+                        self.assertEqual(current_messages(), [bodies["prompt"]])
+                        self.assertFalse(list(self.queue.cache.glob("codex-completions/*.json")))
+                        submit("Stop", "final")
+                    elif (target, side) != ("cleanup", "after"):
+                        self.assertTrue(delivery._has_work(self.queue.cache))
+                        self.assertEqual(len(list(self.queue.cache.glob("codex-completions/*.json"))), 1)
+
+                    self.assertFalse(self.resume_codex_completions())
+                    self.assertFalse(resume_staging(self.queue))
+                    self.assertFalse(list(self.queue.cache.glob("codex-completions/*.json")))
+                    self.assertEqual(current_messages(),
+                                     [bodies[label] for label in ("prompt", "final", "first", "middle", "last")])
+                    rows = self.queue._queued()
+                    self.assertFalse(self.resume_codex_completions())
+                    self.assertEqual(self.queue._queued(), rows)
+
+    def test_codex_stop_without_supplements_keeps_direct_final_path(self):
+        prompt = "Synthetic prompt"
         path = self.rollout()
         self.submit("UserPromptSubmit", prompt, path)
-        self.append_rollout(path, self.native_user("msg-first", prompt), self.native_user("msg-steer", addition))
-        enqueue = self.queue._enqueue
+        self.append_rollout(path, self.native_user("msg-first", prompt))
+        save = self.queue._save
 
-        def interrupted(request):
-            if request["params"]["event"]["messages"] == [{"role": "user", "content": addition}]:
-                raise OSError("Synthetic append interruption")
-            return enqueue(request)
+        def reject_completion(name, value):
+            self.assertFalse(name.startswith("codex-completions/"))
+            return save(name, value)
 
-        with patch.object(self.queue, "_enqueue", side_effect=interrupted):
+        with patch.object(self.queue, "_save", side_effect=reject_completion):
             result = self.submit("Stop", "Synthetic final", path)
-        self.assertEqual(result["same_turn_capture_error_type"], "OSError")
+        self.assertEqual(result["status"], "staged")
         self.assertEqual(self.queued_messages(), [("assistant", "Synthetic final"), ("user", prompt)])
-        self.queue = self.f.restart()
-        self.assertFalse(resume_staging(self.queue))
-        self.assertEqual(self.queued_messages(),
-                         [("assistant", "Synthetic final"), ("user", prompt), ("user", addition)])
 
     def test_codex_rollout_scope_failures_leave_direct_final_capture_available(self):
         prompt = "Synthetic initial prompt"
