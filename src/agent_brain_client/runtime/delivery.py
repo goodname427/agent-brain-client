@@ -127,12 +127,19 @@ def deliver_origin(home, task, core):
     if not core.approved(value) or select(value['scope'], local) is None:
         return True  # Suspended, not empty: the supervisor rechecks without network.
     client, queue = core.build_delivery_queue(value, local, task['harness'])
+    pending_capture = False
     if task['harness'] == 'codex':
+        from agent_brain_client.adapters.harnesses.codex.hooks import resume_completions
         from agent_brain_client.adapters.storage.observed_migration import migrate_staged_turns
 
         selected = select(value['scope'], local)
         project_id = namespace(client.actor, source_id(value['scope'], local, selected['sharing']))
         migrate_staged_turns(queue, origin=local, project_id=project_id)
+        pending_capture = resume_completions(
+            queue, lambda payload: core.submit_hook(value, local, payload),
+            allowed=lambda scope: scope['project_id'] == project_id and scope['cwd'] == local['cwd']
+            and source_active(home, local['cwd'], 'codex') and core.legacy(value, local) is None,
+        )
     scope = digest(value['scope'])
 
     def allowed(session):
@@ -145,7 +152,7 @@ def deliver_origin(home, task, core):
         return (fresh.queue_identity == client.queue_identity
                 and fresh.status(session).get('source_admitted') is True)
 
-    return deliver_with_cursor(home, [task['harness'], local], queue, allowed)
+    return deliver_with_cursor(home, [task['harness'], local], queue, allowed) or pending_capture
 
 
 def deliver_with_cursor(home, identity, queue, allowed, allowed_event=lambda event: True):
@@ -207,8 +214,7 @@ def run(home, *, max_seconds=600, pause=time.sleep):
                                     raise ValueError('Observed project completion task required')
                                 pending = finish_codebuddy_project(home, task) or pending
                             elif task.get('harness') == 'codex-project':
-                                from agent_brain_client.runtime.project_memory import delivery_port
-                                from agent_brain_client.runtime.project_memory import load
+                                from agent_brain_client.runtime.project_memory import capture, delivery_port, load
 
                                 if set(task) != {'schema', 'harness', 'settings', 'settings_sha256'} or task['schema'] != 1:
                                     raise ValueError('Pinned project delivery required')
@@ -216,6 +222,12 @@ def run(home, *, max_seconds=600, pause=time.sleep):
                                 if Path(project['device_home']) != Path(home):
                                     raise ValueError('Project device changed')
                                 queue, allowed, allowed_event = delivery_port(task['settings'], task['settings_sha256'])
+                                if project['harness'] == 'codex':
+                                    from agent_brain_client.adapters.harnesses.codex.hooks import resume_completions
+
+                                    pending = resume_completions(
+                                        queue, lambda payload: capture(project, payload), allowed=allowed_event,
+                                    ) or pending
                                 pending = deliver_with_cursor(home, task, queue, allowed, allowed_event) or pending
                             else:
                                 core = load_core(home)
@@ -252,10 +264,11 @@ def run(home, *, max_seconds=600, pause=time.sleep):
 def _has_work(cache):
     """Inspect only owned durable observations; never host transcripts."""
     cache = Path(cache)
-    for parent in (cache, cache / 'observed-staging', cache / 'outbox'):
+    staging = (cache / 'observed-staging', cache / 'codex-completions')
+    for parent in (cache, *staging, cache / 'outbox'):
         if parent.is_symlink():
             raise ValueError('Owned observation directory required')
-    if any((cache / 'observed-staging').glob('*.json')):
+    if any(file for directory in staging for file in directory.glob('*.json')):
         return True
     for path in (cache / 'outbox').glob('*.json'):
         if metadata.private_json(path, cache=True).get('state') == 'pending':

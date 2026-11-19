@@ -66,6 +66,213 @@ class HostEntries(unittest.TestCase):
                 self.assertEqual(json.loads(result.stdout)["mode"], mode)
 
 
+
+class _RolloutTestQueue:
+    """Filesystem-backed queue fixture with no native platform or transport."""
+
+    def __init__(self, cache):
+        self.cache = cache
+        cache.mkdir(exist_ok=True)
+
+    def _outbox_lock(self, *_):
+        return contextlib.nullcontext()
+
+    def _load(self, name):
+        path = self.cache / name
+        return json.loads(path.read_bytes()) if path.exists() else None
+
+    def _save(self, name, value):
+        path = self.cache / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value), encoding="utf-8")
+
+    def _safe(self, path, base):
+        path.relative_to(base)
+
+    def _discard_staging(self, name):
+        (self.cache / name).unlink()
+
+    def _enqueue(self, request):
+        name = "outbox/" + request["request_id"] + ".json"
+        row = self._load(name)
+        if row is None:
+            row = {"state": "pending", "request": request}
+            self._save(name, row)
+        elif row["request"] != request:
+            raise ValueError("Synthetic request changed")
+        return row
+
+    def messages(self):
+        return sorted(
+            (message["role"], message["content"])
+            for file in (self.cache / "outbox").glob("*.json")
+            for message in self._load("outbox/" + file.name)["request"]["params"]["event"]["messages"]
+        )
+
+
+class _OversizedRolloutCase:
+    def __init__(self, directory):
+        from agent_brain_client.adapters.harnesses.codex import hooks
+
+        self.hooks = hooks
+        self.home = Path(directory).resolve()
+        self.scope = {"session_id": "synthetic-session", "project_id": "synthetic-project",
+                      "cwd": str(self.home)}
+        self.turn = "synthetic-turn"
+        self.file = self.home / "sessions/2026/01/02/rollout-2026-01-02T03-04-05-synthetic-session.jsonl"
+        self.file.parent.mkdir(parents=True)
+        self.queue = _RolloutTestQueue(self.home / "queue")
+        self.append("session_meta", {"id": self.scope["session_id"]})
+        self.append("event_msg", {"type": "task_started", "turn_id": self.turn, "root_turn_id": self.turn})
+        self.append("turn_context", {"turn_id": self.turn, "root_turn_id": self.turn, "cwd": self.scope["cwd"]})
+        self.hook("UserPromptSubmit", "Synthetic prompt")
+        self.message("msg-first", "Synthetic prompt")
+
+    def append(self, kind, payload):
+        self.write(json.dumps({"type": kind, "payload": payload}).encode() + b"\n")
+
+    def write(self, data):
+        with self.file.open("ab") as stream:
+            stream.write(data)
+
+    def message(self, identity, text, *, image=None):
+        parts = [{"type": "input_text", "text": text}]
+        kinds = ["user.text"]
+        if image is not None:
+            parts.append({"type": "input_image", "image_url": image})
+            kinds.append("user.image")
+        self.append("response_item", {
+            "type": "message", "role": "user", "id": identity, "content": parts,
+            "internal_chat_message_metadata_passthrough": {
+                "turn_id": self.turn, "content_item_kinds": kinds,
+                "content_item_metadata": [{"provenance": {"type": "user"}} for _ in kinds],
+            },
+        })
+
+    def exclude(self):
+        self.queue._save("excluded.json", True)
+        return {"status": "excluded-local-only-or-sensitive", "data_transferred": False}
+
+    def submit(self, payload):
+        return self.hooks.stage_hook_messages(
+            self.queue, self.scope, self.turn, payload["hook_event_name"],
+            payload.get("last_assistant_message") or payload["prompt"], payload,
+            native_home=lambda: self.home, exclude=self.exclude,
+            excluded=lambda: self.queue._load("excluded.json") is True,
+        )
+
+    def hook(self, kind, body):
+        payload = {"hook_event_name": kind, "turn_id": self.turn, "cwd": self.scope["cwd"],
+                   "session_id": self.scope["session_id"], "transcript_path": str(self.file),
+                   "stop_hook_active": False}
+        payload["last_assistant_message" if kind == "Stop" else "prompt"] = body
+        return self.submit(payload)
+
+    def resume(self):
+        self.queue = _RolloutTestQueue(self.home / "queue")
+        return self.hooks.resume_completions(self.queue, self.submit, allowed=lambda scope: scope == self.scope)
+
+    def checkpoint(self):
+        entries = list((self.queue.cache / "codex-completions").glob("*.json"))
+        return self.queue._load("codex-completions/" + entries[0].name) if entries else None
+
+
+class OversizedCodexRollout(unittest.TestCase):
+    def capture(self):
+        temp = tempfile.TemporaryDirectory(prefix="synthetic-oversized-rollout-")
+        self.addCleanup(temp.cleanup)
+        return _OversizedRolloutCase(temp.name)
+
+    def settle(self, case):
+        for _ in range(12):
+            if not case.resume():
+                return
+        self.fail("Oversized rollout completion did not settle")
+
+    def test_tool_and_image_rows_advance_the_durable_cursor(self):
+        from agent_brain_client.adapters.harnesses.codex import transcript
+
+        case = self.capture()
+        body = "x" * (transcript._TAIL_LIMIT + 4096)
+        case.append("response_item", {"type": "function_call_output", "output": body})
+        case.message("msg-image", "Synthetic image text", image="data:image/png;base64," + body)
+        case.message("msg-later", "Synthetic later user")
+        self.assertEqual(case.hook("Stop", "Synthetic final")["same_turn_capture"], "bounded-pending")
+        before = case.checkpoint()["scan"]
+        self.assertTrue(case.resume())
+        self.assertGreater(case.checkpoint()["scan"], before + transcript._TAIL_LIMIT)
+        self.settle(case)
+        self.assertEqual(case.queue.messages(), [
+            ("assistant", "Synthetic final"), ("user", "Synthetic image text"),
+            ("user", "Synthetic later user"), ("user", "Synthetic prompt"),
+        ])
+        self.assertFalse(case.resume())
+        self.assertEqual(len(case.queue.messages()), 4)
+
+    def test_incomplete_oversized_tail_resumes_after_append(self):
+        from agent_brain_client.adapters.harnesses.codex import transcript
+
+        case = self.capture()
+        prefix = b'{"type":"response_item","payload":{"type":"function_call_output","output":"'
+        case.write(prefix + b"x" * (transcript._TAIL_LIMIT + 4096) + b"\\u12")
+        case.hook("Stop", "Synthetic final")
+        before = case.checkpoint()["scan"]
+        self.assertTrue(case.resume())
+        self.assertEqual(case.checkpoint()["scan"], before)
+        self.assertEqual(case.queue.messages(), [("user", "Synthetic prompt")])
+        case.write(b'34"}}\n')
+        case.message("msg-later", "Synthetic later user")
+        self.settle(case)
+        self.assertEqual(case.queue.messages(), [
+            ("assistant", "Synthetic final"), ("user", "Synthetic later user"), ("user", "Synthetic prompt"),
+        ])
+
+    def test_oversized_invalid_or_unverified_user_row_retires_the_retry(self):
+        from agent_brain_client.adapters.harnesses.codex import transcript
+
+        large = "x" * (transcript._TAIL_LIMIT + 4096)
+        for variant, reason in (("invalid", "oversized-rollout-json-invalid"),
+                                ("unverified-user", "oversized-rollout-unverified-fields"),
+                                ("unverified-text-with-image", "oversized-rollout-unverified-fields")):
+            with self.subTest(variant=variant):
+                case = self.capture()
+                if variant == "invalid":
+                    prefix = b'{"type":"response_item","payload":{"type":"function_call_output","output":"'
+                    case.write(prefix + large.encode() + b'\\q"}}\n')
+                elif variant == "unverified-user":
+                    case.message("msg-private", large + "\nLocalOnly: Synthetic private")
+                else:
+                    case.message(
+                        "msg-private", "x" * transcript._TEXT_LIMIT + "\nLocalOnly: Synthetic private",
+                        image="data:image/png;base64," + large,
+                    )
+                case.message("msg-later", "Synthetic later user")
+                case.hook("Stop", "Synthetic final")
+                self.assertFalse(case.resume())
+                self.assertIsNone(case.checkpoint())
+                review, = (case.queue.cache / "codex-completions/review").glob("*.json")
+                entry = json.loads(review.read_bytes())
+                self.assertEqual(entry["diagnostic"]["reason"], reason)
+                self.assertEqual(set(entry), {"schema", "scope", "turn_id", "binding", "diagnostic"})
+                self.assertEqual(case.queue.messages(), [("user", "Synthetic prompt")])
+                result = case.hook("Stop", "Synthetic final")
+                self.assertEqual(result["status"], "capture-review-required")
+                self.assertFalse(case.resume())
+
+    def test_oversized_image_preserves_local_only_text(self):
+        from agent_brain_client.adapters.harnesses.codex import transcript
+
+        case = self.capture()
+        case.message("msg-private", "LocalOnly: Synthetic image text",
+                     image="data:image/png;base64," + "x" * (transcript._TAIL_LIMIT + 4096))
+        case.message("msg-later", "Synthetic later user")
+        case.hook("Stop", "Synthetic final")
+        self.assertFalse(case.resume())
+        self.assertIsNone(case.checkpoint())
+        self.assertEqual(case.queue.messages(), [("user", "Synthetic prompt")])
+        self.assertTrue(case.queue._load("excluded.json"))
+
+
 def probe(mode, harness):
     sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests"), str(ROOT)]
     other = "codex" if harness == "codebuddy" else "codebuddy"
