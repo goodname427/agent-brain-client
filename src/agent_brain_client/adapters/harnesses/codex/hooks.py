@@ -120,7 +120,7 @@ def _stage_hook_messages(queue, name, completion, scope, source, turn, kind, tex
     first = None
     if state["first_pending"] or (not bound and ordinary_prompt):
         first = prompt_fingerprint(queue, **source, operation_id=turn)
-    first_prompt = ordinary_prompt and first is None and not bound
+    first_prompt = ordinary_prompt and first is None and not bound and not state["first_pending"]
     first_sha = None
     if ordinary_prompt and first is None and (first_prompt or state["first_pending"]):
         first_sha = digest([{"role": "user", "content": text}])
@@ -152,14 +152,24 @@ def _stage_hook_messages(queue, name, completion, scope, source, turn, kind, tex
 
     snap = None
     observed = None
+    position = None
     if payload.get("transcript_path"):
         try:
+            native = native_home()
+            if first_prompt:
+                try:
+                    position = transcript.observation_position(native, payload)
+                except (OSError, ValueError):
+                    pass
             snap = transcript.snapshot(
-                native_home(), payload, binding=binding, cursor=cursor,
+                native, payload, binding=binding, cursor=cursor,
                 until=pending["until"] if replaying else None, allow_next=pending is not None,
+                observed_position=state.get("rollout_position"),
             )
             observed = transcript.user_messages(snap.rows, turn, known_forms)
-        except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError, CacheBlocked):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError, CacheBlocked) as error:
+            if not isinstance(error, (OSError, transcript.RolloutScopeUnavailable)):
+                position = None  # A positive scope mismatch cannot establish a checkpoint.
             diagnostic["same_turn_capture"] = "unavailable"
     if observed is not None:
         if observed.private:
@@ -167,6 +177,12 @@ def _stage_hook_messages(queue, name, completion, scope, source, turn, kind, tex
         if observed.unknown_form:
             state["unknown_form"] = True
             queue._save(name, state)
+        if snap.observed_cursor is not None:
+            # Adopt the earlier append boundary only after the native scope is pinned.
+            state = dict(state, binding=snap.binding, cursor=snap.observed_cursor, forms=observed.forms)
+            state.pop("rollout_position")
+            queue._save(name, state)
+            bound = True
         if snap.more:
             diagnostic["same_turn_capture"] = "bounded-pending"
         elif snap.incomplete or observed.incomplete:
@@ -213,6 +229,10 @@ def _stage_hook_messages(queue, name, completion, scope, source, turn, kind, tex
                 state, binding=snap.binding, cursor=snap.size, first_pending=True, forms=forms,
                 first_prompt_sha256=first_sha,
             ))
+        elif position is not None:
+            queue._save(name, dict(
+                state, rollout_position=position, first_pending=True, first_prompt_sha256=first_sha,
+            ))
         result = stage(turn, "prompt", text)
         return dict(result, **diagnostic)
     elif retry_first:
@@ -227,7 +247,9 @@ def _stage_hook_messages(queue, name, completion, scope, source, turn, kind, tex
         first = prompt_fingerprint(queue, **source, operation_id=turn)
     only_forms = pending["only_forms"] if replaying else not bound
     failed = False
-    for _, message_id, original, content, message_is_form in observed.messages:
+    for offset, message_id, original, content, message_is_form in observed.messages:
+        if snap.observed_cursor is not None and offset < snap.observed_cursor:
+            continue
         if only_forms and not (message_is_form and (is_stop or is_form and original == text)):
             continue
         if first_pending and not message_is_form:

@@ -1,6 +1,7 @@
 """Fault injection over synthetic homes, identities, queues and stdout only."""
 import copy
 import json
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -166,6 +167,79 @@ class CaptureRecovery(unittest.TestCase):
             ("assistant", "Synthetic final"), ("user", prompt), ("user", prompt),
         ])
         self.assertIn(first_request, [row["request"] for row in self.queue._queued()])
+
+    def test_codex_rebinds_at_stop_after_initial_rollout_read_failure(self):
+        prompt, addition = "Synthetic first prompt", "Synthetic steer"
+        path = self.rollout(self.native_user("msg-unobserved-same", prompt))
+        with patch.object(transcript, "snapshot", side_effect=OSError):
+            first = self.submit("UserPromptSubmit", prompt, path)
+        self.assertEqual(first["status"], "staged")
+        self.assertEqual(first["same_turn_capture"], "unavailable")
+        self.assertEqual(self.queued_messages(), [("user", prompt)])
+
+        self.queue = self.f.restart()
+        self.append_rollout(
+            path, self.native_user("msg-first", prompt), self.native_user("msg-repeat", prompt),
+            self.native_user("msg-addition", addition),
+        )
+        self.submit("Stop", "Synthetic final", path)
+        original = self.queue._queued()
+        self.queue = self.f.restart()
+        self.submit("Stop", "Synthetic final", path)
+        self.assertEqual(self.queue._queued(), original)
+        self.assertEqual(self.queued_messages(), [
+            ("assistant", "Synthetic final"), ("user", prompt), ("user", prompt), ("user", addition),
+        ])
+
+    def test_codex_rebinds_and_pages_after_late_turn_context(self):
+        prompt = "Synthetic first prompt"
+        path = Path(self.rollout())
+        path.write_bytes(b"".join(path.read_bytes().splitlines(keepends=True)[:2]))
+        self.assertEqual(self.submit("UserPromptSubmit", prompt, str(path))["status"], "staged")
+        context = ("turn_context", {
+            "turn_id": "synthetic-turn", "root_turn_id": "synthetic-turn", "cwd": str(self.home),
+        })
+        padding = ("response_item", {"type": "function_call_output", "output": "x" * 1400})
+        self.append_rollout(
+            path, context, self.native_user("msg-first", prompt), padding, padding, padding,
+            self.native_user("msg-middle", "Synthetic middle"), padding, padding, padding,
+            self.native_user("msg-late", "Synthetic late"),
+        )
+        with patch.object(transcript, "_TAIL_LIMIT", 4096):
+            result = self.submit("Stop", "Synthetic final", str(path))
+            self.assertEqual(result["same_turn_capture"], "bounded-pending")
+            for _ in range(12):
+                self.queue = self.f.restart()
+                if not self.resume_codex_completions():
+                    break
+            else:
+                self.fail("Rebound completion did not settle")
+        self.assertEqual(self.queued_messages(), [
+            ("assistant", "Synthetic final"), ("user", prompt),
+            ("user", "Synthetic late"), ("user", "Synthetic middle"),
+        ])
+
+    def test_codex_rebind_does_not_trust_a_replacement_rollout(self):
+        prompt = "Synthetic first prompt"
+        path = Path(self.rollout())
+        with patch.object(transcript, "snapshot", side_effect=OSError):
+            self.submit("UserPromptSubmit", prompt, str(path))
+        path.rename(path.with_suffix(".old"))
+        self.rollout(self.native_user("msg-first", prompt),
+                     self.native_user("msg-unverified", "Synthetic unverified addition"))
+        self.submit("Stop", "Synthetic final", str(path))
+        self.assertEqual(self.queued_messages(), [("assistant", "Synthetic final"), ("user", prompt)])
+
+    def test_codex_rebind_preserves_local_only_after_initial_read_failure(self):
+        prompt = "Synthetic first prompt"
+        path = self.rollout()
+        with patch.object(transcript, "snapshot", side_effect=OSError):
+            self.submit("UserPromptSubmit", prompt, path)
+        self.append_rollout(path, self.native_user("msg-first", prompt),
+                            self.native_user("msg-private", "LocalOnly: synthetic private"))
+        self.assertEqual(self.submit("Stop", "Synthetic final", path)["status"],
+                         "excluded-local-only-or-sensitive")
+        self.assertEqual(self.queued_messages(), [("user", prompt)])
 
     def test_codex_same_turn_prompts_use_native_ids_including_identical_text(self):
         prior = self.native_user("msg-unobserved-same", "Synthetic repeated text")

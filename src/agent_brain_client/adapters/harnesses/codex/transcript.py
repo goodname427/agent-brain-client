@@ -40,6 +40,7 @@ class Snapshot:
     rows: list
     incomplete: bool
     more: bool
+    observed_cursor: int | None = None
 
 
 @dataclass
@@ -50,6 +51,10 @@ class Observations:
     unknown_form: bool = False
     unmatched_form: bool = False
     incomplete: bool = False
+
+
+class RolloutScopeUnavailable(ValueError):
+    """The current turn's scope is not visible in the available rollout bytes."""
 
 
 def _path(native_home, payload):
@@ -71,6 +76,20 @@ def _path(native_home, payload):
     ):
         raise ValueError("Current Codex rollout required")
     return path
+
+
+def _identity(path, info):
+    return [info.st_dev, info.st_ino, digest(os.fsencode(path))]
+
+
+def observation_position(native_home, payload):
+    """Record an append boundary even when rollout contents are not yet readable."""
+    path = _path(native_home, payload)
+    info = native_source_stat(path)
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+            or hasattr(os, "getuid") and info.st_uid != os.getuid()):
+        raise ValueError("Current Codex rollout must be an owned regular file")
+    return {"identity": _identity(path, info), "cursor": info.st_size}
 
 
 def _read_rows(stream, start, stop, *, newest_turn=False):
@@ -121,7 +140,7 @@ def _pin(stream, pin, maximum):
 
 def _pin_scope(rows, turn_id, cwd):
     if not rows or not _event(rows[0][2], "task_started"):
-        raise ValueError("Current Codex turn is outside the rollout read bound")
+        raise RolloutScopeUnavailable("Current Codex turn is outside the rollout read bound")
     start, checksum, boundary = rows[0]
     item = boundary["payload"]
     if item.get("turn_id") != turn_id or item.get("root_turn_id") != turn_id:
@@ -132,10 +151,11 @@ def _pin_scope(rows, turn_id, cwd):
             if row["payload"].get("root_turn_id") != turn_id or row["payload"].get("cwd") != cwd:
                 raise ValueError("Current Codex rollout workspace changed")
             return [[start, checksum], [offset, context_sha]], current
-    raise ValueError("Current Codex rollout workspace unavailable")
+    raise RolloutScopeUnavailable("Current Codex rollout workspace unavailable")
 
 
-def snapshot(native_home, payload, *, binding=None, cursor=None, until=None, allow_next=False):
+def snapshot(native_home, payload, *, binding=None, cursor=None, until=None, allow_next=False,
+             observed_position=None):
     path = _path(native_home, payload)
     session_id, turn_id = payload["session_id"], payload["turn_id"]
     initial = native_source_stat(path)
@@ -145,21 +165,37 @@ def snapshot(native_home, payload, *, binding=None, cursor=None, until=None, all
     with stream:
         if hasattr(os, "getuid") and info.st_uid != os.getuid():
             raise ValueError("Current Codex rollout must be owned by the user")
-        header = json.loads(stream.readline(_TEXT_LIMIT), object_pairs_hook=unique)
+        header_line = stream.readline(_TEXT_LIMIT)
+        if not header_line.endswith(b"\n"):
+            raise RolloutScopeUnavailable("Current Codex rollout header unavailable")
+        header = json.loads(header_line, object_pairs_hook=unique)
         if header["type"] != "session_meta" or header["payload"]["id"] != session_id:
             raise ValueError("Current Codex rollout session changed")
-        identity = [info.st_dev, info.st_ino, digest(os.fsencode(path))]
+        identity = _identity(path, info)
         size = info.st_size if until is None else until
         if type(size) is not int or not 0 < size <= info.st_size:
             raise ValueError("Current Codex rollout shrank")
         more = False
+        observed_cursor = None
         if binding is None:
+            limit = size
+            if observed_position is not None and observed_position["identity"] == identity:
+                position = observed_position["cursor"]
+                if type(position) is int and 0 <= position <= size:
+                    # Look near the original observation for the turn pins.
+                    # They may have fallen outside the latest tail by now.
+                    observed_cursor = position
+                    limit = min(size, position + _TAIL_LIMIT // 2)
             rows, end, damaged_at = _read_rows(
-                stream, max(0, size - _TAIL_LIMIT), size, newest_turn=True,
+                stream, max(0, limit - _TAIL_LIMIT), limit, newest_turn=True,
             )
             pins, rows = _pin_scope(rows, turn_id, payload["cwd"])
             binding = {"identity": identity, "pins": pins}
             damaged = damaged_at is not None and damaged_at > pins[0][0]
+            if observed_cursor is not None:
+                observed_cursor = max(observed_cursor, pins[0][0])
+                end = max(end, observed_cursor)
+                more = limit < size
         else:
             if (identity != binding["identity"] or type(cursor) is not int
                     or not 0 < cursor <= size or len(binding["pins"]) != 2):
@@ -178,7 +214,7 @@ def snapshot(native_home, payload, *, binding=None, cursor=None, until=None, all
         if (after.st_dev, after.st_ino) != (info.st_dev, info.st_ino) or after.st_size < size:
             raise ValueError("Current Codex rollout changed")
     return Snapshot(binding, end, size, [(offset, row) for offset, _, row in rows],
-                    damaged or (not more and end != size), more)
+                    damaged or (not more and end != size), more, observed_cursor)
 
 
 def _check_increment(rows, turn_id, cwd, allow_next):
