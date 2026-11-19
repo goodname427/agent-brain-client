@@ -1,5 +1,6 @@
 """Read bounded, source-verified increments from the current Codex rollout."""
 
+import codecs
 from dataclasses import dataclass
 import json
 import os
@@ -19,6 +20,11 @@ from agent_brain_client.domain.scopes import restricted
 # Bound the read independently of session length. Codex can also omit the path.
 _TAIL_LIMIT = 8 * 1048576
 _TEXT_LIMIT = 1048576
+_LARGE_ROW_LIMIT = 64 * 1048576
+_ROW_CHUNK = 65536
+_STRING_SPECIAL = re.compile(rb'["\\\x00-\x1f]')
+_JSON_ESCAPE = re.compile(rb'\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})')
+_BULK_FIELD = re.compile(rb'"(?:output|image_url)"[ \t\r]*:[ \t\r]*$')
 _FORM_TOOL = "request_user_input_async"
 _FORM_TAG = "<send_user_message_question_reply>"
 _FORM_END = "</send_user_message_question_reply>"
@@ -41,6 +47,7 @@ class Snapshot:
     incomplete: bool
     more: bool
     observed_cursor: int | None = None
+    review: dict | None = None
 
 
 @dataclass
@@ -55,6 +62,10 @@ class Observations:
 
 class RolloutScopeUnavailable(ValueError):
     """The current turn's scope is not visible in the available rollout bytes."""
+
+
+class OversizedRowUnverified(ValueError):
+    """A bounded scan cannot safely classify an oversized JSONL record."""
 
 
 def _path(native_home, payload):
@@ -124,6 +135,155 @@ def _read_rows(stream, start, stop, *, newest_turn=False):
     return rows, end, damaged_at
 
 
+def _count_elisions(value, marker):
+    if value is marker:
+        return 1
+    if isinstance(value, dict):
+        return sum(_count_elisions(item, marker) for item in value.values())
+    if isinstance(value, list):
+        return sum(_count_elisions(item, marker) for item in value)
+    return 0
+
+
+def _verified_projection(projected, dropped):
+    marker = object()
+    decoded = 0
+
+    def constant(name):
+        nonlocal decoded
+        if name != "NaN":
+            raise ValueError("Invalid JSON constant")
+        decoded += 1
+        return marker
+
+    row = json.loads(projected, object_pairs_hook=unique, parse_constant=constant)
+    if not isinstance(row, dict) or not isinstance(row.get("payload"), dict) or decoded != dropped:
+        raise ValueError("Invalid JSONL projection")
+    item = row["payload"]
+    if dropped:
+        allowed = 0
+        if row.get("type") == "response_item":
+            if item.get("type") in ("function_call_output", "custom_tool_call_output"):
+                allowed = _count_elisions(item.get("output"), marker)
+            elif item.get("type") == "message" and isinstance(item.get("content"), list):
+                for part in item["content"]:
+                    if (isinstance(part, dict) and part.get("type") == "input_image"
+                            and part.get("image_url") is marker):
+                        allowed += 1
+                        part["image_url"] = ""
+        if allowed != dropped:
+            raise OversizedRowUnverified("oversized-rollout-unverified-fields")
+
+    if row.get("type") == "response_item" and item.get("type") == "message" and item.get("role") == "user":
+        try:
+            metadata = item["internal_chat_message_metadata_passthrough"]
+            if not isinstance(metadata["turn_id"], str):
+                raise ValueError("Missing user message scope")
+            original = _user_text(item, metadata)
+            if original.strip():
+                contract.text(original, _TEXT_LIMIT)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            # An attachment may be elided, but its user's text still has to
+            # fit the normal privacy check.
+            raise OversizedRowUnverified("oversized-rollout-unverified-fields") from None
+    return row
+
+
+def _read_oversized_row(stream, offset, size):
+    """Validate one large row without materializing its large JSON strings."""
+    stream.seek(offset - 1)
+    if stream.read(1) != b"\n":
+        raise OversizedRowUnverified("oversized-rollout-unaligned")
+    end = offset
+    scan_end = min(size, offset + _LARGE_ROW_LIMIT)
+    utf8 = codecs.getincrementaldecoder("utf-8")("strict")
+    projected = bytearray()
+    token = None
+    token_limit = _TAIL_LIMIT
+    inside = False
+    carry = b""
+    dropped = 0
+
+    def append(data):
+        if len(projected) + len(data) > _TAIL_LIMIT:
+            raise OversizedRowUnverified("oversized-rollout-projection-limit")
+        projected.extend(data)
+
+    def retain(data):
+        nonlocal token
+        if token is not None:
+            if len(token) + len(data) <= token_limit:
+                token.extend(data)
+            else:
+                token = None
+
+    try:
+        while end < scan_end:
+            chunk = stream.readline(min(_ROW_CHUNK, scan_end - end))
+            if not chunk:
+                break
+            end += len(chunk)
+            complete = chunk.endswith(b"\n")
+            data = chunk[:-1] if complete else chunk
+            utf8.decode(data, final=complete)
+            data = carry + data
+            carry = b""
+            cursor = 0
+            while cursor < len(data):
+                if not inside:
+                    quote = data.find(b'"', cursor)
+                    if quote < 0:
+                        append(data[cursor:])
+                        break
+                    append(data[cursor:quote])
+                    token_limit = min(_TAIL_LIMIT, 6 * _TEXT_LIMIT + 2)
+                    if _BULK_FIELD.search(projected[-128:]):
+                        token_limit = min(token_limit, _ROW_CHUNK)
+                    token = bytearray(b'"')
+                    inside = True
+                    cursor = quote + 1
+                    continue
+                special = _STRING_SPECIAL.search(data, cursor)
+                if special is None:
+                    retain(data[cursor:])
+                    break
+                position = special.start()
+                retain(data[cursor:position])
+                char = data[position:position + 1]
+                cursor = position + 1
+                if char == b'"':
+                    retain(char)
+                    if token is None:
+                        dropped += 1
+                        append(b"NaN")
+                    else:
+                        append(token)
+                    inside = False
+                elif char == b"\\":
+                    width = 6 if data[cursor:cursor + 1] == b"u" else 2
+                    escape = data[position:position + width]
+                    if len(escape) < width:
+                        carry = escape
+                        break
+                    if not _JSON_ESCAPE.fullmatch(escape):
+                        raise ValueError("Invalid JSON escape")
+                    retain(escape)
+                    cursor = position + width
+                else:
+                    raise ValueError("Unescaped JSON control byte")
+            if complete:
+                if inside or carry:
+                    raise ValueError("Unfinished JSON string")
+                return _verified_projection(projected, dropped), end
+    except OversizedRowUnverified:
+        raise
+    except (ValueError, RecursionError):
+        raise OversizedRowUnverified("oversized-rollout-json-invalid") from None
+    if end == offset + _LARGE_ROW_LIMIT:
+        raise OversizedRowUnverified("oversized-rollout-scan-limit")
+    return None, offset  # Still appending; the cursor stays before the record.
+
+
 def _event(row, name):
     return row.get("type") == "event_msg" and row["payload"].get("type") == name
 
@@ -176,6 +336,7 @@ def snapshot(native_home, payload, *, binding=None, cursor=None, until=None, all
         if type(size) is not int or not 0 < size <= info.st_size:
             raise ValueError("Current Codex rollout shrank")
         more = False
+        review = None
         observed_cursor = None
         if binding is None:
             limit = size
@@ -204,7 +365,17 @@ def snapshot(native_home, payload, *, binding=None, cursor=None, until=None, all
                 _pin(stream, pin, info.st_size)
             limit = min(cursor + _TAIL_LIMIT, size)
             rows, end, damaged_at = _read_rows(stream, cursor, limit)
-            more = limit < size
+            if end == cursor and limit < size:
+                try:
+                    row, end = _read_oversized_row(stream, cursor, size)
+                    if row is not None:
+                        # Scope pins must come from whole, bounded records.
+                        if _event(row, "task_started") or row.get("type") == "turn_context":
+                            raise OversizedRowUnverified("oversized-rollout-unverified-fields")
+                        rows = [(cursor, None, row)]
+                except OversizedRowUnverified as error:
+                    review = {"offset": cursor, "reason": str(error)}
+            more = end < size and review is None
             damaged = damaged_at is not None
         rows, boundary = _check_increment(rows, turn_id, payload["cwd"], allow_next)
         if boundary is not None:
@@ -214,7 +385,7 @@ def snapshot(native_home, payload, *, binding=None, cursor=None, until=None, all
         if (after.st_dev, after.st_ino) != (info.st_dev, info.st_ino) or after.st_size < size:
             raise ValueError("Current Codex rollout changed")
     return Snapshot(binding, end, size, [(offset, row) for offset, _, row in rows],
-                    damaged or (not more and end != size), more, observed_cursor)
+                    damaged or (not more and end != size), more, observed_cursor, review)
 
 
 def _check_increment(rows, turn_id, cwd, allow_next):

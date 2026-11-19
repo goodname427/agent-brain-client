@@ -21,11 +21,15 @@ def stage_hook_messages(queue, scope, turn, kind, text, payload, *, native_home,
     key = digest([scope, turn])
     name = "codex-rollouts/" + key + ".json"
     completion = "codex-completions/" + key + ".json"
+    review = "codex-completions/review/" + key + ".json"
     with queue._outbox_lock(queue.cache / "codex-rollouts" / (key + ".lock"), "codex-rollout"):
         if excluded():
             return {"status": "excluded-turn", "data_transferred": False}
+        blocked = queue._load(review)
+        if blocked is not None:
+            return _review_result(blocked["diagnostic"])
         result = _stage_hook_messages(
-            queue, name, completion, scope, source, turn, kind, text, payload,
+            queue, name, completion, review, scope, source, turn, kind, text, payload,
             native_home=native_home, exclude=exclude,
         )
         if (result["status"] in ("excluded-turn", "excluded-local-only-or-sensitive")
@@ -61,7 +65,8 @@ def resume_completions(queue, submit, *, allowed):
             if not allowed(scope):
                 continue
             result = submit(payload)
-            if result["status"] in ("excluded-turn", "excluded-local-only-or-sensitive", "retained-paired-event"):
+            if result["status"] in ("excluded-turn", "excluded-local-only-or-sensitive",
+                                    "retained-paired-event", "capture-review-required"):
                 with queue._outbox_lock(queue.cache / "codex-rollouts" / (key + ".lock"), "codex-rollout"):
                     if queue._load(name) is not None:
                         queue._discard_staging(name)
@@ -91,7 +96,13 @@ def _completion(scope, payload, state, snap):
     }
 
 
-def _stage_hook_messages(queue, name, completion, scope, source, turn, kind, text, payload, *, native_home, exclude):
+def _review_result(diagnostic):
+    return {"status": "capture-review-required", "data_transferred": False,
+            "same_turn_capture": diagnostic["reason"]}
+
+
+def _stage_hook_messages(queue, name, completion, review, scope, source, turn, kind, text, payload, *,
+                         native_home, exclude):
     from agent_brain_client.adapters.harnesses.codex import transcript
     from agent_brain_client.application.memory.observations import (
         prompt_fingerprint,
@@ -171,6 +182,17 @@ def _stage_hook_messages(queue, name, completion, scope, source, turn, kind, tex
             if not isinstance(error, (OSError, transcript.RolloutScopeUnavailable)):
                 position = None  # A positive scope mismatch cannot establish a checkpoint.
             diagnostic["same_turn_capture"] = "unavailable"
+    if snap is not None and snap.review is not None:
+        record = {"schema": 1, "scope": scope, "turn_id": turn,
+                  "binding": snap.binding, "diagnostic": snap.review}
+        if pending is not None or is_stop:
+            record["completion"] = pending if pending is not None else _completion(scope, payload, state, snap)
+        # Keep the evidence local and remove the active retry only after the
+        # review marker is durable.
+        queue._save(review, record)
+        if pending is not None:
+            queue._discard_staging(completion)
+        return _review_result(snap.review)
     if observed is not None:
         if observed.private:
             return exclude()
