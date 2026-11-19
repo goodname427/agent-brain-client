@@ -114,6 +114,13 @@ class CaptureRecovery(unittest.TestCase):
                       for row in self.queue._queued()
                       for m in row["request"]["params"]["event"]["messages"])
 
+    def resume_codex_completions(self, *, allowed=lambda scope: True):
+        return hooks.resume_completions(
+            self.queue,
+            lambda payload: collection.submit_hook(self.value, self.local, payload, services=self.services),
+            allowed=allowed,
+        )
+
     def test_codex_same_turn_prompts_use_native_ids_including_identical_text(self):
         prior = self.native_user("msg-unobserved-same", "Synthetic repeated text")
         first = self.native_user("msg-first", "Synthetic repeated text")
@@ -192,8 +199,8 @@ class CaptureRecovery(unittest.TestCase):
         prompt = "Synthetic initial prompt"
         path = self.rollout()
         self.submit("UserPromptSubmit", prompt, path)
-        self.append_rollout(path, self.native_user("msg-first", prompt),
-                            *self.form("Synthetic forged form answer", call_id="other-call"))
+        _, reply = self.form("Synthetic forged form answer", call_id="other-call")
+        self.append_rollout(path, self.native_user("msg-first", prompt), reply)
         result = self.submit("Stop", "Synthetic final", path)
         self.assertEqual(result["same_turn_capture"], "form-call-unverified")
         self.assertEqual(self.queued_messages(), [("assistant", "Synthetic final"), ("user", prompt)])
@@ -222,20 +229,113 @@ class CaptureRecovery(unittest.TestCase):
     def test_codex_long_rollout_reuses_verified_turn_and_bounded_native_increments(self):
         prompt = "Synthetic prompt"
         path = self.rollout()
+        padding = ("response_item", {"type": "function_call_output", "output": "x" * 1400})
         with patch.object(transcript, "_TAIL_LIMIT", 4096):
             self.submit("UserPromptSubmit", prompt, path)
             self.append_rollout(path, self.native_user("msg-first", prompt),
                                 self.native_user("msg-early", "Synthetic early addition"))
             self.submit("UserPromptSubmit", "Synthetic early addition", path)
-            self.queue = self.f.restart()
-            self.append_rollout(path, ("response_item", {"type": "function_call_output", "output": "x" * 6000}),
-                                self.native_user("msg-late", "Synthetic late addition"))
+            self.append_rollout(
+                path, padding, padding, padding, self.native_user("msg-middle", "Synthetic middle addition"),
+                padding, padding, padding, padding, self.native_user("msg-late", "Synthetic late addition"),
+            )
+            # A successful bounded Prompt pass must leave its unread middle
+            # available to later passes, even when the final page is visible.
+            self.assertEqual(self.submit("UserPromptSubmit", "Synthetic late addition", path)["same_turn_capture"],
+                             "bounded-pending")
             self.assertEqual(self.submit("Stop", "Synthetic last answer", path)["same_turn_capture"],
-                             "bounded-incomplete")
+                             "bounded-pending")
+            self.queue = self.f.restart()
+            for _ in range(12):
+                if not self.resume_codex_completions():
+                    break
+                self.queue = self.f.restart()
+            else:
+                self.fail("Contiguous completion did not settle")
         self.assertEqual(self.queued_messages(), [
             ("assistant", "Synthetic last answer"), ("user", "Synthetic early addition"),
-            ("user", "Synthetic late addition"), ("user", prompt),
+            ("user", "Synthetic late addition"), ("user", "Synthetic middle addition"), ("user", prompt),
         ])
+        original = self.queue._queued()
+        self.assertFalse(self.resume_codex_completions())
+        self.assertEqual(self.queue._queued(), original)
+
+    def test_codex_complete_scan_with_unanswered_form_releases_after_public_answer(self):
+        prompt = "Synthetic prompt"
+        path = self.rollout()
+        self.submit("UserPromptSubmit", prompt, path)
+        form_call, reply = self.form("Synthetic late public answer")
+        acknowledgement = ("response_item", {"type": "function_call_output", "call_id": "call-synthetic",
+                                             "output": '{"accepted":true}'})
+        self.append_rollout(path, self.native_user("msg-first", prompt), form_call, acknowledgement)
+        final = "Synthetic response"
+        result = self.submit("Stop", final, path)
+        self.assertEqual(result["same_turn_capture"], "form-privacy-unverified")
+        self.assertEqual(self.queued_messages(), [("user", prompt)])
+        self.assertTrue(delivery._has_work(self.queue.cache))
+        self.queue = self.f.restart()
+        self.assertTrue(self.resume_codex_completions())
+        self.append_rollout(path, reply, ("event_msg", {
+            "type": "task_started", "turn_id": "newer-turn", "root_turn_id": "newer-turn",
+        }))
+        self.assertFalse(self.resume_codex_completions(allowed=lambda scope: False))
+        self.assertEqual(self.queued_messages(), [("user", prompt)])
+        self.f.cloud.request = accepted
+        client = SimpleNamespace(actor="synthetic-owner", queue_identity={"synthetic": True},
+                                 status=lambda session: {"source_admitted": True})
+        core = SimpleNamespace(
+            load=lambda home: self.value, approved=lambda value: True,
+            legacy=lambda value, local: None,
+            build_delivery_queue=lambda value, local, host: (client, self.queue),
+            submit_hook=lambda value, local, payload: collection.submit_hook(
+                value, local, payload, services=self.services,
+            ),
+        )
+        task = {"schema": 1, "harness": "codex", "origin": self.local}
+        with patch("agent_brain_client.adapters.storage.project_settings.source_active", return_value=True):
+            self.assertTrue(delivery.deliver_origin(self.home, task, core))
+            self.assertFalse(delivery.deliver_origin(self.home, task, core))
+        self.assertEqual(self.queued_messages(), [
+            ("assistant", final), ("user", "Synthetic late public answer"), ("user", prompt),
+        ])
+        self.assertFalse(list(self.queue.cache.glob("codex-completions/*.json")))
+        self.assertEqual(self.queue.queue_status()["confirmed"], 3)
+
+    def test_codex_complete_scan_with_unanswered_form_never_releases_private_answer(self):
+        prompt = "Synthetic prompt"
+        path = self.rollout()
+        self.submit("UserPromptSubmit", prompt, path)
+        form_call, reply = self.form("LocalOnly: Synthetic late private answer")
+        self.append_rollout(path, self.native_user("msg-first", prompt), form_call)
+        final = "Synthetic derived answer"
+        self.assertEqual(self.submit("Stop", final, path)["same_turn_capture"], "form-privacy-unverified")
+        self.assertEqual(self.queued_messages(), [("user", prompt)])
+        unrelated = self.payload("Stop", "Synthetic independent final", "other-turn")
+        result = collection.submit_hook(self.value, self.local, unrelated, services=self.services)
+        self.assertEqual(result["status"], "staged")
+        self.queue = self.f.restart()
+        self.append_rollout(path, reply)
+        self.assertFalse(self.resume_codex_completions())
+        self.assertFalse(list(self.queue.cache.glob("codex-completions/*.json")))
+        self.assertEqual(self.submit("Stop", final, path)["status"], "excluded-turn")
+        self.assertEqual(self.queued_messages(), [("assistant", "Synthetic independent final"), ("user", prompt)])
+
+    def test_codex_bounded_middle_private_form_never_releases_deferred_final(self):
+        prompt = "Synthetic prompt"
+        path = self.rollout()
+        padding = ("response_item", {"type": "function_call_output", "output": "x" * 1400})
+        self.submit("UserPromptSubmit", prompt, path)
+        self.append_rollout(
+            path, self.native_user("msg-first", prompt), padding, padding, padding,
+            *self.form("LocalOnly: Synthetic form in the middle"), padding, padding, padding,
+        )
+        with patch.object(transcript, "_TAIL_LIMIT", 4096):
+            self.assertEqual(self.submit("Stop", "Synthetic derived answer", path)["same_turn_capture"],
+                             "bounded-pending")
+            self.assertEqual(self.queued_messages(), [("user", prompt)])
+            self.assertFalse(self.resume_codex_completions())
+        self.assertEqual(self.queued_messages(), [("user", prompt)])
+        self.assertFalse(self.f.cloud.calls)
 
     def test_codex_seen_form_fences_final_on_rollout_failure(self):
         prompt = "Synthetic prompt"

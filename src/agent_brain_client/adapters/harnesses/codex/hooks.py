@@ -1,6 +1,7 @@
 """Codex Hook policy, native payload parsing and normalized capture entry."""
 
 import hashlib
+import re
 
 from agent_brain_client.adapters.platforms.filesystem import cache_locked
 
@@ -19,15 +20,78 @@ def stage_hook_messages(queue, scope, turn, kind, text, payload, *, native_home,
     source = {key: scope[key] for key in ("project_id", "session_id")}
     key = digest([scope, turn])
     name = "codex-rollouts/" + key + ".json"
+    completion = "codex-completions/" + key + ".json"
     with queue._outbox_lock(queue.cache / "codex-rollouts" / (key + ".lock"), "codex-rollout"):
         if excluded():
             return {"status": "excluded-turn", "data_transferred": False}
-        return _stage_hook_messages(
-            queue, name, source, turn, kind, text, payload, native_home=native_home, exclude=exclude,
+        result = _stage_hook_messages(
+            queue, name, completion, scope, source, turn, kind, text, payload,
+            native_home=native_home, exclude=exclude,
         )
+        if (result["status"] in ("excluded-turn", "excluded-local-only-or-sensitive")
+                and queue._load(completion) is not None):
+            queue._discard_staging(completion)
+        return result
 
 
-def _stage_hook_messages(queue, name, source, turn, kind, text, payload, *, native_home, exclude):
+def resume_completions(queue, submit, *, allowed):
+    """Recheck only Stop payloads durably observed behind a local capture gate."""
+    from agent_brain_client.domain.errors import CacheBlocked
+    from agent_brain_client.domain.scopes import digest
+
+    directory = queue.cache / "codex-completions"
+    try:
+        queue._safe(directory, queue.cache)
+    except CacheBlocked:
+        return False
+    remaining = False
+    for file in sorted(directory.glob("*.json")):
+        if not re.fullmatch(r"[a-f0-9]{64}\.json", file.name):
+            continue
+        name = "codex-completions/" + file.name
+        try:
+            row = queue._load(name)
+            if row is None:
+                continue  # A concurrent native Hook completed this request.
+            scope, payload = row["scope"], row["payload"]
+            key = digest([scope, payload["turn_id"]])
+            if (row["schema"] != 1 or file.stem != key or payload["hook_event_name"] != "Stop"
+                    or (scope["cwd"], scope["session_id"]) != (payload["cwd"], payload["session_id"])):
+                raise ValueError("Codex completion identity changed")
+            if not allowed(scope):
+                continue
+            result = submit(payload)
+            if result["status"] in ("excluded-turn", "excluded-local-only-or-sensitive", "retained-paired-event"):
+                with queue._outbox_lock(queue.cache / "codex-rollouts" / (key + ".lock"), "codex-rollout"):
+                    if queue._load(name) is not None:
+                        queue._discard_staging(name)
+            remaining = queue._load(name) is not None or remaining
+        except (OSError, ValueError, KeyError, TypeError, CacheBlocked):
+            # One unreadable local completion must not starve the normal outbox.
+            remaining = True
+    return remaining
+
+
+def _completion(scope, payload, state, snap):
+    binding = snap.binding if snap is not None else state["binding"]
+    start = state["cursor"] if state["binding"] is not None else (
+        binding["pins"][0][0] if binding is not None else None
+    )
+    captured = {
+        key: payload.get(key) for key in (
+            "hook_event_name", "session_id", "turn_id", "cwd", "transcript_path",
+            "stop_hook_active", "last_assistant_message",
+        )
+    }
+    return {
+        "schema": 1, "scope": scope, "payload": captured, "binding": binding,
+        "start": start, "scan": snap.end if snap is not None else start, "until": None,
+        "forms": state["forms"], "only_forms": state["binding"] is None,
+        "first_pending": state["first_pending"],
+    }
+
+
+def _stage_hook_messages(queue, name, completion, scope, source, turn, kind, text, payload, *, native_home, exclude):
     from agent_brain_client.adapters.harnesses.codex import transcript
     from agent_brain_client.application.memory.observations import (
         prompt_fingerprint,
@@ -44,6 +108,7 @@ def _stage_hook_messages(queue, name, source, turn, kind, text, payload, *, nati
 
     is_stop = kind == "Stop"
     is_form = not is_stop and transcript.form_reply(text)
+    pending = queue._load(completion)
     state = queue._load(name)
     if state is None:
         state = {
@@ -68,14 +133,26 @@ def _stage_hook_messages(queue, name, source, turn, kind, text, payload, *, nati
             if transcript.private(answers):
                 return exclude()
 
+    if pending is not None:
+        if not is_stop:
+            # The delivery worker owns this Stop's bounded scan until it settles.
+            return {"status": "capture-unconfirmed", "data_transferred": False}
+        if pending["scope"] != scope or pending["payload"]["last_assistant_message"] != text:
+            raise ValueError("Observed Codex completion changed")
+    replaying = pending is not None and pending["until"] is not None
+    binding = pending["binding"] if pending is not None else state["binding"]
+    cursor = (pending["start"] if replaying else pending["scan"]) if pending is not None else state["cursor"]
+    known_forms = pending["forms"] if pending is not None else state["forms"]
+
     snap = None
     observed = None
     if payload.get("transcript_path"):
         try:
             snap = transcript.snapshot(
-                native_home(), payload, binding=state["binding"], cursor=state["cursor"],
+                native_home(), payload, binding=binding, cursor=cursor,
+                until=pending["until"] if replaying else None, allow_next=pending is not None,
             )
-            observed = transcript.user_messages(snap.rows, turn, state["forms"])
+            observed = transcript.user_messages(snap.rows, turn, known_forms)
         except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError, CacheBlocked):
             diagnostic["same_turn_capture"] = "unavailable"
     if observed is not None:
@@ -84,23 +161,43 @@ def _stage_hook_messages(queue, name, source, turn, kind, text, payload, *, nati
         if observed.unknown_form:
             state["unknown_form"] = True
             queue._save(name, state)
-        if snap.incomplete or observed.incomplete:
+        if snap.more:
+            diagnostic["same_turn_capture"] = "bounded-pending"
+        elif snap.incomplete or observed.incomplete:
             diagnostic["same_turn_capture"] = "bounded-incomplete"
         elif observed.unmatched_form:
             diagnostic["same_turn_capture"] = "form-call-unverified"
 
-    # A failed or partial read only fences a direct final when this turn has
-    # evidence of a form whose answer privacy could still be unknown.
-    forms = observed.forms if observed is not None else state["forms"]
-    incomplete = observed is None or snap.incomplete or observed.incomplete
-    if state["unknown_form"] or (incomplete and any(forms.values())):
+    forms = observed.forms if observed is not None else known_forms
+    form_wait = state["unknown_form"] or any(forms.values())
+    if is_stop and not replaying and (pending is not None or form_wait or (snap is not None and snap.more)):
+        job = pending if pending is not None else _completion(scope, payload, state, snap)
+        if observed is not None:
+            if job["binding"] is None:
+                job = _completion(scope, payload, state, snap)
+            job = dict(job, scan=snap.end, forms=forms)
+            if not snap.more and not form_wait:
+                # Replay from the uncommitted cursor only after the whole
+                # bounded sequence is cleared for sharing.
+                job["until"] = snap.end
+        if job != pending:
+            queue._save(completion, job)
+        return {"status": "capture-unconfirmed", "data_transferred": False,
+                "same_turn_capture": "form-privacy-unverified" if form_wait else "bounded-pending"}
+    if form_wait or (replaying and observed is None):
+        if (is_form and not bound and observed is not None and not state["unknown_form"]
+                and not any(item[4] and item[2] == text for item in observed.messages)):
+            # The first Hook can carry a public form envelope before the host
+            # writes the identifying user row. Keep the verified pre-submit boundary.
+            queue._save(name, dict(state, binding=snap.binding, cursor=snap.end, forms=forms))
+            return {"status": "awaiting-native-identity", "data_transferred": False}
         if forms != state["forms"]:
             queue._save(name, dict(state, forms=forms))
         return {"status": "capture-unconfirmed", "data_transferred": False,
-                "same_turn_capture": "form-privacy-unverified"}
+                "same_turn_capture": "form-privacy-unverified" if form_wait else "unavailable"}
 
     result = {"status": "awaiting-native-identity", "data_transferred": False}
-    if is_stop:
+    if is_stop and not replaying:
         # Seal the final independently of failures in supplemental staging.
         result = stage(turn, "assistant", text)
     elif first_prompt:
@@ -114,18 +211,20 @@ def _stage_hook_messages(queue, name, source, turn, kind, text, payload, *, nati
     if observed is None:
         return dict(result, **diagnostic)
 
-    first_pending = state["first_pending"]
+    first_pending = pending["first_pending"] if replaying else state["first_pending"]
+    if first_pending and first is None:
+        first = prompt_fingerprint(queue, **source, operation_id=turn)
+    only_forms = pending["only_forms"] if replaying else not bound
     failed = False
-    for offset, message_id, original, content, message_is_form in observed.messages:
-        if not bound and not (message_is_form and (is_stop or is_form and original == text)):
+    for _, message_id, original, content, message_is_form in observed.messages:
+        if only_forms and not (message_is_form and (is_stop or is_form and original == text)):
             continue
         if first_pending and not message_is_form:
             # Only the first ordinary native record after the pre-submit
             # cursor can account for the existing turn-keyed prompt. Rows
             # already present when the Hook began are never matched by text.
             matches_first = digest([{"role": "user", "content": original}]) == first
-            if snap.gap_at is None or offset < snap.gap_at:
-                first_pending = False
+            first_pending = False
             if matches_first:
                 continue
         try:
@@ -135,7 +234,16 @@ def _stage_hook_messages(queue, name, source, turn, kind, text, payload, *, nati
         except (OSError, ValueError, KeyError, CacheBlocked) as error:
             failed = True
             diagnostic["same_turn_capture_error_type"] = type(error).__name__
-    if not is_stop and not failed and (bound or is_form):
+    if replaying:
+        if failed or snap.more:
+            if not failed:
+                queue._save(completion, dict(pending, start=snap.end, first_pending=first_pending))
+            return dict(result, status="capture-unconfirmed", **diagnostic)
+        result = stage(turn, "assistant", text)
+        if bound:
+            queue._save(name, dict(state, cursor=snap.end, first_pending=first_pending, forms=forms))
+        queue._discard_staging(completion)
+    elif not is_stop and not failed and (bound or is_form):
         queue._save(name, dict(
             state, binding=snap.binding, cursor=snap.end,
             first_pending=first_pending, forms=forms,

@@ -39,7 +39,7 @@ class Snapshot:
     size: int
     rows: list
     incomplete: bool
-    gap_at: int | None
+    more: bool
 
 
 @dataclass
@@ -135,7 +135,7 @@ def _pin_scope(rows, turn_id, cwd):
     raise ValueError("Current Codex rollout workspace unavailable")
 
 
-def snapshot(native_home, payload, *, binding=None, cursor=None):
+def snapshot(native_home, payload, *, binding=None, cursor=None, until=None, allow_next=False):
     path = _path(native_home, payload)
     session_id, turn_id = payload["session_id"], payload["turn_id"]
     initial = native_source_stat(path)
@@ -149,8 +149,10 @@ def snapshot(native_home, payload, *, binding=None, cursor=None):
         if header["type"] != "session_meta" or header["payload"]["id"] != session_id:
             raise ValueError("Current Codex rollout session changed")
         identity = [info.st_dev, info.st_ino, digest(os.fsencode(path))]
-        size = info.st_size
-        gap_at = None
+        size = info.st_size if until is None else until
+        if type(size) is not int or not 0 < size <= info.st_size:
+            raise ValueError("Current Codex rollout shrank")
+        more = False
         if binding is None:
             rows, end, damaged_at = _read_rows(
                 stream, max(0, size - _TAIL_LIMIT), size, newest_turn=True,
@@ -163,34 +165,34 @@ def snapshot(native_home, payload, *, binding=None, cursor=None):
                     or not 0 < cursor <= size or len(binding["pins"]) != 2):
                 raise ValueError("Current Codex rollout cursor changed")
             for pin in binding["pins"]:
-                _pin(stream, pin, cursor)
-            # A long idle interval can put the turn boundary outside the tail.
-            # Keep the first unseen rows and the recent suffix within one budget.
-            if size - cursor > _TAIL_LIMIT:
-                half = _TAIL_LIMIT // 2
-                early, gap_at, _ = _read_rows(stream, cursor, cursor + half)
-                recent, end, _ = _read_rows(stream, size - (_TAIL_LIMIT - half), size)
-                rows, damaged = early + recent, True
-            else:
-                rows, end, damaged_at = _read_rows(stream, cursor, size)
-                damaged = damaged_at is not None
-        _check_increment(rows, turn_id, payload["cwd"])
+                _pin(stream, pin, info.st_size)
+            limit = min(cursor + _TAIL_LIMIT, size)
+            rows, end, damaged_at = _read_rows(stream, cursor, limit)
+            more = limit < size
+            damaged = damaged_at is not None
+        rows, boundary = _check_increment(rows, turn_id, payload["cwd"], allow_next)
+        if boundary is not None:
+            end = size = boundary
+            more = False
         after = native_source_stat(path)
         if (after.st_dev, after.st_ino) != (info.st_dev, info.st_ino) or after.st_size < size:
             raise ValueError("Current Codex rollout changed")
     return Snapshot(binding, end, size, [(offset, row) for offset, _, row in rows],
-                    damaged or end != size, gap_at)
+                    damaged or (not more and end != size), more)
 
 
-def _check_increment(rows, turn_id, cwd):
-    for _, _, row in rows:
+def _check_increment(rows, turn_id, cwd, allow_next):
+    for index, (offset, _, row) in enumerate(rows):
         item = row["payload"]
         if _event(row, "task_started") and (item.get("turn_id"), item.get("root_turn_id")) != (turn_id, turn_id):
+            if allow_next and isinstance(item.get("turn_id"), str) and item["turn_id"] == item.get("root_turn_id"):
+                return rows[:index], offset
             raise ValueError("Current Codex rollout turn changed")
         if row.get("type") == "turn_context" and (
             item.get("turn_id"), item.get("root_turn_id"), item.get("cwd")
         ) != (turn_id, turn_id, cwd):
             raise ValueError("Current Codex rollout workspace changed")
+    return rows, None
 
 
 def _user_text(item, metadata):
