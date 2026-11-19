@@ -185,10 +185,8 @@ def _stage_hook_messages(queue, name, completion, review, scope, source, turn, k
     if snap is not None and snap.review is not None:
         record = {"schema": 1, "scope": scope, "turn_id": turn,
                   "binding": snap.binding, "diagnostic": snap.review}
-        if pending is not None or is_stop:
-            record["completion"] = pending if pending is not None else _completion(scope, payload, state, snap)
-        # Keep the evidence local and remove the active retry only after the
-        # review marker is durable.
+        # Persist the scope and reason without retaining the deferred message.
+        # Remove the active retry only after the review marker is durable.
         queue._save(review, record)
         if pending is not None:
             queue._discard_staging(completion)

@@ -253,6 +253,7 @@ class OversizedCodexRollout(unittest.TestCase):
                 review, = (case.queue.cache / "codex-completions/review").glob("*.json")
                 entry = json.loads(review.read_bytes())
                 self.assertEqual(entry["diagnostic"]["reason"], reason)
+                self.assertEqual(set(entry), {"schema", "scope", "turn_id", "binding", "diagnostic"})
                 self.assertEqual(case.queue.messages(), [("user", "Synthetic prompt")])
                 result = case.hook("Stop", "Synthetic final")
                 self.assertEqual(result["status"], "capture-review-required")
