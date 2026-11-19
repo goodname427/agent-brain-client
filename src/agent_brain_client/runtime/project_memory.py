@@ -565,7 +565,7 @@ def capture(p, payload):
         from agent_brain_client.adapters.harnesses.codex.hooks import stage_hook_messages
 
         return stage_hook_messages(
-            adapter, scope, turn, kind, text, payload, exclude=exclude,
+            adapter, scope, turn, kind, text, payload, exclude=exclude, excluded=blocked.exists,
             native_home=lambda: p["codex_home"],
         )
     from agent_brain_client.application.memory.observations import stage_messages

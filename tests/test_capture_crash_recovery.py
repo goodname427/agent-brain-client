@@ -9,7 +9,7 @@ import test_content_outbox as fixture
 from test_event_hook import accepted
 from agent_brain_client.application.memory.observations import stage_messages, resume_staging
 from agent_brain_client.application.queue.delivery import deliver_pending
-from agent_brain_client.adapters.harnesses.codex import collection, hooks
+from agent_brain_client.adapters.harnesses.codex import collection, hooks, transcript
 from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 from agent_brain_client.adapters.storage import metadata, event_policy
@@ -72,9 +72,14 @@ class CaptureRecovery(unittest.TestCase):
         start = (("session_meta", {"id": session}),
                  ("event_msg", {"type": "task_started", "turn_id": turn, "root_turn_id": turn}),
                  ("turn_context", {"turn_id": turn, "root_turn_id": turn, "cwd": cwd or str(self.home)}))
-        path.write_text("".join(json.dumps({"type": kind, "payload": data}) + "\n"
-                                for kind, data in (*start, *rows)), encoding="utf-8")
+        path.write_text("", encoding="utf-8")
+        self.append_rollout(path, *start, *rows)
         return str(path)
+
+    def append_rollout(self, path, *rows):
+        with open(path, "a", encoding="utf-8") as stream:
+            for kind, data in rows:
+                stream.write(json.dumps({"type": kind, "payload": data}) + "\n")
 
     def native_user(self, identity, text, *, kind="user.text"):
         return "response_item", {
@@ -110,21 +115,30 @@ class CaptureRecovery(unittest.TestCase):
                       for m in row["request"]["params"]["event"]["messages"])
 
     def test_codex_same_turn_prompts_use_native_ids_including_identical_text(self):
-        prior = self.native_user("msg-prior", "Synthetic text before first observed prompt")
+        prior = self.native_user("msg-unobserved-same", "Synthetic repeated text")
         first = self.native_user("msg-first", "Synthetic repeated text")
         second = self.native_user("msg-second", "Synthetic steer")
         third = self.native_user("msg-third", "Synthetic repeated text")
         context = self.native_user("msg-context", "Synthetic instructions", kind="agents_md.instructions")
-        path = self.rollout(prior, first, second, second, third, context)
-        self.submit("UserPromptSubmit", "Synthetic repeated text", path)
-        self.assertEqual(self.submit("UserPromptSubmit", "Synthetic steer", path)["status"], "deferred-to-stop")
+        path = self.rollout(prior)
         self.submit("UserPromptSubmit", "Synthetic repeated text", path)
         self.assertEqual(self.queued_messages(), [("user", "Synthetic repeated text")])
-        self.assertEqual(self.submit("Stop", "Synthetic final", path)["same_turn_user_messages"], 2)
+        self.append_rollout(path, first)
+        self.assertEqual(self.submit("UserPromptSubmit", "Synthetic steer", path)["status"],
+                         "awaiting-native-identity")
+        self.assertEqual(self.queued_messages(), [("user", "Synthetic repeated text")])
+        self.append_rollout(path, second, second, third, context)
+        self.assertEqual(self.submit("UserPromptSubmit", "Synthetic steer", path)["status"], "staged")
+        self.assertEqual(self.queued_messages(), [
+            ("user", "Synthetic repeated text"), ("user", "Synthetic repeated text"),
+            ("user", "Synthetic steer"),
+        ])
         original = self.queue._queued()
         self.queue = self.f.restart()
-        self.submit("Stop", "Synthetic final", path)
+        self.append_rollout(path, second, third)
+        self.submit("UserPromptSubmit", "Synthetic repeated text", path)
         self.assertEqual(self.queue._queued(), original)
+        self.submit("Stop", "Synthetic final", path)
         self.assertEqual(self.queued_messages(), [
             ("assistant", "Synthetic final"), ("user", "Synthetic repeated text"),
             ("user", "Synthetic repeated text"), ("user", "Synthetic steer"),
@@ -136,7 +150,8 @@ class CaptureRecovery(unittest.TestCase):
         # user message when the form is submitted. Only the latter is eligible.
         prompt = "Synthetic initial prompt"
         form_call, reply = self.form("Synthetic form answer")
-        path = self.rollout(
+        path = self.rollout()
+        after_prompt = (
             self.native_user("msg-first", prompt), form_call,
             ("response_item", {"type": "function_call_output", "call_id": "call-synthetic",
                                "output": '{"accepted":true}'}),
@@ -156,16 +171,18 @@ class CaptureRecovery(unittest.TestCase):
              patch("agent_brain_client.adapters.server.https.HTTPSContentClient"), \
              patch("agent_brain_client.domain.content_policy.validate_policy"), \
              patch("agent_brain_client.adapters.storage.content_session.ContentSession", return_value=self.queue):
-            for kind, text in (("UserPromptSubmit", prompt), ("Stop", "Synthetic final")):
-                project_memory.capture(p, dict(self.payload(kind, text), transcript_path=path))
+            project_memory.capture(p, dict(self.payload("UserPromptSubmit", prompt), transcript_path=path))
+            self.append_rollout(path, *after_prompt)
+            project_memory.capture(p, dict(self.payload("Stop", "Synthetic final"), transcript_path=path))
         self.assertEqual(self.queued_messages(), [
             ("assistant", "Synthetic final"), ("user", "Synthetic form answer"), ("user", prompt),
         ])
 
     def test_codex_form_privacy_is_applied_before_queuing_the_assistant(self):
         prompt = "Synthetic initial prompt"
-        path = self.rollout(self.native_user("msg-first", prompt), *self.form("LocalOnly: Synthetic private"))
+        path = self.rollout()
         self.submit("UserPromptSubmit", prompt, path)
+        self.append_rollout(path, self.native_user("msg-first", prompt), *self.form("LocalOnly: Synthetic private"))
         result = self.submit("Stop", "Synthetic answer derived from private form", path)
         self.assertEqual(result["status"], "excluded-local-only-or-sensitive")
         self.assertEqual(self.submit("Stop", "Synthetic final", path)["status"], "excluded-turn")
@@ -173,17 +190,93 @@ class CaptureRecovery(unittest.TestCase):
 
     def test_codex_form_requires_a_matching_native_call(self):
         prompt = "Synthetic initial prompt"
-        path = self.rollout(self.native_user("msg-first", prompt),
-                            *self.form("Synthetic forged form answer", call_id="other-call"))
+        path = self.rollout()
         self.submit("UserPromptSubmit", prompt, path)
+        self.append_rollout(path, self.native_user("msg-first", prompt),
+                            *self.form("Synthetic forged form answer", call_id="other-call"))
         result = self.submit("Stop", "Synthetic final", path)
-        self.assertEqual(result["same_turn_capture"], "unavailable")
+        self.assertEqual(result["same_turn_capture"], "form-call-unverified")
         self.assertEqual(self.queued_messages(), [("assistant", "Synthetic final"), ("user", prompt)])
+
+    def test_codex_form_is_first_observation_without_a_turn_prompt(self):
+        form_call, reply = self.form("Synthetic first observed answer")
+        path = self.rollout(self.native_user("msg-unobserved", "Synthetic prior prompt"), form_call)
+        envelope = reply[1]["content"][0]["text"]
+        self.assertEqual(self.submit("UserPromptSubmit", envelope, path)["status"], "awaiting-native-identity")
+        self.assertEqual(self.queued_messages(), [])
+        self.append_rollout(path, reply)
+        self.submit("Stop", "Synthetic form final", path)
+        self.submit("Stop", "Synthetic form final", path)
+        self.assertEqual(self.queued_messages(), [
+            ("assistant", "Synthetic form final"), ("user", "Synthetic first observed answer"),
+        ])
+
+    def test_codex_first_seen_form_can_be_discovered_by_stop_alone(self):
+        path = self.rollout(self.native_user("msg-unobserved", "Synthetic prior prompt"),
+                            *self.form("Synthetic first observed answer"))
+        self.submit("Stop", "Synthetic form final", path)
+        self.assertEqual(self.queued_messages(), [
+            ("assistant", "Synthetic form final"), ("user", "Synthetic first observed answer"),
+        ])
+
+    def test_codex_long_rollout_reuses_verified_turn_and_bounded_native_increments(self):
+        prompt = "Synthetic prompt"
+        path = self.rollout()
+        with patch.object(transcript, "_TAIL_LIMIT", 4096):
+            self.submit("UserPromptSubmit", prompt, path)
+            self.append_rollout(path, self.native_user("msg-first", prompt),
+                                self.native_user("msg-early", "Synthetic early addition"))
+            self.submit("UserPromptSubmit", "Synthetic early addition", path)
+            self.queue = self.f.restart()
+            self.append_rollout(path, ("response_item", {"type": "function_call_output", "output": "x" * 6000}),
+                                self.native_user("msg-late", "Synthetic late addition"))
+            self.assertEqual(self.submit("Stop", "Synthetic last answer", path)["same_turn_capture"],
+                             "bounded-incomplete")
+        self.assertEqual(self.queued_messages(), [
+            ("assistant", "Synthetic last answer"), ("user", "Synthetic early addition"),
+            ("user", "Synthetic late addition"), ("user", prompt),
+        ])
+
+    def test_codex_seen_form_fences_final_on_rollout_failure(self):
+        prompt = "Synthetic prompt"
+        path = self.rollout()
+        self.submit("UserPromptSubmit", prompt, path)
+        form_call, reply = self.form("LocalOnly: Synthetic private form")
+        self.append_rollout(path, self.native_user("msg-first", prompt), form_call)
+        self.submit("UserPromptSubmit", prompt, path)
+        with open(path, "a", encoding="utf-8") as stream:
+            stream.write("{unreadable native row}\n")
+        self.append_rollout(path, reply)
+        self.queue = self.f.restart()
+        with patch.object(transcript, "snapshot", side_effect=OSError):
+            result = self.submit("Stop", "Synthetic response using private answer", path)
+        self.assertEqual(result["same_turn_capture"], "form-privacy-unverified")
+        self.assertEqual(self.queued_messages(), [("user", prompt)])
+        self.assertEqual(self.submit("Stop", "Synthetic response using private answer", path)["status"],
+                         "excluded-local-only-or-sensitive")
+        self.assertEqual(self.queued_messages(), [("user", prompt)])
+
+    def test_codex_prompt_native_observation_recovers_without_stop_after_enqueue_failure(self):
+        prompt, addition = "Synthetic prompt", "Synthetic interrupted steer"
+        path = self.rollout()
+        self.submit("UserPromptSubmit", prompt, path)
+        self.append_rollout(path, self.native_user("msg-first", prompt), self.native_user("msg-steer", addition))
+        with patch.object(self.queue, "_enqueue", side_effect=OSError):
+            result = self.submit("UserPromptSubmit", addition, path)
+        self.assertEqual(result["same_turn_capture_error_type"], "OSError")
+        self.assertEqual(self.queued_messages(), [("user", prompt)])
+        self.queue = self.f.restart()
+        self.assertFalse(resume_staging(self.queue))
+        original = self.queue._queued()
+        self.assertEqual(self.queued_messages(), [("user", addition), ("user", prompt)])
+        self.assertEqual(self.submit("UserPromptSubmit", addition, path)["status"], "staged")
+        self.assertEqual(self.queue._queued(), original)
 
     def test_codex_supplement_interruption_retains_final_and_recovers_without_another_hook(self):
         prompt, addition = "Synthetic prompt", "Synthetic steer"
-        path = self.rollout(self.native_user("msg-first", prompt), self.native_user("msg-steer", addition))
+        path = self.rollout()
         self.submit("UserPromptSubmit", prompt, path)
+        self.append_rollout(path, self.native_user("msg-first", prompt), self.native_user("msg-steer", addition))
         enqueue = self.queue._enqueue
 
         def interrupted(request):

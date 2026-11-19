@@ -12,71 +12,138 @@ def native_hook_fields(policy, payload):
     return normalized_hook_fields(policy, payload)
 
 
-def stage_hook_messages(queue, scope, turn, kind, text, payload, *, native_home, exclude):
-    """Keep the first prompt's existing identity and reconcile additions on Stop."""
+def stage_hook_messages(queue, scope, turn, kind, text, payload, *, native_home, exclude, excluded):
+    """Keep the first prompt's request and stage later native IDs at either Hook."""
+    from agent_brain_client.domain.scopes import digest
+
+    source = {key: scope[key] for key in ("project_id", "session_id")}
+    key = digest([scope, turn])
+    name = "codex-rollouts/" + key + ".json"
+    with queue._outbox_lock(queue.cache / "codex-rollouts" / (key + ".lock"), "codex-rollout"):
+        if excluded():
+            return {"status": "excluded-turn", "data_transferred": False}
+        return _stage_hook_messages(
+            queue, name, source, turn, kind, text, payload, native_home=native_home, exclude=exclude,
+        )
+
+
+def _stage_hook_messages(queue, name, source, turn, kind, text, payload, *, native_home, exclude):
     from agent_brain_client.adapters.harnesses.codex import transcript
     from agent_brain_client.application.memory.observations import (
         prompt_fingerprint,
         stage_messages,
     )
-    from agent_brain_client.domain import privacy
     from agent_brain_client.domain.errors import CacheBlocked
-    from agent_brain_client.domain.scopes import digest, restricted
+    from agent_brain_client.domain.scopes import digest
 
-    source = {key: scope[key] for key in ("project_id", "session_id")}
-    if kind == "UserPromptSubmit":
-        # A form envelope includes model-authored questions. Stop can verify
-        # the current form and extract only what the user submitted.
-        if transcript.form_reply(text):
-            return {"status": "deferred-to-stop", "data_transferred": False}
+    def stage(operation_id, phase, body):
         return stage_messages(
-            queue, **source, operation_id=turn, phase="prompt",
-            messages=[{"role": "user", "content": text}],
-            defer_changed_prompt=bool(payload.get("transcript_path")),
+            queue, **source, operation_id=operation_id, phase=phase,
+            messages=[{"role": "user" if phase == "prompt" else "assistant", "content": body}],
         )
 
-    additions = []
+    is_stop = kind == "Stop"
+    is_form = not is_stop and transcript.form_reply(text)
+    state = queue._load(name)
+    if state is None:
+        state = {
+            "schema": 1, "binding": None, "cursor": None,
+            "first_pending": False, "forms": {}, "unknown_form": False,
+        }
+    bound = state["binding"] is not None
+    first = None
+    if state["first_pending"] or (not bound and not (is_stop or is_form)):
+        first = prompt_fingerprint(queue, **source, operation_id=turn)
+    first_prompt = not (is_stop or is_form) and first is None and state["binding"] is None
     diagnostic = {}
+
+    if is_form:
+        try:
+            answers, _ = transcript.form_answers(text)
+        except (ValueError, TypeError, KeyError, RecursionError):
+            # A known form with uncertain privacy must survive a later read failure.
+            state["unknown_form"] = True
+            queue._save(name, state)
+        else:
+            if transcript.private(answers):
+                return exclude()
+
+    snap = None
+    observed = None
     if payload.get("transcript_path"):
         try:
-            first = prompt_fingerprint(queue, **source, operation_id=turn)
-            if first is not None:
-                messages = transcript.user_messages(native_home(), payload)
+            snap = transcript.snapshot(
+                native_home(), payload, binding=state["binding"], cursor=state["cursor"],
+            )
+            observed = transcript.user_messages(snap.rows, turn, state["forms"])
         except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError, CacheBlocked):
             diagnostic["same_turn_capture"] = "unavailable"
-        else:
-            if first is not None:
-                if any(
-                    privacy.private_content(body) or restricted(body)
-                    for _, original, content in messages for body in (original, content)
-                ):
-                    return exclude()
-                for index, (_, original, _) in enumerate(messages):
-                    if digest([{"role": "user", "content": original}]) == first:
-                        # Anchor to the earliest matching message so equal-body
-                        # additions stay distinct and earlier history stays out.
-                        additions = messages[index + 1:]
-                        break
-                else:
-                    diagnostic["same_turn_capture"] = "prompt-unmatched"
+    if observed is not None:
+        if observed.private:
+            return exclude()
+        if observed.unknown_form:
+            state["unknown_form"] = True
+            queue._save(name, state)
+        if snap.incomplete or observed.incomplete:
+            diagnostic["same_turn_capture"] = "bounded-incomplete"
+        elif observed.unmatched_form:
+            diagnostic["same_turn_capture"] = "form-call-unverified"
 
-    # Seal the direct final even if a supplemental message cannot be staged.
-    result = stage_messages(
-        queue, **source, operation_id=turn, phase="assistant",
-        messages=[{"role": "assistant", "content": text}],
-    )
-    staged = 0
-    for message_id, _, content in additions:
+    # A failed or partial read only fences a direct final when this turn has
+    # evidence of a form whose answer privacy could still be unknown.
+    forms = observed.forms if observed is not None else state["forms"]
+    incomplete = observed is None or snap.incomplete or observed.incomplete
+    if state["unknown_form"] or (incomplete and any(forms.values())):
+        if forms != state["forms"]:
+            queue._save(name, dict(state, forms=forms))
+        return {"status": "capture-unconfirmed", "data_transferred": False,
+                "same_turn_capture": "form-privacy-unverified"}
+
+    result = {"status": "awaiting-native-identity", "data_transferred": False}
+    if is_stop:
+        # Seal the final independently of failures in supplemental staging.
+        result = stage(turn, "assistant", text)
+    elif first_prompt:
+        if observed is not None:
+            # Preserve the pre-submit boundary even if staging is interrupted.
+            queue._save(name, dict(
+                state, binding=snap.binding, cursor=snap.size, first_pending=True, forms=forms,
+            ))
+        result = stage(turn, "prompt", text)
+        return dict(result, **diagnostic)
+    if observed is None:
+        return dict(result, **diagnostic)
+
+    first_pending = state["first_pending"]
+    failed = False
+    for offset, message_id, original, content, message_is_form in observed.messages:
+        if not bound and not (message_is_form and (is_stop or is_form and original == text)):
+            continue
+        if first_pending and not message_is_form:
+            # Only the first ordinary native record after the pre-submit
+            # cursor can account for the existing turn-keyed prompt. Rows
+            # already present when the Hook began are never matched by text.
+            matches_first = digest([{"role": "user", "content": original}]) == first
+            if snap.gap_at is None or offset < snap.gap_at:
+                first_pending = False
+            if matches_first:
+                continue
         try:
-            stage_messages(
-                queue, **source, operation_id="codex-user-" + digest([turn, message_id]),
-                phase="prompt", messages=[{"role": "user", "content": content}],
-            )
-            staged += 1
+            saved = stage("codex-user-" + digest([turn, message_id]), "prompt", content)
+            if not is_stop and original == text:
+                result = saved
         except (OSError, ValueError, KeyError, CacheBlocked) as error:
+            failed = True
             diagnostic["same_turn_capture_error_type"] = type(error).__name__
-    if additions:
-        diagnostic["same_turn_user_messages"] = staged
+    if not is_stop and not failed and (bound or is_form):
+        queue._save(name, dict(
+            state, binding=snap.binding, cursor=snap.end,
+            first_pending=first_pending, forms=forms,
+        ))
+    elif forms != state["forms"]:
+        # Preserve positive form evidence on failure, even if the cursor stays
+        # put so that a retry can re-stage the same native IDs.
+        queue._save(name, dict(state, forms=forms))
     return dict(result, **diagnostic)
 
 

@@ -90,7 +90,7 @@ def submit_hook(value, local, payload, *, services):
     if previous is not None:
         return dict(queue._queue_result(previous), status="retained-paired-event")
     return stage_hook_messages(
-        queue, scope, turn, kind, text, payload, exclude=exclude,
+        queue, scope, turn, kind, text, payload, exclude=exclude, excluded=blocked.exists,
         native_home=lambda: registration_store.content_location(value["device_home"], r, "codex")[0],
     )
 

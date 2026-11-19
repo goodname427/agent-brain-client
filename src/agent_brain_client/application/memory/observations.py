@@ -62,14 +62,24 @@ def _operation_key(project_id, session_id, operation_id, phase):
     return digest(["observed-v1", project_id, session_id, operation_id, phase])
 
 
+def _batch_key(project_id, session_id, operation_id, phase, index):
+    return digest(["observed-v1", project_id, session_id, operation_id, phase, index])
+
+
 def prompt_fingerprint(queue, *, project_id, session_id, operation_id):
+    """Fingerprint of an existing replayable prompt, including partial staging."""
     key = _operation_key(project_id, session_id, operation_id, "prompt")
     marker = queue._load("observed-operations/" + key + ".json")
-    return marker["content_sha256"] if marker is not None else None
+    if marker is None:
+        return None
+    batch = _batch_key(project_id, session_id, operation_id, "prompt", 0)
+    if (queue._load("outbox/observed_event_" + batch + ".json") is not None
+            or queue._load("observed-staging/" + key + ".json") is not None):
+        return marker["content_sha256"]
+    return None
 
 
-def stage_messages(queue, *, project_id, session_id, operation_id, phase, messages,
-                   occurred_at=None, defer_changed_prompt=False):
+def stage_messages(queue, *, project_id, session_id, operation_id, phase, messages, occurred_at=None):
     contract.event_identifier(session_id)
     contract.event_identifier(project_id)
     contract.event_identifier(operation_id)
@@ -101,8 +111,6 @@ def stage_messages(queue, *, project_id, session_id, operation_id, phase, messag
         marker = "observed-operations/" + operation_key + ".json"
         previous = queue._load(marker)
         if previous is not None and previous.get("content_sha256") != fingerprint:
-            if phase == "prompt" and defer_changed_prompt:
-                return {"status": "deferred-to-stop", "data_transferred": False}
             raise ValueError("Observed operation changed; preserve queued event")
         if previous is None:
             queue._save(marker, {"schema": 1, "content_sha256": fingerprint})
@@ -113,7 +121,7 @@ def stage_messages(queue, *, project_id, session_id, operation_id, phase, messag
             return _result(rows)
         requests = []
         for index, batch in enumerate(batches):
-            key = digest(["observed-v1", project_id, session_id, operation_id, phase, index])
+            key = _batch_key(project_id, session_id, operation_id, phase, index)
             rid = "observed_event_" + key
             old = queue._load("outbox/" + rid + ".json")
             if old is not None:
