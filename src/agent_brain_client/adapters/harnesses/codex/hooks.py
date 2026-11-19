@@ -108,6 +108,7 @@ def _stage_hook_messages(queue, name, completion, scope, source, turn, kind, tex
 
     is_stop = kind == "Stop"
     is_form = not is_stop and transcript.form_reply(text)
+    ordinary_prompt = not (is_stop or is_form)
     pending = queue._load(completion)
     state = queue._load(name)
     if state is None:
@@ -117,9 +118,14 @@ def _stage_hook_messages(queue, name, completion, scope, source, turn, kind, tex
         }
     bound = state["binding"] is not None
     first = None
-    if state["first_pending"] or (not bound and not (is_stop or is_form)):
+    if state["first_pending"] or (not bound and ordinary_prompt):
         first = prompt_fingerprint(queue, **source, operation_id=turn)
-    first_prompt = not (is_stop or is_form) and first is None and state["binding"] is None
+    first_prompt = ordinary_prompt and first is None and not bound
+    first_sha = None
+    if ordinary_prompt and first is None and (first_prompt or state["first_pending"]):
+        first_sha = digest([{"role": "user", "content": text}])
+    retry_first = (state["first_pending"] and first_sha is not None
+                   and first_sha == state.get("first_prompt_sha256"))
     diagnostic = {}
 
     if is_form:
@@ -205,9 +211,14 @@ def _stage_hook_messages(queue, name, completion, scope, source, turn, kind, tex
             # Preserve the pre-submit boundary even if staging is interrupted.
             queue._save(name, dict(
                 state, binding=snap.binding, cursor=snap.size, first_pending=True, forms=forms,
+                first_prompt_sha256=first_sha,
             ))
         result = stage(turn, "prompt", text)
         return dict(result, **diagnostic)
+    elif retry_first:
+        # Reuse the reserved request and preserve the original native cursor.
+        result = stage(turn, "prompt", text)
+        first = first_sha
     if observed is None:
         return dict(result, **diagnostic)
 

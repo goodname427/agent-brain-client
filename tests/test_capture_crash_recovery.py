@@ -121,6 +121,52 @@ class CaptureRecovery(unittest.TestCase):
             allowed=allowed,
         )
 
+    def test_codex_retries_first_prompt_after_binding_before_durable_stage(self):
+        prompt = "Synthetic first prompt"
+        path = self.rollout()
+
+        def interrupt_at(prefix):
+            save = self.queue._save
+
+            def interrupted(name, value):
+                if name.startswith(prefix):
+                    raise OSError("Synthetic interruption before durable prompt staging")
+                return save(name, value)
+
+            with patch.object(self.queue, "_save", side_effect=interrupted), self.assertRaises(OSError):
+                self.submit("UserPromptSubmit", prompt, path)
+
+        interrupt_at("observed-operations/")
+        marker = next(self.queue.cache.glob("codex-rollouts/*.json"))
+        self.assertIsNotNone(self.queue._load("codex-rollouts/" + marker.name)["binding"])
+        self.assertEqual(self.queued_messages(), [])
+        self.assertFalse(list(self.queue.cache.glob("observed-staging/*.json")))
+
+        self.queue = self.f.restart()
+        self.assertEqual(self.submit("UserPromptSubmit", "Synthetic different prompt", path)["status"],
+                         "awaiting-native-identity")
+        self.assertEqual(self.queued_messages(), [])
+        interrupt_at("observed-staging/")
+        self.assertTrue(list(self.queue.cache.glob("observed-operations/*.json")))
+        self.assertFalse(list(self.queue.cache.glob("observed-staging/*.json")))
+        self.assertEqual(self.queued_messages(), [])
+        self.queue = self.f.restart()
+        result = self.submit("UserPromptSubmit", prompt, path)
+        self.assertEqual(result["status"], "staged")
+        first_request = self.queue._queued()[0]["request"]
+        first_event = first_request["params"]["event"]
+        first_key = digest(["observed-v1", first_event["project_id"], first_event["session_id"],
+                            "synthetic-turn", "prompt", 0])
+        self.assertEqual(result["request_ids"], ["observed_event_" + first_key])
+
+        self.append_rollout(path, self.native_user("msg-first", prompt), self.native_user("msg-repeat", prompt))
+        self.submit("UserPromptSubmit", prompt, path)
+        self.submit("Stop", "Synthetic final", path)
+        self.assertEqual(self.queued_messages(), [
+            ("assistant", "Synthetic final"), ("user", prompt), ("user", prompt),
+        ])
+        self.assertIn(first_request, [row["request"] for row in self.queue._queued()])
+
     def test_codex_same_turn_prompts_use_native_ids_including_identical_text(self):
         prior = self.native_user("msg-unobserved-same", "Synthetic repeated text")
         first = self.native_user("msg-first", "Synthetic repeated text")
