@@ -15,6 +15,7 @@ from agent_brain_client.adapters.storage.bounded_json import (
 )
 
 NAME = "agent_brain_server"
+CODEBUDDY_ENTRY = "src/agent_brain_client/interfaces/cli/codebuddy.py"
 BEGIN = "<!-- agent-brain-codebuddy:begin -->"
 END = "<!-- agent-brain-codebuddy:end -->"
 IDE_HEADER = "---\nalwaysApply: true\nenabled: true\n---\n"
@@ -275,19 +276,48 @@ def refresh(home, source, *, check_only=False):
     # Check-only maintenance must report native drift just as an update does.
     # No credential or backend call is needed to validate owned native images.
     status(home, None, backend_check=lambda *args: (None, {"status": "native-ownership-only"}))
-    from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+    from agent_brain_client.adapters.packages.frozen import runtime_pins
 
-    pins = {name: digest((source / name).read_bytes()) for name in PYTHON_FILES}
+    pins = runtime_pins(source)
     root = directory / "code" / digest(json.dumps(pins, sort_keys=True).encode())
-    wanted, _ = definitions(root / "src/agent_brain_client/interfaces/cli/codebuddy.py", home)
-    available = (receipt["mcp"] != wanted or
-                 instruction_paths(home, receipt["surface"], receipt) !=
-                 instruction_paths(home, receipt["surface"]))
     if check_only:
+        mcp, hooks = definitions(root / CODEBUDDY_ENTRY, home)
+        if retains_mcp(home, source, receipt["mcp"], mcp):
+            mcp = receipt["mcp"]
+        available = (
+            receipt["mcp"] != mcp or receipt["hooks"] != hooks
+            or instruction_paths(home, receipt["surface"], receipt)
+            != instruction_paths(home, receipt["surface"])
+        )
         return {"status": "codebuddy-update-available" if available else "codebuddy-current",
                 "native_changed": False, "update_available": available}
-    result = install(home, source, None, surface=receipt["surface"])
-    return dict(result, native_changed=available, update_available=False)
+    return install(home, source, None, surface=receipt["surface"], maintenance=True)
+
+
+def retains_mcp(home, source, registered, desired):
+    from agent_brain_client.adapters.packages.client import compatible_managed_workers
+    from agent_brain_client.adapters.packages.frozen import runtime_pins, verify_frozen_code
+    from agent_brain_client.adapters.packages.releases import UpdateBlocked
+
+    try:
+        entry = canonical(Path(registered["args"][4]))
+        frozen = entry.parents[4]
+        if (
+            frozen.parent != state_directory(home) / "code"
+            or entry != frozen / CODEBUDDY_ENTRY
+            or not (frozen / "code.json").is_file()
+            or not same(registered, definitions(entry, home)[0])
+            or not same(registered, dict(desired, args=[
+                *desired["args"][:4], str(entry), *desired["args"][5:],
+            ]))
+        ):
+            return False
+        old_pins = runtime_pins(frozen)
+        if not compatible_managed_workers(frozen, old_pins, source, runtime_pins(source)):
+            return False
+        return verify_frozen_code(frozen) == old_pins
+    except (OSError, ValueError, KeyError, IndexError, TypeError, UpdateBlocked):
+        return False
 
 
 def definitions(entry, home):
@@ -317,14 +347,18 @@ def definitions(entry, home):
 
 
 def freeze(source, home, core):
-    from agent_brain_client.adapters.packages.layout import PYTHON_FILES
-    from agent_brain_client.adapters.packages.frozen import freeze_code
-    # Source is an explicitly verified package. The shared freezer binds bytes
-    # from its executing immutable package; callers verify the same source pins.
-    pins = {name: digest((source / name).read_bytes()) for name in PYTHON_FILES}
+    from agent_brain_client.adapters.packages.frozen import freeze_code, runtime_pins
+
+    pins = runtime_pins(source)
     root = freeze_code(state_directory(home), pins, source=source)
-    metadata_io.write(root / "code.json", {"schema": 1, "files": pins})
-    return root / "src/agent_brain_client/interfaces/cli/codebuddy.py"
+    # Legacy snapshots did not need a sidecar for the common freezer.
+    record = root / "code.json"
+    if record.exists() or record.is_symlink():
+        if runtime_pins(root) != pins:
+            raise ValueError("Frozen CodeBuddy code scope changed")
+    else:
+        metadata_io.write(record, {"schema": 1, "files": pins})
+    return root / CODEBUDDY_ENTRY
 
 
 def recover(home, core):
@@ -380,7 +414,32 @@ def registration(file, journal, core):
         return metadata_io.private_json(file)
 
 
-def install(home, source, core, *, surface="both", remove=False, enable_hooks=None):
+def mcp_unchanged_during_transaction(record, receipt_file, receipt):
+    """Check both receipt images for a transaction with no native MCP writes."""
+    from agent_brain_client.adapters.storage.host_files import host_row
+
+    try:
+        host = record["host"]
+        if (
+            record["schema"] != 1 or record["surface"] != receipt["surface"]
+            or set(host).intersection(receipt["mcp_paths"])
+        ):
+            return False
+        row = host[str(receipt_file)]
+        if row.get("private") is not True:
+            return False
+        before, after, _ = host_row(receipt_file, row)
+        fields = ("removed", "surface", "mcp_paths", "mcp")
+        return all(
+            all(image[key] == receipt[key] for key in fields)
+            for image in (json.loads(before), json.loads(after))
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def install(home, source, core, *, surface="both", remove=False, enable_hooks=None,
+            maintenance=False):
     from agent_brain_client.adapters.platforms.filesystem import (
         locked,
         private_directory,
@@ -401,6 +460,9 @@ def install(home, source, core, *, surface="both", remove=False, enable_hooks=No
             if receipt_file.exists()
             else None
         )
+        if maintenance and (receipt is None or receipt.get("removed")):
+            return {"status": "codebuddy-not-installed", "native_changed": False,
+                    "update_available": False}
         if receipt and receipt["surface"] != surface:
             raise ValueError(
                 "Uninstall the original CodeBuddy surface before changing its scope"
@@ -423,10 +485,21 @@ def install(home, source, core, *, surface="both", remove=False, enable_hooks=No
         previous_mcp = receipt["mcp"] if receipt else None
         previous_hooks = receipt["hooks"] if receipt and receipt.get("hooks_enabled", True) else None
         hooks_enabled = (receipt.get("hooks_enabled", True) if receipt else True) if enable_hooks is None else enable_hooks
-        payload = {
-            p: render_json(read_host(p), mcp, previous_mcp, remove=remove)
-            for p in paths
-        }
+        if maintenance and set(map(str, mcp_paths(home, surface))) != set(map(str, paths)):
+            raise ValueError("Higher priority CodeBuddy MCP configuration changed")
+        keep_mcp = maintenance and (
+            same(mcp, previous_mcp) or retains_mcp(home, source, previous_mcp, mcp)
+        )
+        if keep_mcp:
+            mcp = previous_mcp
+            for path in paths:
+                render_json(read_host(path), mcp, mcp)
+            payload = {}
+        else:
+            payload = {
+                p: render_json(read_host(p), mcp, previous_mcp, remove=remove)
+                for p in paths
+            }
         settings = canonical(Path(home) / ".codebuddy/settings.json")
         if receipt and receipt.get("hooks_enabled") is False:
             current_hooks = Document(read_host(settings)).value.get("hooks", {})
@@ -469,10 +542,25 @@ def install(home, source, core, *, surface="both", remove=False, enable_hooks=No
             "surface": surface,
             "host": host_plan(payload, private_paths=(receipt_file,)),
         }
+        native_changed = any(
+            row["before_sha"] != row["target_sha"]
+            for name, row in record["host"].items()
+            if name != str(receipt_file)
+        )
+        if maintenance and all(
+            row["before_sha"] == row["target_sha"] for row in record["host"].values()
+        ):
+            return {"status": "codebuddy-current", "native_changed": False,
+                    "update_available": False}
         journal = directory / "transaction.json"
         metadata_io.write(journal, record)
         try:
             host_apply(record["host"], lambda: metadata_io.write(journal, record))
+            if keep_mcp:
+                if set(mcp_paths(home, surface)) != set(paths):
+                    raise ValueError("Higher priority CodeBuddy MCP configuration changed")
+                for path in paths:
+                    render_json(read_host(path), mcp, mcp)
             record["phase"] = "complete"
             metadata_io.write(journal, record)
         except Exception:
@@ -483,7 +571,8 @@ def install(home, source, core, *, surface="both", remove=False, enable_hooks=No
     return {
         "status": "codebuddy-uninstalled" if remove else "codebuddy-configured",
         "installed": not remove,
-        "native_changed": True,
+        "native_changed": native_changed if maintenance else True,
+        "update_available": False,
         "surface": surface,
         "model_loaded": False,
         "automatic_capture": "future-observed-turns" if hooks_enabled and not remove else "hooks-uninstalled",

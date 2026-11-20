@@ -1,12 +1,18 @@
 """Device-wide source policy and admission metadata, without any Harness."""
 
-import re
+import json
 from pathlib import Path
 from agent_brain_client.adapters.storage import metadata as metadata
 from agent_brain_client.adapters.storage import registration as registration_store
 from agent_brain_client.adapters.platforms.filesystem import private_mode
 from agent_brain_client.domain.scopes import validate, digest
 from agent_brain_client.adapters.packages.layout import PYTHON_FILES as FILES
+from agent_brain_client.adapters.packages.frozen import (
+    compatible_codebuddy_runtime,
+    runtime_pins,
+    validate_python_pins,
+    verify_frozen_code,
+)
 
 ROOT = Path(__file__).resolve().parents[4]
 
@@ -45,16 +51,7 @@ def validate_settings(value, home):
         raise ValueError("Native L1 count required")
     recall_options(options)
     validate(value["scope"])
-    pins = value["code_sha256"]
-    if (
-        not isinstance(pins, dict)
-        or set(pins) != set(FILES)
-        or any(
-            not isinstance(p, str) or not re.fullmatch("[a-f0-9]{64}", p)
-            for p in pins.values()
-        )
-    ):
-        raise ValueError("Complete global code pin required")
+    validate_python_pins(value["code_sha256"], required=FILES)
     return value
 
 
@@ -64,13 +61,23 @@ def load(home, *, verify_code=True):
     private_mode(directory, directory=True, owner=True)
     value = validate_settings(metadata.private_json(file), home)
     if verify_code:
-        if set(value["code_sha256"]) != set(FILES):
-            raise ValueError("Refresh the owned Hook before running the shared runtime")
-        for name, pin in value["code_sha256"].items():
-            if metadata.digest((ROOT / name).read_bytes()) != pin:
-                raise ValueError(
-                    "Global source code changed; refresh owned installation"
-                )
+        executing_pins = runtime_pins(ROOT, fallback=FILES)
+        configured_pins = value["code_sha256"]
+        if executing_pins != configured_pins:
+            pin = metadata.digest(json.dumps(configured_pins, sort_keys=True).encode())
+            root = directory / "code" / pin
+            if (
+                not compatible_codebuddy_runtime(home, ROOT, executing_pins, root, configured_pins)
+                or verify_frozen_code(ROOT) != executing_pins
+                or verify_frozen_code(root) != configured_pins
+            ):
+                raise ValueError("Refresh the owned Hook before running the shared runtime")
+        else:
+            for name, pin in executing_pins.items():
+                if metadata.digest((ROOT / name).read_bytes()) != pin:
+                    raise ValueError(
+                        "Global source code changed; refresh owned installation"
+                    )
     registration_store.registration(
         home
     )  # Metadata only; never activates a credential.

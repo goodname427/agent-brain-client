@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from agent_brain_client.adapters.storage import metadata
 from agent_brain_client.adapters.storage.collection import settings_path
 from agent_brain_client.adapters.storage.registration import registration
-from agent_brain_client.adapters.packages.frozen import freeze_code
+from agent_brain_client.adapters.packages.frozen import freeze_code, runtime_pins
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -124,13 +124,14 @@ class HostMaintenance:
         from agent_brain_client.adapters.storage.private_files import safe
         from agent_brain_client.runtime.updates import refresh_bindings
         package = safe(active["package"])
+        pins = runtime_pins(package, manifest_sha256=active.get("manifest_sha256"))
         hosts = {}
         if channel.verified_active() != active:
             raise ValueError("Active package changed before native host maintenance")
         for host in self.hosts():
             if host == "codex":
                 from agent_brain_client.adapters.harnesses.codex import collection_installation as hooks
-                if all((package / name).read_bytes() == (hooks.ROOT / name).read_bytes() for name in hooks.FILES):
+                if pins == runtime_pins(hooks.ROOT, fallback=hooks.FILES):
                     try:
                         hosts[host] = hooks.refresh(self.home, check_only=check_only)
                     except hooks.ManagedHookConflict as error:

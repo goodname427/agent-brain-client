@@ -94,6 +94,11 @@ def operation_lock(path, stage):
         yield handle
 
 
+# Stable on-disk contract shared by the content workers. Bump this declaration
+# only with a reviewed incompatible change to the content ledgers.
+CONTENT_CACHE_ABI = "content-ledgers-v1"
+
+
 class FileContentOutbox(DurableOutbox):
     _outbox_lock = staticmethod(operation_lock)
     _outbox_stage = staticmethod(operation_stage)
@@ -102,7 +107,9 @@ class FileContentOutbox(DurableOutbox):
     def _outbox_locked(*args, **kwargs):
         return locked(*args, **kwargs)
 
-    def __init__(self, home, cache, policy, client, *, binding, protected=()):
+    def __init__(
+        self, home, cache, policy, client, *, binding, protected=(), existing_cache=False,
+    ):
         self.platform = require_platform(
             "cache-storage", (getattr(client, "grant", None) or {}).get("platform")
         )
@@ -132,9 +139,11 @@ class FileContentOutbox(DurableOutbox):
             raise CacheBlocked()
         self._safe(self.home, self.home)
         self._safe(self.cache, self.cache)
-        cache_directory(self.cache)
+        if not existing_cache:
+            cache_directory(self.cache)
         cache_mode(self.cache, directory=True, blocked=CacheBlocked)
-        sync_directory(self.cache.parent)
+        if not existing_cache:
+            sync_directory(self.cache.parent)
 
     def prepare_capture_stage(self, *, limit):
         directory = self.cache / "hook-turns"

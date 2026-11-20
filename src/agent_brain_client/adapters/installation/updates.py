@@ -10,7 +10,7 @@ from agent_brain_client.application.installation.update_ports import (
     HostEditInProgress,
 )
 from agent_brain_client.adapters.installation import installation
-from agent_brain_client.adapters.installation.launcher_update import refresh_launcher
+from agent_brain_client.adapters.installation.launcher_update import can_retain_launcher, refresh_launcher
 from agent_brain_client.adapters.packages.client import (
     ClientReleases,
     HTTPS_CONTENT_CAPABILITIES,
@@ -117,9 +117,25 @@ class RegisteredClientInstallation:
         return installation.tool_discovery(self.home, self.meta, active)
 
     def launcher_update_available(self, version, commit):
-        return self.meta["package"] != str(
-            Path(self.channel.engine.local) / "packages" / (version + "-" + commit)
-        )
+        installed = Path(self.meta["package"])
+        target = Path(self.channel.engine.local) / "packages" / (version + "-" + commit)
+        if target == installed:
+            return False
+        if not target.is_dir():
+            return True
+        try:
+            policy, registered, _, _ = installation.registered_context(self.home, self.meta)
+            if "--harness" not in registered["args"]:
+                return True
+            plan = installation.prepare(
+                self.home, target, self.meta["release_policy"], self.meta["release_policy_sha256"],
+                replace_existing=True, harness=installation.command_harness(registered),
+            )
+            return not can_retain_launcher(
+                policy, installed, registered, target, plan["mcp"], self.channel.verified_active(),
+            )
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+            return True
 
     def refresh_hooks(self, *, check_only=False):
         return self.host_hooks.refresh(self.channel, check_only=check_only)

@@ -4,7 +4,15 @@ import json
 import os
 from pathlib import Path
 import subprocess
-from agent_brain_client.adapters.packages.client import ClientReleases
+from agent_brain_client.adapters.packages.client import (
+    ClientReleases,
+    HTTPS_CONTENT_CAPABILITIES,
+    MCP_LAUNCHER_ENTRY,
+    UpdateBlocked,
+    fixed_launcher_files,
+    launcher_package_files,
+    managed_worker_abi,
+)
 from agent_brain_client.adapters.storage.private_files import private_json, safe
 import agent_brain_client.adapters.storage.private_files as private_files
 from agent_brain_client.adapters.platforms.credentials import canonical
@@ -84,6 +92,41 @@ def retire_completed_reinstall(home, meta):
     if private_json(current_path) != current:
         raise ValueError("Completed reinstall marker changed")
     current_path.unlink()
+
+
+def can_retain_launcher(policy, installed, registered, candidate, desired, before):
+    """Ignore only the verified worker-package path component of the binding."""
+    if policy["capabilities"] != HTTPS_CONTENT_CAPABILITIES or before is None:
+        return False
+    installed, candidate = Path(installed), Path(candidate)
+    old_entry = str(installed / MCP_LAUNCHER_ENTRY)
+    new_entry = str(candidate / MCP_LAUNCHER_ENTRY)
+    try:
+        if registered["args"].count(old_entry) != 1 or desired["args"].count(new_entry) != 1:
+            return False
+        if registered != dict(desired, args=[
+            old_entry if arg == new_entry else arg for arg in desired["args"]
+        ]):
+            return False
+        old_files = launcher_package_files(installed)
+        target_files = launcher_package_files(candidate)
+        previous = Path(before["package"])
+        previous_files = launcher_package_files(previous)
+        fixed = fixed_launcher_files(old_files)
+        if (
+            MCP_LAUNCHER_ENTRY not in fixed
+            or fixed != fixed_launcher_files(target_files)
+            or fixed != fixed_launcher_files(previous_files)
+        ):
+            return False
+        installed_abi = managed_worker_abi(installed, old_files)
+        return (
+            installed_abi is not None
+            and installed_abi == managed_worker_abi(previous, previous_files)
+            and installed_abi == managed_worker_abi(candidate, target_files)
+        )
+    except (OSError, ValueError, KeyError, TypeError, UpdateBlocked):
+        return False
 
 
 def refresh_launcher(
@@ -172,6 +215,10 @@ def apply_launcher_update(
         )
         _, registered, _, _ = ci.registered_context(home, meta)
         if str(candidate) == meta["package"] and plan["mcp"] == registered:
+            return False
+        if can_retain_launcher(
+            channel.engine.policy, meta["package"], registered, candidate, plan["mcp"], before,
+        ):
             return False
         saved = {
             "schema": 1,

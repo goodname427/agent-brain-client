@@ -169,10 +169,25 @@ def deliver_with_cursor(home, identity, queue, allowed, allowed_event=lambda eve
 
 def run(home, *, max_seconds=600, pause=time.sleep):
     from agent_brain_client.application.control import RequestControl
-    from agent_brain_client.runtime.host_binding import load_core
+    from agent_brain_client.runtime.host_binding import load_delivery_core
 
     root = directory(home)
     cache_directory(root)
+    core = None
+    binding_error = None
+
+    def shared_core():
+        nonlocal core, binding_error
+        if binding_error is not None:
+            raise binding_error.with_traceback(None)
+        if core is None:
+            try:
+                core = load_delivery_core(home)
+            except Exception as error:
+                binding_error = error
+                raise
+        return core
+
     try:
         with ExitStack() as lease:
             lease.enter_context(cache_locked(root / 'worker.lock', timeout=0))
@@ -181,6 +196,9 @@ def run(home, *, max_seconds=600, pause=time.sleep):
             while time.monotonic() < end:
                 scan_started = time.time()
                 pending = False
+                # Retry a failed binding after backoff, without repeating it for
+                # each task or blocking independently pinned project work.
+                binding_error = None
                 for file in sorted(root.glob('*.json')):
                     if file.name in ('spawn.json', 'status.json'):
                         continue
@@ -198,9 +216,9 @@ def run(home, *, max_seconds=600, pause=time.sleep):
                                 terminal = root / 'review' / (digest(task) + '.json')
                                 if terminal.exists():
                                     continue
-                                core = load_core(home)
+                                current = shared_core()
                                 try:
-                                    pending = resume_observed_assistant(home, core, task['turn_id']) or pending
+                                    pending = resume_observed_assistant(home, current, task['turn_id']) or pending
                                 except ValueError as error:
                                     cache_directory(terminal.parent)
                                     metadata.write(terminal, {
@@ -230,8 +248,7 @@ def run(home, *, max_seconds=600, pause=time.sleep):
                                     ) or pending
                                 pending = deliver_with_cursor(home, task, queue, allowed, allowed_event) or pending
                             else:
-                                core = load_core(home)
-                                pending = deliver_origin(home, task, core) or pending
+                                pending = deliver_origin(home, task, shared_core()) or pending
                     except Exception as error:
                         pending = True
                         metadata.write(root / 'status.json', {
@@ -335,11 +352,14 @@ def discover_existing(home):
                 continue  # Preserve invalid evidence without blocking valid completion tasks.
 
 
-def supervise(home):
+def supervise(home, *, start=None):
     """Recover after worker failure without another user message or OS service."""
     stop = threading.Event()
 
     def watch():
+        if start is not None:
+            while not stop.is_set() and not start.wait(0.1):
+                pass
         while not stop.is_set():
             try:
                 discover_existing(home)
