@@ -1,4 +1,5 @@
 """Exercise the actual MCP checkpoint under the launcher's minimal environment."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,8 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT)] + [str(ROOT / n) for n in ('src', 'src', 'src')]
 import dev.integration.checkpoint as connect
 import agent_brain_client.interfaces.mcp.topics as remote_mcp
+from agent_brain_client.adapters.packages.client import CAPABILITIES
 from agent_brain_client.adapters.platforms.filesystem import native_platform
-from dev.build.package import release
+from dev.build.package import export, release
 from dev.checks.source import check_platform_boundary
 
 
@@ -90,44 +92,83 @@ from test_content_outbox import POLICY
 
 
 class VerifiedPackageTools(unittest.TestCase):
+    catalog_path = 'src/agent_brain_client/application/tools/catalog.py'
+
     def setUp(self):
-        temporary=tempfile.TemporaryDirectory()
+        temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root=Path(temporary.name).resolve()
-        self.grant={'scopes':['read','put'],'artifact_types':POLICY['kinds'],'ids':POLICY['ids']}
+        self.root = Path(temporary.name).resolve()
+        self.grant = {
+            'scopes': ['read', 'put'],
+            'artifact_types': POLICY['kinds'],
+            'ids': POLICY['ids'],
+        }
 
-
+    def write_candidate_source(self, package, name, source):
+        data = source.encode('utf-8')
+        (package / name).write_bytes(data)
+        # Tool discovery compares the pinned digests, so both manifests must
+        # describe the revised fixture bytes.
+        digest = hashlib.sha256(data).hexdigest()
+        for manifest_name in ('export-manifest.json', 'releases/manifest.json'):
+            path = package / manifest_name
+            manifest = json.loads(path.read_bytes())
+            self.assertIn(name, manifest['files'])
+            manifest['files'][name] = digest
+            path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
 
     def test_future_package_addition_needs_no_version_or_name_allowlist(self):
-        package=self.root/'future-package'
-        release(ROOT,package,'0.9.0','personal-content-https',native_platform())
-        before=set(ci.package_tools(package,POLICY,self.grant))
-        file=package/'src/agent_brain_client/application/tools/catalog.py'
-        raw=file.read_text().replace('    return tools\n',"    tools.append({'name':'synthetic_future_read'})\n    return tools\n",1)
-        file.write_text(raw)
-        tools=ci.package_tools(package,POLICY,self.grant)
-        self.assertIn('synthetic_future_read',tools)
-        self.assertIn('memory_query',tools)
-        self.assertEqual(set(tools),before|{'synthetic_future_read'})
+        package = self.root / 'future-package'
+        release(ROOT, package, '0.9.0', 'personal-content-https', native_platform())
+        before = set(ci.package_tools(package, POLICY, self.grant))
+        source = (package / self.catalog_path).read_text(encoding='utf-8')
+        updated = source.replace(
+            '    return tools\n',
+            "    tools.append({'name': 'synthetic_future_read'})\n    return tools\n",
+            1,
+        )
+        self.write_candidate_source(package, self.catalog_path, updated)
+        tools = ci.package_tools(package, POLICY, self.grant)
+        self.assertIn('synthetic_future_read', tools)
+        self.assertIn('memory_query', tools)
+        self.assertEqual(set(tools), before | {'synthetic_future_read'})
 
     def test_same_catalog_with_different_target_contract_uses_target_definitions(self):
         package = self.root / 'changed-contract'
         release(ROOT, package, '0.9.0', 'personal-content-https', native_platform())
-        file = package / 'src/agent_brain_client/domain/authorization.py'
-        source = file.read_text()
-        updated = source.replace('return methods(scopes) - HOOK_METHODS', "return methods(scopes) - HOOK_METHODS - {'content_put'}")
+        name = 'src/agent_brain_client/domain/authorization.py'
+        source = (package / name).read_text(encoding='utf-8')
+        updated = source.replace(
+            'return methods(scopes) - HOOK_METHODS',
+            "return methods(scopes) - HOOK_METHODS - {'content_put'}",
+        )
         self.assertNotEqual(source, updated)
-        file.write_text(updated)
+        self.write_candidate_source(package, name, updated)
         self.assertNotIn('content_put', ci.package_tools(package, POLICY, self.grant))
 
     def test_probe_failure_is_bounded_and_does_not_accept_updater_fallback(self):
-        package=self.root/'old-package'
-        release(ROOT,package,'0.9.0','personal-content-https',native_platform())
-        catalog=package/'src/agent_brain_client/application/tools/catalog.py'
-        catalog.write_text(catalog.read_text()+'\n# Different verified package source\n')
-        with patch.object(ci.subprocess,'run',return_value=type('Result',(),{'returncode':1,'stdout':b''})()):
-            with self.assertRaises(ci.InstallBlocked):
-                ci.package_tools(package,POLICY,self.grant)
+        package = self.root / 'old-package'
+        release(ROOT, package, '0.9.0', 'personal-content-https', native_platform())
+        source = (package / self.catalog_path).read_text(encoding='utf-8')
+        self.write_candidate_source(
+            package, self.catalog_path, source + '\n# Different verified package source\n',
+        )
+        failed_probe = subprocess.CompletedProcess(args=[], returncode=1, stdout=b'')
+        with patch.object(ci.subprocess, 'run', return_value=failed_probe):
+            with self.assertRaisesRegex(
+                ci.InstallBlocked, 'Verified package tool contract unavailable',
+            ):
+                ci.package_tools(package, POLICY, self.grant)
+
+    def test_package_check_rejects_catalog_with_stale_export_digest(self):
+        package = self.root / 'changed-after-export'
+        export(ROOT, package)
+        policy = {'capabilities': CAPABILITIES}
+        ci.package_check(package, policy)
+        catalog = package / self.catalog_path
+        catalog.write_bytes(catalog.read_bytes() + b'\n# Changed after export\n')
+        with self.assertRaisesRegex(ci.InstallBlocked, 'Candidate package changed'):
+            ci.package_check(package, policy)
 
 
 if __name__ == '__main__':
