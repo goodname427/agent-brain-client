@@ -143,7 +143,7 @@ class FileContentOutbox(DurableOutbox):
             raise ValueError("Hook staging capacity reached")
 
     def _cache_bytes(self, name):
-        if name.startswith(("observed-staging/", "observed-review/")):
+        if name.startswith(("observed-staging/", "observed-review/", "codex-completions/")):
             return 8 * 1048576
         return 1048576
 
@@ -153,7 +153,7 @@ class FileContentOutbox(DurableOutbox):
         return ["observed-staging/" + path.name for path in sorted(directory.glob("*.json"))]
 
     def _discard_staging(self, name):
-        if not name.startswith("observed-staging/"):
+        if not name.startswith(("observed-staging/", "codex-completions/")):
             raise CacheBlocked()
         path = self.cache / name
         self._safe(path, self.cache)

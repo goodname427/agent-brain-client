@@ -5,14 +5,23 @@ import re
 from agent_brain_client.adapters.storage.collection import settings_path
 from agent_brain_client.adapters.storage import metadata as metadata
 from agent_brain_client.adapters.platforms.filesystem import private_directory
+from agent_brain_client.application.control import saved_recall_timing
 
 
 def save_recall_observation(value, receipt):
     directory = settings_path(value["device_home"]).parent
     receipts = directory / "recall-receipts"
     private_directory(receipts)
-    metadata.write(receipts / (receipt["request_key"] + ".json"), receipt)
+    receipt_sha256 = metadata.write(receipts / (receipt["request_key"] + ".json"), receipt)
     metadata.write(directory / "last-recall.json", receipt)
+    if receipt.get("status") == "failed":
+        sample = saved_recall_timing(receipt["request_key"])
+        if sample is not None:
+            sample["receipt_sha256"] = receipt_sha256
+            try:
+                metadata.write(directory / "last-recall-timing.json", sample)
+            except (OSError, ValueError):
+                pass  # Diagnostic I/O must not replace the original failure.
     if receipt.get("output_written") is True and receipt.get("status") != "failed":
         metadata.write(directory / ("prompt-" + receipt["request_key"] + ".json"),
                        {"at": receipt["at"]})
