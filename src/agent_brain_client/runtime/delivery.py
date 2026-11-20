@@ -335,11 +335,14 @@ def discover_existing(home):
                 continue  # Preserve invalid evidence without blocking valid completion tasks.
 
 
-def supervise(home):
+def supervise(home, *, start=None):
     """Recover after worker failure without another user message or OS service."""
     stop = threading.Event()
 
     def watch():
+        if start is not None:
+            while not stop.is_set() and not start.wait(0.1):
+                pass
         while not stop.is_set():
             try:
                 discover_existing(home)

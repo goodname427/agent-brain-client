@@ -39,6 +39,7 @@ from agent_brain_client.adapters.packages.layout import (
     PYTHON_FILES,
     runtime_python_members,
 )
+from agent_brain_client.adapters.storage.private_files import raw as private_package_bytes
 
 CLIENT_FILES = (
     "README.md",
@@ -496,6 +497,51 @@ class ClientPackage:
             healthy = False
         if result.returncode or not healthy:
             raise UpdateBlocked("Client health check failed; previous package restored")
+
+
+MCP_CONTENT_ENTRY = "src/agent_brain_client/interfaces/mcp/content.py"
+MCP_LAUNCHER_ENTRY = "src/agent_brain_client/interfaces/mcp/launcher.py"
+_CACHE_ABI_ENTRY = "src/agent_brain_client/adapters/storage/content.py"
+_CACHE_ABI_DECLARATION = re.compile(rb'CONTENT_CACHE_ABI = "([a-z][a-z0-9-]{0,63})"')
+
+
+def launcher_package_files(package):
+    package = Path(package)
+    receipt = package / "verified.json"
+    record = json.loads(private_package_bytes(
+        receipt if receipt.exists() else package / "export-manifest.json"
+    ))
+    return record.get("manifest", record)["files"]
+
+
+def fixed_launcher_files(files):
+    return {
+        name: sha for name, sha in files.items()
+        if name.startswith("src/") and name not in (
+            MCP_CONTENT_ENTRY, "src/agent_brain_client/interfaces/mcp/topics.py",
+        )
+    }
+
+
+def managed_worker_abi(package, files):
+    def pinned_source(name):
+        path = Path(package) / name
+        source = private_package_bytes(path, 1048576)
+        if source is None or hashlib.sha256(source).hexdigest() != files[name]:
+            raise UpdateBlocked("MCP worker source changed after verification")
+        return source
+
+    if b"MCP_WORKER_HANDOFF = 1" not in pinned_source(MCP_CONTENT_ENTRY).splitlines():
+        return None
+    storage = pinned_source(_CACHE_ABI_ENTRY)
+    declarations = [
+        line for line in storage.splitlines()
+        if line.lstrip().startswith(b"CONTENT_CACHE_ABI")
+    ]
+    match = _CACHE_ABI_DECLARATION.fullmatch(declarations[0]) if len(declarations) == 1 else None
+    if match is None:
+        raise UpdateBlocked("MCP cache ABI declaration required")
+    return match[1].decode("ascii")
 
 
 class ClientReleases:

@@ -20,6 +20,12 @@ from agent_brain_client.adapters.packages.client import (
     HTTPS_CONTENT_CAPABILITIES,
     LEGACY_PRESERVATION,
     DEPENDENCY_RUNTIME,
+    MCP_CONTENT_ENTRY,
+    MCP_LAUNCHER_ENTRY,
+    fixed_launcher_files,
+    launcher_package_files,
+    managed_worker_abi,
+    UpdateBlocked,
     version,
 )
 from agent_brain_client.adapters.platforms.filesystem import (
@@ -28,6 +34,7 @@ from agent_brain_client.adapters.platforms.filesystem import (
     PlatformUnsupported,
 )
 import agent_brain_client.adapters.platforms.filesystem as brain_lock
+from agent_brain_client.adapters.storage import private_files
 from agent_brain_client.adapters.storage.reinstallation import require_memory_verified
 from agent_brain_client.application.installation.fresh import (
     FreshMemoryVerificationRequired,
@@ -81,7 +88,7 @@ def content_runtime_blocker(active, policy):
     return None
 
 
-def serve_content(command, active, policy, status):
+def serve_content(command, active, policy, status, *, run_live=None):
     """Keep the fixed guard valid until the actual mapping worker exits.
 
     Legacy workers take an exclusive lease; compatible workers share a lease.
@@ -132,14 +139,12 @@ def serve_content(command, active, policy, status):
             blocked = content_runtime_blocker(active, policy)
             if blocked:
                 return blocked
-            return {
-                "status": status,
-                "served": True,
-                "exit_code": subprocess.run(
-                    command,
-                    **({} if os.name == "nt" else {"pass_fds": (lease.fileno(),)}),
-                ).returncode,
-            }
+            options = {} if os.name == "nt" else {"pass_fds": (lease.fileno(),)}
+            exit_code = (
+                run_live(options) if run_live is not None
+                else subprocess.run(command, **options).returncode
+            )
+            return {"status": status, "served": True, "exit_code": exit_code}
     except RuntimeError:
         return {
             "status": "content-runtime-in-use",
@@ -154,6 +159,128 @@ def serve_content(command, active, policy, status):
             "native_changed": False,
             "next_action": "Preserve the content cache and its persistent lease; inspect ownership or access before serving.",
         }
+
+
+def content_command(active, runtime, harness):
+    command = [
+        sys.executable, "-I", "-B", str(Path(active["package"]) / MCP_CONTENT_ENTRY),
+        "--harness", harness, "--client-version", active["version"],
+    ]
+    for name, value in runtime.items():
+        if name not in LEGACY_PRESERVATION | DEPENDENCY_RUNTIME:
+            flag = "--" + name.replace("_", "-").replace("content-cache", "cache")
+            command.extend([flag, value])
+    return command
+
+
+def runtime_manifest(active):
+    package = Path(active["package"])
+    manifest = json.loads((package / "verified.json").read_bytes())["manifest"]
+    if hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest() != active["manifest_sha256"]:
+        raise UpdateBlocked("MCP package receipt changed")
+    return package, manifest
+
+
+def content_worker(active, runtime, harness):
+    from agent_brain_client.interfaces.mcp.server import (
+        WorkerSpec, runtime_files, runtime_fingerprint,
+    )
+
+    package, manifest = runtime_manifest(active)
+    abi = managed_worker_abi(package, manifest["files"])
+    if abi is None:
+        return None
+    return WorkerSpec(tuple(content_command(active, runtime, harness)), runtime_fingerprint(runtime_files(manifest)), abi)
+
+
+def launcher_files(package):
+    return fixed_launcher_files(launcher_package_files(package))
+
+
+def registration_stamp(runtime, harness):
+    """Identify only the owned MCP entries, independently of native Hooks."""
+    from agent_brain_client.adapters.installation.installation import inspect
+
+    home = Path(runtime["device_home"])
+    state = home / ".config/agent-brain-client"
+    pending = state / "launcher-handover.json"
+    registered = state / "codex-mcp.json"
+    if pending.exists() or pending.is_symlink():
+        return None
+    before = private_files.private_json(registered)
+    if not inspect(home).get("installed"):
+        return None
+    if harness == "codex":
+        from agent_brain_client.adapters.harnesses.codex import binding
+
+        native = binding.native_home(home, runtime)
+        actual = binding.entry(binding.read(native / "config.toml"))
+        receipt = binding.receipt(home)
+        if (
+            not isinstance(actual, dict) or actual.get("enabled") is not True
+            or receipt is not None and (
+                receipt["removed"] or not binding.matches(actual, receipt["mcp"])
+            )
+        ):
+            return None
+        owned = actual
+    else:
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration as host
+
+        directory = host.state_directory(home)
+        transaction = directory / "transaction.json"
+        if (transaction.exists() or transaction.is_symlink()) and (
+            private_files.private_json(transaction).get("phase") == "applying"
+        ):
+            return None
+        receipt = private_files.private_json(directory / "registration.json")
+        if receipt["removed"] or set(receipt["mcp_paths"]) != set(map(str, host.mcp_paths(home, receipt["surface"]))):
+            return None
+        owned = []
+        for name in sorted(receipt["mcp_paths"]):
+            path = private_files.safe(name)
+            actual = host.Document(host.read_host(path)).value.get("mcpServers", {}).get(host.NAME)
+            if not host.same(actual, receipt["mcp"]):
+                return None
+            owned.append((name, actual))
+    if (
+        pending.exists() or pending.is_symlink()
+        or private_files.private_json(registered) != before
+    ):
+        return None
+    return before["package"], before, owned
+
+
+def observe_content_worker(releases, runtime, harness, registered, fixed_files):
+    """Watch the verified local pointer without discovery or package activation."""
+    seen = None
+
+    def read(path):
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            return None
+
+    def observe():
+        nonlocal seen
+        journal, pointer = releases.engine.journal, releases.engine.pointer
+        token = (read(journal), read(pointer))
+        if token == seen:
+            return None
+        if registration_stamp(runtime, harness) != registered:
+            return False
+        active = releases.verified_active(serving=True)
+        if active is None or content_runtime_blocker(active, releases.policy):
+            return False
+        if launcher_files(active["package"]) != fixed_files:
+            return False
+        candidate = content_worker(active, runtime, harness)
+        if token == (read(journal), read(pointer)):
+            seen = token
+            return candidate if candidate is not None else False
+        return None
+
+    return observe
 
 
 def startup(
@@ -249,8 +376,7 @@ def startup(
     if check_only:
         return result
     if not installation_check and not event_hook:
-        # The selected package is immutable. A later successful update affects
-        # only future workers; this thread performs no native registration.
+        # Discovery stays off the host's stdio connection.
         try:
             threading.Thread(
                 target=releases.startup_check,
@@ -281,27 +407,7 @@ def startup(
                     "served": False,
                     "next_action": "Complete or recover the exact native installation transaction before mapping cloud content.",
                 }
-        command = [
-            sys.executable,
-            "-I",
-            "-B",
-            str(
-                Path(active["package"])
-                / "src/agent_brain_client/interfaces/mcp/content.py"
-            ),
-            "--harness",
-            harness,
-            "--client-version",
-            active["version"],
-        ]
-        for name, value in runtime.items():
-            if name not in LEGACY_PRESERVATION | DEPENDENCY_RUNTIME:
-                command.extend(
-                    [
-                        "--" + name.replace("_", "-").replace("content-cache", "cache"),
-                        value,
-                    ]
-                )
+        command = content_command(active, runtime, harness)
         if installation_check:
             command.append("--installation-check")
         if event_hook:
@@ -322,7 +428,37 @@ def startup(
                 "served": True,
                 "exit_code": subprocess.run(command).returncode,
             }
-        return serve_content(command, active, releases.policy, result["status"])
+        run_live = None
+        if not event_hook and releases.policy["capabilities"] == HTTPS_CONTENT_CAPABILITIES:
+            try:
+                initial = content_worker(active, runtime, harness)
+                registered = registration_stamp(runtime, harness) if initial is not None else None
+                if registered is not None:
+                    package = Path(active["package"])
+                    fixed_files = launcher_files(registered[0])
+                    if (
+                        MCP_LAUNCHER_ENTRY not in fixed_files
+                        or launcher_files(package) != fixed_files
+                    ):
+                        registered = None
+            except (OSError, ValueError, KeyError, TypeError, UpdateBlocked):
+                registered = None
+            if registered is not None:
+                from agent_brain_client.interfaces.mcp.server import supervise_stdio
+
+                def run_live(options):
+                    return supervise_stdio(
+                        initial,
+                        observe_content_worker(releases, runtime, harness, registered, fixed_files),
+                        sys.stdin.buffer,
+                        sys.stdout,
+                        options,
+                        can_switch=lambda: registration_stamp(runtime, harness) == registered,
+                    )
+
+        if run_live is None:
+            return serve_content(command, active, releases.policy, result["status"])
+        return serve_content(command, active, releases.policy, result["status"], run_live=run_live)
     if installation_check:
         return {"status": "content-runtime-review-required", "served": False}
     manifest = json.loads((Path(active["package"]) / "verified.json").read_bytes())[
