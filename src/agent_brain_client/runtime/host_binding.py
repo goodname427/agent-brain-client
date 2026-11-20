@@ -34,7 +34,7 @@ def load_delivery_core(home):
     channel = ClientReleases(registration["release_policy"], registration["release_policy_sha256"])
     if channel.policy["runtime"]["device_home"] != str(Path(home)):
         raise ValueError("Delivery release device binding changed")
-    active = channel.verified_active(serving=True, exact_membership=True)
+    active = channel.verified_active(serving=True)
     if active is None or Path(active["package"]) != root:
         raise ValueError("Verified serving delivery package required")
 

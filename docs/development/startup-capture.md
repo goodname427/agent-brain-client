@@ -49,7 +49,7 @@ Codex 和 CodeBuddy 的新观察采用共同的前台顺序：可靠入队、唤
 
 后台复用原 request_id、event_id、时间和正文；未知回执不能更换请求 ID。当前身份、来源范围、暂停开关及 Server admission 在传输边界重新核验。MCP 启动恢复已登记来源的待处理工作，并在 MCP 存活期间监督脱离 Hook 的后台 worker；关闭所有进程或设备重启后，需要正常启动 Harness/MCP，不能宣称无进程时仍可上传。后台不安装系统服务、不修改用户启动项、不扫描历史会话。
 
-0.8.24 的首次安装可以从 `first-install/releases/packages` 启动后台 worker，而 `global-memory/code` 冻结副本可能尚未生成。原 worker 在读取队列和访问 Server 前即因冻结副本缺失而退出本轮，已入队事件持续 pending。独立启动的受管投递进程通过既有发布解析器确认自身是该设备当前可用的包，只在建立工作上下文时检查包和完整成员。每次投递仍重新检查来源批准、设备身份、队列和 Server admission。来源设置里的 Python pins 用于原生 Hook，允许早于当前投递包。独立冻结入口和 CodeBuddy 原生入口仍执行原有冻结校验。Mac 隔离回归走首次安装、原生 Hook、后台子进程及合成 Server 回执，检查原请求确认和再次启动后的去重。Windows 共用此后台入口，原生验证单独记录。
+0.8.24 的首次安装可以从 `first-install/releases/packages` 启动后台 worker，而 `global-memory/code` 冻结副本可能尚未生成。原 worker 在读取队列和访问 Server 前即因冻结副本缺失而退出本轮，已入队事件持续 pending。独立启动的受管投递进程通过既有发布解析器确认自身是该设备当前可用的包，成功后复用该工作上下文。清单、列出文件及扩展布局成员校验沿用发布解析器的规则。每次投递仍重新检查来源批准、设备身份、队列和 Server admission。来源设置里的 Python pins 用于原生 Hook，允许早于当前投递包。独立冻结入口和 CodeBuddy 原生入口仍执行原有冻结校验。Mac 隔离回归走首次安装、原生 Hook、后台子进程及合成 Server 回执，检查原请求确认和再次启动后的去重。Windows 共用此后台入口，原生验证单独记录。
 
 长消息先按完整原文执行 LocalOnly／限制共享判定，再按协议预算切分；切分不能把正文中的标记变成新指令。首条入队前原子保存完整观察的所有请求，分批中断或容量耗尽后由后台恢复原请求尾部；损坏日志按原字节保留到 `observed-review`，不阻塞其他合法事件。1,024 条容量只统计未解决请求，confirmed／reconciled 回执保留用于原请求去重。监督器从真实 pending／未完成观察刷新既有任务，项目入口在采集前保存固定设置的恢复路由。
 

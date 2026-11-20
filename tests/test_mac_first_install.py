@@ -284,7 +284,11 @@ class FirstInstall(unittest.TestCase):
         return interpreter, package, channel, active
 
     def test_first_install_hook_delivers_from_active_package_without_frozen_copy(self):
-        interpreter, package, _, _ = self.installed_delivery_fixture()
+        interpreter, package, channel, active = self.installed_delivery_fixture()
+        files = json.loads((package / 'verified.json').read_bytes())['manifest']['files']
+        if files.keys() == set(channel.engine.adapter.files):
+            # An unused file is allowed by the fixed-layout release verifier.
+            (package / 'synthetic-unused.txt').touch()
         project = self.home / 'synthetic-project'
         project.mkdir()
         (project / 'Synthetic.uproject').touch()
@@ -336,6 +340,8 @@ class FirstInstall(unittest.TestCase):
         self.assertEqual(sent[0]['params']['origin'], metadata.private_json(origin, cache=True))
         self.assertEqual(hook_and_wait('SessionStart', 'session-ready')['status'], 'idle')
         self.assertEqual(submissions(), sent)
+        self.assertEqual(channel.verified_active(serving=True), active)
+        self.assertFalse((state / 'code').exists())
 
     def test_first_install_delivery_requires_exact_serving_release_and_keeps_frozen_entry(self):
         interpreter, package, channel, active = self.installed_delivery_fixture()
@@ -389,11 +395,6 @@ class FirstInstall(unittest.TestCase):
         probe(package, '--probe-delivery', 'Metadata digest changed')
         policy.write_bytes(original)
 
-        extra = package / 'src/agent_brain_client/synthetic_unlisted.py'
-        extra.write_text('pass\n')
-        probe(package, '--probe-delivery', 'Client package membership changed')
-        extra.unlink()
-
         member = package / 'README.md'
         raw = member.read_bytes()
         member.write_bytes(raw + b'\nSYNTHETIC DRIFT\n')
@@ -401,9 +402,6 @@ class FirstInstall(unittest.TestCase):
         member.write_bytes(raw)
         target = self.base / 'synthetic-readme'
         member.rename(target)
-        os.link(target, member)
-        probe(package, '--probe-delivery', 'Unsupported Client package member')
-        member.unlink()
         member.symlink_to(target)
         probe(package, '--probe-delivery', 'Active package integrity failed')
         member.unlink()
