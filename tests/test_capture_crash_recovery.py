@@ -1,7 +1,11 @@
 """Fault injection over synthetic homes, identities, queues and stdout only."""
+from contextlib import chdir, redirect_stderr, redirect_stdout
 import copy
+import io
 import json
+import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -17,6 +21,7 @@ from agent_brain_client.adapters.storage import metadata, event_policy
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.domain.scopes import digest
+from agent_brain_client.interfaces.cli import collection as collection_cli
 from agent_brain_client.runtime import delivery, project_memory
 
 
@@ -54,8 +59,8 @@ class CaptureRecovery(unittest.TestCase):
             session_id='synthetic-session', operation_id=operation, phase='prompt',
             messages=[{'role': 'user', 'content': text}])
 
-    def payload(self, kind, text, turn='synthetic-turn'):
-        return {'hook_event_name': kind, 'session_id': 'synthetic-session', 'turn_id': turn,
+    def payload(self, kind, text, turn='synthetic-turn', *, session='synthetic-session'):
+        return {'hook_event_name': kind, 'session_id': session, 'turn_id': turn,
                 'cwd': str(self.home), 'prompt': text, 'last_assistant_message': text,
                 'stop_hook_active': False}
 
@@ -66,9 +71,10 @@ class CaptureRecovery(unittest.TestCase):
             rows = [by_id[key] for key in request_ids]
         return ''.join(m['content'] for r in rows for m in r['request']['params']['event']['messages'])
 
-    def rollout(self, *rows, turn="synthetic-turn", cwd=None, session="synthetic-session"):
+    def rollout(self, *rows, turn="synthetic-turn", cwd=None, session="synthetic-session",
+                filename_id="synthetic-session"):
         path = (self.native_home / "sessions/2026/01/02" /
-                "rollout-2026-01-02T03-04-05-synthetic-session.jsonl")
+                f"rollout-2026-01-02T03-04-05-{filename_id}.jsonl")
         path.parent.mkdir(parents=True, exist_ok=True)
         start = (("session_meta", {"id": session}),
                  ("event_msg", {"type": "task_started", "turn_id": turn, "root_turn_id": turn}),
@@ -271,6 +277,133 @@ class CaptureRecovery(unittest.TestCase):
             ("user", "Synthetic repeated text"), ("user", "Synthetic steer"),
         ])
         self.assertFalse(self.f.cloud.calls)
+
+    def test_codex_forked_rollout_uses_hook_path_and_recovers_native_ids(self):
+        session = "11111111-1111-4111-8111-111111111111"
+        fork = "22222222-2222-4222-8222-222222222222"
+        path = self.rollout(session=session, filename_id=f"{session}_{fork}")
+        legacy = self.rollout(session=session, filename_id=session)
+
+        def native_hook(kind, text):
+            payload = dict(self.payload(kind, text, session=session), transcript_path=path)
+            stdin = SimpleNamespace(buffer=io.BytesIO(json.dumps(payload).encode()))
+            stdout, stderr = io.StringIO(), io.StringIO()
+            core = collection_cli.core
+            with (
+                chdir(self.home), redirect_stdout(stdout), redirect_stderr(stderr),
+                patch.object(sys, "stdin", stdin),
+                patch.object(core, "load", return_value=self.value),
+                patch.object(core, "eligible", return_value=self.local),
+                patch.object(core, "legacy", return_value=None),
+                patch.object(core, "settings_path", self.services.settings_path),
+                patch.object(core, "adapter", self.services.adapter),
+                patch.object(core, "schedule_delivery"),
+                patch.object(core, "recall_prompt", return_value=[]),
+            ):
+                result = collection_cli.main(["global-hook", "--harness", "codex",
+                                              "--device-home", str(self.home)])
+            self.assertEqual(result, 0, stderr.getvalue())
+            self.assertEqual(json.loads(stdout.getvalue()), {})
+            return json.loads(stderr.getvalue().splitlines()[0])
+
+        prompt = "Synthetic initial prompt"
+        first = native_hook("UserPromptSubmit", prompt)
+        self.assertEqual(first["status"], "staged")
+        self.assertNotIn("same_turn_capture", first)
+
+        body = "Synthetic repeated steer"
+        first_steer, second_steer = "msg-first-steer", "msg-second-steer"
+        self.append_rollout(path, self.native_user("msg-initial", prompt),
+                            self.native_user(first_steer, body), self.native_user(second_steer, body))
+        self.append_rollout(legacy, self.native_user("msg-initial", prompt),
+                            self.native_user("msg-neighbor", "Synthetic neighbor"))
+        legacy_mtime = Path(legacy).stat().st_mtime
+        os.utime(path, (legacy_mtime - 10, legacy_mtime - 10))
+        self.assertGreater(legacy_mtime, Path(path).stat().st_mtime)
+
+        first_event = self.queue._queued()[0]["request"]["params"]["event"]
+
+        def native_request_id(message_id):
+            operation = "codex-user-" + digest(["synthetic-turn", message_id])
+            return "observed_event_" + digest([
+                "observed-v1", first_event["project_id"], session, operation, "prompt", 0,
+            ])
+
+        first_id = native_request_id(first_steer)
+        second_id = native_request_id(second_steer)
+        enqueue = self.queue._enqueue
+
+        def interrupted(request):
+            if request["request_id"] == second_id:
+                raise OSError("Synthetic interruption before the second native enqueue")
+            return enqueue(request)
+
+        final = "Synthetic final"
+        with patch.object(self.queue, "_enqueue", side_effect=interrupted):
+            result = native_hook("Stop", final)
+        self.assertEqual(result["status"], "capture-unconfirmed")
+        self.assertEqual(result["same_turn_capture_error_type"], "OSError")
+        ids = [row["request"]["request_id"] for row in self.queue._queued()]
+        self.assertIn(first_id, ids)
+        self.assertNotIn(second_id, ids)
+
+        self.queue = self.f.restart()
+        self.assertFalse(self.resume_codex_completions())
+        original = self.queue._queued()
+        ids = [row["request"]["request_id"] for row in original]
+        self.assertEqual(ids.count(first_id), 1)
+        self.assertEqual(ids.count(second_id), 1)
+        self.assertEqual(self.queued_messages(), [
+            ("assistant", final), ("user", prompt), ("user", body), ("user", body),
+        ])
+        native_hook("Stop", final)
+        self.assertFalse(self.resume_codex_completions())
+        self.assertEqual(self.queue._queued(), original)
+        self.assertFalse(self.f.cloud.calls)
+
+    def test_codex_forked_rollout_requires_matching_session_scope_and_file(self):
+        session = "11111111-1111-4111-8111-111111111111"
+        fork = "abcdefab-2222-4222-8222-222222222222"
+        filename_id = f"{session}_{fork}"
+        payload = self.payload("Stop", "Synthetic final", session=session)
+        valid = self.rollout(session=session, filename_id=filename_id)
+        initial = transcript.snapshot(self.native_home, dict(payload, transcript_path=valid))
+        legacy = self.rollout(session=session, filename_id=session)
+        legacy_snapshot = transcript.snapshot(self.native_home, dict(payload, transcript_path=legacy))
+        self.assertNotEqual(initial.binding["identity"], legacy_snapshot.binding["identity"])
+        with self.assertRaisesRegex(ValueError, "rollout cursor changed"):
+            transcript.snapshot(self.native_home, dict(payload, transcript_path=legacy),
+                                binding=initial.binding, cursor=initial.end)
+
+        for invalid in (f"{fork}_{session}", f"{session}_fork", f"{session}_{fork[:-1]}g",
+                        f"{session}_{fork.upper()}", f"{session}_{fork.replace('-', '')}",
+                        f"{session}_{fork}_{fork}"):
+            with self.subTest(filename_id=invalid):
+                path = self.rollout(session=session, filename_id=invalid)
+                with self.assertRaisesRegex(ValueError, "Current Codex rollout required"):
+                    transcript.snapshot(self.native_home, dict(payload, transcript_path=path))
+
+        for scope, error in (({"session": fork}, "rollout session changed"),
+                             ({"turn": "other-turn"}, "rollout turn changed"),
+                             ({"cwd": str(self.home / "other")}, "rollout workspace changed")):
+            with self.subTest(scope=scope):
+                path = self.rollout(filename_id=filename_id, **({"session": session} | scope))
+                with self.assertRaisesRegex(ValueError, error):
+                    transcript.snapshot(self.native_home, dict(payload, transcript_path=path))
+
+        path = Path(self.rollout(session=session, filename_id=filename_id))
+        link = path.with_suffix(".copy")
+        link.hardlink_to(path)
+        with self.assertRaisesRegex(ValueError, "Native transcript regular file required"):
+            transcript.snapshot(self.native_home, dict(payload, transcript_path=str(path)))
+        link.unlink()
+
+        if os.name != "nt":
+            directory = path.parent
+            physical = directory.rename(directory.with_name("physical"))
+            directory.symlink_to(physical, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "Linked Client path preserved"):
+                transcript.snapshot(self.native_home, dict(payload, transcript_path=str(path)))
 
     def test_project_codex_form_reply_captures_only_answer_without_prompt_hook(self):
         # Desktop writes an async acceptance as tool output, then a separate
