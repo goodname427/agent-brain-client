@@ -29,6 +29,7 @@ from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from agent_brain_client.adapters.packages.build import PACKAGE_SOURCE_PATHS
+from agent_brain_client.adapters.packages.layout import runtime_python_members
 from agent_brain_client.adapters.packages.publication import require_publishable
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -204,17 +205,38 @@ def require_contract(before, after):
             raise ValueError("Release contract change requires review: " + key)
 
 
+def installed_manifest_layout(baseline, manifest):
+    path = "src/agent_brain_client/adapters/packages/layout.py"
+    if path not in manifest["files"]:
+        return False
+    raw = run(["git", "show", baseline + ":" + path])
+    return (
+        sha(raw) == manifest["files"][path]
+        and b"MANIFEST_PYTHON_LAYOUT = 1" in raw.splitlines()
+    )
+
+
 def compatible(
     before,
     after,
     credential="src/agent_brain_client/adapters/platforms/windows/native.py",
+    *,
+    manifest_layout=False,
 ):
     require_contract(before, after)
-    if set(before["files"]) != set(after["files"]):
-        raise ValueError(
-            "Release file scope change requires review; use a new installation for the current layout"
-        )
-    if before["files"][credential] != after["files"][credential]:
+    before_files, after_files = set(before["files"]), set(after["files"])
+    if before_files != after_files:
+        if not manifest_layout:
+            raise ValueError(
+                "Release file scope change requires the manifest-layout bridge on the channel"
+            )
+        before_python = set(runtime_python_members(n for n in before_files if n.endswith(".py")))
+        after_python = set(runtime_python_members(n for n in after_files if n.endswith(".py")))
+        if before_files - before_python != after_files - after_python:
+            raise ValueError("Fixed runtime member scope changed")
+    if before["files"].get(credential) != after["files"].get(credential) or (
+        credential not in before["files"]
+    ):
         raise ValueError("Credential component change requires policy review")
 
 
@@ -335,12 +357,22 @@ def runtime_artifacts(
                 if reinstall:
                     review_reinstallation(previous, manifest, parent, payload, group)
                 else:
-                    compatible(previous, manifest, definition["credential"])
+                    changed = previous["files"].keys() != manifest["files"].keys()
+                    compatible(
+                        previous,
+                        manifest,
+                        definition["credential"],
+                        manifest_layout=changed and installed_manifest_layout(parent, previous),
+                    )
             package = {
                 p.relative_to(target).as_posix(): p.read_bytes()
                 for p in target.rglob("*")
                 if p.is_file()
             }
+            if set(package) != manifest["files"].keys() | {
+                "export-manifest.json", "releases/manifest.json"
+            }:
+                raise ValueError("Runtime package membership differs from its manifest")
             for name, digest in manifest["files"].items():
                 source_name = PACKAGE_SOURCE_PATHS.get(name, name)
                 # Older frozen source trees still store these documents at the root.

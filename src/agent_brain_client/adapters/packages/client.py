@@ -35,7 +35,10 @@ from agent_brain_client.adapters.platforms.filesystem import (
     LockTimeout,
 )
 
-from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+from agent_brain_client.adapters.packages.layout import (
+    PYTHON_FILES,
+    runtime_python_members,
+)
 
 CLIENT_FILES = (
     "README.md",
@@ -360,7 +363,6 @@ class ClientPackage:
         self.https = bool(
             policy and policy["capabilities"] == HTTPS_CONTENT_CAPABILITIES
         )
-        self.policy_files = policy["file_prefixes"] if policy else []
         self.files = (
             https_files(policy["platform"])
             if self.https
@@ -383,11 +385,19 @@ class ClientPackage:
         )
 
     def package_files(self, manifest):
-        if set(manifest.get("files", {})) != set(self.files):
-            raise UpdateBlocked(
-                "Current package layout required; reinstall from the official entry"
-            )
-        return self.files
+        files = manifest.get("files")
+        required = set(self.files)
+        if not isinstance(files, dict) or not required <= files.keys():
+            raise UpdateBlocked("Required Client package members missing")
+        added = files.keys() - required
+        if added:
+            if not self.https:
+                raise UpdateBlocked("File outside approved runtime scope")
+            try:
+                runtime_python_members((*PYTHON_FILES, *added))
+            except ValueError as error:
+                raise UpdateBlocked("File outside approved runtime scope") from error
+        return (*self.files, *sorted(added))
 
     def preflight(self, package, manifest):
         files = self.package_files(manifest)
@@ -417,6 +427,23 @@ class ClientPackage:
             raise UpdateBlocked(
                 "Native component source changed; signed component/plan review required"
             )
+        if len(files) != len(self.files):
+            # A module outside the verified manifest could be imported by Python.
+            root = package.resolve()
+            present = set()
+            for path in package.rglob("*"):
+                relative = path.relative_to(package)
+                if path.is_symlink() or path.resolve() != root / relative:
+                    raise UpdateBlocked("Linked Client package member")
+                if path.is_file() and path.stat().st_nlink == 1:
+                    present.add(relative.as_posix())
+                elif not path.is_dir():
+                    raise UpdateBlocked("Unsupported Client package member")
+            envelope = (
+                "verified.json" if "verified.json" in present else "export-manifest.json"
+            )
+            if present - {envelope} != set(files):
+                raise UpdateBlocked("Client package membership changed")
         for name in files:
             path = package / name
             if path.is_symlink() or not path.is_file():
@@ -426,11 +453,6 @@ class ClientPackage:
                     compile(path.read_bytes(), name, "exec")
                 except (SyntaxError, UnicodeError):
                     raise UpdateBlocked("Client syntax check failed") from None
-
-    def allows_shared_file(self, path):
-        # Called only by the already-installed release engine. Never grant a
-        # directory prefix, change capabilities or accept arbitrary new files.
-        return path in self.files and self.policy_files == list(self.files)
 
     def snapshot(self):
         return {}  # Only ReleaseEngine owns the active pointer.
@@ -533,7 +555,6 @@ class ClientReleases:
             ):
                 commit, manifest, read = self.engine.source.latest()
                 self.engine.validate(manifest, {"version": installed_version})
-                self.engine.adapter.package_files(manifest)
                 if manifest["migrations"]:
                     raise UpdateBlocked("Client release scope changed")
                 package = self.engine.prepare(commit, manifest, read)

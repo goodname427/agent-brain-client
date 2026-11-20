@@ -27,6 +27,7 @@ from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.adapters.server.http import RemoteClient, NoRedirect
 from dev.build.package import export
 from agent_brain_client.adapters.packages.client import HTTPS_CONTENT_CLIENT_FILES,HTTPS_CONTENT_CAPABILITIES
+from agent_brain_client.adapters.packages.layout import source_python_members
 
 ROOT=Path(__file__).resolve().parents[1]
 GRANT={'actor':'owner-adapter','scopes':['read','put'],'artifact_types':['memory','rule','skill'],
@@ -210,9 +211,9 @@ class HTTPSContent(unittest.TestCase):
             out=self.base/('https-release-'+version);manifest=release(ROOT,out,version,'personal-content-https')
             if mutate:
                 source=out/'src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift';source.write_bytes(source.read_bytes()+b'\n// SYNTHETIC_UNAPPROVED_HELPER_CHANGE\n');manifest['files']['src/agent_brain_client/adapters/platforms/macos/native/CredentialStore.swift']=hashlib.sha256(source.read_bytes()).hexdigest();(out/'releases/manifest.json').write_text(json.dumps(manifest))
-            for name in [*HTTPS_CONTENT_CLIENT_FILES,'releases/manifest.json']:
+            for name in [*manifest['files'],'releases/manifest.json']:
                 destination=f.publisher/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(out/name,destination)
-            f.git(f.publisher,'add','--',*HTTPS_CONTENT_CLIENT_FILES,'releases/manifest.json');f.git(f.publisher,'commit','-m','synthetic HTTPS '+version);f.git(f.publisher,'push','origin','releases/stable')
+            f.git(f.publisher,'add','--',*manifest['files'],'releases/manifest.json');f.git(f.publisher,'commit','-m','synthetic HTTPS '+version);f.git(f.publisher,'push','origin','releases/stable')
         with patch.object(NativeKeychain,'call',side_effect=AssertionError('Package health cannot query credentials')):
             publish('0.2.2');result=channel.update();self.assertEqual(result['status'],'updated',result);active=channel.verified_active()
             publish('0.2.3',True);self.assertEqual(channel.update()['status'],'release-review-required');self.assertEqual(channel.verified_active(),active)
@@ -253,7 +254,7 @@ class HTTPSContent(unittest.TestCase):
 
     def test_https_export_separate_allowlist_no_server_signed_component_or_stable_manifest(self):
         out=self.base/'export';manifest=export(ROOT,out,https_content_candidate=True)
-        self.assertEqual(set(manifest['files']),set(HTTPS_CONTENT_CLIENT_FILES));self.assertFalse(manifest['keychain_accessed']);self.assertFalse((out/'releases').exists());self.assertFalse((out/'src/agent_brain_client/adapters/platforms/macos/native/DeviceComponent.swift').exists());self.assertFalse(any('brain_server' in path for path in manifest['files']))
+        self.assertEqual(set(manifest['files']),set(HTTPS_CONTENT_CLIENT_FILES) | set(source_python_members(ROOT)));self.assertFalse(manifest['keychain_accessed']);self.assertFalse((out/'releases').exists());self.assertFalse((out/'src/agent_brain_client/adapters/platforms/macos/native/DeviceComponent.swift').exists());self.assertFalse(any('brain_server' in path for path in manifest['files']))
         with self.assertRaises(ValueError):export(ROOT,self.base/'mixed',ssh_content_candidate=True,https_content_candidate=True)
 
     def install_fixture(self):

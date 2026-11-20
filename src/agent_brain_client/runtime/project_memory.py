@@ -23,7 +23,7 @@ from agent_brain_client.adapters.platforms.filesystem import (
     private_directory,
     locked,
 )
-from agent_brain_client.adapters.packages.layout import PYTHON_FILES as RUNTIME
+from agent_brain_client.adapters.packages.frozen import runtime_pins
 from agent_brain_client.adapters.storage.project_settings import active, project_settings, project_harness
 
 
@@ -87,7 +87,7 @@ def setup(args):
         "query": args.query,
         "max_items": 3,
         "max_context_bytes": 12288,
-        "code_sha256": {n: digest((ROOT / n).read_bytes()) for n in RUNTIME},
+        "code_sha256": runtime_pins(ROOT),
         "capture_policy": None,
         "capture_policy_sha256": None,
         "recall_policy": None,
@@ -165,7 +165,7 @@ def enable(args):
             value,
             harness=args.harness,
             enabled=True,
-            code_sha256={n: digest((ROOT / n).read_bytes()) for n in RUNTIME},
+            code_sha256=runtime_pins(ROOT),
         )
         fd, candidate = tempfile.mkstemp(prefix=".settings-check-", dir=output.parent)
         os.close(fd)

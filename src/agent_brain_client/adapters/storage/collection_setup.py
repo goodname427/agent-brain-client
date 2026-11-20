@@ -10,6 +10,7 @@ from agent_brain_client.adapters.storage import registration as registration_sto
 from agent_brain_client.adapters.storage import project_settings as project_sources
 from agent_brain_client.adapters.platforms.filesystem import private_directory, private_mode
 from agent_brain_client.adapters.packages.layout import PYTHON_FILES as FILES
+from agent_brain_client.adapters.packages.frozen import runtime_pins
 from agent_brain_client.domain.scopes import validate
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -90,9 +91,7 @@ def prepare(args, *, locate):
             except (ValueError, OSError):
                 continue
     value["legacy_projects"] = list(routes.values())
-    value["code_sha256"] = {
-        n: metadata_io.digest((ROOT / n).read_bytes()) for n in FILES
-    }
+    value["code_sha256"] = runtime_pins(ROOT, fallback=FILES)
     if bool(args.operator) != bool(args.operator_sha256):
         raise ValueError("Complete existing operator reference required")
     if args.operator:
@@ -158,7 +157,7 @@ def refresh_code(home, source, *, check_only=False):
     if not check_only:
         recover_code(home)
     value = validate_settings(metadata_io.private_json(file), home)
-    pins = {name: metadata_io.digest((source / name).read_bytes()) for name in FILES}
+    pins = runtime_pins(source, fallback=FILES)
     if pins == value["code_sha256"]:
         return False
     if check_only:

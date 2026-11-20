@@ -14,6 +14,11 @@ from agent_brain_client.adapters.storage.bounded_json import (
     read_json,
 )
 from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+from agent_brain_client.adapters.packages.frozen import (
+    frozen_source_files,
+    runtime_pins,
+    validate_python_pins,
+)
 
 
 def load_core(home):
@@ -29,13 +34,17 @@ def load_core(home):
     pins = value.get("code_sha256")
     if not isinstance(pins, dict) or not 1 <= len(pins) <= 256:
         raise ValueError("Existing frozen Client runtime required")
-    if set(pins) != set(PYTHON_FILES):
-        raise ValueError(
-            "Current Client runtime required; reinstall before binding a Harness"
-        )
+    validate_python_pins(pins)
+    executing_root = Path(__file__).resolve().parents[3]
+    if pins != runtime_pins(executing_root):
+        raise ValueError("Refresh the Harness binding to the current Client runtime")
     root = canonical(
         directory / "code" / digest(json.dumps(pins, sort_keys=True).encode())
     )
+    if (pins.keys() - set(PYTHON_FILES) or (root / "code.json").exists()) and (
+        runtime_pins(root) != pins or frozen_source_files(root) != pins.keys()
+    ):
+        raise ValueError("Frozen Client membership changed")
     for name, pin in pins.items():
         path = PurePosixPath(name)
         if (
@@ -54,7 +63,7 @@ def load_core(home):
             or digest(file.read_bytes()) != pin
         ):
             raise ValueError("Frozen Client code changed")
-        executing = canonical(Path(__file__).resolve().parents[3] / name)
+        executing = canonical(executing_root / name)
         if not executing.is_file() or digest(executing.read_bytes()) != pin:
             raise ValueError(
                 "Refresh the Harness binding to the current Client runtime"
