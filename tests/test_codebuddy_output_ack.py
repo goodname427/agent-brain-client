@@ -2,6 +2,8 @@
 
 from contextlib import nullcontext
 import io
+import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -104,6 +106,30 @@ class CodeBuddyOutputAck(unittest.TestCase):
         self.assertIn("additionalContext", output.getvalue())
         self.assertTrue(recall_receipts.recall_observation(self.value)["output_written"])
         self.assertEqual(self.retrieval.call_count, 2)
+
+    def test_failed_timing_is_opt_in_and_has_no_codebuddy_request_deadline(self):
+        from agent_brain_client.application import control
+
+        def recall(*args, **kwargs):
+            with control.recall_response_headers(), control.recall_header_read(90):
+                raise ValueError('Synthetic private failure detail')
+
+        self.retrieval.side_effect = recall
+        sample_file = settings_path(self.home).with_name('last-recall-timing.json')
+        for enabled in ('0', '1'):
+            with self.subTest(enabled=enabled), patch.dict(os.environ, {control.RECALL_TIMING_ENV: enabled}):
+                output = io.StringIO()
+                self.assertEqual(self.run_cli(output), 0)
+                self.assertEqual(json.loads(output.getvalue()), {})
+                receipt = recall_receipts.recall_observation(self.value)
+                self.assertEqual(receipt['status'], 'failed')
+                self.assertFalse(receipt['output_written'])
+                self.assertEqual(sample_file.exists(), enabled == '1')
+        sample_text = sample_file.read_text()
+        sample = json.loads(sample_text)
+        self.assertEqual(sample['first_read_budget_ms'], {'request_ms': None, 'socket_ms': 90000})
+        self.assertNotIn('control_started', sample['phase_offsets_ms'])
+        self.assertNotIn('Synthetic private failure detail', sample_text)
 
 
 if __name__ == "__main__":

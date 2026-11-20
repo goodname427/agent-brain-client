@@ -12,6 +12,7 @@ import ssl
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +23,7 @@ import agent_brain_client.domain.contract as contract
 from agent_brain_client.interfaces.mcp.content import ContentServer
 from agent_brain_client.interfaces.mcp.server import serve
 import agent_brain_client.interfaces.mcp.server as mcp_scheduler
+from agent_brain_client.adapters.server import http as http_transport
 from agent_brain_client.adapters.server.http import RemoteClient, NoRedirect, ReadHTTPHandler, ReadHTTPSHandler
 from agent_brain_client.adapters.platforms.processes import controlled_run
 from agent_brain_client.application.control import RequestControl, RequestStopped
@@ -68,6 +70,70 @@ class Output:
 
     def get(self):
         return self.responses.get(timeout=3)
+
+
+class DNSReadBudget(unittest.TestCase):
+    def test_dns_wait_distinguishes_io_limit_total_deadline_and_cancellation(self):
+        cases = (
+            ("io-timeout", 0, False, False, 90, TimeoutError, None),
+            ("total-deadline", 30, False, False, 80, RequestStopped, "request_deadline_exceeded"),
+            ("cancel-at-timeout", 0, True, False, 90, RequestStopped, "request_cancelled"),
+            ("cancel-wakes-wait", 0, True, True, 90, RequestStopped, "request_cancelled"),
+        )
+        for name, start, cancel, signaled, budget, error_type, reason in cases:
+            with self.subTest(case=name):
+                resolving = threading.Event()
+                release = threading.Event()
+                dns_event = threading.Event()
+                threads = []
+                clock = SimpleNamespace(now=0, monotonic=lambda: clock.now)
+
+                def lookup(*args, **kwargs):
+                    resolving.set()
+                    if not release.wait(2):
+                        raise AssertionError("Synthetic DNS worker was not released")
+                    return []
+
+                def wait(dns_timeout):
+                    self.assertTrue(resolving.wait(1))
+                    self.assertEqual(dns_timeout, budget)
+                    clock.now += dns_timeout
+                    if cancel:
+                        request.cancel()
+                        self.assertTrue(dns_event.is_set())
+                    return signaled
+
+                def start_thread(*args, **kwargs):
+                    thread = threading.Thread(*args, **kwargs)
+                    threads.append(thread)
+                    return thread
+
+                with (
+                    patch("agent_brain_client.application.control.time", clock),
+                    patch.object(dns_event, "wait", side_effect=wait),
+                    patch.object(
+                        http_transport, "threading",
+                        SimpleNamespace(Event=lambda: dns_event, Thread=start_thread),
+                    ),
+                    patch.object(http_transport.socket, "getaddrinfo", side_effect=lookup),
+                    patch.object(
+                        http_transport.socket, "socket",
+                        side_effect=AssertionError("Timed-out DNS must not connect"),
+                    ),
+                ):
+                    request = RequestControl(110)
+                    clock.now = start
+                    try:
+                        with self.assertRaises(error_type) as raised, request.activate():
+                            http_transport._read_socket(("127.0.0.1", 1))
+                        self.assertEqual(getattr(raised.exception, "reason", None), reason)
+                        self.assertEqual(request.reason, reason)
+                    finally:
+                        request.close()
+                        release.set()
+                        for thread in threads:
+                            thread.join(2)
+                            self.assertFalse(thread.is_alive())
 
 
 class ReadRequests(unittest.TestCase):

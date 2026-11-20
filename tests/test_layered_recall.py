@@ -294,6 +294,53 @@ class LayeredRecall(unittest.TestCase):
         self.assertNotIn('hook-output-written', diagnostic.getvalue())
         self.assertNotIn('FICTIONAL_PRIVATE_ERROR', diagnostic.getvalue())
 
+    def test_opt_in_codex_failure_timing_is_bounded_and_matches_exact_receipt(self):
+        from agent_brain_client.application import control
+
+        clock = SimpleNamespace(now=0, monotonic=lambda: clock.now)
+        write = recall_receipts.metadata.write
+
+        def recall(*args, **kwargs):
+            clock.now = 20
+            with control.recall_response_headers():
+                for _ in range(12):
+                    with control.recall_header_read(90):
+                        clock.now += 1
+            raise ValueError('FICTIONAL_PRIVATE_ERROR')
+
+        def timed_write(path, value, **kwargs):
+            clock.now += 0.125
+            return write(path, value, **kwargs)
+
+        with (patch.dict(os.environ, {control.RECALL_TIMING_ENV: '1'}),
+              patch.object(control, 'time', clock),
+              patch.object(recall_receipts.metadata, 'write', side_effect=timed_write),
+              patch.object(gm, 'load', return_value=self.value),
+              patch.object(gm, 'eligible', return_value=self.local),
+              patch.object(gm, 'submit_hook', return_value={'status': 'staged'}),
+              patch.object(gm, 'recall', side_effect=recall),
+              patch.object(sys, 'stdin', self.prompt()),
+              patch.object(sys, 'stdout', io.StringIO()) as output,
+              patch.object(sys, 'stderr', io.StringIO())):
+            self.assertEqual(collection_cli.main(['global-hook']), 0)
+        self.assertEqual(json.loads(output.getvalue()), {})
+        sample_text = (self.root / 'last-recall-timing.json').read_text()
+        sample = json.loads(sample_text)
+        receipt = recall_receipts.recall_observation(self.value, sample['request_key'])
+        exact = self.root / 'recall-receipts' / (receipt['request_key'] + '.json')
+        self.assertEqual(sample['receipt_sha256'], recall_receipts.metadata.digest(exact.read_bytes()))
+        self.assertEqual(sample['first_read_budget_ms'], {'request_ms': 90000, 'socket_ms': 90000})
+        reads = sample['response_header_reads']
+        self.assertEqual(reads['count'], 12)
+        self.assertEqual(len(reads['first_spans_ms']), 8)
+        self.assertEqual(reads['first_spans_ms'][0], [20000, 21000])
+        self.assertEqual(reads['last_span_ms'], [31000, 32000])
+        self.assertEqual(sample['failure_receipt_write_ms'], 250)
+        self.assertEqual(receipt['error_type'], 'ValueError')
+        self.assertFalse(receipt['output_written'])
+        self.assertNotIn('FICTIONAL_PRIVATE_ERROR', sample_text)
+        self.assertNotIn('/synthetic/', sample_text)
+
     def test_stdout_write_and_flush_interruption_allow_same_turn_recall_retry(self):
         class Interrupted(BaseException):
             pass
