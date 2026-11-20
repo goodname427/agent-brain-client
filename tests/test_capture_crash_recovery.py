@@ -880,7 +880,7 @@ class CaptureRecovery(unittest.TestCase):
                 metadata.write(cache / 'origin.json', self.local, cache=True)
                 with patch.object(delivery, 'wake'):
                     delivery.schedule_delivery(self.home, harness, self.local)
-                with patch('agent_brain_client.runtime.host_binding.load_core', return_value=Mock()), \
+                with patch('agent_brain_client.runtime.host_binding.load_delivery_core', return_value=Mock()), \
                      patch.object(delivery, 'deliver_origin', return_value=False):
                     delivery.run(self.home)
                 stage_messages(queue, project_id='synthetic-project', session_id='synthetic-session',
