@@ -112,7 +112,6 @@ def request_timeout(timeout):
 
 RECALL_TIMING_ENV = "AGENT_BRAIN_RECALL_TIMING"
 _HEADER_READ_SAMPLES = 8
-_recall_timing = ContextVar("recall_timing", default=None)
 
 
 class _RecallTiming:
@@ -129,6 +128,9 @@ class _RecallTiming:
 
     def offset(self):
         return round((time.monotonic() - self.started) * 1000, 3)
+
+
+_recall_timing: ContextVar[_RecallTiming | None] = ContextVar("recall_timing", default=None)
 
 
 @contextmanager
