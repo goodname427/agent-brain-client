@@ -348,7 +348,7 @@ class MemoryBehavior(unittest.TestCase):
         self.assertIn("GitHub backup", MEMORY_GUIDANCE)
         self.assertIn("remote-confirmed with durable=true", MEMORY_GUIDANCE)
 
-        protocol = (ROOT / "PROTOCOL.md").read_text()
+        protocol = (ROOT / "docs/reference/PROTOCOL.md").read_text()
         section = protocol.split("Memory behavior and source-coverage decisions", 1)[1].split("\nmemory_query", 1)[0]
         self.assertIn("agent-brain-memory", section)
         self.assertIn("agent-brain-onboard", section)

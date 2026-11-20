@@ -20,6 +20,12 @@ from agent_brain_client.adapters.packages.releases import version as validate_ve
 
 ROOT = Path(__file__).resolve().parents[4]
 
+# Source paths can move independently of the published runtime file names.
+PACKAGE_SOURCE_PATHS = {
+    "ADAPTERS.md": "docs/reference/ADAPTERS.md",
+    "PROTOCOL.md": "docs/reference/PROTOCOL.md",
+}
+
 
 def export(
     source,
@@ -65,7 +71,7 @@ def export(
     prior = ()
     payload = {}
     for name in names:
-        p = ROOT / name
+        p = ROOT / PACKAGE_SOURCE_PATHS.get(name, name)
         if not p.is_file() or p.is_symlink():
             raise ValueError("Missing or linked local source")
         payload[name] = p.read_bytes()

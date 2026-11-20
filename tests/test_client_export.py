@@ -73,8 +73,9 @@ class ClientExport(unittest.TestCase):
         self.assertNotIn('version', generated)
         self.assertEqual(set(generated['files']), set(__import__('agent_brain_client.adapters.packages.client',fromlist=['HTTPS_CONTENT_CLIENT_FILES']).HTTPS_CONTENT_CLIENT_FILES))
         for name, digest in generated['files'].items():
-            self.assertEqual(digest, hashlib.sha256((ROOT / name).read_bytes()).hexdigest(), name)
-            self.assertEqual((output / name).read_bytes(), (ROOT / name).read_bytes(), name)
+            source = ROOT / 'docs/reference' / name if name in {'ADAPTERS.md', 'PROTOCOL.md'} else ROOT / name
+            self.assertEqual(digest, hashlib.sha256(source.read_bytes()).hexdigest(), name)
+            self.assertEqual((output / name).read_bytes(), source.read_bytes(), name)
         self.assertFalse((output / 'releases/manifest.json').exists())
         self.assertEqual((ROOT / 'releases/manifest.json').read_bytes(), frozen)
 
