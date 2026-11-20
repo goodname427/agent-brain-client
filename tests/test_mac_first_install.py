@@ -90,7 +90,8 @@ def remote(*args, **kwargs):
 def worker(home):
     with (patch.object(ClientReleases, 'verified_active', autospec=True,
                        side_effect=ClientReleases.verified_active) as verified,
-          patch.object(collection, 'runtime_pins', side_effect=AssertionError('Repeated code check'))):
+          patch.object(collection, 'runtime_pins', create=True,
+                       side_effect=AssertionError('Repeated code check'))):
         try:
             run(home, max_seconds=2)
         finally:
