@@ -107,22 +107,25 @@ def main(argv=None):
                 )
                 result = core.configure_recall(value, options)
             elif a.action == "global-hook":
-                from agent_brain_client.application.control import RequestControl
+                from agent_brain_client.application.control import (
+                    RECALL_TIMING_ENV, RequestControl, recall_timing_scope,
+                )
                 from agent_brain_client.adapters.storage.content import (
                     operation_diagnostics,
                 )
 
                 initialized = time.monotonic()
-                control = RequestControl(110)
-                try:
-                    with operation_diagnostics() as progress:
-                        try:
-                            with control.activate():
-                                result = core.hook(value, harness=a.harness or "codex", observe=observation.update)
-                        finally:
-                            diagnostic.update(progress)
-                finally:
-                    control.close()
+                with recall_timing_scope(os.environ.get(RECALL_TIMING_ENV) == "1"):
+                    control = RequestControl(110)
+                    try:
+                        with operation_diagnostics() as progress:
+                            try:
+                                with control.activate():
+                                    result = core.hook(value, harness=a.harness or "codex", observe=observation.update)
+                            finally:
+                                diagnostic.update(progress)
+                    finally:
+                        control.close()
             elif a.action == "global-status":
                 result = core.status(
                     value,

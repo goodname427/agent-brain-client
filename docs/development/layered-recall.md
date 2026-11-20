@@ -76,6 +76,20 @@ including origin metadata and the policy prefix. It does not measure escaped
 ASCII JSON or fail the entire recall because another candidate is too large.
 Oversized candidates are omitted with a count; stored memory is never truncated.
 
+For isolated diagnosis, a Hook process started with `AGENT_BRAIN_RECALL_TIMING=1`
+can write a private `last-recall-timing.json` beside `last-recall.json`. The
+sampling is off by default. The file is replaced only after saving a sampled
+failed recall. Its request key and exact receipt SHA-256 identify the associated
+receipt, including when a later attempt has the same request key. Offsets use one
+monotonic origin per Hook. They cover the receipt start, credential reads, DNS,
+TCP, TLS, the first response read's remaining request and socket budgets, and
+the interval from failure to saving the normal receipts. Response header timing
+keeps the read count, the first eight spans and the final span. CodeBuddy's
+normal Hook has no Client request deadline, so its request budget is null. The
+sample contains no response bytes, prompt text, credentials or addresses. The
+normal receipt format and Hook output are unchanged, and failure to save a
+sample leaves the original recall outcome intact.
+
 The owned Stop Hook is synchronous, with the existing 120-second host timeout
 and 110-second client deadline. This lets a short-lived `codex exec --json` wait
 for the durable outbox path. An isolated CLI 0.166.0-alpha.5.1 probe with a local
