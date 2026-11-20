@@ -120,8 +120,11 @@ def install(home, *, native=None, remove=False, enabled=None, check_only=False):
                 if not matches(entry(before), previous["mcp"]):
                     raise ValueError("Owned Codex MCP entry changed during Hook removal")
         before_hooks = before
-        after = (toml_remove(before_hooks.decode(), [("mcp_servers", NAME)]) if remove else
-                 toml_replace(before.decode(), ("mcp_servers", NAME), wanted)).encode()
+        if not remove and actual == wanted:
+            after = before_hooks  # Preserve placement and bytes for an unchanged entry.
+        else:
+            after = (toml_remove(before_hooks.decode(), [("mcp_servers", NAME)]) if remove else
+                     toml_replace(before.decode(), ("mcp_servers", NAME), wanted)).encode()
         saved = {"schema": 1, "native_home": str(target), "mcp": wanted, "removed": remove}
         available = before != after or saved != previous
         result = {"status": "codex-uninstalled" if remove else "codex-configured",
