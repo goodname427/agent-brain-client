@@ -1,7 +1,7 @@
 # Mac（Apple Silicon / Intel）：安装、使用、卸载、再次安装
 
-0.8 旧布局请使用[保留记忆并重新连接的重装入口](reinstall.md)，普通 install 不会自动覆盖旧安装；旧未同步队列不会自动接续。
-> 状态：当前维护。适用：Mac arm64 / x86_64 当前安装入口；运行版本由原渠道固定。文档核对日期：2026-11-06；验收范围见 [0.5 交付状态](../releases/0.5-status.md)。
+发布说明要求重装或当前布局不兼容时，请使用[保留记忆并重新连接的重装入口](reinstall.md)，普通 install 不会自动覆盖旧安装；旧未同步队列不会自动接续。
+> 状态：当前维护。适用：Mac arm64 / x86_64 当前安装入口；运行版本由原渠道固定。文档核对日期：2026-11-06；[0.5 验收记录](../releases/0.5-status.md)仅作历史参考。
 
 支持 Apple Silicon / Intel Mac、Codex 和既有 HTTPS 个人 Memory/Rule/Skill 服务。普通客户端无管理 SSH、sudo、发码或 Server/Data 凭据。Windows 使用同一接入协议，见 [Windows 步骤](windows.md)。CodeBuddy 使用[共享安装入口](codebuddy.md)。
 
@@ -98,38 +98,9 @@ sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --action check-update
 sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --action update
 ```
 
-不传新 connection 或邀请。两项动作复用已验证登记中的原 policy、渠道、信任锚和固定依赖，不重新配对或访问设备凭据。update 通过既有安装事务交接旧固定启动器，再用既有健康检查及回滚机制切换活动包；保留 MCP 暂停状态及其他宿主设置。0.3.0 的专用兼容桥接见下文。安装或刷新全局 Hook，同时默认登记和开启所有项目的今后采集，包含旧设备与非交互更新；保留身份、数据、队列、排除目录和隔离规则。宿主提示时按正常流程审核 Hook。check-update 可以下载并校验候选缓存，但不激活、不运行候选健康检查、不刷新 Hook。维护所需工具/解释器缺失或漂移时停止审核，不重新准备或改写其绑定。重复 install 的已安装分支只核验登记，不检查或应用软件更新，输出会指向上述入口。
+不传新 connection 或邀请。两项动作复用已验证登记中的原 policy、渠道、信任锚和固定依赖，不重新配对或访问设备凭据。update 通过既有安装事务交接旧固定启动器，再用既有健康检查及回滚机制切换活动包；保留 MCP 暂停状态及其他宿主设置。若新版发布明确要求重装，请按[重装与续接说明](reinstall.md)，不强行原地升级。安装或刷新全局 Hook，同时默认登记和开启所有项目的今后采集，包含旧设备与非交互更新；保留身份、数据、队列、排除目录和隔离规则。宿主提示时按正常流程审核 Hook。check-update 可以下载并校验候选缓存，但不激活、不运行候选健康检查、不刷新 Hook。维护所需工具/解释器缺失或漂移时停止审核，不重新准备或改写其绑定。重复 install 的已安装分支只核验登记，不检查或应用软件更新，输出会指向上述入口。
 
 check-update 成功返回 client-update-available/current 与 channel_checked:true；update 成功返回 client-update-updated/current。网络不可达、健康失败或信任/范围审核受阻均退出非零并保留恢复材料；不要把旧活动包版本称为已确认最新版，不通过改摘要或信任锚跳过审核。status 不访问渠道。
-
-#### 0.3.0 到 0.3.1 的 HTTPS 更新
-
-0.3.0 的已发布 updater 固定要求 22 个 HTTPS 文件，其中包含 `src/agent_brain_client/adapters/harnesses/codex/notify.py`；0.2.14 固定要求的则是不同的 21 文件集合。0.3.0 自带 updater 会拒绝 21 文件补丁，因此这一个旧版本不能使用其活动包内的自动更新路径。不要改写本机 release policy，也不要把 mux 加回 0.3.1 包。
-
-0.3.0 的 checkout 尚没有 `bootstrap_main.py`，所以这一步必须从官方 HTTPS 仓库取得当前 main 源码；它只准备维护工具源码，不安装或改写 Client。先创建独立 checkout，并确认来源、分支与工作树：
-
-```sh
-MAIN_CHECKOUT=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/agentbrain-main.XXXXXX")
-/usr/bin/git clone --depth 1 --single-branch --branch main --no-tags -- \
-  https://github.com/goodname427/agent-brain-client.git "$MAIN_CHECKOUT"
-test "$(/usr/bin/git -C "$MAIN_CHECKOUT" remote get-url origin)" = \
-  https://github.com/goodname427/agent-brain-client.git
-test "$(/usr/bin/git -C "$MAIN_CHECKOUT" branch --show-current)" = main
-test -z "$(/usr/bin/git -C "$MAIN_CHECKOUT" status --porcelain --untracked-files=all)"
-```
-
-然后从该独立 checkout 调用已有更新入口：
-
-```sh
-sh "$MAIN_CHECKOUT/bootstrap/macos/install.sh" --action check-update
-sh "$MAIN_CHECKOUT/bootstrap/macos/install.sh" --action update
-```
-
-新 checkout 的 updater 只接受精确已知的 0.3.0 历史策略或 0.2.14 当前策略，并仍要求候选包恰好匹配当前 21 文件清单。它复用原 release policy 字节、信任锚和固定依赖；不重新配对、不改 allowlist、不访问设备凭据。
-
-0.3.0 的 `client_startup.py` 固定在旧 22 文件包内，无法读取 21 文件候选。`update` 会先下载并校验候选，再用离线检查确认候选启动器可验证仍活动的 0.3.0 包；随后通过既有安装 journal/回滚事务，只更新 Agent Brain 拥有的 MCP 命令，使它指向缓存中的候选启动器。其他 TOML 设置保持原样。完成此启动器交接后才切换活动包指针。若事务检查失败，原 MCP 配置、登记和 0.3.0 活动包保持不变；若后续渠道更新失败，新启动器仍能运行已验证的 0.3.0 包，之后可重试。这个交接不读取设备凭据、不重新配对，也不改写 release policy。
-
-0.2.14 的 21 文件 updater 可按原有直接更新入口使用，无需启动器交接。两条路径更新成功后先比较 MCP worker 与活动包的版本及 commit，按实际差异决定是否重载。
 
 三个版本分别核查：active_package_version 是本地活动包，latest_channel_version 是本次成功渠道检查的候选，client_runtime.running_worker_version 是 MCP 调用所用 worker。CLI 无法观测 worker，其字段及 reload_required 为 null；reload_check 分别报告活动包、MCP 登记和 Hook 配置的变更。新鲜 MCP 结果中的 reload_required:false 表示版本及 commit 都匹配活动包，true 表示当前 worker 与活动包不同，null 表示无法核实活动包或 commit。需要时通过宿主正常重载本服务，不杀进程；无需重启整个 Codex。offered_tools 是 worker 提供的清单，需与 Agent 实际可调用工具对照；宿主过滤或缓存工具清单、Hook trust、模型上下文加载不能靠 worker 版本判断。确认后再进行本轮 Onboard。即使更新回报 current，也不能据此断言旧 worker 已重载。main、tags、旧回执和映射数量都不能替代此核验。
 
@@ -142,3 +113,7 @@ sh "$MAIN_CHECKOUT/bootstrap/macos/install.sh" --action update
 源码和合成隔离测试不是独立实机验收。真实当前设备卸载/固定入口切换、Keychain、新邀请与发布渠道操作须先确认具体对象及影响；不要自动操作。安装成功后的实际 MCP 读写、卸载、再次安装由未参与开发的执行者仅按本文验证并记录版本、状态和数据保留。未实测另一台裸 Mac，不宣称完成裸机、签名、公证或 Gatekeeper 验收。
 
 首次安装与更新沿用 Windows 的同一来源设置实现：用本机已有 HTTPS 设备身份自动核对服务个人池、登记并开启所有项目的今后采集。不补传历史，不要求重复授权摘要或手填 profile ID。失败重跑同一入口即可；原配置与队列保留。已有 Memory 读取仍可独立使用。完整范围与恢复语义见 [Windows 来源设置](windows.md)。
+
+#### 0.3.0 到 0.3.1 的 HTTPS 更新
+
+这是历史兼容方案，旧桥接已移除，不是当前安装或更新步骤。历史原文见[整理前的 Mac 指南](https://github.com/goodname427/agent-brain-client/blob/8651b586676acef2679e748ee3199ed37e69ff35/docs/installation/mac.md)，当前路径见上文和[重装与续接说明](reinstall.md)。
