@@ -14,4 +14,4 @@
 | [无凭据连接示例](../connection.example.json) | 合成旧格式，不是可用信任锚 |
 | [既有 0.4 阶段固定映射](../../FREEZE-4.0.json) | 不可变阶段／组件映射，不是 0.5 新冻结文件；[历史标识说明](../releases/0.5-status.md#历史标识) |
 
-[项目记忆入口](../../AUTOMATIC_MEMORY.md) 与 [全局记忆入口](../../GLOBAL_MEMORY.md) 维持原位置。本轮仅整理文档，不调整内容记忆组织、受管 Rule/Skill 或生产目录。
+[项目记忆入口](automatic-memory.md)与[全局记忆入口](global-memory.md)收录在此。不调整内容记忆组织、受管 Rule/Skill 或生产目录。
