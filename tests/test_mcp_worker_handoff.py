@@ -809,7 +809,10 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
         from agent_brain_client.adapters.packages.client import ClientReleases
         from agent_brain_client.adapters.packages.frozen import freeze_code, runtime_pins
         from agent_brain_client.adapters.packages.releases import atomic_json, digest
-        from agent_brain_client.adapters.platforms.filesystem import cache_directory
+        from agent_brain_client.adapters.platforms.filesystem import (
+            cache_directory,
+            private_directory,
+        )
         from agent_brain_client.adapters.storage import metadata
         from agent_brain_client.adapters.storage.collection import settings_path
         from agent_brain_client.domain.scopes import digest as scope_digest
@@ -822,6 +825,7 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
         source = Path(active["package"])
         pins = runtime_pins(source)
         settings_file = settings_path(self.home)
+        private_directory(settings_file.parent)
         freeze_code(settings_file.parent, pins, source=source)
         scope = {
             "schema": 1, "profile_id": "a" * 32, "include_roots": [], "exclude_roots": [],
