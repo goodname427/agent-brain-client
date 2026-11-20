@@ -25,6 +25,7 @@ _ROW_CHUNK = 65536
 _STRING_SPECIAL = re.compile(rb'["\\\x00-\x1f]')
 _JSON_ESCAPE = re.compile(rb'\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})')
 _BULK_FIELD = re.compile(rb'"(?:output|image_url)"[ \t\r]*:[ \t\r]*$')
+_FORK_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _FORM_TOOL = "request_user_input_async"
 _FORM_TAG = "<send_user_message_question_reply>"
 _FORM_END = "</send_user_message_question_reply>"
@@ -81,7 +82,8 @@ def _path(native_home, payload):
         or len(parts) != 4
         or not re.fullmatch(r"[0-9]{4}/[0-9]{2}/[0-9]{2}", "/".join(parts[:3]))
         or not re.fullmatch(
-            rf"rollout-[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{2}}-[0-9]{{2}}-[0-9]{{2}}-{session}\.jsonl",
+            rf"rollout-[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{2}}-[0-9]{{2}}-[0-9]{{2}}-"
+            rf"{session}(?:_{_FORK_UUID})?\.jsonl",
             parts[-1],
         )
     ):
