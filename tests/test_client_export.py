@@ -71,7 +71,12 @@ class ClientExport(unittest.TestCase):
         self.assertFalse(generated['production_release_policy_compatible'])
         self.assertFalse(generated['native_install_wired'])
         self.assertNotIn('version', generated)
-        self.assertEqual(set(generated['files']), set(__import__('agent_brain_client.adapters.packages.client',fromlist=['HTTPS_CONTENT_CLIENT_FILES']).HTTPS_CONTENT_CLIENT_FILES))
+        from agent_brain_client.adapters.packages.client import HTTPS_CONTENT_CLIENT_FILES
+        from agent_brain_client.adapters.packages.layout import source_python_members
+        self.assertEqual(
+            set(generated["files"]),
+            set(HTTPS_CONTENT_CLIENT_FILES) | set(source_python_members(ROOT)),
+        )
         for name, digest in generated['files'].items():
             source = ROOT / 'docs/reference' / name if name in {'ADAPTERS.md', 'PROTOCOL.md'} else ROOT / name
             self.assertEqual(digest, hashlib.sha256(source.read_bytes()).hexdigest(), name)

@@ -30,22 +30,20 @@ def backend_home(home):
 
 def verify_adapter():
     pin = ROOT / "code.json"
-    if not pin.exists():
+    if not pin.exists() and not pin.is_symlink():
         return  # Source checkout is only an installer/developer entry.
-    if pin.is_symlink() or pin.stat().st_size > 65536:
-        raise ValueError("Frozen CodeBuddy code metadata changed")
-    value = json.loads(pin.read_bytes())
-    from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+    from agent_brain_client.adapters.packages.frozen import (
+        frozen_source_files,
+        runtime_pins,
+    )
+    from agent_brain_client.adapters.platforms.source_files import canonical
 
-    names = set(PYTHON_FILES)
-    if value.get("schema") != 1 or set(value.get("files", {})) != names:
+    pins = runtime_pins(ROOT)
+    if frozen_source_files(ROOT) != pins.keys():
         raise ValueError("Frozen CodeBuddy code scope changed")
-    for name, sha in value["files"].items():
-        path = ROOT / name
-        if (
-            any(p.is_symlink() for p in (path, *path.parents))
-            or hashlib.sha256(path.read_bytes()).hexdigest() != sha
-        ):
+    for name, sha in pins.items():
+        path = canonical(ROOT / name)
+        if path.stat().st_nlink != 1 or hashlib.sha256(path.read_bytes()).hexdigest() != sha:
             raise ValueError("Frozen CodeBuddy code changed")
 
 

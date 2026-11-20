@@ -233,20 +233,13 @@ def package_tools(package, content, grant):
     package = safe(package)
     from agent_brain_client.application.tools import catalog as tool_catalog
 
-    from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+    from agent_brain_client.adapters.packages.frozen import runtime_pins
 
     root = Path(__file__).resolve().parents[4]
-    contract_files = [
-        name
-        for name in PYTHON_FILES
-        if name.startswith(
-            ("src/agent_brain_client/domain/", "src/agent_brain_client/application/")
-        )
-    ]
-    if all(
-        raw(package / name, 1048576) == (root / name).read_bytes()
-        for name in contract_files
-    ):
+    prefixes = ("src/agent_brain_client/domain/", "src/agent_brain_client/application/")
+    local = {n: h for n, h in runtime_pins(root).items() if n.startswith(prefixes)}
+    target = {n: h for n, h in runtime_pins(package).items() if n.startswith(prefixes)}
+    if target == local:
         return tool_catalog.enabled_tools(content, grant)
     command = [
         sys.executable,

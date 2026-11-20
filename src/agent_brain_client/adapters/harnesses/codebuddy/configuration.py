@@ -275,9 +275,9 @@ def refresh(home, source, *, check_only=False):
     # Check-only maintenance must report native drift just as an update does.
     # No credential or backend call is needed to validate owned native images.
     status(home, None, backend_check=lambda *args: (None, {"status": "native-ownership-only"}))
-    from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+    from agent_brain_client.adapters.packages.frozen import runtime_pins
 
-    pins = {name: digest((source / name).read_bytes()) for name in PYTHON_FILES}
+    pins = runtime_pins(source)
     root = directory / "code" / digest(json.dumps(pins, sort_keys=True).encode())
     wanted, _ = definitions(root / "src/agent_brain_client/interfaces/cli/codebuddy.py", home)
     available = (receipt["mcp"] != wanted or
@@ -317,13 +317,17 @@ def definitions(entry, home):
 
 
 def freeze(source, home, core):
-    from agent_brain_client.adapters.packages.layout import PYTHON_FILES
-    from agent_brain_client.adapters.packages.frozen import freeze_code
-    # Source is an explicitly verified package. The shared freezer binds bytes
-    # from its executing immutable package; callers verify the same source pins.
-    pins = {name: digest((source / name).read_bytes()) for name in PYTHON_FILES}
+    from agent_brain_client.adapters.packages.frozen import freeze_code, runtime_pins
+
+    pins = runtime_pins(source)
     root = freeze_code(state_directory(home), pins, source=source)
-    metadata_io.write(root / "code.json", {"schema": 1, "files": pins})
+    # Legacy snapshots did not need a sidecar for the common freezer.
+    record = root / "code.json"
+    if record.exists() or record.is_symlink():
+        if runtime_pins(root) != pins:
+            raise ValueError("Frozen CodeBuddy code scope changed")
+    else:
+        metadata_io.write(record, {"schema": 1, "files": pins})
     return root / "src/agent_brain_client/interfaces/cli/codebuddy.py"
 
 

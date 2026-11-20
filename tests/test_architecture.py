@@ -9,7 +9,10 @@ import unittest
 
 from dev.checks.source import check_layer_boundary, check_responsibility_boundary
 from agent_brain_client.adapters.packages.client import ClientPackage, UpdateBlocked
-from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+from agent_brain_client.adapters.packages.layout import (
+    PYTHON_FILES,
+    source_python_members,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = "src/agent_brain_client/"
@@ -185,13 +188,13 @@ print(json.dumps({'host_loaded':False,'search_path_changed':False}))
             {"host_loaded": False, "search_path_changed": False},
         )
 
-    def test_every_runtime_module_is_in_the_exact_package_inventory(self):
+    def test_every_runtime_module_is_in_the_source_inventory(self):
         actual = {
             p.relative_to(ROOT).as_posix()
             for p in (ROOT / "src/agent_brain_client").rglob("*.py")
         }
-        self.assertEqual(set(PYTHON_FILES), actual)
-        self.assertEqual(len(PYTHON_FILES), len(actual))
+        self.assertEqual(set(source_python_members(ROOT)), actual)
+        self.assertLessEqual(set(PYTHON_FILES), actual)
 
     def test_old_and_mixed_executable_layouts_require_a_new_installation(self):
         package = ClientPackage()
