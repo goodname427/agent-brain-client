@@ -68,6 +68,32 @@ def frozen_source_files(root):
     }
 
 
+def verify_frozen_code(root):
+    """Read the digest-named inventory and verify every member of the image."""
+    pins = runtime_pins(root)
+    if frozen_source_files(root) != pins.keys():
+        raise ValueError("Frozen Python code scope changed")
+    for name, pin in pins.items():
+        path = metadata_io.canonical(root / name)
+        if path.stat().st_nlink != 1 or metadata_io.digest(path.read_bytes()) != pin:
+            raise ValueError("Frozen Python code changed")
+    return pins
+
+
+def compatible_codebuddy_runtime(home, executing, executing_pins, configured, configured_pins):
+    """Only a pinned CodeBuddy image can use worker-only runtime compatibility."""
+    from agent_brain_client.adapters.packages.client import compatible_managed_workers
+
+    directory = Path(home) / ".config/agent-brain-client"
+    if (
+        executing.parent != directory / "codebuddy/code"
+        or configured.parent != directory / "global-memory/code"
+        or not (executing / "code.json").is_file()
+    ):
+        return False
+    return compatible_managed_workers(executing, executing_pins, configured, configured_pins)
+
+
 def freeze_code(directory, pins, *, source=ROOT):
     """Keep executable Hook code in a private immutable cache, never a checkout."""
     from agent_brain_client.adapters.storage.host_files import atomic

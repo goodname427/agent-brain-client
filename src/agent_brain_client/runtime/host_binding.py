@@ -15,6 +15,7 @@ from agent_brain_client.adapters.storage.bounded_json import (
 )
 from agent_brain_client.adapters.packages.layout import PYTHON_FILES
 from agent_brain_client.adapters.packages.frozen import (
+    compatible_codebuddy_runtime,
     frozen_source_files,
     runtime_pins,
     validate_python_pins,
@@ -24,8 +25,8 @@ from agent_brain_client.adapters.packages.frozen import (
 def load_core(home):
     """Use the existing immutable global runtime, including its own code pins.
 
-    The gateway and shared runtime must contain the same reviewed code. Refresh
-    the Harness binding after a Client change; retain policy, credentials and scope.
+    The gateway and shared runtime must contain the same reviewed Hook code.
+    An immutable CodeBuddy snapshot may differ in compatible MCP worker files.
     """
     directory = canonical(Path(home) / ".config/agent-brain-client/global-memory")
     value = read_json(directory / "settings.json")
@@ -36,11 +37,14 @@ def load_core(home):
         raise ValueError("Existing frozen Client runtime required")
     validate_python_pins(pins)
     executing_root = Path(__file__).resolve().parents[3]
-    if pins != runtime_pins(executing_root):
-        raise ValueError("Refresh the Harness binding to the current Client runtime")
+    executing_pins = runtime_pins(executing_root)
     root = canonical(
         directory / "code" / digest(json.dumps(pins, sort_keys=True).encode())
     )
+    if pins != executing_pins and not compatible_codebuddy_runtime(
+        home, executing_root, executing_pins, root, pins
+    ):
+        raise ValueError("Refresh the Harness binding to the current Client runtime")
     if (pins.keys() - set(PYTHON_FILES) or (root / "code.json").exists()) and (
         runtime_pins(root) != pins or frozen_source_files(root) != pins.keys()
     ):
@@ -64,7 +68,7 @@ def load_core(home):
         ):
             raise ValueError("Frozen Client code changed")
         executing = canonical(executing_root / name)
-        if not executing.is_file() or digest(executing.read_bytes()) != pin:
+        if not executing.is_file() or digest(executing.read_bytes()) != executing_pins[name]:
             raise ValueError(
                 "Refresh the Harness binding to the current Client runtime"
             )

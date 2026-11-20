@@ -80,7 +80,10 @@ class ContentSession(FileContentOutbox):
         view.mapping = host.mapping(view)
         return view
 
-    def __init__(self, home, cache, policy, client, health=None, native_home=None, *, host: NativeContentHost):
+    def __init__(
+        self, home, cache, policy, client, health=None, native_home=None,
+        *, host: NativeContentHost, existing_cache=False,
+    ):
         self.host = host
         require_platform(
             "cache-storage", (getattr(client, "grant", None) or {}).get("platform")
@@ -103,6 +106,7 @@ class ContentSession(FileContentOutbox):
                 Path(home).resolve() / name
                 for name in host.protected
             ],
+            existing_cache=existing_cache,
         )
         self.health = health or (lambda: None)
         self.offline_denied = False

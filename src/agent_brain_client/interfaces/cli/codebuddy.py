@@ -13,7 +13,6 @@ import agent_brain_client.adapters.storage.bounded_json as bounded_json
 
 
 import argparse
-import hashlib
 import json
 import os
 import subprocess
@@ -32,19 +31,9 @@ def verify_adapter():
     pin = ROOT / "code.json"
     if not pin.exists() and not pin.is_symlink():
         return  # Source checkout is only an installer/developer entry.
-    from agent_brain_client.adapters.packages.frozen import (
-        frozen_source_files,
-        runtime_pins,
-    )
-    from agent_brain_client.adapters.platforms.source_files import canonical
+    from agent_brain_client.adapters.packages.frozen import verify_frozen_code
 
-    pins = runtime_pins(ROOT)
-    if frozen_source_files(ROOT) != pins.keys():
-        raise ValueError("Frozen CodeBuddy code scope changed")
-    for name, sha in pins.items():
-        path = canonical(ROOT / name)
-        if path.stat().st_nlink != 1 or hashlib.sha256(path.read_bytes()).hexdigest() != sha:
-            raise ValueError("Frozen CodeBuddy code changed")
+    verify_frozen_code(ROOT)
 
 
 def probe(home, core, runner=subprocess.run):
