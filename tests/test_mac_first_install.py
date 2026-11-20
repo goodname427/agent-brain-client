@@ -12,8 +12,12 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
+import shutil
 import subprocess
 import sys
+import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -24,10 +28,85 @@ import test_https_content as fixtures
 
 GRANT, ROOT = fixtures.GRANT, fixtures.ROOT
 from agent_brain_client.application.installation.pairing import EnrollmentTerminal
+from agent_brain_client.adapters.packages import client as releases
 from agent_brain_client.adapters.packages.client import dependency_environment
+from agent_brain_client.adapters.packages.frozen import freeze_code
 from agent_brain_client.adapters.platforms.credentials import canonical
+from agent_brain_client.adapters.storage import collection, collection_setup, metadata
+from agent_brain_client.domain.scopes import digest, namespace
 import agent_brain_client.runtime.installation as wizard
 import agent_brain_client.adapters.installation.installation as content_install
+
+
+DELIVERY_FIXTURE = """
+import io
+import json
+from pathlib import Path
+import runpy
+import sys
+from types import SimpleNamespace
+from unittest.mock import patch
+
+sys.executable, entry, *args = sys.argv[1:]
+home = Path(args[args.index('--device-home') + 1])
+entry = Path(entry)
+sys.path.insert(0, str(entry.parents[3]))
+from agent_brain_client.adapters.packages.client import ClientReleases
+from agent_brain_client.adapters.server import https
+from agent_brain_client.adapters.storage import collection, metadata
+from agent_brain_client.domain.scopes import digest
+from agent_brain_client.runtime import delivery, host_binding
+
+record = metadata.private_json(home / 'synthetic-credential.json')
+
+class Peer:
+    def open(self, request, **kwargs):
+        assert request.full_url == 'https://synthetic.invalid/v1/requests'
+        assert request.get_header('Authorization') == 'Bearer ' + record['credential']
+        body = json.loads(request.data)
+        method, params = body['method'], body['params']
+        reply = {'request_id': body['request_id']}
+        if method == 'memory_global_status':
+            scope = metadata.private_json(collection.settings_path(home))['scope']
+            reply['result'] = {'global_profile_id': scope['profile_id'],
+                               'scope_sha256': digest(scope), 'source_admitted': True}
+        elif method == 'memory_global_event_submit':
+            event = params['event']
+            reply['result'] = {'event_id': event['event_id'], 'state': 'committed',
+                'message_ids': ['synthetic-received-message'],
+                'core_acceptance': 'acknowledged-not-durability-proof', 'ledger_sync': 'sqlite-wal-full',
+                'pipeline_state': 'unverified', 'model_extraction_verified': False}
+            reply['persistence'] = {'state': 'core-accepted', 'durable': False,
+                'github_confirmed': False, 'receipt_ledger_durable': True}
+        else:
+            reply['error'] = {'code': 'synthetic_recall_unavailable'}
+        with (home / 'synthetic-wire.jsonl').open('a') as log:
+            log.write(json.dumps(body) + '\\n')
+        return io.BytesIO(json.dumps(reply).encode())
+
+def remote(*args, **kwargs):
+    return SimpleNamespace(opener=Peer())
+
+def worker(home):
+    with (patch.object(ClientReleases, 'verified_active', autospec=True,
+                       side_effect=ClientReleases.verified_active) as verified,
+          patch.object(collection, 'runtime_pins', side_effect=AssertionError('Repeated code check'))):
+        try:
+            run(home, max_seconds=2)
+        finally:
+            (home / 'synthetic-worker-finished').write_text(str(verified.call_count))
+
+run = delivery.run
+sys.argv = [str(entry), *args]
+if '--probe-delivery' in args:
+    host_binding.load_delivery_core(home).load(home)
+elif '--probe-frozen' in args:
+    host_binding.load_core(home)
+else:
+    with (patch.object(https, 'native_store', return_value=SimpleNamespace(load=lambda: record)),
+          patch.object(https, 'RemoteClient', remote), patch.object(delivery, 'run', worker)):
+        runpy.run_path(str(entry), run_name='__main__')
+"""
 
 
 class FirstInstall(unittest.TestCase):
@@ -155,6 +234,180 @@ class FirstInstall(unittest.TestCase):
             self.connection_sha,
             **options,
         )
+
+    def installed_delivery_fixture(self):
+        python = Path(sys.executable).resolve()
+        profile_id = 'a' * 32
+        project_id = namespace(self.fixture_grant['actor'], profile_id)
+        event_key = digest(['observed-v1', project_id, 'synthetic-session', 'synthetic-turn', 'prompt', 0])
+        self.fixture_grant['ids']['memory'][0] = 'evt-observed-' + event_key[:48]
+        self.code = self.authority.issue(self.fixture_grant, 300)
+        self.fixture()
+        driver = self.home / 'synthetic-delivery.py'
+        driver.write_text(DELIVERY_FIXTURE)
+        interpreter = Path(self.materials['dependencies']['python'])
+        interpreter.write_text(
+            '#!/bin/sh\n'
+            'case "$3" in\n'
+            '  */interfaces/cli/delivery.py|*/interfaces/cli/collection.py)\n'
+            f'    shift 2; exec {shlex.quote(str(python))} -I -B {shlex.quote(str(driver))} "$0" "$@" ;;\n'
+            'esac\n'
+            f'exec {shlex.quote(str(python))} "$@"\n'
+        )
+        self.materials['dependencies']['python_sha256'] = metadata.digest(interpreter.read_bytes())
+
+        candidate = self.base / 'candidate'
+        exported = fixtures.export(ROOT, candidate, https_content_candidate=True)
+        manifest = dict(schema=1, version='0.8.24', channel='stable', core_api=1,
+                        state_schema=1, python_min='3.11', migrations=[],
+                        capabilities=releases.HTTPS_CONTENT_CAPABILITIES, files=exported['files'])
+        release = ('a' * 40, manifest, lambda member: (candidate / member).read_bytes())
+        with patch.object(releases.GitReleaseSource, 'latest', return_value=release):
+            result = self.run_wizard(updater=None)
+        self.assertTrue(result['installed'], result)
+        self.assertTrue(content_install.inspect(self.home)['registration_verified'])
+        registration, _ = collection.registration_store.registration(self.home)
+        channel = releases.ClientReleases(registration['release_policy'], registration['release_policy_sha256'])
+        active = channel.verified_active(serving=True)
+        package = Path(active['package'])
+        self.assertEqual(package.parent, self.home / '.config/agent-brain-client/first-install/releases/packages')
+
+        value = collection_setup.prepare(SimpleNamespace(
+            device_home=self.home, profile_id=profile_id, operator=None, operator_sha256=None), locate=None)
+        value['scope']['all_projects'] = True
+        scope_sha = digest(value['scope'])
+        metadata.write(collection.settings_path(self.home), dict(
+            value, enabled=True, approved_scope_sha256=scope_sha, server_scope_sha256=scope_sha))
+        metadata.write(self.home / 'synthetic-credential.json', self.backend.record)
+        self.assertFalse((collection.settings_path(self.home).parent / 'code').exists())
+        return interpreter, package, channel, active
+
+    def test_first_install_hook_delivers_from_active_package_without_frozen_copy(self):
+        interpreter, package, _, _ = self.installed_delivery_fixture()
+        project = self.home / 'synthetic-project'
+        project.mkdir()
+        (project / 'Synthetic.uproject').touch()
+        hook = package / 'src/agent_brain_client/interfaces/cli/collection.py'
+        state = collection.settings_path(self.home).parent
+        finished = self.home / 'synthetic-worker-finished'
+        transcript = self.native / 'sessions/2026/01/02/rollout-2026-01-02T03-04-05-synthetic-session.jsonl'
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'synthetic-session'}}) + '\n')
+        payload = dict(hook_event_name='UserPromptSubmit', cwd=str(project),
+                       session_id='synthetic-session', turn_id='synthetic-turn',
+                       prompt='Synthetic observation', transcript_path=str(transcript))
+
+        def hook_and_wait(kind, expected):
+            finished.unlink(missing_ok=True)
+            result = subprocess.run([
+                str(interpreter), '-I', '-B', str(hook), 'global-hook', '--harness', 'codex',
+                '--device-home', str(self.home),
+            ], input=json.dumps(dict(payload, hook_event_name=kind)).encode(),
+               cwd=project, capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            status = json.loads(result.stderr.splitlines()[0])
+            self.assertEqual(status['status'], expected, status)
+            if kind == 'UserPromptSubmit':
+                self.assertEqual(status['local_queue']['state'], 'pending')
+            self.assertNotIn('schedule_error_type', status)
+            deadline = time.monotonic() + 8
+            while not finished.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(finished.exists(), 'Detached worker did not finish')
+            return metadata.private_json(state / 'delivery/status.json', cache=True)
+
+        status = hook_and_wait('UserPromptSubmit', 'staged')
+        outbox, = (state / 'outboxes').glob('*/outbox/*.json')
+        row = metadata.private_json(outbox, cache=True)
+        wire = self.home / 'synthetic-wire.jsonl'
+
+        def submissions():
+            lines = wire.read_text().splitlines() if wire.exists() else []
+            return [request for request in map(json.loads, lines)
+                    if request['method'] == 'memory_global_event_submit']
+
+        sent = submissions()
+        self.assertEqual((status['status'], row['state'], len(sent)), ('idle', 'confirmed', 1), status)
+        self.assertEqual(finished.read_text(), '1')
+        self.assertEqual(sent[0]['request_id'], row['request']['request_id'])
+        self.assertEqual(sent[0]['params']['event'], row['request']['params']['event'])
+        origin = outbox.parents[1] / 'origin.json'
+        self.assertEqual(sent[0]['params']['origin'], metadata.private_json(origin, cache=True))
+        self.assertEqual(hook_and_wait('SessionStart', 'session-ready')['status'], 'idle')
+        self.assertEqual(submissions(), sent)
+
+    def test_first_install_delivery_requires_exact_serving_release_and_keeps_frozen_entry(self):
+        interpreter, package, channel, active = self.installed_delivery_fixture()
+        settings = collection.settings_path(self.home)
+        value = metadata.private_json(settings)
+
+        def probe(root, flag, error=None):
+            result = subprocess.run([
+                str(interpreter), '-I', '-B', str(root / 'src/agent_brain_client/interfaces/cli/delivery.py'),
+                '--device-home', str(self.home), flag,
+            ], capture_output=True, text=True, timeout=15)
+            if error is None:
+                self.assertEqual(result.returncode, 0, result.stderr)
+            else:
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(error, result.stderr)
+
+        probe(package, '--probe-delivery')
+        probe(package, '--probe-frozen', 'Frozen Client code changed')
+        frozen = freeze_code(settings.parent, value['code_sha256'], source=package)
+        probe(frozen, '--probe-frozen')
+        probe(frozen, '--probe-delivery')
+
+        other = package.with_name('0.8.24-' + 'b' * 40)
+        shutil.copytree(package, other)
+        probe(other, '--probe-delivery', 'Verified serving delivery package required')
+        other_home = self.base / 'other-device' / package.relative_to(self.home)
+        shutil.copytree(package, other_home)
+        probe(other_home, '--probe-delivery', 'Verified serving delivery package required')
+
+        # A healthy predecessor remains authoritative during candidate activation.
+        metadata.write(channel.engine.journal, {'phase': 'activated', 'before': active})
+        channel.engine.set_active(dict(active, commit='b' * 40, package=str(other)))
+        probe(package, '--probe-delivery')
+        probe(other, '--probe-delivery', 'Verified serving delivery package required')
+        metadata.write(channel.engine.journal, {'phase': 'complete'})
+        channel.engine.set_active(active)
+
+        metadata.write(settings, dict(value, device_home=str(self.base)))
+        probe(package, '--probe-delivery', 'Exact global memory settings required')
+        hashes = dict(value['code_sha256'])
+        hashes[next(iter(hashes))] = '0' * 64
+        metadata.write(settings, dict(value, code_sha256=hashes))
+        probe(package, '--probe-delivery')
+        probe(frozen, '--probe-delivery', 'Refresh the Harness binding')
+        metadata.write(settings, value)
+
+        policy = self.home / '.config/agent-brain-client/first-install/release-policy.json'
+        original = policy.read_bytes()
+        metadata.write(policy, dict(channel.policy, origin='https://synthetic.invalid/other.git'))
+        probe(package, '--probe-delivery', 'Metadata digest changed')
+        policy.write_bytes(original)
+
+        extra = package / 'src/agent_brain_client/synthetic_unlisted.py'
+        extra.write_text('pass\n')
+        probe(package, '--probe-delivery', 'Client package membership changed')
+        extra.unlink()
+
+        member = package / 'README.md'
+        raw = member.read_bytes()
+        member.write_bytes(raw + b'\nSYNTHETIC DRIFT\n')
+        probe(package, '--probe-delivery', 'Active package integrity failed')
+        member.write_bytes(raw)
+        target = self.base / 'synthetic-readme'
+        member.rename(target)
+        os.link(target, member)
+        probe(package, '--probe-delivery', 'Unsupported Client package member')
+        member.unlink()
+        member.symlink_to(target)
+        probe(package, '--probe-delivery', 'Active package integrity failed')
+        member.unlink()
+        target.rename(member)
+        probe(package, '--probe-delivery')
 
     def test_first_install_cli_emits_onboard_handoff_without_importing(self):
         self.fixture()

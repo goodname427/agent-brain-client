@@ -70,9 +70,10 @@ class Delivery(unittest.TestCase):
             home = Path(temp).resolve()
             with patch.object(delivery, 'wake'):
                 delivery.schedule_delivery(home, 'codex', {'cwd': '/synthetic'})
-            with patch('agent_brain_client.runtime.host_binding.load_core', return_value=SimpleNamespace()), \
+            with patch('agent_brain_client.runtime.host_binding.load_delivery_core', return_value=SimpleNamespace()) as bind, \
                  patch.object(delivery, 'deliver_origin', side_effect=[OSError(), False]) as send:
                 delivery.run(home, pause=lambda _: None)
+                bind.assert_called_once_with(home)
                 self.assertEqual(send.call_count, 2)
             with patch.object(delivery.subprocess, 'Popen') as spawn:
                 self.assertFalse(delivery.wake(home))
@@ -87,6 +88,25 @@ class Delivery(unittest.TestCase):
                  patch.object(delivery.subprocess, 'Popen') as spawn:
                 self.assertFalse(delivery.wake(home))
                 spawn.assert_not_called()
+
+    def test_failed_binding_retries_after_backoff_instead_of_per_task(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp).resolve()
+            with patch.object(delivery, 'wake'):
+                delivery.schedule_delivery(home, 'codex', {'cwd': '/first'})
+                delivery.schedule_delivery(home, 'codebuddy', {'cwd': '/second'})
+            core = SimpleNamespace()
+
+            def after_scan(_):
+                self.assertEqual(bind.call_count, 1)
+                send.assert_not_called()
+
+            with (patch('agent_brain_client.runtime.host_binding.load_delivery_core',
+                        side_effect=[ValueError(), core]) as bind,
+                  patch.object(delivery, 'deliver_origin', return_value=False) as send):
+                delivery.run(home, pause=after_scan)
+            self.assertEqual(bind.call_count, 2)
+            self.assertEqual(send.call_count, 2)
 
     def test_fair_cursor_skips_previous_unknown_outcome(self):
         queue = Mock()
@@ -164,7 +184,7 @@ class Delivery(unittest.TestCase):
             def resume(_):
                 queue.invoke.assert_not_called()
                 core.approved.return_value = True
-            with patch('agent_brain_client.runtime.host_binding.load_core', return_value=core), \
+            with patch('agent_brain_client.runtime.host_binding.load_delivery_core', return_value=core), \
                  patch('agent_brain_client.domain.scopes.select', return_value={}):
                 delivery.run(home, pause=resume)
             self.assertEqual(queue.invoke.call_count, 1)
@@ -180,7 +200,7 @@ class Delivery(unittest.TestCase):
             delivery.discover_existing(home)
             task = delivery.metadata.private_json(next(delivery.directory(home).glob('*.json')), cache=True)
             self.assertEqual(task, {'schema': 1, 'harness': 'codebuddy-final', 'turn_id': key})
-            with patch('agent_brain_client.runtime.host_binding.load_core', return_value=Mock()), \
+            with patch('agent_brain_client.runtime.host_binding.load_delivery_core', return_value=Mock()), \
                  patch('agent_brain_client.adapters.harnesses.codebuddy.events.resume_observed_assistant',
                        side_effect=[True, False], create=True) as finish:
                 delivery.run(home, pause=lambda _: None)
@@ -216,7 +236,7 @@ class Delivery(unittest.TestCase):
                     thread.start()
                     self.assertTrue(attempted.wait(2))
                 return original(path, value, **kwargs)
-            with patch('agent_brain_client.runtime.host_binding.load_core', return_value=Mock()), \
+            with patch('agent_brain_client.runtime.host_binding.load_delivery_core', return_value=Mock()), \
                  patch.object(delivery, 'deliver_origin', return_value=False), \
                  patch.object(delivery.metadata, 'write', side_effect=save), \
                  patch.object(delivery.subprocess, 'Popen') as spawn:
@@ -232,7 +252,7 @@ class Delivery(unittest.TestCase):
             home = Path(temp).resolve()
             with patch.object(delivery, 'wake'):
                 delivery.schedule_assistant_completion(home, 'b' * 64)
-            with patch('agent_brain_client.runtime.host_binding.load_core', return_value=Mock()), \
+            with patch('agent_brain_client.runtime.host_binding.load_delivery_core', return_value=Mock()), \
                  patch('agent_brain_client.adapters.harnesses.codebuddy.events.resume_observed_assistant',
                        side_effect=ValueError('Synthetic cancelled request')) as finish:
                 delivery.run(home)
@@ -248,7 +268,7 @@ class Delivery(unittest.TestCase):
             home = Path(temp).resolve()
             with patch.object(delivery, 'wake'):
                 delivery.schedule_delivery(home, 'codex', {'cwd': '/old'})
-            with patch('agent_brain_client.runtime.host_binding.load_core', return_value=Mock()), \
+            with patch('agent_brain_client.runtime.host_binding.load_delivery_core', return_value=Mock()), \
                  patch.object(delivery, 'deliver_origin', return_value=False):
                 delivery.run(home)
             with patch.object(delivery.subprocess, 'Popen') as spawn:

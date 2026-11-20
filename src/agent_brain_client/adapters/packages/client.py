@@ -399,7 +399,7 @@ class ClientPackage:
                 raise UpdateBlocked("File outside approved runtime scope") from error
         return (*self.files, *sorted(added))
 
-    def preflight(self, package, manifest):
+    def preflight(self, package, manifest, *, exact_membership=False):
         files = self.package_files(manifest)
         if manifest["migrations"]:
             raise UpdateBlocked("Client migration change requires review")
@@ -427,7 +427,7 @@ class ClientPackage:
             raise UpdateBlocked(
                 "Native component source changed; signed component/plan review required"
             )
-        if len(files) != len(self.files):
+        if exact_membership or len(files) != len(self.files):
             # A module outside the verified manifest could be imported by Python.
             root = package.resolve()
             present = set()
@@ -516,7 +516,7 @@ class ClientReleases:
             {},
         )
 
-    def verified_active(self, *, serving=False):
+    def verified_active(self, *, serving=False, exact_membership=False):
         require_platform("release-update", self.policy["platform"])
         active = self.engine.serving_active() if serving else self.engine.active()
         if active and self.policy["capabilities"] in (
@@ -527,7 +527,9 @@ class ClientReleases:
             receipt = json.loads(
                 (Path(active["package"]) / "verified.json").read_text(encoding="utf-8")
             )
-            self.engine.adapter.preflight(Path(active["package"]), receipt["manifest"])
+            self.engine.adapter.preflight(
+                Path(active["package"]), receipt["manifest"], exact_membership=exact_membership,
+            )
         return active
 
     def discover(self, adapter, platform, installed_version):
