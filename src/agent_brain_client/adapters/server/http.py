@@ -106,9 +106,10 @@ def _resolve_address(address):
     # finish late; it cannot send HTTP, touch the adapter or publish its result.
     threading.Thread(target=resolve, name="content-read-dns", daemon=True).start()
     control.register(done.set)
-    if not done.wait(request_timeout(90)):
-        control.cancel("request_deadline_exceeded")
+    resolved = done.wait(request_timeout(90))
     control.check()
+    if not resolved:
+        raise TimeoutError("Name resolution timed out")
     if errors:
         raise errors[0]
     return result[0]
