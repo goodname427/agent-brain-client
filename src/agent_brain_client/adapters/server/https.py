@@ -15,7 +15,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 BASE = Path(__file__).resolve().parent
 ROOT = BASE.parent
 from agent_brain_client.adapters.server.http import RemoteClient, NoRedirect
-from agent_brain_client.application.control import RequestStopped
+from agent_brain_client.application.control import RequestStopped, recall_timing_stage
 from agent_brain_client.domain.enrollment import enrollment_record
 from agent_brain_client.domain.authorization import valid_secret
 from agent_brain_client.domain.service import endpoint_check
@@ -574,7 +574,8 @@ class HTTPSContentClient:
         )
 
     def activate_identity(self):
-        saved = enrollment_record(self.store.load(), self.profile_sha, self.grant)
+        with recall_timing_stage("identity_read"):
+            saved = enrollment_record(self.store.load(), self.profile_sha, self.grant)
         if (
             saved["phase"] != "active"
             or self.device_id is not None
@@ -590,7 +591,8 @@ class HTTPSContentClient:
         }
 
     def _credential(self):
-        saved = enrollment_record(self.store.load(), self.profile_sha, self.grant)
+        with recall_timing_stage("credential_read"):
+            saved = enrollment_record(self.store.load(), self.profile_sha, self.grant)
         if (
             saved["phase"] != "active"
             or self.device_id is None

@@ -58,6 +58,27 @@ def _chunks(content):
         start = end
 
 
+def _operation_key(project_id, session_id, operation_id, phase):
+    return digest(["observed-v1", project_id, session_id, operation_id, phase])
+
+
+def _batch_key(project_id, session_id, operation_id, phase, index):
+    return digest(["observed-v1", project_id, session_id, operation_id, phase, index])
+
+
+def prompt_fingerprint(queue, *, project_id, session_id, operation_id):
+    """Fingerprint of an existing replayable prompt, including partial staging."""
+    key = _operation_key(project_id, session_id, operation_id, "prompt")
+    marker = queue._load("observed-operations/" + key + ".json")
+    if marker is None:
+        return None
+    batch = _batch_key(project_id, session_id, operation_id, "prompt", 0)
+    if (queue._load("outbox/observed_event_" + batch + ".json") is not None
+            or queue._load("observed-staging/" + key + ".json") is not None):
+        return marker["content_sha256"]
+    return None
+
+
 def stage_messages(queue, *, project_id, session_id, operation_id, phase, messages, occurred_at=None):
     contract.event_identifier(session_id)
     contract.event_identifier(project_id)
@@ -83,7 +104,7 @@ def stage_messages(queue, *, project_id, session_id, operation_id, phase, messag
             batch.append(item)
     if batch:
         batches.append(batch)
-    operation_key = digest(["observed-v1", project_id, session_id, operation_id, phase])
+    operation_key = _operation_key(project_id, session_id, operation_id, phase)
     fingerprint = digest(messages)
     # Freeze timestamps once under the short enqueue lock; never wait on transport.
     with queue._outbox_lock(queue.cache / "observed-messages.lock", "capture-stage-lock"):
@@ -100,7 +121,7 @@ def stage_messages(queue, *, project_id, session_id, operation_id, phase, messag
             return _result(rows)
         requests = []
         for index, batch in enumerate(batches):
-            key = digest(["observed-v1", project_id, session_id, operation_id, phase, index])
+            key = _batch_key(project_id, session_id, operation_id, phase, index)
             rid = "observed_event_" + key
             old = queue._load("outbox/" + rid + ".json")
             if old is not None:

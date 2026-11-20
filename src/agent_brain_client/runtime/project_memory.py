@@ -534,13 +534,20 @@ def capture(p, payload):
     blocked = canonical(Path(p["off_file"]).parent / ("excluded-" + key + ".json"))
     if blocked.exists():
         return {"status": "excluded-turn", "data_transferred": False}
-    if private_content(text) or restricted(text):
-        write(
-            blocked,
-            {"schema": 1, "reason": "local-only-or-sensitive", "turn_sha256": key},
-            exclusive=True,
-        )
+
+    def exclude():
+        try:
+            write(
+                blocked,
+                {"schema": 1, "reason": "local-only-or-sensitive", "turn_sha256": key},
+                exclusive=True,
+            )
+        except FileExistsError:
+            pass
         return {"status": "excluded-turn", "data_transferred": False}
+
+    if private_content(text) or restricted(text):
+        return exclude()
     client = HTTPSContentClient(p["profile"], p["profile_sha256"])
     content = pinned(p["content_policy"], p["content_policy_sha256"])
     validate_policy(content, client.grant)
@@ -550,24 +557,19 @@ def capture(p, payload):
     if kind == "Stop":
         staged = adapter._load("hook-turns/" + key + ".json")
         if isinstance(staged, dict) and (private_content(staged.get("prompt", "")) or restricted(staged.get("prompt", ""))):
-            blocked = canonical(
-                Path(p["off_file"]).parent / ("excluded-" + key + ".json")
-            )
-            if not blocked.exists():
-                write(
-                    blocked,
-                    {
-                        "schema": 1,
-                        "reason": "local-only-or-sensitive",
-                        "turn_sha256": key,
-                    },
-                    exclusive=True,
-                )
-            return {"status": "excluded-turn", "data_transferred": False}
-    from agent_brain_client.application.memory.observations import stage_messages
+            return exclude()
     previous = adapter._load("outbox/agentbrain_event_" + key + ".json")
     if previous is not None:
         return dict(adapter._queue_result(previous), status="retained-paired-event")
+    if p["harness"] == "codex":
+        from agent_brain_client.adapters.harnesses.codex.hooks import stage_hook_messages
+
+        return stage_hook_messages(
+            adapter, scope, turn, kind, text, payload, exclude=exclude, excluded=blocked.exists,
+            native_home=lambda: p["codex_home"],
+        )
+    from agent_brain_client.application.memory.observations import stage_messages
+
     return stage_messages(adapter, project_id=scope["project_id"], session_id=scope["session_id"],
                           operation_id=turn, phase="prompt" if kind == "UserPromptSubmit" else "assistant",
                           messages=[{"role": "user" if kind == "UserPromptSubmit" else "assistant", "content": text}])

@@ -99,11 +99,13 @@ def main():
             return host_binding.execute_mcp(home, core)
         if args.action == "hook":
             initialized = time.monotonic()
+            from agent_brain_client.application.control import RECALL_TIMING_ENV, recall_timing_scope
             from agent_brain_client.runtime.delivery import schedule_assistant_completion
             observation = {}
-            output, state = runtime.hook(home, sys.stdin.buffer, core=core,
-                defer=lambda turn: schedule_assistant_completion(home, turn),
-                observe=observation.update)
+            with recall_timing_scope(os.environ.get(RECALL_TIMING_ENV) == "1"):
+                output, state = runtime.hook(home, sys.stdin.buffer, core=core,
+                    defer=lambda turn: schedule_assistant_completion(home, turn),
+                    observe=observation.update)
             state["cli_timing_ms"] = {
                 "initialization_ms": round((initialized - started) * 1000, 3),
                 "total_ms": round((time.monotonic() - started) * 1000, 3),

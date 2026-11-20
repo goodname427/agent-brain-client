@@ -24,6 +24,7 @@ PYTHON_FILES = (
     "src/agent_brain_client/adapters/harnesses/codex/mapping.py",
     "src/agent_brain_client/adapters/harnesses/codex/memory_inventory.py",
     "src/agent_brain_client/adapters/harnesses/codex/project_configuration.py",
+    "src/agent_brain_client/adapters/harnesses/codex/transcript.py",
     "src/agent_brain_client/adapters/harnesses/hook_output.py",
     "src/agent_brain_client/adapters/installation/__init__.py",
     "src/agent_brain_client/adapters/installation/fresh_installation.py",

@@ -5,6 +5,10 @@ from pathlib import Path
 from agent_brain_client.application.control import (
     check_request,
     current_request,
+    recall_header_read,
+    recall_response_headers,
+    recall_timing_active,
+    recall_timing_stage,
     request_timeout,
 )
 #!/usr/bin/env python3
@@ -57,29 +61,31 @@ def _read_socket(address, timeout=None, source_address=None):
     check_request()
     candidates = _resolve_address(address)
     check_request()
-    error = None
-    for family, kind, protocol, _, destination in candidates:
-        sock = socket.socket(family, kind, protocol)
-        try:
-            sock.settimeout(timeout)
-            if source_address:
-                sock.bind(source_address)
-            _watch_socket(sock)
-            sock.connect(destination)
-            check_request()
-            return sock
-        except OSError as exc:
-            sock.close()
-            check_request()
-            error = exc
-        except BaseException:
-            sock.close()
-            raise
-    if error is not None:
-        raise error
-    raise OSError("No connection address")
+    with recall_timing_stage("tcp"):
+        error = None
+        for family, kind, protocol, _, destination in candidates:
+            sock = socket.socket(family, kind, protocol)
+            try:
+                sock.settimeout(timeout)
+                if source_address:
+                    sock.bind(source_address)
+                _watch_socket(sock)
+                sock.connect(destination)
+                check_request()
+                return sock
+            except OSError as exc:
+                sock.close()
+                check_request()
+                error = exc
+            except BaseException:
+                sock.close()
+                raise
+        if error is not None:
+            raise error
+        raise OSError("No connection address")
 
 
+@recall_timing_stage("dns")
 def _resolve_address(address):
     control = current_request()
     if control is None:
@@ -106,9 +112,10 @@ def _resolve_address(address):
     # finish late; it cannot send HTTP, touch the adapter or publish its result.
     threading.Thread(target=resolve, name="content-read-dns", daemon=True).start()
     control.register(done.set)
-    if not done.wait(request_timeout(90)):
-        control.cancel("request_deadline_exceeded")
+    resolved = done.wait(request_timeout(90))
     control.check()
+    if not resolved:
+        raise TimeoutError("Name resolution timed out")
     if errors:
         raise errors[0]
     return result[0]
@@ -186,15 +193,48 @@ class _ReadResponseSocket:
     def makefile(self, mode):
         if mode != "rb":
             raise ValueError("Read-only response required")
-        return io.BufferedReader(_ReadSocketFile(self.sock, self.control))
+        sample = recall_timing_active()
+        timeout = self.sock.gettimeout() if sample else None
+        raw = (
+            _ReadSocketFile(self.sock, self.control) if self.control is not None
+            else self.sock.makefile(mode, buffering=0)
+        )
+        return io.BufferedReader(_TimedHeaderFile(raw, timeout) if sample else raw)
+
+
+class _TimedHeaderFile(io.RawIOBase):
+    """Observe reads under the host's existing socket and request deadlines."""
+
+    def __init__(self, raw, timeout):
+        super().__init__()
+        self.raw, self.timeout = raw, timeout
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        with recall_header_read(self.timeout):
+            return self.raw.readinto(buffer)
+
+    def close(self):
+        try:
+            self.raw.close()
+        finally:
+            super().close()
 
 
 class ReadHTTPResponse(http.client.HTTPResponse):
     def __init__(self, sock, *args, **kwargs):
         control = current_request()
-        if control is not None:
+        if control is not None or recall_timing_active():
             sock = _ReadResponseSocket(sock, control)
         super().__init__(sock, *args, **kwargs)
+
+    def begin(self):
+        if recall_timing_active():
+            with recall_response_headers():
+                return super().begin()
+        return super().begin()
 
 
 class ReadHTTPConnection(http.client.HTTPConnection):
@@ -220,12 +260,13 @@ class ReadHTTPSConnection(http.client.HTTPSConnection):
         check_request()
         http.client.HTTPConnection.connect(self)
         server_hostname = getattr(self, "_tunnel_host", None) or self.host
-        self.sock = getattr(self, "_context").wrap_socket(
-            self.sock, server_hostname=server_hostname, do_handshake_on_connect=False
-        )
-        _watch_socket(self.sock)
-        self.sock.do_handshake()
-        check_request()
+        with recall_timing_stage("tls"):
+            self.sock = getattr(self, "_context").wrap_socket(
+                self.sock, server_hostname=server_hostname, do_handshake_on_connect=False
+            )
+            _watch_socket(self.sock)
+            self.sock.do_handshake()
+            check_request()
 
 
 class ReadHTTPHandler(HTTPHandler):

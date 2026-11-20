@@ -3,6 +3,7 @@
 import time
 from agent_brain_client.domain import privacy
 from agent_brain_client.domain.scopes import digest, restricted
+from agent_brain_client.application.control import recall_timing_failed, start_recall_timing
 from agent_brain_client.application.memory.context import render_context
 
 
@@ -32,6 +33,7 @@ def recall_prompt(value, local, payload, query, *, services, observe=None):
         if services.cache_exists(stamp):
             return []
         query = question[:1024]
+        start_recall_timing(key)
         receipt = {
             "schema": 2,
             "at": time.time(),
@@ -69,6 +71,7 @@ def recall_prompt(value, local, payload, query, *, services, observe=None):
                 )
             result = items
         except Exception as error:
+            recall_timing_failed()
             receipt["error_type"] = type(error).__name__
             services.save_observation(value, receipt)
             if observe is not None:

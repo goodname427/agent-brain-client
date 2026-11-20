@@ -30,7 +30,7 @@ def sha(raw):
 
 
 def cache_bytes(name):
-    if name.startswith(("observed-staging/", "observed-review/")):
+    if name.startswith(("observed-staging/", "observed-review/", "codex-completions/")):
         return 8 * 1048576
     if name in ("transaction.json", "projection-removal.json") or re.fullmatch(r"projection-removal-history/[a-f0-9]{64}\.json", name):
         return TRANSACTION_BYTES
