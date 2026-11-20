@@ -104,12 +104,12 @@ Actions 重跑 publish job 复用同次 prepare artifact。重跑整个 prepare 
 
 ## 需要重新安装的结构发布
 
-`prepare --installation-mode reinstall --targets all --version 0.8.0` 用于已审核的目录结构切换。默认 `upgrade` 仍要求完全相同的文件集合和凭据组件摘要；不会因为新结构而放宽旧客户端的升级校验。重装模式必须同时准备 Mac arm64、Mac x86_64、Windows amd64、Windows arm64，保留现有三个渠道及其祖先，不另建信任渠道。
+`prepare --installation-mode reinstall --targets all --version auto` 用于已审核的目录结构切换。默认 `upgrade` 仍要求完全相同的文件集合和凭据组件摘要；不会因为新结构而放宽旧客户端的升级校验。重装模式必须同时准备 Mac arm64、Mac x86_64、Windows amd64、Windows arm64，保留现有三个渠道及其祖先，不另建信任渠道。
 
 重装模式仍逐项核对协议、状态 schema、Python 最低版本、能力与 migrations。`plan.json` 冻结 `installation.mode`、每个原渠道的新增／删除路径、凭据前后路径和摘要。Mac 凭据 Swift 源必须逐字节相同；旧 Windows `scripts/brain_windows.py` 只允许已审核的 `unique` 导入变为完整包名，其余字节必须相同。任意其他凭据实现变化、来源字节不符、部分平台发布或重跑时切换模式都会拒绝。发布／核验从原始源码重建整个审计，不接受手改计划。此项审计**不修改设备上的 profile、凭据 pin 或队列绑定**。
 
-工作流对应 `installation_mode: reinstall`；`publish` 仍默认关闭。Release 正文明确标注 `REINSTALLATION REQUIRED`。旧布局无法原地更新，旧客户端应保留原活动包并报告 review-required。新安装使用当前入口。已有安装必须保留本地 Memory、Server 数据、身份、凭据、待发送队列和安装回执；不得删除配置目录、清空队列、重置设备身份或改写 pin 来获得安装成功。
+工作流对应 `installation_mode: reinstall`；`publish` 仍默认关闭。Release 正文明确标注 `REINSTALLATION REQUIRED`。旧布局无法原地更新，旧客户端应保留原活动包并报告 review-required。新安装使用当前入口。结构重装应建立同一 Server／账号的新设备登记。旧身份、凭据项、未发送队列和安装回执保留在原位置或归档，不作为新身份接续，旧队列不自动重放。
 
-旧 Windows profile 的摘要绑定旧凭据源；新版继续拒绝旧 pin。结构切换使用显式 `reinstall` action：在通过精确租约检查、由宿主正常断开受影响的 Agent Brain MCP 服务并等待活动 Hook／事务结束后，仅移除回执核验一致的 Agent Brain 入口，将旧 Client 状态移动到独立保留目录，再由用户通过隐藏输入重新连接同一 Server/账号。新 profile 有独立 instance_id，原系统凭据项与旧 pin 不改写、不清理；旧身份和旧队列不接续。已确认的本地记忆投影由 mapping 所有者验证并复制，原生持久记忆保持原位置；新连接读取已知原记忆进行核验。具体命令和恢复步骤见[0.8 重装](../installation/reinstall.md)。
+实际操作、已确认记忆的恢复范围和事务续接见[官方重装与续接](../installation/reinstall.md)。发行方不能用手改 pin、删除配置或清空队列代替重装事务。
 
 Mac 安装器按原生架构选择 Python 3.12.15 的固定归档，ARM 与 Intel 分别独立校验 SHA256。摘要来自 [上游 20261009 正式发布](https://github.com/astral-sh/python-build-standalone/releases/tag/20261009) 的 asset digest；已具备 Python 3.11+ 时复用现有解释器。Windows 继续使用已验证的本机 Python，不引入下载或系统 Python 替换。
