@@ -28,6 +28,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
+from agent_brain_client.adapters.packages.build import PACKAGE_SOURCE_PATHS
 from agent_brain_client.adapters.packages.publication import require_publishable
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -341,7 +342,11 @@ def runtime_artifacts(
                 if p.is_file()
             }
             for name, digest in manifest["files"].items():
-                if package[name] != payload[name] or sha(package[name]) != digest:
+                source_name = PACKAGE_SOURCE_PATHS.get(name, name)
+                # Older frozen source trees still store these documents at the root.
+                if source_name not in payload:
+                    source_name = name
+                if package[name] != payload[source_name] or sha(package[name]) != digest:
                     raise ValueError("Runtime source integrity failed: " + name)
             run(
                 [

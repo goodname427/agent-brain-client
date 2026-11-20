@@ -16,7 +16,7 @@
 
 ## 根入口与合同数据
 
-根目录保留固定入口 [PROTOCOL](../PROTOCOL.md) 和 [ADAPTERS](../ADAPTERS.md)。日常说明见[项目记忆](reference/automatic-memory.md)和[全局记忆](reference/global-memory.md)。ADAPTERS 包含历史候选，当前安装使用平台步骤，不能将旧候选当当前能力。
+参考文档包括 [公共协议](reference/PROTOCOL.md) 和 [适配器历史参考](reference/ADAPTERS.md)。日常说明见[项目记忆](reference/automatic-memory.md)和[全局记忆](reference/global-memory.md)。ADAPTERS 包含历史候选，当前安装使用平台步骤，不能将旧候选当当前能力。
 
 [connection.example.json](connection.example.json) 是无凭据旧连接格式示例，包含合成端点和占位锚，只供合同说明／旧事务兼容，不能直接安装；[历史冻结映射](archive/0.4/FREEZE-4.0.json) 是既有 0.4 阶段不可变基线。历史记录保留原字节和旧 tag；连接示例及本地 [运行 manifest](../releases/manifest.json) 保留原路径。
 
