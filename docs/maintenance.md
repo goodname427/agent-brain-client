@@ -18,7 +18,7 @@
 
 已发布的 0.5.9 安装器源码 tag 保留迁移前的文件和相对引用；历史 tag／提交的地址不因删除 main 上的导读页而改变。无法从本仓库确认外部是否有人保存过指向 main 旧文件的链接，不宣称这些入链不存在；此类旧 main 地址在删除后不再兼容。当前使用从根安装入口或文档索引开始。
 
-[connection.example.json](connection.example.json) 是无凭据连接格式合同，根 [历史冻结映射](../FREEZE-4.0.json) 是既有不可变基线，[运行 manifest](../releases/manifest.json) 是既有数据，三者保留路径和原字节，不归档、不因文案更新改值。记忆内容、组织、受管 Rule/Skill 与生产 catalog 不属于本次整理范围。
+[connection.example.json](connection.example.json) 是无凭据连接格式合同，[运行 manifest](../releases/manifest.json) 是现行合同数据，两者保留原路径，不因文案更新改值。[历史冻结映射](archive/0.4/FREEZE-4.0.json) 和 [0.5 冻结清单](archive/0.5/FREEZE-0.5.json) 保留原字节、文件名和旧 tag，在 main 归入对应阶段。记忆内容、组织、受管 Rule/Skill 与生产 catalog 不属于本次整理范围。
 
 ## 检查与交付
 

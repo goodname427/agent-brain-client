@@ -21,4 +21,4 @@
 
 0.5.8／0.5.9 没有旧平铺发布说明，本轮按已存在的 tag／提交补入 [0.5 状态](../releases/0.5-status.md)，不虚构历史验收。
 
-历史正文只在上述版本目录维护，仓内索引直接指向正文，不另设旧平铺路径导读。归档不包括 [connection 示例](../connection.example.json)、[0.4 阶段固定基线](../../FREEZE-4.0.json) 或运行 manifest；这些仍是契约数据。
+历史正文与冻结快照归入对应阶段：[0.4 冻结清单](0.4/FREEZE-4.0.json)、[0.5 冻结清单](0.5/FREEZE-0.5.json)。现行 [connection 示例](../connection.example.json) 和运行 manifest 不归档。
