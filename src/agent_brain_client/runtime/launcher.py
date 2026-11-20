@@ -229,11 +229,14 @@ def registration_stamp(runtime, harness):
 
         directory = host.state_directory(home)
         transaction = directory / "transaction.json"
-        if (transaction.exists() or transaction.is_symlink()) and (
-            private_files.private_json(transaction).get("phase") == "applying"
-        ):
-            return None
-        receipt = private_files.private_json(directory / "registration.json")
+        receipt_file = directory / "registration.json"
+        receipt = private_files.private_json(receipt_file)
+        if transaction.exists() or transaction.is_symlink():
+            record = private_files.private_json(transaction)
+            if record.get("phase") == "applying" and not host.mcp_unchanged_during_transaction(
+                record, receipt_file, receipt
+            ):
+                return None
         if receipt["removed"] or set(receipt["mcp_paths"]) != set(map(str, host.mcp_paths(home, receipt["surface"]))):
             return None
         owned = []

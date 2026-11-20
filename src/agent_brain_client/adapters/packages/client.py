@@ -544,6 +544,14 @@ def managed_worker_abi(package, files):
     return match[1].decode("ascii")
 
 
+def compatible_managed_workers(previous, previous_files, candidate, candidate_files):
+    """Both snapshots must implement the same cache ABI and fixed runtime."""
+    if fixed_launcher_files(previous_files) != fixed_launcher_files(candidate_files):
+        return False
+    abi = managed_worker_abi(previous, previous_files)
+    return abi is not None and abi == managed_worker_abi(candidate, candidate_files)
+
+
 class ClientReleases:
     def __init__(self, path, expected_sha, *, inspection=False, discovery_timeout=5):
         self.inspection = inspection

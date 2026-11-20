@@ -614,6 +614,7 @@ from agent_brain_client.interfaces.mcp.framing import write_response
 from agent_brain_client.interfaces.mcp.server import DRAIN_METHOD, HANDOFF_VERSION, serve
 
 version = sys.argv[sys.argv.index("--client-version") + 1]
+harness = sys.argv[sys.argv.index("--harness") + 1]
 seed = sys.argv[sys.argv.index("--managed-stdio") + 1]
 protocol = "2025-11-25"
 tools = [{"name": "fixture", "inputSchema": {"type": "object"}}]
@@ -634,7 +635,7 @@ class Worker:
             raise AssertionError("Initialize first")
         if method == "tools/list":
             return {"tools": tools}
-        return {"worker_version": version, "worker_source": str(Path(__file__).resolve())}
+        return {"worker_version": version, "worker_source": str(Path(__file__).resolve()), "harness": harness}
 
 write_response(sys.stdout, {
     "abWorkerReady": HANDOFF_VERSION,
@@ -802,6 +803,177 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
         self.assertEqual(Path(observed["worker_source"]).parents[4], Path(active["package"]))
         self.assertIsNone(child.poll())
         self.assertEqual(exchange("tools/list"), tools)
+
+    def codebuddy_registration(self):
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration as host
+        from agent_brain_client.adapters.packages.client import ClientReleases
+        from agent_brain_client.adapters.packages.frozen import freeze_code, runtime_pins
+        from agent_brain_client.adapters.packages.releases import atomic_json, digest
+        from agent_brain_client.adapters.platforms.filesystem import cache_directory
+        from agent_brain_client.adapters.storage import metadata
+        from agent_brain_client.adapters.storage.collection import settings_path
+        from agent_brain_client.domain.scopes import digest as scope_digest
+        from agent_brain_client.runtime.delivery import directory
+
+        state = self.home / ".config/agent-brain-client"
+        registration = metadata.private_json(state / "codex-mcp.json")
+        channel = ClientReleases(registration["release_policy"], registration["release_policy_sha256"])
+        active = self.packages(channel, Path(registration["package"]))
+        source = Path(active["package"])
+        pins = runtime_pins(source)
+        settings_file = settings_path(self.home)
+        freeze_code(settings_file.parent, pins, source=source)
+        scope = {
+            "schema": 1, "profile_id": "a" * 32, "include_roots": [], "exclude_roots": [],
+            "non_project_roots": [str(self.home)], "recall_personal": True,
+        }
+        approved = scope_digest(scope)
+        metadata.write(settings_file, {
+            "schema": 1, "enabled": True, "device_home": str(self.home), "scope": scope,
+            "approved_scope_sha256": approved, "server_scope_sha256": approved,
+            "legacy_projects": [], "operator": None, "operator_sha256": None, "code_sha256": pins,
+        })
+        cache_directory(directory(self.home))
+        atomic_json(channel.engine.local / "startup-check.json", {
+            "policy_sha256": digest(json.dumps(channel.policy, sort_keys=True).encode()),
+            "checked_at": time.time(),
+        })
+        host.install(self.home, source, None, surface="cli")
+        receipt_file = host.state_directory(self.home) / "registration.json"
+        receipt = metadata.private_json(receipt_file)
+        config = Path(receipt["mcp_paths"][0])
+        # Untouched native bytes include a BOM and a user comment.
+        config.write_bytes(b"\xef\xbb\xbf" + config.read_bytes().replace(b"{", b"{ // fixture\n", 1))
+        return channel, receipt_file, config
+
+    def run_codebuddy_hook(self, receipt):
+        import shlex
+
+        from agent_brain_client.adapters.storage import metadata
+        from agent_brain_client.runtime.delivery import directory
+
+        # Refresh the normal spawn cooldown for each isolated invocation.
+        metadata.write(directory(self.home) / "spawn.json", {"at": time.time()}, cache=True)
+        command = receipt["hooks"]["SessionStart"]["hooks"][0]["command"]
+        result = subprocess.run(
+            shlex.split(command),
+            input=json.dumps({
+                "hook_event_name": "SessionStart", "session_id": "native-codebuddy-fixture",
+                "cwd": str(self.home),
+            }).encode(),
+            env={"HOME": str(self.home), "LANG": "en_US.UTF-8"},
+            capture_output=True, timeout=15, check=True,
+        )
+        self.assertEqual(json.loads(result.stdout), {})
+        diagnostic = json.loads(result.stderr)
+        self.assertEqual(diagnostic["status"], "session-ready", diagnostic)
+
+    def test_codebuddy_public_update_preserves_registered_stdio_and_refreshes_native_hook(self):
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration as host
+        from agent_brain_client.adapters.packages.frozen import runtime_pins
+        from agent_brain_client.adapters.storage import metadata
+        from agent_brain_client.adapters.storage.collection import settings_path
+        from agent_brain_client.runtime.updates import manage_update
+
+        channel, receipt_file, config = self.codebuddy_registration()
+        before = metadata.private_json(receipt_file)
+        native_bytes = config.read_bytes()
+        child, exchange = self.start_registered(before["mcp"])
+        exchange("initialize", INIT)
+        exchange("notifications/initialized", notification=True)
+        tools = exchange("tools/list")
+        args = {"name": "fixture"}
+        old_worker = exchange("tools/call", args)
+        self.assertEqual(old_worker["worker_version"], "0.8.25")
+        self.assertEqual(old_worker["harness"], "codebuddy")
+        self.run_codebuddy_hook(before)
+
+        report = manage_update(self.home, "update", channel_factory=lambda *a, **k: channel)
+        self.assertEqual(report["status"], "client-update-updated", report)
+        self.assertFalse(report["bootstrap_registration_changed"], report)
+        self.assertTrue(report["global_hook"]["hosts"]["codebuddy"]["native_changed"], report)
+        after = metadata.private_json(receipt_file)
+        self.assertEqual(after["mcp"], before["mcp"])
+        self.assertEqual(config.read_bytes(), native_bytes)
+        self.assertEqual(after["hooks_enabled"], before["hooks_enabled"])
+        self.assertNotEqual(after["hooks"], before["hooks"])
+        native_hooks = host.Document(host.read_host(self.home / ".codebuddy/settings.json")).value["hooks"]
+        for event, group in after["hooks"].items():
+            self.assertIn(group, native_hooks[event])
+            self.assertNotIn(before["hooks"][event], native_hooks[event])
+        self.run_codebuddy_hook(after)
+        self.run_codebuddy_hook(before)
+
+        seen = {}
+        def switched():
+            seen.update(exchange("tools/call", args))
+            return seen["worker_version"] == "0.8.26"
+
+        wait_until(switched, timeout=15)
+        active = Path(channel.verified_active()["package"])
+        self.assertEqual(Path(seen["worker_source"]).parents[4], active)
+        self.assertEqual(seen["harness"], "codebuddy")
+        self.assertIsNone(child.poll())
+        self.assertEqual(exchange("tools/list"), tools)
+        settings = metadata.private_json(settings_path(self.home))
+        self.assertTrue(settings["enabled"])
+        self.assertEqual(settings["approved_scope_sha256"], settings["server_scope_sha256"])
+        self.assertEqual(settings["code_sha256"], runtime_pins(active))
+
+        # A restarted host can still use the preserved frozen MCP registration.
+        _, restarted = self.start_registered(after["mcp"])
+        restarted("initialize", INIT)
+        restarted("notifications/initialized", notification=True)
+        self.assertEqual(restarted("tools/call", args)["worker_version"], "0.8.26")
+        checked = manage_update(self.home, "check-update", channel_factory=lambda *a, **k: channel)
+        self.assertEqual(checked["status"], "client-update-current", checked)
+
+    def test_codebuddy_hook_transaction_can_roll_back_without_touching_registered_mcp(self):
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration as host
+        from agent_brain_client.adapters.storage import host_files, metadata
+        from agent_brain_client.runtime.launcher import registration_stamp
+
+        channel, receipt_file, config = self.codebuddy_registration()
+        before = metadata.private_json(receipt_file)
+        native_bytes = config.read_bytes()
+        settings = self.home / ".codebuddy/settings.json"
+        hook_bytes = settings.read_bytes()
+        runtime = {"device_home": str(self.home)}
+        stamp = registration_stamp(runtime, "codebuddy")
+        self.assertIsNotNone(stamp)
+        discovery = channel.discover("codex", channel.policy["platform"], "0.8.25")
+        self.assertEqual(discovery["status"], "compatible-update")
+        candidate = channel.engine.local / "packages" / ("0.8.26-" + "b" * 40)
+
+        apply = host_files.host_apply
+        def applied_then_failed(rows, persist):
+            apply(rows, persist)
+            self.assertNotIn(str(config), rows)
+            self.assertEqual(config.read_bytes(), native_bytes)
+            self.assertEqual(registration_stamp(runtime, "codebuddy"), stamp)
+            applied = metadata.private_json(receipt_file)
+            self.assertNotEqual(applied["hooks"], before["hooks"])
+            self.run_codebuddy_hook(applied)
+            raise RuntimeError("Synthetic failure after applying native Hook")
+
+        with patch.object(host_files, "host_apply", side_effect=applied_then_failed):
+            with self.assertRaisesRegex(RuntimeError, "Synthetic failure"):
+                host.refresh(self.home, candidate)
+        self.assertEqual(settings.read_bytes(), hook_bytes)
+        self.assertEqual(metadata.private_json(receipt_file), before)
+        self.assertEqual(config.read_bytes(), native_bytes)
+        self.assertEqual(registration_stamp(runtime, "codebuddy"), stamp)
+        self.run_codebuddy_hook(before)
+
+        drift = host.Document(native_bytes.decode("utf-8-sig")).patch(
+            ("mcpServers", host.NAME, "command"), "/synthetic-outside-edit",
+        ).encode()
+        config.write_bytes(drift)
+        self.assertIsNone(registration_stamp(runtime, "codebuddy"))
+        with self.assertRaisesRegex(ValueError, "binding preserved"):
+            host.refresh(self.home, candidate)
+        self.assertEqual(config.read_bytes(), drift)
+        self.assertEqual(settings.read_bytes(), hook_bytes)
 
     def test_changed_binding_or_abi_is_outside_manual_noop(self):
         from agent_brain_client.adapters.installation.launcher_update import can_retain_launcher
