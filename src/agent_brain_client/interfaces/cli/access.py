@@ -352,8 +352,13 @@ def run_address_install(
             from agent_brain_client.application.installation.fresh import FreshConnectionMismatch
 
             stage = "retained-connection-validation"
+            # A ready transaction still validates against its original journal
+            # host, even when installation targets the new shared backend.
+            retained_native = (
+                Path(fresh["native"]) if fresh and fresh["phase"] == "ready" else native
+            )
             try:
-                retained_installation(home, native).validate_connection(connection)
+                retained_installation(home, retained_native).validate_connection(connection)
             except FreshConnectionMismatch as error:
                 # Only this fresh attempt's separate origin-key item is removed;
                 # no old device item, Server credential or authorization changes.

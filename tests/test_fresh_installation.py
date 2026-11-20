@@ -572,6 +572,67 @@ class FreshInstallation(unittest.TestCase):
                 self.port, NoRequest(), "c" * 64, ["personal-owner"]
             )
 
+    def assert_address_resume_preserves_archive(self, target, harness):
+        from agent_brain_client.interfaces.cli import access
+        from agent_brain_client.adapters.storage.registration import registry_home
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        record = read_journal(self.home)
+        archive = Path(record["archive"])
+        before = {p.relative_to(archive): p.read_bytes()
+                  for p in archive.rglob("*") if p.is_file()}
+        self.assertEqual(registry_home(self.home), target)
+        self.assertEqual(registry_home(self.home, retained=True), self.native)
+        self.assertEqual(record["phase"], "ready")
+        self.assertEqual(before[self.old_queue.relative_to(self.root)],
+                         b"SYNTHETIC_UNSENT_OLD_QUEUE_DO_NOT_REPLAY")
+        endpoint = record["endpoint"]
+        connection = {
+            "schema": 1,
+            "endpoint": endpoint,
+            "grant": self.grant,
+            "release": {
+                "origin": "https://github.com/goodname427/agent-brain-client.git",
+                "ref": "refs/heads/releases/personal-https-windows-stable"
+                if native_platform().startswith("win32-")
+                else "refs/heads/releases/personal-https-stable",
+                "anchor_commit": "a" * 40,
+            },
+        }
+        store = SimpleNamespace(
+            lease=nullcontext, load=lambda: None, save=Mock(),
+            clear=Mock(side_effect=AssertionError("Accepted key must be kept")),
+        )
+        receipt = {"status": "synthetic-install-boundary"}
+        install = Mock(return_value=receipt)
+        transport = SimpleNamespace(
+            bootstrap=Mock(return_value=connection),
+            replay=Mock(side_effect=AssertionError("Old queue must not replay")),
+        )
+        result = access.run_address_install(
+            self.home, target, endpoint, harness=harness, install=install,
+            store_factory=lambda *args: store,
+            dependency_preparer=lambda *args: {},
+            transport=transport, key_input=lambda *args: "SYNTHETIC_ACCESS_KEY_" + "x" * 40,
+        )
+        self.assertEqual(result, receipt)
+        install.assert_called_once()
+        self.assertEqual(install.call_args.args[:3], (self.home, target, connection))
+        self.assertEqual(install.call_args.kwargs["harness"], harness)
+        transport.bootstrap.assert_called_once()
+        transport.replay.assert_not_called()
+        store.clear.assert_not_called()
+        self.assertEqual(read_journal(self.home), record)
+        self.assertEqual(
+            {p.relative_to(archive): p.read_bytes()
+             for p in archive.rglob("*") if p.is_file()}, before,
+        )
+
+    def test_legacy_ready_address_resume_validates_old_journal_and_keeps_new_target(self):
+        self.prepare()
+        self.assert_address_resume_preserves_archive(self.root / "shared-native", "codex")
+
     def test_codebuddy_shared_native_home_and_bootstrap_resume_are_preserved(self):
         from agent_brain_client.interfaces.cli.codebuddy import backend_home
 
@@ -596,6 +657,7 @@ class FreshInstallation(unittest.TestCase):
         self.port = retained_installation(self.home, shared)
         self.prepare()
         self.assertEqual(backend_home(self.home), shared)
+        self.assert_address_resume_preserves_archive(shared, "codebuddy")
         self.assertTrue((shared / "memories/existing.md").exists())
         self.assertNotIn("agent_brain_server", self.config.read_text())
         self.port.restore_mapping(self.cache, self.content)
@@ -689,6 +751,7 @@ class FreshInstallation(unittest.TestCase):
         from unittest.mock import Mock
 
         self.prepare()
+        target = self.root / "shared-native"
         backend = {"record": None}
 
         def save(value, expected):
@@ -717,7 +780,7 @@ class FreshInstallation(unittest.TestCase):
         install = Mock()
         result = access.run_address_install(
             self.home,
-            self.native,
+            target,
             connection["endpoint"],
             store_factory=lambda *args: store,
             dependency_preparer=lambda *args: {},
