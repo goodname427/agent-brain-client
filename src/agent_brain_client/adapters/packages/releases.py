@@ -69,6 +69,15 @@ def atomic_json(path, value):
     replace(temp, path)
 
 
+def unique_manifest_object(items):
+    fields = {}
+    for key, value in items:
+        if key in fields:
+            raise UpdateBlocked("Duplicate release manifest field")
+        fields[key] = value
+    return fields
+
+
 class GitReleaseSource:
     """Fetch a pinned authorized repository/ref without changing the data checkout."""
 
@@ -111,7 +120,7 @@ class GitReleaseSource:
         raw = self.git("show", commit + ":releases/manifest.json")
         if len(raw) > 65536:
             raise UpdateBlocked("Manifest too large")
-        manifest = json.loads(raw)
+        manifest = json.loads(raw, object_pairs_hook=unique_manifest_object)
         return commit, manifest, lambda path: self.git("show", commit + ":" + path)
 
 
@@ -230,7 +239,11 @@ class ReleaseEngine:
         files = manifest["files"]
         if not isinstance(files, dict) or not 1 <= len(files) <= 250:
             raise UpdateBlocked("Invalid release files")
+        adapter = getattr(self, "adapter", None)
+        package_files = getattr(adapter, "package_files", None)
         for path, sha in files.items():
+            if not isinstance(path, str) or not isinstance(sha, str):
+                raise UpdateBlocked("Unsafe release path/hash")
             p = PurePosixPath(path)
             if (
                 p.is_absolute()
@@ -239,12 +252,16 @@ class ReleaseEngine:
                 or not re.fullmatch(r"[a-f0-9]{64}", sha)
             ):
                 raise UpdateBlocked("Unsafe release path/hash")
-            if not any(
-                path.startswith(prefix) for prefix in self.policy["file_prefixes"]
-            ) and not getattr(self.adapter, "allows_shared_file", lambda name: False)(
-                path
+            if (
+                package_files is None
+                and not any(
+                    path.startswith(prefix) for prefix in self.policy["file_prefixes"]
+                )
+                and not getattr(adapter, "allows_shared_file", lambda name: False)(path)
             ):
                 raise UpdateBlocked("File outside approved runtime scope")
+        if package_files is not None:
+            package_files(manifest)
         for step in manifest["migrations"]:
             if set(step) != {"id", "sha256"} or step["id"] not in self.migrations:
                 raise UpdateBlocked("Unknown migration; explicit review required")

@@ -15,6 +15,10 @@ from agent_brain_client.adapters.packages.client import (
     SSH_CONTENT_CAPABILITIES,
     HTTPS_CONTENT_CAPABILITIES,
 )
+from agent_brain_client.adapters.packages.layout import (
+    PYTHON_FILES,
+    source_python_members,
+)
 from agent_brain_client.adapters.packages.publication import require_publishable
 from agent_brain_client.adapters.packages.releases import version as validate_version
 
@@ -68,6 +72,10 @@ def export(
         if pairing_candidate
         else CLIENT_FILES
     )
+    if https_content_candidate:
+        names += tuple(
+            name for name in source_python_members(ROOT) if name not in PYTHON_FILES
+        )
     prior = ()
     payload = {}
     for name in names:

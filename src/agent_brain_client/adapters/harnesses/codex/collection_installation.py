@@ -11,6 +11,7 @@ import agent_brain_client.adapters.storage.private_files as private_files
 
 
 from agent_brain_client.adapters.packages.layout import PYTHON_FILES as FILES
+from agent_brain_client.adapters.packages.frozen import runtime_pins
 
 ROOT = Path(__file__).resolve().parents[5]
 MARKER = "Agent Brain global memory"
@@ -313,12 +314,25 @@ def unowned_config(config, owned):
 def block(value, *, root=None):
     source_root = Path(root) if root is not None else ROOT
     pins = value["code_sha256"]
+    expanded = bool(pins.keys() - set(FILES))
+    if expanded:
+        pin = metadata_io.digest(json.dumps(pins, sort_keys=True).encode())
+        membership = (
+            'p=json.loads((r/"code.json").read_bytes())["files"]; '
+            "assert hashlib.sha256(json.dumps(p,sort_keys=True).encode()).hexdigest()=="
+            + repr(pin)
+            + '; assert {f.relative_to(r).as_posix() for f in (r/"src").rglob("*") if f.is_file()}==p.keys(); '
+        )
+    else:
+        membership = "p=" + repr(pins) + "; "
     guard = (
-        "import hashlib,pathlib,runpy,sys; r=pathlib.Path("
+        "import hashlib,"
+        + ("json," if expanded else "")
+        + "pathlib,runpy,sys; r=pathlib.Path("
         + repr(str(source_root))
-        + "); p="
-        + repr(pins)
-        + "; assert all(hashlib.sha256((r/n).read_bytes()).hexdigest()==h for n,h in p.items()); "
+        + "); "
+        + membership
+        + "assert all(hashlib.sha256((r/n).read_bytes()).hexdigest()==h for n,h in p.items()); "
         + 'sys.path.insert(0,str(r/"src")); sys.argv=[str(r/"src/agent_brain_client/interfaces/cli/collection.py"),"global-hook","--device-home",'
         + repr(value["device_home"])
         + ']; runpy.run_path(sys.argv[0],run_name="__main__")'
@@ -688,7 +702,7 @@ def refresh_hooks(home, *, check_only=False):
         return absent
     if previous is None:
         return absent  # Explicit uninstall remains uninstalled.
-    pins = {name: metadata_io.digest((ROOT / name).read_bytes()) for name in FILES}
+    pins = runtime_pins(ROOT, fallback=FILES)
     target = dict(value, code_sha256=pins)
     root = (
         file.parent

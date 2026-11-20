@@ -53,9 +53,9 @@ def configure_recall(value, options):
     return control().configure_recall(value, options)
 
 
-def native_services():
+def native_services(*, verify_code=True):
     return SimpleNamespace(
-        load=lambda home: load(home),
+        load=lambda home: load(home, verify_code=verify_code),
         approved=lambda value: approved(value),
         admission=lambda value: admission_state(value),
         discover=lambda cwd: discover(cwd),

@@ -13,7 +13,6 @@ import agent_brain_client.adapters.storage.bounded_json as bounded_json
 
 
 import argparse
-import hashlib
 import json
 import os
 import subprocess
@@ -30,23 +29,11 @@ def backend_home(home):
 
 def verify_adapter():
     pin = ROOT / "code.json"
-    if not pin.exists():
+    if not pin.exists() and not pin.is_symlink():
         return  # Source checkout is only an installer/developer entry.
-    if pin.is_symlink() or pin.stat().st_size > 65536:
-        raise ValueError("Frozen CodeBuddy code metadata changed")
-    value = json.loads(pin.read_bytes())
-    from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+    from agent_brain_client.adapters.packages.frozen import verify_frozen_code
 
-    names = set(PYTHON_FILES)
-    if value.get("schema") != 1 or set(value.get("files", {})) != names:
-        raise ValueError("Frozen CodeBuddy code scope changed")
-    for name, sha in value["files"].items():
-        path = ROOT / name
-        if (
-            any(p.is_symlink() for p in (path, *path.parents))
-            or hashlib.sha256(path.read_bytes()).hexdigest() != sha
-        ):
-            raise ValueError("Frozen CodeBuddy code changed")
+    verify_frozen_code(ROOT)
 
 
 def probe(home, core, runner=subprocess.run):

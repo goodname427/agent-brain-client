@@ -35,7 +35,11 @@ from agent_brain_client.adapters.platforms.filesystem import (
     LockTimeout,
 )
 
-from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+from agent_brain_client.adapters.packages.layout import (
+    PYTHON_FILES,
+    runtime_python_members,
+)
+from agent_brain_client.adapters.storage.private_files import raw as private_package_bytes
 
 CLIENT_FILES = (
     "README.md",
@@ -360,7 +364,6 @@ class ClientPackage:
         self.https = bool(
             policy and policy["capabilities"] == HTTPS_CONTENT_CAPABILITIES
         )
-        self.policy_files = policy["file_prefixes"] if policy else []
         self.files = (
             https_files(policy["platform"])
             if self.https
@@ -383,11 +386,19 @@ class ClientPackage:
         )
 
     def package_files(self, manifest):
-        if set(manifest.get("files", {})) != set(self.files):
-            raise UpdateBlocked(
-                "Current package layout required; reinstall from the official entry"
-            )
-        return self.files
+        files = manifest.get("files")
+        required = set(self.files)
+        if not isinstance(files, dict) or not required <= files.keys():
+            raise UpdateBlocked("Required Client package members missing")
+        added = files.keys() - required
+        if added:
+            if not self.https:
+                raise UpdateBlocked("File outside approved runtime scope")
+            try:
+                runtime_python_members((*PYTHON_FILES, *added))
+            except ValueError as error:
+                raise UpdateBlocked("File outside approved runtime scope") from error
+        return (*self.files, *sorted(added))
 
     def preflight(self, package, manifest):
         files = self.package_files(manifest)
@@ -417,6 +428,23 @@ class ClientPackage:
             raise UpdateBlocked(
                 "Native component source changed; signed component/plan review required"
             )
+        if len(files) != len(self.files):
+            # A module outside the verified manifest could be imported by Python.
+            root = package.resolve()
+            present = set()
+            for path in package.rglob("*"):
+                relative = path.relative_to(package)
+                if path.is_symlink() or path.resolve() != root / relative:
+                    raise UpdateBlocked("Linked Client package member")
+                if path.is_file() and path.stat().st_nlink == 1:
+                    present.add(relative.as_posix())
+                elif not path.is_dir():
+                    raise UpdateBlocked("Unsupported Client package member")
+            envelope = (
+                "verified.json" if "verified.json" in present else "export-manifest.json"
+            )
+            if present - {envelope} != set(files):
+                raise UpdateBlocked("Client package membership changed")
         for name in files:
             path = package / name
             if path.is_symlink() or not path.is_file():
@@ -426,11 +454,6 @@ class ClientPackage:
                     compile(path.read_bytes(), name, "exec")
                 except (SyntaxError, UnicodeError):
                     raise UpdateBlocked("Client syntax check failed") from None
-
-    def allows_shared_file(self, path):
-        # Called only by the already-installed release engine. Never grant a
-        # directory prefix, change capabilities or accept arbitrary new files.
-        return path in self.files and self.policy_files == list(self.files)
 
     def snapshot(self):
         return {}  # Only ReleaseEngine owns the active pointer.
@@ -474,6 +497,59 @@ class ClientPackage:
             healthy = False
         if result.returncode or not healthy:
             raise UpdateBlocked("Client health check failed; previous package restored")
+
+
+MCP_CONTENT_ENTRY = "src/agent_brain_client/interfaces/mcp/content.py"
+MCP_LAUNCHER_ENTRY = "src/agent_brain_client/interfaces/mcp/launcher.py"
+_CACHE_ABI_ENTRY = "src/agent_brain_client/adapters/storage/content.py"
+_CACHE_ABI_DECLARATION = re.compile(rb'CONTENT_CACHE_ABI = "([a-z][a-z0-9-]{0,63})"')
+
+
+def launcher_package_files(package):
+    package = Path(package)
+    receipt = package / "verified.json"
+    record = json.loads(private_package_bytes(
+        receipt if receipt.exists() else package / "export-manifest.json"
+    ))
+    return record.get("manifest", record)["files"]
+
+
+def fixed_launcher_files(files):
+    return {
+        name: sha for name, sha in files.items()
+        if name.startswith("src/") and name not in (
+            MCP_CONTENT_ENTRY, "src/agent_brain_client/interfaces/mcp/topics.py",
+        )
+    }
+
+
+def managed_worker_abi(package, files):
+    def pinned_source(name):
+        path = Path(package) / name
+        source = private_package_bytes(path, 1048576)
+        if source is None or hashlib.sha256(source).hexdigest() != files[name]:
+            raise UpdateBlocked("MCP worker source changed after verification")
+        return source
+
+    if b"MCP_WORKER_HANDOFF = 1" not in pinned_source(MCP_CONTENT_ENTRY).splitlines():
+        return None
+    storage = pinned_source(_CACHE_ABI_ENTRY)
+    declarations = [
+        line for line in storage.splitlines()
+        if line.lstrip().startswith(b"CONTENT_CACHE_ABI")
+    ]
+    match = _CACHE_ABI_DECLARATION.fullmatch(declarations[0]) if len(declarations) == 1 else None
+    if match is None:
+        raise UpdateBlocked("MCP cache ABI declaration required")
+    return match[1].decode("ascii")
+
+
+def compatible_managed_workers(previous, previous_files, candidate, candidate_files):
+    """Both snapshots must implement the same cache ABI and fixed runtime."""
+    if fixed_launcher_files(previous_files) != fixed_launcher_files(candidate_files):
+        return False
+    abi = managed_worker_abi(previous, previous_files)
+    return abi is not None and abi == managed_worker_abi(candidate, candidate_files)
 
 
 class ClientReleases:
@@ -533,7 +609,6 @@ class ClientReleases:
             ):
                 commit, manifest, read = self.engine.source.latest()
                 self.engine.validate(manifest, {"version": installed_version})
-                self.engine.adapter.package_files(manifest)
                 if manifest["migrations"]:
                     raise UpdateBlocked("Client release scope changed")
                 package = self.engine.prepare(commit, manifest, read)

@@ -14,13 +14,43 @@ from agent_brain_client.adapters.storage.bounded_json import (
     read_json,
 )
 from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+from agent_brain_client.adapters.packages.frozen import (
+    compatible_codebuddy_runtime,
+    frozen_source_files,
+    runtime_pins,
+    validate_python_pins,
+)
+
+
+def load_delivery_core(home):
+    """Resolve the trusted core once for an independently started worker."""
+    root = canonical(Path(__file__).absolute().parents[3])
+    state = Path(home) / ".config/agent-brain-client"
+    if root.parent in (state / "global-memory/code", state / "codebuddy/code"):
+        return load_core(home)
+
+    from agent_brain_client.adapters.packages.client import ClientReleases
+
+    registration, _ = registration_store.registration(home)
+    channel = ClientReleases(registration["release_policy"], registration["release_policy_sha256"])
+    if channel.policy["runtime"]["device_home"] != str(Path(home)):
+        raise ValueError("Delivery release device binding changed")
+    active = channel.verified_active(serving=True)
+    if active is None or Path(active["package"]) != root:
+        raise ValueError("Verified serving delivery package required")
+
+    from agent_brain_client.runtime import collection as core
+
+    # The release owns executable integrity. Settings pins belong to the
+    # native Hook and may legitimately lag a successful package update.
+    return core.native_services(verify_code=False)
 
 
 def load_core(home):
     """Use the existing immutable global runtime, including its own code pins.
 
-    The gateway and shared runtime must contain the same reviewed code. Refresh
-    the Harness binding after a Client change; retain policy, credentials and scope.
+    The gateway and shared runtime must contain the same reviewed Hook code.
+    An immutable CodeBuddy snapshot may differ in compatible MCP worker files.
     """
     directory = canonical(Path(home) / ".config/agent-brain-client/global-memory")
     value = read_json(directory / "settings.json")
@@ -29,13 +59,20 @@ def load_core(home):
     pins = value.get("code_sha256")
     if not isinstance(pins, dict) or not 1 <= len(pins) <= 256:
         raise ValueError("Existing frozen Client runtime required")
-    if set(pins) != set(PYTHON_FILES):
-        raise ValueError(
-            "Current Client runtime required; reinstall before binding a Harness"
-        )
+    validate_python_pins(pins)
+    executing_root = Path(__file__).resolve().parents[3]
+    executing_pins = runtime_pins(executing_root)
     root = canonical(
         directory / "code" / digest(json.dumps(pins, sort_keys=True).encode())
     )
+    if pins != executing_pins and not compatible_codebuddy_runtime(
+        home, executing_root, executing_pins, root, pins
+    ):
+        raise ValueError("Refresh the Harness binding to the current Client runtime")
+    if (pins.keys() - set(PYTHON_FILES) or (root / "code.json").exists()) and (
+        runtime_pins(root) != pins or frozen_source_files(root) != pins.keys()
+    ):
+        raise ValueError("Frozen Client membership changed")
     for name, pin in pins.items():
         path = PurePosixPath(name)
         if (
@@ -54,8 +91,8 @@ def load_core(home):
             or digest(file.read_bytes()) != pin
         ):
             raise ValueError("Frozen Client code changed")
-        executing = canonical(Path(__file__).resolve().parents[3] / name)
-        if not executing.is_file() or digest(executing.read_bytes()) != pin:
+        executing = canonical(executing_root / name)
+        if not executing.is_file() or digest(executing.read_bytes()) != executing_pins[name]:
             raise ValueError(
                 "Refresh the Harness binding to the current Client runtime"
             )

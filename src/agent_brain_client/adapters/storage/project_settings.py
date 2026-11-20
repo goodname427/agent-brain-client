@@ -11,7 +11,7 @@ from agent_brain_client.adapters.storage.metadata import (
 from agent_brain_client.adapters.platforms.filesystem import (
     private_mode,
 )
-from agent_brain_client.adapters.packages.layout import PYTHON_FILES as RUNTIME
+from agent_brain_client.adapters.packages.frozen import runtime_pins
 
 ROOT = Path(__file__).resolve().parents[4]
 ENTRY = ROOT / "src/agent_brain_client/interfaces/cli/project.py"
@@ -82,7 +82,8 @@ def load(path, sha, *, locate):
         or not 1024 <= p["max_context_bytes"] <= 16384
         or not isinstance(p["query"], str)
         or len(p["query"]) > 1024
-        or set(p["code_sha256"]) != set(RUNTIME)
+        or not isinstance(p["code_sha256"], dict)
+        or p["code_sha256"].keys() != runtime_pins(ROOT).keys()
     ):
         raise ValueError("Bounded project memory settings required")
     for n, h in p["code_sha256"].items():

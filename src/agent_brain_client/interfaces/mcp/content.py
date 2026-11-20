@@ -13,6 +13,7 @@ from agent_brain_client.interfaces.mcp.framing import (
     ProtocolError,
     keys,
     pairs,
+    write_response,
     ContentParameterError,
     ContentToolUnavailable,
 )
@@ -29,7 +30,9 @@ from agent_brain_client.application.tools.catalog import (
 )
 from agent_brain_client.adapters.storage.pinned import pinned
 
-from agent_brain_client.interfaces.mcp.server import serve
+from agent_brain_client.interfaces.mcp.server import (
+    DRAIN_METHOD, DRAIN_PREFIX, HANDOFF_VERSION, runtime_files, serve,
+)
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.adapters.storage.reinstallation import require_memory_verified
 from agent_brain_client.application.installation.fresh import (
@@ -47,15 +50,16 @@ import json
 import os
 import re
 import ssl
+import threading
 from urllib.error import HTTPError
 import uuid
-from agent_brain_client.interfaces.mcp.topics import Server
+from agent_brain_client.interfaces.mcp.topics import Server, VERSIONS
 from agent_brain_client.adapters.storage.content_session import (
     ContentSession,
     contract,
     ROOT as CLIENT_ROOT,
 )
-from agent_brain_client.adapters.storage.content import operation_diagnostics
+from agent_brain_client.adapters.storage.content import CONTENT_CACHE_ABI, operation_diagnostics
 from agent_brain_client.domain.content_policy import validate_policy
 from agent_brain_client.adapters.platforms.macos.component import ComponentClient
 from agent_brain_client.adapters.platforms.filesystem import (
@@ -69,6 +73,9 @@ cache_locked = brain_lock.cache_locked
 cache_directory = brain_lock.cache_directory
 from agent_brain_client.application.control import RequestStopped
 from agent_brain_client.adapters.packages.client import UPDATE_GUIDANCE
+
+
+MCP_WORKER_HANDOFF = 1
 
 
 def worker_commit(client_version):
@@ -99,6 +106,9 @@ def worker_commit(client_version):
 
 
 class ContentServer(Server):
+    update_guidance = UPDATE_GUIDANCE
+    managed_stdio = False
+
     def __init__(self, adapter, client_version="0.2.0"):
         super().__init__(None, client_version)
         self.adapter = adapter
@@ -148,6 +158,14 @@ class ContentServer(Server):
                 active_package_version=active["version"],
                 active_package_commit=active.get("commit"),
             )
+            if self.managed_stdio:
+                current = json.loads((CLIENT_ROOT / "verified.json").read_bytes())["manifest"]
+                selected = json.loads(
+                    (Path(active["package"]) / "verified.json").read_bytes()
+                )["manifest"]
+                if runtime_files(current) == runtime_files(selected):
+                    value.update(reload_required=False, reload_reason="running-worker-content-current")
+                    return value
             # A version mismatch proves this worker is old. Equality needs the
             # exact commit too; source checkouts / legacy receipts stay unknown.
             if active["version"] != self.client_version:
@@ -604,6 +622,15 @@ class ContentServer(Server):
             ],
         }
 
+    def catalog(self):
+        return tool_definitions(
+            self.adapter.methods(),
+            getattr(self.adapter, "policy", {}).get("kinds", ["memory", "rule", "skill"]),
+            self._memory_source_tools_authorized(),
+            self.client_version,
+            self.update_guidance,
+        )
+
     def handle(self, request):
         if (
             isinstance(request, dict)
@@ -625,17 +652,7 @@ class ContentServer(Server):
             keys(params, ("cursor",))
             if params.get("cursor") not in (None, ""):
                 raise ProtocolError(-32602, "Unknown cursor.")
-            return {
-                "tools": tool_definitions(
-                    self.adapter.methods(),
-                    getattr(self.adapter, "policy", {}).get(
-                        "kinds", ["memory", "rule", "skill"]
-                    ),
-                    self._memory_source_tools_authorized(),
-                    self.client_version,
-                    UPDATE_GUIDANCE,
-                )
-            }
+            return {"tools": self.catalog()}
         result = super().handle(request)
         if (
             isinstance(request, dict)
@@ -656,9 +673,58 @@ class ContentServer(Server):
                 + "Native mapping result: "
                 + json.dumps(mapping, sort_keys=True)
                 + ". "
-                + UPDATE_GUIDANCE
+                + self.update_guidance
             )
         return result
+
+
+class ManagedContentServer(ContentServer):
+    """Resume a previously negotiated stdio session without native refresh."""
+
+    managed_stdio = True
+    update_guidance = UPDATE_GUIDANCE.replace(
+        "Matching identities need no worker reload; differing identities need a normal reload of only Agent Brain MCP after in-flight work.",
+        "Compatible tool contracts can switch workers on this connection after in-flight work. "
+        "Confirm client_runtime after the update. When the verified registration, cache ABI or tool contract changes, use the normal Agent Brain MCP reload after in-flight work.",
+    )
+
+    def __init__(self, adapter, client_version, protocol):
+        super().__init__(adapter, client_version)
+        if protocol != "initial":
+            self.state = "ready"
+
+    def handle(self, request):
+        if (
+            isinstance(request, dict)
+            and request.get("method") == DRAIN_METHOD
+            and isinstance(request.get("id"), str)
+            and request["id"].startswith(DRAIN_PREFIX)
+        ):
+            return {}
+        return super().handle(request)
+
+    def readiness(self):
+        return {
+            "abWorkerReady": HANDOFF_VERSION,
+            "versions": list(VERSIONS),
+            "capabilities": {"tools": {}},
+            "toolContract": TOOL_CONTRACT_VERSION,
+            "cacheIdentity": self.adapter.queue_sha,
+            "cacheAbi": CONTENT_CACHE_ABI,
+            "tools": self.catalog(),
+        }
+
+
+class DeliveryInput:
+    def __init__(self, source, start):
+        self.source = source
+        self.start = start
+
+    def readline(self, limit):
+        line = self.source.readline(limit)
+        if line:
+            self.start.set()
+        return line
 
 
 def self_check():
@@ -943,7 +1009,13 @@ def main():
         default="0.2.0",
         help="Verified active version supplied by the pinned startup.",
     )
+    parser.add_argument("--managed-stdio", choices=("initial", *VERSIONS), help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.managed_stdio and (
+        not args.https_profile or args.installation_check or args.event_hook
+        or args.mapping_refresh or args.import_plan
+    ):
+        raise ValueError("Managed stdio requires ordinary HTTPS MCP serving")
     _STARTUP_STAGE = "component-source-check"
     if (
         args.component_source_sha256
@@ -1080,7 +1152,8 @@ def main():
     host = content_host(args.harness)
     native, cache = host.location(Path(args.device_home), {"codex_home": args.codex_home, "content_cache": args.cache})
     adapter = ContentSession(
-        args.device_home, cache, policy, client, host=host, native_home=native
+        args.device_home, cache, policy, client, host=host, native_home=native,
+        existing_cache=args.managed_stdio not in (None, "initial"),
     )
     if args.mapping_refresh:
         result = adapter.refresh()
@@ -1108,9 +1181,19 @@ def main():
     _STARTUP_STAGE = "mcp-serve"
     from agent_brain_client.runtime.delivery import supervise
 
-    delivery_stop = supervise(args.device_home)
+    if args.managed_stdio:
+        server = ManagedContentServer(adapter, args.client_version, args.managed_stdio)
+        delivery_start = threading.Event()
+        source = DeliveryInput(sys.stdin.buffer, delivery_start)
+    else:
+        server = ContentServer(adapter, args.client_version)
+        delivery_start = None
+        source = sys.stdin.buffer
+    delivery_stop = supervise(args.device_home, start=delivery_start)
     try:
-        serve(ContentServer(adapter, args.client_version), sys.stdin.buffer, sys.stdout)
+        if args.managed_stdio:
+            write_response(sys.stdout, server.readiness())
+        serve(server, source, sys.stdout, managed_stdio=bool(args.managed_stdio))
     finally:
         delivery_stop.set()
 

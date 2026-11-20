@@ -1,4 +1,10 @@
-"""Exact installed Python module inventory; no historical executable layouts."""
+"""Required Python runtime and scoped manifest extensions."""
+
+from pathlib import Path, PurePosixPath
+import re
+
+
+MANIFEST_PYTHON_LAYOUT = 1
 
 PYTHON_FILES = (
     "src/agent_brain_client/__init__.py",
@@ -182,3 +188,57 @@ PYTHON_FILES = (
     "src/agent_brain_client/runtime/source_enrollment.py",
     "src/agent_brain_client/runtime/updates.py",
 )
+
+
+_EXTENSION_MODULE = re.compile(
+    r"src/agent_brain_client/(?:application|domain|runtime|"
+    r"adapters/(?:harnesses|server|storage))/"
+    r"(?:[a-z_][a-z0-9_]*/)*[a-z_][a-z0-9_]*\.py"
+)
+_RESERVED_WINDOWS_NAME = re.compile(r"(?:aux|con|nul|prn|com[1-9]|lpt[1-9])")
+_RUNTIME_ROOT = PurePosixPath("src/agent_brain_client")
+
+
+def ordinary_python_module(name, members):
+    if not isinstance(name, str) or not _EXTENSION_MODULE.fullmatch(name):
+        return False
+    path = PurePosixPath(name)
+    if any(
+        _RESERVED_WINDOWS_NAME.fullmatch(part.removesuffix(".py"))
+        for part in path.parts
+    ):
+        return False
+    if (path.with_suffix("") / "__init__.py").as_posix() in members:
+        return False
+    for parent in path.parents:
+        if parent == _RUNTIME_ROOT:
+            break
+        if (
+            (parent / "__init__.py").as_posix() not in members
+            or parent.with_suffix(".py").as_posix() in members
+        ):
+            return False
+    return True
+
+
+def runtime_python_members(names, *, required=PYTHON_FILES):
+    """Keep the existing installed layout and validate all optional members."""
+    members = set(names)
+    required = set(required)
+    if not required <= members or any(
+        not ordinary_python_module(name, members) for name in members - required
+    ):
+        raise ValueError("Python runtime members outside reviewed layout")
+    return tuple(sorted(members))
+
+
+def source_python_members(source):
+    """Enumerate only in an installer source tree or its exact build checkout."""
+    source = Path(source).resolve()
+    paths = (source / "src/agent_brain_client").rglob("*.py")
+    names = []
+    for path in paths:
+        if path.resolve() != path or path.is_symlink() or not path.is_file():
+            raise ValueError("Linked or nonregular Python source")
+        names.append(path.relative_to(source).as_posix())
+    return runtime_python_members(names)
