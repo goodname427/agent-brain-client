@@ -1,5 +1,7 @@
 # 开发与发布维护
 
+[AB 开发与交付规范](engineering-practices.md)：开工、验证、汇报与文档沉淀。
+
 CodeBuddy 的专属代码量、共用接口及验证边界见 [CodeBuddy 适配边界](codebuddy-adapter.md)。
 
 > 当前维护；Client 源码独立构建。安装器／Windows 核对基线 0.5.9，Mac 运行渠道另行固定。
