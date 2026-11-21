@@ -43,7 +43,7 @@ class LayeredRecall(unittest.TestCase):
         self.response = {'result': {'schema': 1, 'namespace_results': [self.group()]}}
         self.sent = []
         client = SimpleNamespace(actor='synthetic-owner', device=self.device,
-                                 params=lambda session: {'origin': self.local, 'session_id': session},
+                                 params=lambda session, *, recall: {'origin': self.local, 'session_id': session},
                                  wire=lambda method, params, **kwargs: self.send(method, params))
         for target in (patch.object(gm, 'schedule_delivery', return_value=False),
                        patch.object(gm, 'CollectionClient', return_value=client),
@@ -276,6 +276,98 @@ class LayeredRecall(unittest.TestCase):
         prompt = self.prompt() if question is None else self.prompt(question)
         with patch.object(gm, 'eligible', return_value=self.local), patch.object(gm, 'submit_hook', return_value={'status': 'staged'}), patch.object(sys, 'stdin', prompt):
             return gm.hook(self.value, **kwargs)
+
+    def test_both_native_hooks_route_projects_and_ordinary_directories(self):
+        from agent_brain_client.adapters.harnesses.codebuddy import events, transcript
+        from agent_brain_client.adapters.server.collection import CollectionClient
+
+        directories = {name: self.root / name for name in ("project", "ordinary")}
+        for directory in directories.values():
+            directory.mkdir()
+        (directories["project"] / ".git").mkdir()
+        base_scope = dict(self.value["scope"], all_projects=True, include_roots=[])
+        for harness in ("codex", "codebuddy"):
+            for kind, scope, capture, recall, question in (
+                ("project", dict(base_scope, all_non_projects=True), True, True, "Synthetic project question"),
+                ("ordinary", dict(base_scope, all_non_projects=True), True, True, "Synthetic ordinary question"),
+                ("ordinary", base_scope, False, True, "Synthetic prior default question"),
+                ("ordinary", dict(base_scope, all_non_projects=False), False, False, "Synthetic narrow scope"),
+                ("ordinary", dict(base_scope, recall_personal=False), False, False, "Synthetic personal recall off"),
+                ("ordinary", dict(base_scope, all_non_projects=True, recall_personal=False),
+                 True, False, "Synthetic capture with recall off"),
+                ("ordinary", dict(base_scope, all_non_projects=True,
+                                  include_roots=[{"root": str(directories["ordinary"]), "sharing": "project"}]),
+                 False, False, "Synthetic isolated directory with no marker"),
+                ("ordinary", dict(base_scope, all_non_projects=True, exclude_roots=[str(directories["ordinary"])]),
+                 False, False, "Synthetic excluded directory"),
+                ("ordinary", dict(base_scope, all_non_projects=True), True, False, "[LocalOnly] Synthetic private prompt"),
+            ):
+                with self.subTest(harness=harness, kind=kind, question=question):
+                    directory = directories[kind]
+                    self.local = gm.discover(str(directory))
+                    self.response["result"]["namespace_results"] = [self.group()]
+                    pin = digest(scope)
+                    value = dict(self.value, scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin)
+                    client = CollectionClient.__new__(CollectionClient)
+                    client.value, client.local = value, self.local
+                    client.actor, client.device = "synthetic-owner", self.device
+                    client.wire = lambda method, params, **kwargs: self.send(method, params)
+                    payload = {
+                        "cwd": str(directory), "hook_event_name": "UserPromptSubmit",
+                        "session_id": "synthetic-reader", "turn_id": "synthetic-turn",
+                        "generation_id": "synthetic-generation", "prompt": question,
+                    }
+                    self.sent.clear()
+                    with (
+                        patch.object(gm, "load", return_value=value),
+                        patch.object(os, "getcwd", return_value=str(directory)),
+                        patch.object(gm, "CollectionClient", return_value=client),
+                        patch.object(gm, "schedule_delivery") as schedule,
+                        patch.object(gm, "submit_hook", return_value={"status": "staged"}) as codex,
+                        patch.object(events, "capture_messages", return_value={"status": "staged"}) as buddy,
+                        patch.object(transcript, "observe", return_value="synthetic"),
+                        patch.object(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(json.dumps(payload).encode()))),
+                        patch.object(sys, "stderr", io.StringIO()),
+                    ):
+                        output = gm.hook(value, harness=harness)
+                    self.assertEqual(codex.call_count, int(capture and harness == "codex"))
+                    self.assertEqual(buddy.call_count, int(capture and harness == "codebuddy"))
+                    self.assertEqual(schedule.call_count, int(capture))
+                    self.assertEqual(len(self.sent), int(recall))
+                    if recall:
+                        method, params = self.sent[0]
+                        self.assertEqual(method, "memory_query")
+                        self.assertEqual(params["origin"], self.local)
+                        self.assertEqual(params["query"], question)
+                        self.assertIn("Synthetic L1 answer marker", output["hookSpecificOutput"]["additionalContext"])
+                    else:
+                        self.assertEqual(output, {})
+
+    def test_ordinary_recall_keeps_verified_personal_output_and_complete_cache(self):
+        self.local = {"kind": "non-project", "cwd": "/synthetic/ordinary",
+                      "project_root": None, "repository_root": None}
+        scope = dict(self.value["scope"], all_projects=True, include_roots=[])
+        pin = digest(scope)
+        self.value.update(scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin)
+        personal = self.group()
+        self.response["result"]["namespace_results"] = [personal]
+        question = "Synthetic ordinary question"
+        first = self.run_hook(question=question)
+        cache = self.root / ("recall-" + digest(self.local) + ".json")
+        complete = cache.read_bytes()
+        project = copy.deepcopy(personal)
+        project.update(sharing="project", project_id=namespace("synthetic-owner", "d" * 32))
+        project["recall"]["L1"][0]["content"] = "Synthetic isolated content"
+        self.response["result"]["namespace_results"] = [project, personal]
+        mixed = self.run_hook(question=question)
+        self.assertEqual(mixed, first)
+        receipt = recall_receipts.recall_observation(self.value)
+        self.assertTrue(receipt["retrieval"]["partial"])
+        self.assertEqual(cache.read_bytes(), complete)
+        self.response = {"error": {"code": "transport_unconfirmed", "retryable": True}}
+        offline = self.run_hook(question=question)
+        self.assertIn("Synthetic L1 answer marker", offline["hookSpecificOutput"]["additionalContext"])
+        self.assertTrue(recall_receipts.recall_observation(self.value)["offline_cache"])
 
     def test_codex_hook_recall_keeps_provenance_for_equivalent_windows_cwd(self):
         self.local = self.origin(r'C:\Synthetic\Project')

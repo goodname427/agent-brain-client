@@ -10,14 +10,15 @@ class OriginPorts(Protocol):
     def discover(self, cwd: str) -> dict: ...
 
 
-def eligible(value, cwd, *, ports: OriginPorts):
+def eligible(value, cwd, *, ports: OriginPorts, prompt=False):
     if not ports.approved(value):
         return None
     scope = value["scope"]
-    if any(within(ports.canonical(cwd), denied) for denied in scope["exclude_roots"]):
+    canonical = ports.canonical(cwd)
+    if any(within(canonical, denied) for denied in scope["exclude_roots"]):
         return None
-    if not scope.get("all_projects") and not any(
-        within(ports.canonical(cwd), root)
+    if not (scope.get("all_projects") or scope.get("all_non_projects")) and not any(
+        within(canonical, root)
         for root in [
             *[item["root"] for item in scope["include_roots"]],
             *scope["non_project_roots"],
@@ -25,7 +26,9 @@ def eligible(value, cwd, *, ports: OriginPorts):
     ):
         return None
     local = ports.discover(cwd)
-    return local if select(scope, local) is not None else None
+    if select(scope, local) is not None or prompt and select(scope, local, recall=True) is not None:
+        return local
+    return None
 
 
 def delegated_project(value, local):

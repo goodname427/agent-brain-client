@@ -510,7 +510,7 @@ class Hooks(unittest.TestCase):
         self.fixture.cloud.request = send
         self.core = SimpleNamespace(approved=source_policy.approved, load=lambda home: self.value,
                                     adapter=lambda value, local: (self.client, self.queue),
-                                    eligible=lambda value, cwd: self.local, recall_prompt=Mock(return_value=[{'content': 'Synthetic recalled memory'}]), schedule_delivery=Mock(), hook_context=adapters_harnesses_hook_output.hook_context)
+                                    eligible=lambda value, cwd, **kwargs: self.local, recall_prompt=Mock(return_value=[{'content': 'Synthetic recalled memory'}]), schedule_delivery=Mock(), hook_context=adapters_harnesses_hook_output.hook_context)
         queue = patch.object(cb, 'open_queue', return_value=(self.client, self.queue))
         queue.start()
         self.addCleanup(queue.stop)
@@ -1008,6 +1008,33 @@ class Transcript(Hooks):
         self.assertFalse(cb.resume_observed_assistant(self.fixture.home, self.core, turn))
         self.assertFalse(cb.resume_observed_assistant(self.fixture.home, self.core, turn))
         self.assertEqual(len(self.staged), 2)
+
+    def test_default_expansion_preserves_pending_observed_project_completion(self):
+        path, index, _ = self.completed_ide_fixture()
+        index["requests"][0]["state"] = "running"
+        path.write_text(json.dumps(index))
+        spawn = Mock()
+        _, result = cb.hook(self.fixture.home, io.BytesIO(json.dumps(dict(
+            self.payload, hook_event_name="Stop", stop_hook_active=False)).encode()),
+            core=self.core, defer=spawn)
+        self.assertEqual(result["status"], "assistant-capture-deferred")
+        turn = spawn.call_args.args[0]
+        index["requests"][0]["state"] = "complete"
+        path.write_text(json.dumps(index))
+
+        original = self.value["scope"]
+        expanded = dict(original, all_non_projects=True)
+        changed = dict(expanded, exclude_roots=[str(self.fixture.home / "unrelated")])
+        for scope in (changed, expanded):
+            pin = digest(scope)
+            self.value.update(scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin)
+            if scope is changed:
+                with patch.object(native_transcript, "read_bound", side_effect=AssertionError("Changed scope must not read")):
+                    self.assertTrue(cb.resume_observed_assistant(self.fixture.home, self.core, turn))
+                self.assertEqual(len(self.staged), 1)
+            else:
+                self.assertFalse(cb.resume_observed_assistant(self.fixture.home, self.core, turn))
+                self.assertEqual(len(self.staged), 2)
 
     def test_pending_completion_survives_many_attempts_and_revocation_without_reading(self):
         path, index, _ = self.completed_ide_fixture()

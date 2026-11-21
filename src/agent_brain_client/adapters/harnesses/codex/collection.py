@@ -99,7 +99,7 @@ def submit_hook(value, local, payload, *, services):
 def hook(value, *, services, observe=None):
     from time import monotonic
     started = monotonic()
-    local = services.eligible(value, os.getcwd())
+    local = services.eligible(value, os.getcwd(), prompt=True)
     if local is None or services.legacy(value, local) is not None:
         return {}
     from agent_brain_client.adapters.storage.project_settings import source_active
@@ -115,12 +115,17 @@ def hook(value, *, services, observe=None):
     kind = payload.get("hook_event_name")
     from agent_brain_client.application.memory.lifecycle import handle
 
+    scope = value["scope"]
+    capture = select(scope, local) is not None
+    if not capture and kind != "UserPromptSubmit":
+        return {}
+    recall = kind == "UserPromptSubmit" and select(scope, local, recall=True) is not None
     initialized = monotonic()
     items, diagnostic = handle(
         kind, prompt=payload.get("prompt", ""),
-        stage=lambda: services.submit_hook(value, local, payload),
-        schedule=lambda: services.schedule_delivery(value["device_home"], "codex", local),
-        recall=lambda query: services.recall_prompt(value, local, payload, query, observe=observe),
+        stage=(lambda: services.submit_hook(value, local, payload)) if capture else None,
+        schedule=(lambda: services.schedule_delivery(value["device_home"], "codex", local)) if capture else None,
+        recall=(lambda query: services.recall_prompt(value, local, payload, query, observe=observe)) if recall else None,
     )
     diagnostic["timing_ms"]["initialization_ms"] = round((initialized - started) * 1000, 3)
     diagnostic["timing_ms"]["adapter_total_ms"] = round((monotonic() - started) * 1000, 3)

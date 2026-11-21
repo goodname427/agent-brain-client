@@ -4,8 +4,10 @@ import agent_brain_client.adapters.storage.collection as source_policy
 import agent_brain_client.adapters.storage.metadata as metadata
 """Source activation/control regressions with synthetic state and no network."""
 import copy
+from contextlib import nullcontext
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -243,8 +245,11 @@ class AutomaticCapture(unittest.TestCase):
         for root in ('C:/synthetic/new-project', 'Z:/future-volume/project', '/synthetic/elsewhere'):
             local = {'kind':'project','cwd':root,'project_root':root,'repository_root':root}
             self.assertEqual(select(stored['scope'], local)['sharing'], 'personal')
-        self.assertIsNone(select(stored['scope'], {'kind':'non-project','cwd':str(self.home),
-            'project_root':None,'repository_root':None}))
+        ordinary = {'kind':'non-project','cwd':str(self.home),
+                    'project_root':None,'repository_root':None}
+        self.assertTrue(stored['scope']['all_non_projects'])
+        self.assertEqual(select(stored['scope'], ordinary)['sharing'], 'personal')
+        self.assertEqual(select(stored['scope'], ordinary, recall=True)['sharing'], 'personal')
 
     def test_noninteractive_update_runs_source_setup_and_status_does_not(self):
         from agent_brain_client.application.installation.update import ClientUpdate
@@ -259,6 +264,192 @@ class AutomaticCapture(unittest.TestCase):
             setup.reset_mock()
             runtime_updates.manage_update(self.home, 'check-update')
             setup.assert_not_called()
+
+    def test_registered_update_retries_exact_expansion_and_collects_only_new_events(self):
+        from agent_brain_client.adapters.installation.updates import RegisteredClientInstallation
+        from agent_brain_client.adapters.packages.frozen import runtime_pins
+        from agent_brain_client.adapters.storage import registration
+        from agent_brain_client.application.installation.update_ports import RegisteredInstallation
+        from agent_brain_client.application.memory.observations import stage_messages
+        from agent_brain_client.domain.scopes import namespace, select
+        from test_content_outbox import Outbox
+
+        ordinary = self.home / "ordinary"
+        isolated = self.home / "isolated"
+        denied = self.home / "excluded"
+        for directory in (ordinary, isolated, denied):
+            directory.mkdir()
+        (isolated / ".git").mkdir()
+        scope = dict(self.scope, all_projects=True, exclude_roots=[str(denied)],
+                     include_roots=[{"root": str(isolated), "sharing": "project"}])
+        pin = digest(scope)
+        value = dict(self.value, schema=1, scope=scope, approved_scope_sha256=pin,
+                     server_scope_sha256=pin, operator_sha256=None,
+                     code_sha256=runtime_pins(gm.ROOT, fallback=source_policy.FILES))
+        metadata.write(self.file, value)
+        before = self.file.read_bytes()
+        pending = self.file.with_name("pending-scope.json")
+        metadata.write(pending, scope)
+        pending_before = pending.read_bytes()
+        profile = self.file.parent / "synthetic-profile.json"
+        metadata.write(profile, {"endpoint": "https://synthetic.invalid",
+                                 "grant": {"actor": "synthetic-owner"}})
+        runtime = {"https_profile": str(profile), "https_profile_sha256": metadata.digest(profile.read_bytes()),
+                   "content_policy_sha256": "f" * 64}
+        old_queue = Outbox("test_same_id_cannot_change_request_or_cas_base")
+        old_queue.setUp()
+        self.addCleanup(old_queue.doCleanups)
+        current_queue = Outbox("test_same_id_cannot_change_request_or_cas_base")
+        current_queue.setUp()
+        self.addCleanup(current_queue.doCleanups)
+        old_body = "Synthetic formerly observed project turn"
+        project_id = namespace("synthetic-owner", scope["profile_id"])
+        stage_messages(old_queue.adapter, project_id=project_id, session_id="old-session",
+                       operation_id="old-turn", phase="prompt",
+                       messages=[{"role": "user", "content": old_body}])
+        old_file = next((old_queue.cache / "outbox").glob("*.json"))
+        original = old_file.read_bytes()
+
+        remote_scope = copy.deepcopy(scope)
+        calls = []
+        old_server, lose_reply = True, True
+        device = "c" * 32
+
+        def wire(method, params, rid=None):
+            nonlocal remote_scope, lose_reply
+            calls.append((method, copy.deepcopy(params), rid))
+            if method == "memory_global_register":
+                if old_server:
+                    return {"error": {"code": "invalid_global_source_approval", "retryable": False}}
+                self.assertEqual(params["previous_scope_sha256"], digest(remote_scope))
+                remote_scope = copy.deepcopy(params["scope"])
+                if lose_reply:
+                    lose_reply = False
+                    return {"error": {"code": "transport_unconfirmed", "retryable": True}}
+            elif method != "memory_global_status":
+                self.fail("Update may only check or register authenticated source metadata")
+            return {"result": {"metadata_only": True, "source_registered": True,
+                               "source_device_id": device, "global_profile_id": scope["profile_id"],
+                               "scope_sha256": digest(remote_scope), "stopped": False}}
+
+        client = SimpleNamespace(device_id=device, wire=wire, actor="synthetic-owner")
+        active = {"version": "0.8.29", "commit": "a" * 40}
+        updated = {"version": "0.8.30", "commit": "b" * 40}
+
+        def update_package():
+            nonlocal active
+            status = "current" if active == updated else "updated"
+            active = updated
+            return {"status": status}
+
+        channel = SimpleNamespace(verified_active=lambda: active, update=update_package)
+        with (
+            patch.object(registration, "registration", return_value=(None, {"runtime": runtime})),
+            patch("agent_brain_client.adapters.server.collection.CollectionClient", return_value=client),
+            patch.multiple(
+                RegisteredClientInstallation,
+                recover_hooks=Mock(return_value=False),
+                handover_pending=Mock(return_value=False),
+                inspect=Mock(return_value={"registration_verified": True, "installation_state": "verified"}),
+                load_registration=Mock(return_value=RegisteredInstallation("darwin-arm64", True, {}, "codex")),
+                environment=Mock(side_effect=nullcontext),
+                open_channel=Mock(return_value=channel),
+                tool_discovery=Mock(return_value={"registered_enabled_tools": []}),
+                refresh_launcher=Mock(return_value=False),
+                refresh_hooks=Mock(return_value={"status": "global-hook-current", "native_changed": False}),
+            ),
+        ):
+            with patch.object(gm, "discover", side_effect=AssertionError("Update must not probe history")):
+                def update(expected="client-update-current"):
+                    result = runtime_updates.manage_update(self.home, "update")
+                    self.assertEqual(result["status"], expected)
+                    return result["source_setup"]
+                fallback = update("client-update-updated")
+                self.assertTrue(fallback["collection_enabled"])
+                self.assertTrue(fallback["ordinary_directory_collection_pending"])
+                self.assertEqual(fallback["server_error"]["code"], "invalid_global_source_approval")
+                self.assertEqual(self.file.read_bytes(), before)
+                old_server = False
+                self.assertTrue(update()["ordinary_directory_collection_pending"])
+                self.assertEqual(self.file.read_bytes(), before)
+                self.assertTrue(update()["activated"])
+                self.assertEqual(update()["status"], "global-memory-source-current")
+            self.assertEqual([method for method, _, _ in calls], [
+                "memory_global_status", "memory_global_register",
+                "memory_global_status", "memory_global_register",
+                "memory_global_status", "memory_global_status",
+            ])
+            self.assertEqual(calls[1], calls[3])
+            expanded = source_policy.load(self.home)
+            self.assertEqual(expanded["scope"], dict(scope, all_non_projects=True))
+            self.assertEqual(expanded["approved_scope_sha256"], digest(remote_scope))
+            self.assertEqual(expanded["server_scope_sha256"], digest(remote_scope))
+            self.assertEqual(pending.read_bytes(), pending_before)
+            self.assertFalse((current_queue.cache / "outbox").exists())
+            self.assertEqual(old_file.read_bytes(), original)
+            self.assertEqual(select(expanded["scope"], gm.discover(str(isolated)))["sharing"], "project")
+            self.assertIsNone(select(expanded["scope"], gm.discover(str(denied))))
+
+            new_body = "Synthetic future ordinary-directory prompt"
+            payload = {"cwd": str(ordinary), "hook_event_name": "UserPromptSubmit",
+                       "session_id": "new-session", "turn_id": "new-turn", "prompt": new_body}
+            stream = SimpleNamespace(buffer=io.BytesIO(json.dumps(payload).encode()))
+            with (
+                patch.object(os, "getcwd", return_value=str(ordinary)),
+                patch.object(sys, "stdin", stream),
+                patch.object(gm, "build_delivery_queue", return_value=(client, current_queue.adapter)),
+                patch.object(gm, "schedule_delivery") as schedule,
+                patch.object(gm, "recall_prompt", return_value=[]) as recall,
+            ):
+                gm.hook(expanded)
+            schedule.assert_called_once()
+            recall.assert_called_once()
+            captured, = current_queue.adapter._queued()
+            event = captured["request"]["params"]["event"]
+            self.assertEqual(event["messages"], [{"role": "user", "content": new_body}])
+            self.assertEqual(event["project_id"], project_id)
+            self.assertEqual(old_file.read_bytes(), original)
+
+    def test_update_keeps_explicit_source_choices_and_pauses(self):
+        default = dict(self.scope, all_projects=True)
+        for change, stopped, local_stop, explicit_pending in (
+            ({}, True, False, False),
+            ({}, False, True, False),
+            ({"all_projects": False}, False, False, False),
+            ({"all_non_projects": False}, False, False, False),
+            ({"non_project_roots": [str(self.home)]}, False, False, False),
+            ({"recall_personal": False}, False, False, False),
+            ({}, False, False, True),
+        ):
+            with self.subTest(change=change, stopped=stopped, local_stop=local_stop,
+                              explicit_pending=explicit_pending):
+                scope = dict(default, **change)
+                pin, device = digest(scope), "c" * 32
+                value = dict(self.value, scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin)
+                client = SimpleNamespace(device_id=device, wire=Mock())
+                client.wire.return_value = {"result": {
+                    "metadata_only": True, "source_registered": True, "source_device_id": device,
+                    "global_profile_id": scope["profile_id"], "scope_sha256": pin, "stopped": stopped,
+                }}
+                if local_stop:
+                    self.off.touch()
+                if explicit_pending:
+                    metadata.write(self.file.with_name("pending-scope.json"),
+                                   dict(default, recall_personal=False))
+                with (
+                    patch.object(source_policy, "load", return_value=value),
+                    patch("agent_brain_client.adapters.server.collection.CollectionClient",
+                          return_value=client),
+                    patch.object(operator, "packet_for", side_effect=AssertionError("No scope replacement")),
+                ):
+                    result = operator.maintain(self.home)
+                self.assertEqual(result["collection_enabled"], not (stopped or local_stop))
+                if local_stop:
+                    client.wire.assert_not_called()
+                    self.assertTrue(self.off.exists())
+                    self.off.unlink()
+                else:
+                    client.wire.assert_called_once_with("memory_global_status", {})
 
 
 if __name__ == '__main__': unittest.main()

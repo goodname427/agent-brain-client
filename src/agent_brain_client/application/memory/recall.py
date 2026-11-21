@@ -56,10 +56,14 @@ def recall(
     request_id=None,
     observe=None,
 ):
+    scope = value["scope"]
+    selected = select(scope, local, recall=True)
+    if selected is None:
+        raise ValueError("Origin not approved for recall")
     client = services.client(value, local)
     options = dict(value.get("recall", {}))
     params = dict(
-        client.params(session), query=query, limit=options.pop("maxResults", 5)
+        client.params(session, recall=True), query=query, limit=options.pop("maxResults", 5)
     )
     params["recall"] = options
     cache_query = digest([query, params["limit"], options])
@@ -84,12 +88,15 @@ def recall(
                 and saved.get("query_sha256") == cache_query
                 and ("evidence_selected" not in saved or saved["evidence_selected"] is automatic)
                 and services.approved(value)
-                and select(value["scope"], local) is not None
             ):
                 items = [
                     dict(item, offline_cache=True, remote_confirmation=False)
                     for item in saved["items"]
                 ]
+                if not scope["recall_personal"] and any(
+                    item.get("scope") == "personal" for item in items
+                ):
+                    raise ValueError("Cached personal recall is disabled")
                 cached_evidence = saved.get("evidence_selected") is True
                 references = saved.get("selected", [])
                 for index, item in enumerate(items):
@@ -123,11 +130,11 @@ def recall(
         or len(data["namespace_results"]) > 18
     ):
         raise ValueError("Bounded global recall required")
-    selected = select(value["scope"], local)
-    ids = {
-        namespace(client.actor, value["scope"]["profile_id"]),
-        namespace(client.actor, source_id(value["scope"], local, selected["sharing"])),
-    }
+    ids = {}
+    if scope["recall_personal"]:
+        ids[namespace(client.actor, scope["profile_id"])] = "personal"
+    if selected["sharing"] == "project":
+        ids[namespace(client.actor, source_id(scope, local, "project"))] = "project"
     items = []
     references = []
     invalid_group = None
@@ -175,7 +182,7 @@ def _verified_group(group, value, local, session, client, ids):
             {"project_id", "sharing", "recall"},
             {"project_id", "sharing", "recall", "source_device_id"},
         )
-        or group["project_id"] not in ids
+        or ids.get(group["project_id"]) != group["sharing"]
         or group["sharing"] not in ("personal", "project")
     ):
         raise ValueError("Global recall namespace changed")
@@ -229,7 +236,8 @@ def _verified_group(group, value, local, session, client, ids):
                 or not peer
                 and not proof.get("manual_sources")
                 and any(
-                    select(value["scope"], x) is None for x in context["origins"]
+                    (select(value["scope"], x) or {}).get("sharing") != group["sharing"]
+                    for x in context["origins"]
                 )
             ):
                 raise ValueError("Verified origin applicability required")
