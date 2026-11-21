@@ -144,6 +144,7 @@ COMMANDS = {
             "test_install_contracts.PlatformMainContracts",
             "test_install_contracts.InstallationArchitectureContracts",
             "test_windows_native",
+            "test_windows_released_update",
             "test_windows_private_metadata",
             "test_host_config.WindowsBoundary",
             "test_install_plan",
