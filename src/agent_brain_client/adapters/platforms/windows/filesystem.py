@@ -343,8 +343,9 @@ def powershell_quote(value):
     return "'" + value.replace("'", "''") + "'"
 
 
-def powershell_command(invocation):
+def powershell_command(invocation, *, executable="powershell.exe"):
     import base64
+    import subprocess
 
     script = (
         "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; $env:PYTHONIOENCODING='utf-8'; "
@@ -353,7 +354,7 @@ def powershell_command(invocation):
     )
     encoded = base64.b64encode(script.encode("utf-16le")).decode()
     return (
-        "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " + encoded
+        subprocess.list2cmdline([executable]) + " -NoLogo -NoProfile -NonInteractive -EncodedCommand " + encoded
     )
 
 

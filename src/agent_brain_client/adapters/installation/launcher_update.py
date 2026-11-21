@@ -328,6 +328,123 @@ def probe_launcher(plan, active):
         raise ValueError("Launcher checkpoint differs")
 
 
+# Both native commands launch OS tools first. The private installed binding
+# supplies digests as data. Python executes the exact launcher bytes it verifies.
+_LOAD_HOOK = '''
+import hashlib, sys
+from pathlib import Path
+p = Path(sys.argv.pop(1))
+pin = sys.argv.pop(1)
+try:
+    if p.resolve(strict=True) != p or p.stat().st_size > 65536:
+        raise ValueError()
+    raw = p.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != pin:
+        raise ValueError()
+except (OSError, ValueError):
+    print('{}', flush=True)
+    print('agent-brain Hook launcher integrity failed', file=sys.stderr)
+    sys.exit(0)
+exec(compile(raw, str(p), 'exec'))
+'''
+_MAC_HOOK_GUARD = '''
+import hashlib, json, os, pathlib, stat, subprocess, sys
+
+def private(path, limit=65536):
+    st = path.lstat()
+    if (path.resolve(strict=True) != path or not stat.S_ISREG(st.st_mode)
+            or st.st_nlink != 1 or st.st_uid != os.getuid() or st.st_mode & 0o077
+            or st.st_size > limit):
+        raise ValueError('Private Hook binding required')
+    return path.read_bytes()
+
+def pinned(path, expected, limit=65536):
+    raw = private(pathlib.Path(path), limit)
+    if hashlib.sha256(raw).hexdigest() != expected:
+        raise ValueError('Hook binding changed')
+    return json.loads(raw)
+
+try:
+    root = pathlib.Path(sys.argv[1])
+    row = json.loads(private(root / 'binding.json'))
+    saved = json.loads(private(root.parent / 'codex-mcp.json'))
+    anchor = [saved['release_policy'], saved['release_policy_sha256']]
+    if row['schema'] != 2 or row['policy'] != anchor:
+        raise ValueError('Hook enrollment changed')
+    runtime = pinned(*anchor)['runtime']
+    if 'dependency_policy' in runtime:
+        deps = pinned(runtime['dependency_policy'], runtime['dependency_policy_sha256'], 2097152)
+        if deps['schema'] == 2:
+            python_pin = deps['python'], deps['python_sha256']
+        else:
+            base = pathlib.Path(deps['root'])
+            executable = (base / 'python/bin/python3').resolve(strict=True)
+            python_pin = str(executable), deps['files'][executable.relative_to(base).as_posix()]['sha256']
+        if (row['python'], row['python_sha256']) != python_pin:
+            raise ValueError('Hook interpreter binding changed')
+    python = pathlib.Path(row['python'])
+    if (not python.is_absolute() or python.resolve(strict=True) != python
+            or hashlib.sha256(python.read_bytes()).hexdigest() != row['python_sha256']):
+        raise ValueError('Prepared Hook interpreter changed')
+    rc = subprocess.run([
+        str(python), '-X', 'utf8', '-I', '-S', '-B', '-c', sys.argv[2],
+        str(root / 'launcher.py'), row['launcher_sha256'], os.getcwd(), *sys.argv[3:],
+    ], cwd='/usr/bin', check=False).returncode
+except Exception:
+    print('{}', flush=True)
+    print('agent-brain Hook bootstrap verification failed', file=sys.stderr)
+    rc = 0
+sys.exit(rc)
+'''
+
+
+# The first fixed launcher can be retained during a verified rollback to the
+# immediate predecessor. Retire this adapter when dropping 0.8.26 rollback.
+_MAC_0826 = (
+    "be7957ec61b3b776ada0903f626a3c72d3d0972d",
+    "be1b7e52dc108a1ea7bc704b93b841f2c2415006d8ccea28af1a0f646fd0214d",
+)
+_WINDOWS_0826 = (
+    "22b7522e93bac0812907192433016ea45c541d9a",
+    "b8c86e229933e17c1ace09a4d5963a08c8829064c1511aa6535892f162dfe0ff",
+)
+_PUBLISHED_0826 = {
+    "darwin-arm64": _MAC_0826,
+    "darwin-x86_64": _MAC_0826,
+    "win32-amd64": _WINDOWS_0826,
+    "win32-arm64": _WINDOWS_0826,
+}
+_LEGACY_HOOK = '''
+import os
+import sys
+
+sys.path.insert(0, sys.argv.pop(1))
+os.chdir(sys.argv.pop(1))
+home, harness, *project = sys.argv[1:]
+if project:
+    from agent_brain_client.interfaces.cli import project as cli
+    settings, pin = project
+    sys.argv[1:] = ['hook', '--harness', harness, '--settings', settings, '--settings-sha256', pin]
+    status = cli.main()
+elif harness == 'codex':
+    from agent_brain_client.interfaces.cli import collection as cli
+
+    # Serving verification covered the actual executable's code. Keep the
+    # legacy settings/approval/identity checks without requiring forward pins.
+    original_load = cli.core.load
+    cli.core.load = lambda home, *, verify_code=True: original_load(home, verify_code=False)
+    status = cli.main(['global-hook', '--harness', harness, '--device-home', home])
+else:
+    from agent_brain_client.interfaces.cli import codebuddy as cli
+    from agent_brain_client.runtime.collection import native_services
+
+    cli.host_binding.load_core = lambda home: native_services(verify_code=False)
+    sys.argv[1:] = ['hook', '--device-home', home]
+    status = cli.main()
+sys.exit(status)
+'''
+
+
 # This portion runs in isolated Python before importing any release code.
 _BOOTSTRAP = '''
 import hashlib
@@ -365,16 +482,28 @@ try:
         raise ValueError("Verified serving Hook release required")
     package = pathlib.Path(active["package"])
     entry = package / "src/agent_brain_client/runtime/host_binding.py"
-    if not entry.is_file() or b"def run_native_hook(" not in entry.read_bytes():
+    cwd, harness, *project = sys.argv[1:]
+    if harness not in ("codex", "codebuddy") or len(project) > 1:
+        raise ValueError("Explicit native Hook route required")
+    if entry.is_file() and b"def run_native_hook(" in entry.read_bytes():
+        code = (
+            "import os,sys; sys.path.insert(0,sys.argv.pop(1)); os.chdir(sys.argv.pop(1)); "
+            "from agent_brain_client.runtime.host_binding import run_native_hook; "
+            "sys.exit(run_native_hook(*sys.argv[1:]))"
+        )
+    elif (active["version"] == "0.8.26"
+          and (active["commit"], active["manifest_sha256"]) == PUBLISHED_0826.get(channel.policy["platform"])):
+        if project:
+            from agent_brain_client.adapters.storage.project_settings import installed_hook_pin
+
+            project.append(installed_hook_pin(HOME, harness, project[0]))
+        print("agent-brain Hook serving verified 0.8.26 rollback", file=sys.stderr)
+        code = LEGACY_HOOK
+    else:
         raise ValueError("Verified Hook entry required")
-    code = (
-        "import sys; sys.path.insert(0,sys.argv.pop(1)); "
-        "from agent_brain_client.runtime.host_binding import run_native_hook; "
-        "sys.exit(run_native_hook(*sys.argv[1:]))"
-    )
     status = subprocess.run(
         [sys.executable, "-X", "utf8", "-I", "-B", "-c", code, str(package / "src"),
-         HOME, *sys.argv[1:]], check=False,
+         cwd, HOME, harness, *project], check=False,
     ).returncode
 except Exception as error:
     print("{}", flush=True)
@@ -393,20 +522,61 @@ def native_hook_command(home, harness, settings=None):
     from agent_brain_client.adapters.platforms.filesystem import command_line
 
     root = native_hook_directory(home)
-    interpreter, bootstrap = str(root / "python.txt"), str(root / "launcher.py")
     args = [harness, *([str(settings)] if settings is not None else [])]
     if os.name == "nt":
         from agent_brain_client.adapters.platforms.windows.filesystem import powershell_command, powershell_quote
-        return powershell_command(
-            "& ([IO.File]::ReadAllText(" + powershell_quote(interpreter) + ").TrimEnd([char]10)) "
-            + " ".join(map(powershell_quote, ["-X", "utf8", "-I", "-B", bootstrap, *args]))
-        )
-    return command_line([
-        "/bin/sh", "-c",
-        'IFS= read -r python < "$1" || exit; shift; exec "$python" -X utf8 -I -B "$@"',
-        "agent-brain-hook", interpreter, bootstrap, *args,
-    ])
 
+        binding = powershell_quote(str(root / "binding.json"))
+        registration = powershell_quote(str(root.parent / "codex-mcp.json"))
+        launcher = powershell_quote(str(root / "launcher.py"))
+        invocation = (
+            "$ErrorActionPreference='Stop'; try { "
+            "$cwd=$PWD.ProviderPath; "
+            "$env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules'); "
+            "Set-Location -LiteralPath $PSHOME; [Environment]::CurrentDirectory=$PSHOME; "
+            "$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; "
+            "$allowed=@($sid,'S-1-5-18','S-1-5-32-544'); "
+            "function Read-ABBinding($path,$pin,$limit=65536) { "
+            "$item=[IO.FileInfo]::new($path); "
+            "if ($item.FullName -cne $path) { throw 'Canonical Hook binding required' }; "
+            "for($node=$item;$null -ne $node;$node=$(if($node -is [IO.FileInfo]){$node.Directory}else{$node.Parent})) "
+            "{ if($node.Attributes -band [IO.FileAttributes]::ReparsePoint){ throw 'Linked Hook binding' } }; "
+            "$acl=[IO.File]::GetAccessControl($item.FullName); "
+            "if ($item.Length -gt $limit -or $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid "
+            "-or ($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) "
+            "| Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $allowed })) "
+            "{ throw 'Private Hook binding required' }; "
+            "$raw=[IO.File]::ReadAllBytes($item.FullName); "
+            "if($pin -and (Get-ABHash $raw) -ine $pin){ throw 'Hook binding changed' }; "
+            "return ([Text.Encoding]::UTF8.GetString($raw) | ConvertFrom-Json) }; "
+            "function Get-ABHash($raw) { $sha=[Security.Cryptography.SHA256]::Create(); "
+            "try { return [BitConverter]::ToString($sha.ComputeHash([byte[]]$raw)).Replace('-','') } "
+            "finally { $sha.Dispose() } }; "
+            "$row=Read-ABBinding " + binding + " $null; "
+            "$saved=Read-ABBinding " + registration + " $null; "
+            "if ($row.schema -ne 2 -or $row.policy[0] -cne $saved.release_policy "
+            "-or $row.policy[1] -cne $saved.release_policy_sha256) { throw 'Hook enrollment changed' }; "
+            "$runtime=(Read-ABBinding $row.policy[0] $row.policy[1]).runtime; "
+            "if($runtime.dependency_policy){ "
+            "$deps=Read-ABBinding $runtime.dependency_policy $runtime.dependency_policy_sha256 2097152; "
+            "if($deps.schema -eq 2 -and ($deps.python -cne $row.python "
+            "-or $deps.python_sha256 -cne $row.python_sha256)){ throw 'Hook interpreter binding changed' } }; "
+            "if ($row.python -notmatch '^[A-Za-z]:' -or [IO.Path]::GetFullPath($row.python) -cne $row.python "
+            "-or ((Get-Item -LiteralPath $row.python).Attributes -band [IO.FileAttributes]::ReparsePoint) "
+            "-or (Get-FileHash -Algorithm SHA256 -LiteralPath $row.python).Hash -ine $row.python_sha256) "
+            "{ throw 'Prepared Hook interpreter changed' }; "
+            "& $row.python -X utf8 -I -S -B -c " + powershell_quote(_LOAD_HOOK)
+            + " " + launcher + " $row.launcher_sha256 $cwd " + " ".join(map(powershell_quote, args))
+            + "; exit $LASTEXITCODE } catch { "
+            "[Console]::Out.WriteLine('{}'); [Console]::Error.WriteLine('agent-brain Hook bootstrap verification failed'); exit 0 }"
+        )
+        powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+        return powershell_command(invocation, executable=str(powershell))
+    return command_line([
+        "/usr/bin/env", "-u", "DEVELOPER_DIR", "-u", "TOOLCHAINS",
+        "/usr/bin/python3", "-I", "-S", "-B", "-c", _MAC_HOOK_GUARD,
+        str(root), _LOAD_HOOK, *args,
+    ])
 
 def prepare_native_hook(home):
     """Reuse the original approved policy and immutable verifier for this enrollment."""
@@ -427,14 +597,13 @@ def prepare_native_hook(home):
     with locked(root / "install.lock"):
         if receipt.exists():
             previous = metadata.private_json(receipt)
-            if (set(previous) != {"policy", "files"} or previous["policy"] != list(policy)
-                    or set(previous["files"]) != {"python.txt", "launcher.py"}):
+            if (set(previous) != {"schema", "policy", "python", "python_sha256", "launcher_sha256"}
+                    or previous["schema"] != 2 or previous["policy"] != list(policy)):
                 raise ValueError("Fixed Hook enrollment changed")
-            for name, expected in previous["files"].items():
-                path = metadata.canonical(root / name, existing=True)
-                private_mode(path, owner=True)
-                if metadata.digest(path.read_bytes()) != expected:
-                    raise ValueError("Fixed Hook launcher changed")
+            path = metadata.canonical(root / "launcher.py", existing=True)
+            private_mode(path, owner=True)
+            if metadata.digest(path.read_bytes()) != previous["launcher_sha256"]:
+                raise ValueError("Fixed Hook launcher changed")
             return
         channel = ClientReleases(*policy, inspection=True)
         if channel.policy["runtime"]["device_home"] != str(home):
@@ -459,22 +628,22 @@ def prepare_native_hook(home):
         executable = str(Path(python).resolve())
         if "\n" in executable or "\r" in executable:
             raise ValueError("Canonical Hook interpreter required")
-        payload = {
-            "python.txt": (executable + "\n").encode(),
-            "launcher.py": (
-                f"HOME = {str(home)!r}\nPOLICY = {policy!r}\nANCHOR = {str(package)!r}\nPINS = {pins!r}\n"
-                + _BOOTSTRAP
-            ).encode(),
-        }
-        for name, raw in payload.items():
-            path = metadata.canonical(root / name)
-            if path.exists():
-                private_mode(path, owner=True)
-                if path.read_bytes() != raw:
-                    raise ValueError("Existing fixed Hook launcher preserved")
-            else:
-                atomic(path, raw, 0o600)
+        launcher = (
+            f"HOME = {str(home)!r}\nPOLICY = {policy!r}\nANCHOR = {str(package)!r}\nPINS = {pins!r}\n"
+            f"PUBLISHED_0826 = {_PUBLISHED_0826!r}\nLEGACY_HOOK = {_LEGACY_HOOK!r}\n"
+            + _BOOTSTRAP
+        ).encode()
+        path = metadata.canonical(root / "launcher.py")
+        if path.exists():
+            private_mode(path, owner=True)
+            if path.read_bytes() != launcher:
+                raise ValueError("Existing fixed Hook launcher preserved")
+        else:
+            atomic(path, launcher, 0o600)
         metadata.write(receipt, {
+            "schema": 2,
             "policy": list(policy),
-            "files": {name: metadata.digest(raw) for name, raw in payload.items()},
-        }, exclusive=True)
+            "python": executable,
+            "python_sha256": metadata.digest(Path(executable).read_bytes()),
+            "launcher_sha256": metadata.digest(launcher),
+        })
