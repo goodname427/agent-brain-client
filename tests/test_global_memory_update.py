@@ -60,43 +60,15 @@ class GlobalMemoryUpdate(unittest.TestCase):
                 replacement = patch.object(module, "FILES", files)
                 replacement.start()
                 self.addCleanup(replacement.stop)
-        temp = tempfile.TemporaryDirectory(prefix="synthetic-hook-update-")
-        self.addCleanup(temp.cleanup)
-        self.home = private_directory(Path(temp.name).resolve() / "fixture")
-        self.native = private_directory(self.home / "codex")
+        from test_stable_native_hooks import StableHooks
+
+        release = StableHooks("test_post_migration_update_keeps_real_trust_keys_and_executes_active_release")
+        release.setUp()
+        self.addCleanup(release.doCleanups)
+        release.release("0.8.27", "2" * 40)
+        self.home, self.native = release.home, release.native
         self.file = source_policy.settings_path(self.home)
-        private_directory(self.file.parent)
-        state = self.file.parent.parent
-        for name in ("profile.json", "content.json"):
-            metadata.write(state / name, {"schema": 1})
-        policy = {
-            "capabilities": [
-                "codex-stdio-mcp",
-                "personal-content-explicit",
-                "https-system-credential",
-            ],
-            "runtime": {
-                "codex_home": str(self.native),
-                "https_profile": str(state / "profile.json"),
-                "https_profile_sha256": metadata.digest(
-                    (state / "profile.json").read_bytes()
-                ),
-                "content_policy": str(state / "content.json"),
-                "content_policy_sha256": metadata.digest(
-                    (state / "content.json").read_bytes()
-                ),
-            },
-        }
-        metadata.write(state / "policy.json", policy)
-        metadata.write(
-            state / "codex-mcp.json",
-            {
-                "release_policy": str(state / "policy.json"),
-                "release_policy_sha256": metadata.digest(
-                    (state / "policy.json").read_bytes()
-                ),
-            },
-        )
+        self.config = release.config
         self.value = {
             "schema": 1,
             "enabled": False,
@@ -132,12 +104,15 @@ class GlobalMemoryUpdate(unittest.TestCase):
 
     def old_installer(self):
         root = self.home / "synthetic-old-installer"
-        for name in hooks.FILES:
+        for name in hooks.runtime_pins(hooks.ROOT):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(hooks.ROOT / name, target)
         source = root / "src/agent_brain_client/adapters/harnesses/codex/collection.py"
         source.write_bytes(source.read_bytes() + b"\n# Synthetic prior Hook source.\n")
+        # Preserve the optional module inventory in this synthetic package.
+        (root / "dev/build").mkdir(parents=True)
+        (root / "dev/build/package.py").touch()
         with patch.object(hooks, "ROOT", root):
             hooks.refresh(self.home)
             self.assertEqual(hooks.refresh(self.home)["status"], "global-hook-current")
@@ -164,7 +139,8 @@ class GlobalMemoryUpdate(unittest.TestCase):
             self.assertTrue(checked["update_available"], checked)
             self.assertEqual(before, {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()})
             updated = installation.refresh_hooks()
-            self.assertEqual(updated["status"], "global-hook-updated", updated)
+            self.assertEqual(updated["status"], "global-hook-current", updated)
+            self.assertFalse(updated["native_changed"])
             self.assertEqual(installation.refresh_hooks()["status"], "global-hook-current")
         after = source_policy.load(self.home)
         self.assertNotEqual(after["code_sha256"], before_settings["code_sha256"])
@@ -186,9 +162,9 @@ class GlobalMemoryUpdate(unittest.TestCase):
         installation.channel = SimpleNamespace(harness="codex", verified_active=lambda: active)
         result = installation.refresh_hooks()
         self.assertEqual(result["source_package_commit"], active["commit"])
-        self.assertIn("timeout = 121", self.config.read_text())
+        self.assertIn("timeout = 120", self.config.read_text())
         self.assertEqual(installation.refresh_hooks()["status"], "global-hook-current")
-        self.config.write_bytes(self.config.read_bytes().replace(b"timeout = 121", b"timeout = 119"))
+        self.config.write_bytes(self.config.read_bytes().replace(b"timeout = 120", b"timeout = 119"))
         before = self.config.read_bytes()
         from agent_brain_client.application.installation.update_ports import ManagedConfigurationConflict
         with self.assertRaises(ManagedConfigurationConflict) as error:

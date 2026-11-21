@@ -9,9 +9,8 @@ from agent_brain_client.adapters.packages.client import (
     HTTPS_CONTENT_CAPABILITIES,
     MCP_LAUNCHER_ENTRY,
     UpdateBlocked,
-    fixed_launcher_files,
     launcher_package_files,
-    managed_worker_abi,
+    single_entry_pin,
 )
 from agent_brain_client.adapters.storage.private_files import private_json, safe
 import agent_brain_client.adapters.storage.private_files as private_files
@@ -108,23 +107,9 @@ def can_retain_launcher(policy, installed, registered, candidate, desired, befor
             old_entry if arg == new_entry else arg for arg in desired["args"]
         ]):
             return False
-        old_files = launcher_package_files(installed)
-        target_files = launcher_package_files(candidate)
-        previous = Path(before["package"])
-        previous_files = launcher_package_files(previous)
-        fixed = fixed_launcher_files(old_files)
-        if (
-            MCP_LAUNCHER_ENTRY not in fixed
-            or fixed != fixed_launcher_files(target_files)
-            or fixed != fixed_launcher_files(previous_files)
-        ):
-            return False
-        installed_abi = managed_worker_abi(installed, old_files)
-        return (
-            installed_abi is not None
-            and installed_abi == managed_worker_abi(previous, previous_files)
-            and installed_abi == managed_worker_abi(candidate, target_files)
-        )
+        entry_pin = single_entry_pin(installed, launcher_package_files(installed))
+        # Worker compatibility is negotiated on the existing MCP session.
+        return entry_pin is not None and entry_pin == launcher_package_files(candidate).get(MCP_LAUNCHER_ENTRY)
     except (OSError, ValueError, KeyError, TypeError, UpdateBlocked):
         return False
 
@@ -326,3 +311,256 @@ def probe_launcher(plan, active):
         or value.get("device_credentials_accessed") is not False
     ):
         raise ValueError("Launcher checkpoint differs")
+
+
+# This code is part of the host-approved command. It verifies the registered
+# MCP package before importing Python from it, without a mutable launcher file.
+_LOAD_HOOK = '''
+import hashlib, json, pathlib, sys
+
+def read(path, limit):
+    if (not path.is_absolute() or path.resolve(strict=True) != path
+            or not path.is_file() or path.stat().st_size > limit):
+        raise ValueError('Noncanonical Hook runtime path')
+    return path.read_bytes()
+
+def digest(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+try:
+    home, cwd, registry_pin, harness, *project = sys.argv[1:]
+    state = pathlib.Path(home) / '.config/agent-brain-client'
+    original = read(state / 'codex-mcp.json', 1048576)
+    if digest(original) != registry_pin:
+        raise ValueError('Hook enrollment changed')
+    saved = json.loads(original)
+    package = pathlib.Path(saved['package'])
+    receipt = package / 'verified.json'
+    if not receipt.exists():
+        receipt = package / 'export-manifest.json'
+    manifest = json.loads(read(receipt, 262144))
+    files = manifest.get('manifest', manifest)['files']
+    if digest(json.dumps(files, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()) != saved['package_sha256']:
+        raise ValueError('Registered MCP package changed')
+    src = package / 'src'
+    paths = list(src.rglob('*'))
+    pins = {n: h for n, h in files.items() if n.startswith('src/')}
+    if (any(p.is_symlink() for p in paths)
+            or {p.relative_to(package).as_posix() for p in paths if not p.is_dir()} != pins.keys()):
+        raise ValueError('Registered MCP package membership changed')
+    for name, expected in pins.items():
+        if digest(read(package / name, 2097152)) != expected:
+            raise ValueError('Registered MCP package code changed')
+    if read(state / 'codex-mcp.json', 1048576) != original:
+        raise ValueError('Hook enrollment changed')
+    sys.path.insert(0, str(src))
+    from agent_brain_client.adapters.installation.launcher_update import native_hook_startup
+
+    status = native_hook_startup(home, cwd, harness, project, saved)
+except Exception as error:
+    print('{}', flush=True)
+    print('agent-brain Hook launch unavailable: ' + type(error).__name__, file=sys.stderr)
+    status = 0
+sys.exit(status)
+'''
+
+_MAC_HOOK_GUARD = '''
+import hashlib, json, os, pathlib, stat, subprocess, sys
+
+def read(path, limit):
+    p = pathlib.Path(path)
+    st = p.lstat()
+    if (p.resolve(strict=True) != p or not stat.S_ISREG(st.st_mode)
+            or st.st_nlink != 1 or st.st_uid != os.getuid() or st.st_mode & 0o077
+            or st.st_size > limit):
+        raise ValueError('Private Hook binding required')
+    return p.read_bytes()
+
+def pinned(path, expected, limit):
+    raw = read(path, limit)
+    if hashlib.sha256(raw).hexdigest() != expected:
+        raise ValueError('Hook binding changed')
+    return json.loads(raw)
+
+try:
+    home, code, *args = sys.argv[1:]
+    state = pathlib.Path(home) / '.config/agent-brain-client'
+    registered = read(state / 'codex-mcp.json', 1048576)
+    saved = json.loads(registered)
+    runtime = pinned(saved['release_policy'], saved['release_policy_sha256'], 65536)['runtime']
+    deps = pinned(runtime['dependency_policy'], runtime['dependency_policy_sha256'], 2097152)
+    if deps['schema'] == 2:
+        python = pathlib.Path(deps['python'])
+        pin = deps['python_sha256']
+    elif deps['schema'] == 1:
+        base = pathlib.Path(deps['root'])
+        python = (base / 'python/bin/python3').resolve(strict=True)
+        pin = deps['files'][python.relative_to(base).as_posix()]['sha256']
+    else:
+        raise ValueError('Prepared Hook interpreter required')
+    if not python.is_absolute() or python.resolve(strict=True) != python or hashlib.sha256(python.read_bytes()).hexdigest() != pin:
+        raise ValueError('Prepared Hook interpreter changed')
+    status = subprocess.run([str(python), '-X', 'utf8', '-I', '-S', '-B', '-c', code,
+                             home, os.getcwd(), hashlib.sha256(registered).hexdigest(), *args],
+                            cwd='/usr/bin', check=False).returncode
+except Exception:
+    print('{}', flush=True)
+    print('agent-brain Hook bootstrap verification failed', file=sys.stderr)
+    status = 0
+sys.exit(status)
+'''
+
+
+# The first fixed launcher can be retained during a verified rollback to the
+# immediate predecessor. Retire this adapter when dropping 0.8.26 rollback.
+_MAC_0826 = (
+    "be7957ec61b3b776ada0903f626a3c72d3d0972d",
+    "be1b7e52dc108a1ea7bc704b93b841f2c2415006d8ccea28af1a0f646fd0214d",
+)
+_WINDOWS_0826 = (
+    "22b7522e93bac0812907192433016ea45c541d9a",
+    "b8c86e229933e17c1ace09a4d5963a08c8829064c1511aa6535892f162dfe0ff",
+)
+_PUBLISHED_0826 = {
+    "darwin-arm64": _MAC_0826,
+    "darwin-x86_64": _MAC_0826,
+    "win32-amd64": _WINDOWS_0826,
+    "win32-arm64": _WINDOWS_0826,
+}
+_LEGACY_HOOK = '''
+import os
+import sys
+
+sys.path.insert(0, sys.argv.pop(1))
+os.chdir(sys.argv.pop(1))
+home, harness, *project = sys.argv[1:]
+if project:
+    from agent_brain_client.interfaces.cli import project as cli
+    settings, pin = project
+    sys.argv[1:] = ['hook', '--harness', harness, '--settings', settings, '--settings-sha256', pin]
+    status = cli.main()
+elif harness == 'codex':
+    from agent_brain_client.interfaces.cli import collection as cli
+
+    # Serving verification covered the actual executable's code. Keep the
+    # legacy settings/approval/identity checks without requiring forward pins.
+    original_load = cli.core.load
+    cli.core.load = lambda home, *, verify_code=True: original_load(home, verify_code=False)
+    status = cli.main(['global-hook', '--harness', harness, '--device-home', home])
+else:
+    from agent_brain_client.interfaces.cli import codebuddy as cli
+    from agent_brain_client.runtime.collection import native_services
+
+    cli.host_binding.load_core = lambda home: native_services(verify_code=False)
+    sys.argv[1:] = ['hook', '--device-home', home]
+    status = cli.main()
+sys.exit(status)
+'''
+
+
+def native_hook_startup(home, cwd, harness, project, saved):
+    """Select the serving snapshot after the approved MCP verifier is loaded."""
+    import sys
+    from agent_brain_client.adapters.storage.registration import registration
+
+    current, _ = registration(home)
+    if current != saved or harness not in ("codex", "codebuddy") or len(project) > 1:
+        raise ValueError("Hook enrollment or route changed")
+    channel = ClientReleases(saved["release_policy"], saved["release_policy_sha256"])
+    if channel.policy["runtime"]["device_home"] != home:
+        raise ValueError("Hook release identity changed")
+    active = channel.verified_active(serving=True)
+    if active is None:
+        raise ValueError("Verified serving Hook release required")
+    package = Path(active["package"])
+    entry = package / "src/agent_brain_client/runtime/host_binding.py"
+    if entry.is_file() and b"def run_native_hook(" in entry.read_bytes():
+        code = (
+            "import os,sys; sys.path.insert(0,sys.argv.pop(1)); os.chdir(sys.argv.pop(1)); "
+            "from agent_brain_client.runtime.host_binding import run_native_hook; "
+            "sys.exit(run_native_hook(*sys.argv[1:]))"
+        )
+    elif (active["version"] == "0.8.26"
+          and (active["commit"], active["manifest_sha256"]) == _PUBLISHED_0826.get(channel.policy["platform"])):
+        if project:
+            from agent_brain_client.adapters.storage.project_settings import installed_hook_pin
+
+            project.append(installed_hook_pin(home, harness, project[0]))
+        print("agent-brain Hook serving verified 0.8.26 rollback", file=sys.stderr)
+        code = _LEGACY_HOOK
+    else:
+        raise ValueError("Verified Hook entry required")
+    return subprocess.run(
+        [sys.executable, "-X", "utf8", "-I", "-S", "-B", "-c", code,
+         str(package / "src"), cwd, home, harness, *project], check=False,
+    ).returncode
+
+
+def native_hook_command(home, harness, settings=None):
+    """Render a stable native command over the installed MCP authority."""
+    from agent_brain_client.adapters.platforms.filesystem import command_line
+
+    args = [harness, *([str(settings)] if settings is not None else [])]
+    if os.name == "nt":
+        from agent_brain_client.adapters.platforms.windows.filesystem import powershell_command, powershell_quote
+
+        registration = powershell_quote(str(Path(home) / ".config/agent-brain-client/codex-mcp.json"))
+        # This Python literal contains no double quotes, which Windows PowerShell's legacy argument forwarding may otherwise drop.
+        invocation = (
+            "$ProgressPreference='SilentlyContinue';$ErrorActionPreference='Stop';try{$cwd=$PWD.ProviderPath;"
+            "$env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules');"
+            "Set-Location -LiteralPath $PSHOME;[Environment]::CurrentDirectory=$PSHOME;"
+            "$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
+            "function ReadAB($p,$hash,$limit){$f=[IO.FileInfo]::new($p);"
+            "if($f.FullName -cne $p -or $f.Length -gt $limit){throw 'Invalid binding'};"
+            "for($i=$f;$null -ne $i;$i=$(if($i -is [IO.FileInfo]){$i.Directory}else{$i.Parent}))"
+            "{if($i.Attributes -band 1024){throw 'Linked binding'}};"
+            "$acl=[IO.File]::GetAccessControl($p);"
+            "if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid -or "
+            "($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])|Where-Object"
+            " {$_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin @($sid,'S-1-5-18','S-1-5-32-544')}))"
+            "{throw 'Private binding required'};"
+            "$raw=[IO.File]::ReadAllBytes($p);$sha=[Security.Cryptography.SHA256]::Create();"
+            "$script:abpin=[BitConverter]::ToString($sha.ComputeHash($raw)).Replace('-','').ToLowerInvariant();"
+            "if($hash -and $script:abpin -ine $hash){throw 'Binding changed'};"
+            "[Text.Encoding]::UTF8.GetString($raw)|ConvertFrom-Json};"
+            "$r=ReadAB " + registration + " $null 1048576;$registryPin=$script:abpin;"
+            "$p=(ReadAB $r.release_policy $r.release_policy_sha256 65536).runtime;"
+            "$d=ReadAB $p.dependency_policy $p.dependency_policy_sha256 2097152;$exe=$d.python;"
+            "if($d.schema -ne 2 -or $exe -notmatch '^[A-Za-z]:' -or [IO.Path]::GetFullPath($exe) -cne $exe"
+            " -or ((Get-Item -LiteralPath $exe).Attributes -band 1024)"
+            " -or (Get-FileHash -LiteralPath $exe).Hash -ine $d.python_sha256){throw 'Interpreter changed'};"
+            "& $exe -X utf8 -I -S -B -c " + powershell_quote(_LOAD_HOOK)
+            + " " + powershell_quote(str(home)) + " $cwd $registryPin " + " ".join(map(powershell_quote, args))
+            + ";exit $LASTEXITCODE}catch{[Console]::Out.WriteLine('{}');"
+            "[Console]::Error.WriteLine('agent-brain Hook bootstrap verification failed');exit 0}"
+        )
+        powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+        command = powershell_command(invocation, executable=str(powershell), compact=True)
+        if len(command.encode("utf-16le")) // 2 > 8120:  # room for cmd.exe /C and outer quotes
+            raise ValueError("Native Hook registration exceeds the Windows cmd.exe length limit")
+        return command
+    return command_line([
+        "/usr/bin/env", "-u", "DEVELOPER_DIR", "-u", "TOOLCHAINS",
+        "/usr/bin/python3", "-I", "-S", "-B", "-c", _MAC_HOOK_GUARD,
+        str(home), _LOAD_HOOK, *args,
+    ])
+
+
+def prepare_native_hook(home):
+    """Validate the existing managed interpreter and installed MCP trust root."""
+    from agent_brain_client.adapters.installation.installation import package_check
+    from agent_brain_client.adapters.storage.registration import registration
+
+    saved, policy = registration(home)
+    pending = Path(home) / ".config/agent-brain-client/launcher-handover.json"
+    if pending.exists() or pending.is_symlink():
+        raise ValueError("Complete the existing MCP launcher handover before installing Hooks")
+    channel = ClientReleases(saved["release_policy"], saved["release_policy_sha256"], inspection=True)
+    if channel.policy["runtime"]["device_home"] != str(home) or "dependency_policy" not in policy["runtime"]:
+        raise ValueError("The existing verified managed interpreter is required")
+    package = safe(saved["package"])
+    entry = package / "src/agent_brain_client/adapters/installation/launcher_update.py"
+    if (package_check(package, policy) != saved["package_sha256"]
+            or b"def native_hook_startup(" not in entry.read_bytes()):
+        raise ValueError("Run the normal Client update to refresh the installed MCP launcher before migrating Hooks")

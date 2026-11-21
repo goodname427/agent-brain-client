@@ -885,6 +885,40 @@ class NoRedirect(HTTPRedirectHandler):
 class ChecksPending(ValueError):
     """An official same-tree full validation is still running."""
 
+    def __init__(self, head):
+        super().__init__("Official full Client checks for this exact tree are still running")
+        self.head = head
+
+
+def _github_http_diagnostic(path, error, *, upload):
+    route = path.partition("?")[0]
+    if upload:
+        endpoint = "release asset upload"
+    elif route.startswith("/actions/workflows/"):
+        endpoint = "workflow run list"
+    elif route.startswith("/actions/runs/") and route.endswith("/jobs"):
+        endpoint = "workflow attempt jobs"
+    elif route.startswith("/git/commits/"):
+        endpoint = "Git commit tree"
+    elif route.startswith("/compare/"):
+        endpoint = "commit comparison"
+    elif route.startswith("/releases"):
+        endpoint = "release metadata"
+    else:
+        endpoint = "repository API"
+    fields = [f"{endpoint}: HTTP {error.code}"]
+    for name in (
+        "X-RateLimit-Limit",
+        "X-RateLimit-Remaining",
+        "X-RateLimit-Used",
+        "X-RateLimit-Reset",
+        "Retry-After",
+    ):
+        value = error.headers.get(name, "") if error.headers else ""
+        if re.fullmatch(r"[0-9]{1,16}", value):
+            fields.append(f"{name.lower()}={value}")
+    return "; ".join(fields)
+
 
 class GitHub:
     def request(self, path, method="GET", value=None, raw=None, upload=False):
@@ -916,7 +950,8 @@ class GitHub:
             if error.code == 404 and method == "GET":
                 return None
             raise ValueError(
-                f"GitHub {method} failed: HTTP {error.code}; read remote state before retry"
+                f"GitHub {method} failed for {_github_http_diagnostic(path, error, upload=upload)};"
+                " read remote state before retry"
             ) from None
 
     def find_release(self, tag):
@@ -929,31 +964,54 @@ class GitHub:
                 return None
         raise ValueError("Release pagination limit reached")
 
-    def ci(self, plan):
-        pending = False
+    def ci(self, plan, *, pending_head=None):
+        source_tree = plan["source_tree"]
+        trees = {}
+        # A known commit usually has a full main run. A same-tree PR or a
+        # different main commit can still supply compatible evidence.
+        for head in dict.fromkeys((plan.get("source"), pending_head)):
+            if head is not None:
+                evidence = self._ci_evidence(source_tree, trees, head_sha=head)
+                if evidence:
+                    return evidence
+        evidence = self._ci_evidence(source_tree, trees)
+        if evidence:
+            return evidence
+        raise ValueError(
+            "Successful full Client checks for the exact source tree required (PR, main or manual main run)"
+        )
+
+    def _ci_evidence(self, source_tree, trees, *, head_sha=None):
+        pending = None
+        head_filter = "&branch=main&head_sha=" + quote(head_sha, safe="") if head_sha else ""
         for page in range(1, 11):
             result = self.request(
                 f"/actions/workflows/client-checks.yml/runs?per_page=100&page={page}"
+                + head_filter
             )
             for row in result["workflow_runs"]:
                 head = row["head_sha"]
-                if (
+                if head_sha is not None and (
+                    head != head_sha or row.get("head_branch") != "main"
+                ):
+                    continue
+                if (row.get("head_repository") or {}).get("full_name") != REPOSITORY:
+                    continue
+                waiting = (
                     row.get("status")
                     in ("queued", "in_progress", "waiting", "pending", "requested")
                     and row.get("event") == "workflow_dispatch"
                     and row.get("head_branch") == "main"
-                    and (row.get("head_repository") or {}).get("full_name")
-                    == REPOSITORY
-                ):
-                    candidate = self.request("/git/commits/" + head)
-                    pending |= candidate["tree"]["sha"] == plan["source_tree"]
-                if (
-                    row["conclusion"] != "success"
-                    or (row.get("head_repository") or {}).get("full_name") != REPOSITORY
-                ):
+                )
+                if not waiting and row["conclusion"] != "success":
                     continue
-                candidate = self.request("/git/commits/" + head)
-                if candidate["tree"]["sha"] != plan["source_tree"]:
+                if head not in trees:
+                    candidate = self.request("/git/commits/" + head)
+                    trees[head] = candidate["tree"]["sha"] if candidate else None
+                if trees[head] != source_tree:
+                    continue
+                if waiting:
+                    pending = pending or head
                     continue
                 if row["event"] == "pull_request":
                     prs = row.get("pull_requests", [])
@@ -980,27 +1038,26 @@ class GitHub:
                     continue
                 return {
                     "run_id": row["id"],
+                    "run_attempt": row["run_attempt"],
                     "url": row["html_url"],
                     "head": head,
-                    "source_tree": plan["source_tree"],
+                    "source_tree": source_tree,
                     "conclusion": "success",
                 }
             if len(result["workflow_runs"]) < 100:
                 break
         if pending:
-            raise ChecksPending(
-                "Official full Client checks for this exact tree are still running"
-            )
-        raise ValueError(
-            "Successful full Client checks for the exact source tree required (PR, main or manual main run)"
-        )
+            raise ChecksPending(pending)
+        return None
 
     def wait_ci(self, plan, seconds):
         deadline = time.monotonic() + seconds
+        pending_head = None
         while True:
             try:
-                return self.ci(plan)
-            except ChecksPending:
+                return self.ci(plan, pending_head=pending_head)
+            except ChecksPending as error:
+                pending_head = error.head
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise
@@ -1276,7 +1333,9 @@ def publish(output, api, plan, *, local_checks=(), hybrid_checks=False, wait_for
         )
         ci = check_ci(plan)
         if plan.get("schema") == 2 and plan["executor_tree"] != plan["source_tree"]:
-            ci["executor"] = check_ci({"source_tree": plan["executor_tree"]})
+            ci["executor"] = check_ci(
+                {"source": plan["executor_source"], "source_tree": plan["executor_tree"]}
+            )
     (output / "ci.json").write_bytes(encoded(ci))
     notes = (output / "release-notes.md").read_bytes()
     require_publishable({"release-notes.md": notes})

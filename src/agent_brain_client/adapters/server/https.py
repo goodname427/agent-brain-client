@@ -607,6 +607,7 @@ class HTTPSContentClient:
             global_recall_params,
             global_recall_result,
         )
+        from agent_brain_client.domain.scopes import ordinary_drive_path
 
         if (
             self.device_task is not None
@@ -619,10 +620,14 @@ class HTTPSContentClient:
             or "memory" not in self.grant["artifact_types"]
         ):
             raise ValueError("Memory read grant required")
-        global_recall_params(request["params"])
+        params = request["params"]
+        global_recall_params(params)
+        # Existing Servers validate ordinary drive-letter origin metadata.
+        origin = {key: ordinary_drive_path(value) for key, value in params["origin"].items()}
+        request = dict(request, params=dict(params, origin=origin))
         result = self.transport.request(request)
         if "error" not in result:
-            global_recall_result(result["result"], request["params"], self.device_id)
+            global_recall_result(result["result"], params, self.device_id)
         return result
 
     def request(self, request):

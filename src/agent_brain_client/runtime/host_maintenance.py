@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from agent_brain_client.adapters.storage import metadata
 from agent_brain_client.adapters.storage.collection import settings_path
-from agent_brain_client.adapters.storage.registration import registration
+from agent_brain_client.adapters.storage.registration import codex_registration, registration
 from agent_brain_client.adapters.packages.frozen import freeze_code, runtime_pins
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -31,9 +31,9 @@ def host_errors(operation):
 def registered_hosts(home):
     base = Path(home) / ".config/agent-brain-client"
     hosts = []
-    codex = base / "codex/registration.json"
-    if ((codex.exists() and metadata.private_json(codex).get("removed") is not True)
-            or not codex.exists() and (base / "global-memory/hook-install.json").exists()):
+    codex = codex_registration(home)
+    if (codex is not None and not codex["removed"]
+            or codex is None and (base / "global-memory/hook-install.json").exists()):
         hosts.append("codex")
     buddy = base / "codebuddy/registration.json"
     if buddy.exists() and metadata.private_json(buddy).get("removed") is not True:
@@ -133,7 +133,14 @@ class HostMaintenance:
                 from agent_brain_client.adapters.harnesses.codex import collection_installation as hooks
                 if pins == runtime_pins(hooks.ROOT, fallback=hooks.FILES):
                     try:
-                        hosts[host] = hooks.refresh(self.home, check_only=check_only)
+                        from agent_brain_client.runtime.project_memory import refresh_project_hooks
+                        row = hooks.refresh(self.home, check_only=check_only)
+                        projects = refresh_project_hooks(self.home, host, check_only=check_only)
+                        hosts[host] = dict(
+                            row, projects=projects,
+                            native_changed=row["native_changed"] or projects["native_changed"],
+                            update_available=row["update_available"] or projects["update_available"],
+                        )
                     except hooks.ManagedHookConflict as error:
                         from agent_brain_client.application.installation.update_ports import ManagedConfigurationConflict
                         raise ManagedConfigurationConflict(error.field) from None
@@ -145,9 +152,28 @@ class HostMaintenance:
                 raise ValueError("Active package changed during host maintenance")
         changed = any(row["native_changed"] for row in hosts.values())
         available = any(row["update_available"] for row in hosts.values())
-        return {"status": "global-hook-updated" if changed else "global-hook-update-available" if available else "global-hook-current",
-                "native_changed": changed, "update_available": available, "hosts": hosts,
-                "source_package_version": active["version"], "source_package_commit": active["commit"]}
+        result = {"status": "global-hook-updated" if changed else "global-hook-update-available" if available else "global-hook-current",
+                  "native_changed": changed, "update_available": available, "hosts": hosts,
+                  "source_package_version": active["version"], "source_package_commit": active["commit"]}
+        codex = hosts.get("codex", {})
+        codebuddy = hosts.get("codebuddy", {})
+        native_changes = codebuddy.get("native_changes", {})
+        # Older verified packages only report an aggregate native change.
+        unknown = None if codebuddy.get("native_changed") else False
+        result["mcp_registration_changed"] = native_changes.get("mcp", unknown)
+        result["hook_configuration_changed"] = (
+            bool(codex.get("native_changed"))
+            or bool(codebuddy.get("projects", {}).get("native_changed"))
+            or native_changes.get("hooks", unknown)
+        )
+        review = "native-review-required-for-new-command"
+        if review in (codex.get("trust"), codex.get("projects", {}).get("trust")):
+            result["next_action"] = (
+                "Review the migrated Agent Brain Hooks once in Codex after applying the update."
+                if check_only else
+                "Review the migrated Agent Brain Hooks once in Codex."
+            )
+        return result
 
     def registration_preimage(self):
         if "codex" not in self.hosts():

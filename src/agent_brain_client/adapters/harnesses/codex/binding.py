@@ -7,6 +7,7 @@ from pathlib import Path
 import tomllib
 
 from agent_brain_client.adapters.storage import metadata as io
+from agent_brain_client.adapters.storage.registration import CodexBindingStateBlocked
 from agent_brain_client.adapters.storage.host_files import host_image, host_plan, host_apply, host_restore
 from agent_brain_client.adapters.storage.toml_document import toml_replace, toml_remove
 from agent_brain_client.adapters.platforms.filesystem import private_directory, locked
@@ -15,7 +16,42 @@ NAME = "agent_brain_server"
 
 
 def directory(home):
-    return io.canonical(Path(home) / ".config/agent-brain-client/codex")
+    from agent_brain_client.adapters.storage.registration import codex_registration_directory
+    return codex_registration_directory(home)
+
+
+def prepare_directory(home, native, runtime):
+    """Resume the historical cache-only state without changing its security."""
+    try:
+        state = directory(home)
+        return private_directory(state)
+    except (OSError, ValueError) as error:
+        if os.name != "nt":
+            raise
+        from agent_brain_client.adapters.platforms.windows.filesystem import WindowsOwnerMismatch
+        if not isinstance(error, WindowsOwnerMismatch) or error.owner_sid != "S-1-5-32-544":
+            raise CodexBindingStateBlocked() from error
+
+    from agent_brain_client.adapters.platforms.filesystem import cache_mode
+    from agent_brain_client.adapters.storage.reinstallation import read_journal, require_memory_verified
+
+    try:
+        fresh = read_journal(home)
+        if state.name != "codex" or fresh is None or fresh["phase"] != "complete" or fresh.get("native_bindings_restored"):
+            raise CodexBindingStateBlocked()
+        surface = fresh["mapping"].get("registered_surfaces", {}).get("codex")
+        if surface is None or Path(surface["native_home"]) != native:
+            raise CodexBindingStateBlocked()
+        if {item.name for item in state.iterdir()} != {"content-cache"}:
+            raise CodexBindingStateBlocked()
+        require_memory_verified(home, runtime["https_profile_sha256"])
+        cache_mode(state / "content-cache", directory=True)
+        private_directory(state.parent)
+        return private_directory(state.with_name("codex-binding"))
+    except CodexBindingStateBlocked:
+        raise
+    except (OSError, ValueError) as error:
+        raise CodexBindingStateBlocked() from error
 
 
 def private_control(home, runtime):
@@ -62,9 +98,12 @@ def recover(home):
     file = directory(home) / "transaction.json"
     if not file.exists():
         return False
+    if os.name == "nt":
+        from agent_brain_client.adapters.platforms.filesystem import private_mode
+        private_mode(file.parent, directory=True, owner=True)
     value = io.private_json(file)
     native = io.canonical(Path(value["native_home"]))
-    permitted = {str(native / "config.toml"), str(directory(home) / "registration.json")}
+    permitted = {str(native / "config.toml"), str(file.parent / "registration.json")}
     if value.get("schema") != 1 or set(value.get("host", {})) != permitted:
         raise ValueError("Codex transaction scope changed")
     if value.get("phase") != "applying":
@@ -81,8 +120,7 @@ def install(home, *, native=None, remove=False, enabled=None, check_only=False):
     if not private_control(home, policy["runtime"]):
         return {"status": "retained-direct-codex-binding", "native_changed": False,
                 "update_available": False}
-    state = directory(home)
-    private_directory(state)
+    state = prepare_directory(home, Path(native) if native is not None else None, policy["runtime"])
     with locked(state / "binding.lock"):
         recover(home)
         previous = receipt(home)

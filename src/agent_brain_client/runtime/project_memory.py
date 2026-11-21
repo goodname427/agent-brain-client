@@ -9,7 +9,7 @@ import time
 import tempfile
 from agent_brain_client.adapters.platforms.filesystem import command_line
 from agent_brain_client.domain.privacy import private_content
-from agent_brain_client.domain.scopes import restricted
+from agent_brain_client.domain.scopes import ordinary_drive_path, restricted
 from agent_brain_client.adapters.storage.registration import registration
 from agent_brain_client.adapters.storage.metadata import (
     canonical,
@@ -27,10 +27,13 @@ from agent_brain_client.adapters.packages.frozen import runtime_pins
 from agent_brain_client.adapters.storage.project_settings import active, project_settings, project_harness
 
 
-def load(path, sha):
+def load(path, sha, *, verified_release=False):
     from agent_brain_client.adapters.storage.project_settings import load as read_settings
     from agent_brain_client.runtime.harness_content import content_host
-    return read_settings(path, sha, locate=lambda home, runtime, harness: content_host(harness).location(home, runtime))
+    return read_settings(
+        path, sha, verify_code=not verified_release,
+        locate=lambda home, runtime, harness: content_host(harness).location(home, runtime),
+    )
 
 
 def install(settings, path, pin):
@@ -683,7 +686,7 @@ def capture_enabled(settings):
     return hook_enabled(policy)
 
 
-def hook_payload(p, *, settings_path=None, settings_sha256=None):
+def hook_payload(p, *, settings_path=None, settings_sha256=None, verified_release=False):
     if not active(p):
         return {}
     started = time.monotonic()
@@ -714,8 +717,12 @@ def hook_payload(p, *, settings_path=None, settings_sha256=None):
         else:
             from agent_brain_client.adapters.harnesses.codebuddy.events import session_id
             payload = dict(payload, session_id=session_id(payload.get("session_id")))
-    if payload.get("cwd") != p["project_root"]:
+    cwd, root = payload.get("cwd"), p["project_root"]
+    if p["harness"] == "codex":
+        cwd, root = ordinary_drive_path(cwd), ordinary_drive_path(root)
+    if cwd != root:
         return {}
+    payload["cwd"] = p["project_root"]
     event = payload.get("hook_event_name")
     from agent_brain_client.application.memory.lifecycle import handle
     from agent_brain_client.runtime.delivery import schedule_project
@@ -727,7 +734,8 @@ def hook_payload(p, *, settings_path=None, settings_sha256=None):
             # Persist the pinned recovery route before durable content exists.
             # Registration failure follows the shared capture failure path,
             # which still permits current-question recall.
-            schedule_project(p["device_home"], settings_path, settings_sha256, wake_worker=False)
+            schedule_project(p["device_home"], settings_path, settings_sha256,
+                             wake_worker=False, verified_release=verified_release)
         if payload.get("_project_turn_skipped"):
             return {"status": "project-turn-skipped", "data_transferred": False}
         result = capture(p, payload)
@@ -740,7 +748,7 @@ def hook_payload(p, *, settings_path=None, settings_sha256=None):
         if p["capture_policy"] is not None:
             if settings_path is None or settings_sha256 is None:
                 raise ValueError("Pinned project settings required for delivery")
-            schedule_project(p["device_home"], settings_path, settings_sha256)
+            schedule_project(p["device_home"], settings_path, settings_sha256, verified_release=verified_release)
 
     items, diagnostic = handle(event, prompt=payload.get("prompt", ""), stage=stage,
         schedule=schedule, recall=lambda query: recalled(p, payload.get("session_id"), query))
@@ -750,21 +758,22 @@ def hook_payload(p, *, settings_path=None, settings_sha256=None):
     return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": extra}} if extra else {}
 
 
-def hook(p, *, settings_path=None, settings_sha256=None):
+def hook(p, *, settings_path=None, settings_sha256=None, verified_release=False):
     if not active(p):
         return {}
     from agent_brain_client.application.control import RequestControl
     control = RequestControl(25)
     try:
         with control.activate():
-            return hook_payload(p, settings_path=settings_path, settings_sha256=settings_sha256)
+            return hook_payload(p, settings_path=settings_path, settings_sha256=settings_sha256,
+                                verified_release=verified_release)
     finally:
         control.close()
 
 
-def delivery_port(settings, sha):
+def delivery_port(settings, sha, *, verified_release=False):
     from agent_brain_client.adapters.storage.event_policy import validate_hook_policy, hook_enabled
-    p = load(settings, sha)
+    p = load(settings, sha, verified_release=verified_release)
     if not active(p) or p["capture_policy"] is None:
         raise ValueError("Project source inactive")
     client, queue = adapter_for(p)
@@ -776,7 +785,7 @@ def delivery_port(settings, sha):
         excluded_directory=Path(p["off_file"]).parent)
 
     def allowed(session):
-        current = load(settings, sha)
+        current = load(settings, sha, verified_release=verified_release)
         if not active(current):
             return False
         policy = validate_hook_policy(private_json(current["capture_policy"], current["capture_policy_sha256"]),
@@ -788,7 +797,7 @@ def delivery_port(settings, sha):
             return False
         return daily_gate(current, client)() if policy["schema"] == 2 else True
     def allowed_event(event):
-        current = load(settings, sha)
+        current = load(settings, sha, verified_release=verified_release)
         policy = validate_hook_policy(private_json(current["capture_policy"], current["capture_policy_sha256"]),
             profile_sha256=current["profile_sha256"], content_policy_sha256=current["content_policy_sha256"])
         return active(current) and hook_enabled(policy) and any(
@@ -1245,9 +1254,9 @@ def project_content_host(settings):
     return content_host(settings["harness"])
 
 
-def finish_codebuddy_project(home, task):
+def finish_codebuddy_project(home, task, *, verified_release=False):
     from agent_brain_client.adapters.harnesses.codebuddy import transcript, project_configuration as native
-    p = load(task["settings"], task["settings_sha256"])
+    p = load(task["settings"], task["settings_sha256"], verified_release=verified_release)
     if p["device_home"] != str(home) or p["harness"] != "codebuddy":
         raise ValueError("Exact CodeBuddy project completion binding required")
     if not active(p) or not capture_enabled(p):
@@ -1268,5 +1277,57 @@ def finish_codebuddy_project(home, task):
     result = capture(p, payload)
     native.complete_observation(payload, result)
     from agent_brain_client.runtime.delivery import schedule_project
-    schedule_project(home, task["settings"], task["settings_sha256"])
+    schedule_project(home, task["settings"], task["settings_sha256"], verified_release=verified_release)
     return not result.get("local_queue", {}).get("saved", False)
+
+
+def refresh_project_hooks(home, harness, *, check_only=False):
+    """Migrate only receipt-owned project Hooks already known to this device."""
+    from agent_brain_client.adapters.storage.collection import settings_path
+    from agent_brain_client.adapters.storage.project_settings import hook_registration
+
+    if harness == "codex":
+        from agent_brain_client.adapters.harnesses.codex.project_configuration import definitions
+    elif harness == "codebuddy":
+        from agent_brain_client.adapters.harnesses.codebuddy.project_configuration import definitions
+    else:
+        raise ValueError("Explicit project Harness required")
+    candidates = set((Path(home) / ".config/agent-brain-client/project-memory").glob("*/settings.json"))
+    global_settings = settings_path(home)
+    if harness == "codex" and global_settings.exists():
+        data = private_json(global_settings)
+        candidates.update(Path(row["settings"]) for row in data["legacy_projects"] if "settings" in row)
+    changed, available, review = 0, 0, 0
+    for path in sorted(candidates):
+        try:
+            enrolled = private_json(path)
+            if project_harness(enrolled) != harness or enrolled["device_home"] != str(home):
+                continue
+            _, file = hook_registration(harness, path, enrolled["project_root"])
+            if not file.exists():
+                continue
+            receipt = private_json(file)
+            pin = receipt["settings_sha256"]
+            phase = receipt["phase"]
+            if phase not in ("complete", "prepared", "applying", "rolled-back"):
+                review += 1
+                continue
+            wanted = (definitions(enrolled, path, pin) if harness == "codex"
+                      else definitions(enrolled, path))
+            if phase == "complete" and wanted == receipt["definitions"]:
+                continue
+            p = load(path, pin, verified_release=True)
+            if check_only:
+                available += 1
+            else:
+                changed += int(install(p, str(path), pin)["native_changed"])
+        except (OSError, ValueError, KeyError, TypeError):
+            review += 1  # A project conflict does not block other registered sources.
+    return {
+        "native_changed": bool(changed),
+        "update_available": bool(available),
+        "migrated": changed,
+        "review_needed": review,
+        "trust": "native-review-required-for-new-command" if harness == "codex" and (changed or available)
+                 else "native-host-settings" if changed or available else "command-unchanged",
+    }

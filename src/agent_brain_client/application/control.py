@@ -115,8 +115,8 @@ _HEADER_READ_SAMPLES = 8
 
 
 class _RecallTiming:
-    def __init__(self):
-        self.started = time.monotonic()
+    def __init__(self, started):
+        self.started = started
         self.request_key = None
         self.phases = {}
         self.in_headers = False
@@ -134,12 +134,18 @@ _recall_timing: ContextVar[_RecallTiming | None] = ContextVar("recall_timing", d
 
 
 @contextmanager
-def recall_timing_scope(enabled):
-    token = _recall_timing.set(_RecallTiming() if enabled else None)
+def recall_timing_scope(enabled, *, started):
+    token = _recall_timing.set(_RecallTiming(started) if enabled else None)
     try:
         yield
     finally:
         _recall_timing.reset(token)
+
+
+def mark_recall_timing(phase):
+    timing = _recall_timing.get()
+    if timing is not None:
+        timing.phases[phase] = timing.offset()
 
 
 def start_recall_timing(request_key):
@@ -214,17 +220,23 @@ def recall_timing_failed():
 
 def saved_recall_timing(request_key):
     timing = _recall_timing.get()
-    if timing is None or timing.request_key != request_key or timing.failed_at is None:
+    if timing is None or timing.request_key != request_key:
+        return None
+    if timing.failed_at is None and "output_flushed" not in timing.phases:
         return None
     finished = timing.offset()
-    return {
+    phases = dict(timing.phases, receipt_saved=finished)
+    sample = {
         "request_key": request_key,
-        "phase_offsets_ms": dict(timing.phases, failed=timing.failed_at, receipt_saved=finished),
+        "phase_offsets_ms": phases,
         "first_read_budget_ms": timing.first_read_budget,
         "response_header_reads": {
             "count": timing.read_count,
             "first_spans_ms": timing.reads,
             "last_span_ms": timing.last_read,
         },
-        "failure_receipt_write_ms": round(finished - timing.failed_at, 3),
     }
+    if timing.failed_at is not None:
+        phases["failed"] = timing.failed_at
+        sample["failure_receipt_write_ms"] = round(finished - timing.failed_at, 3)
+    return sample

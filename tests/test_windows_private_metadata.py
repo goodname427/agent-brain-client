@@ -174,6 +174,21 @@ class PrivateMetadata(unittest.TestCase):
         self.kernel.CloseHandle.assert_not_called()
         self.kernel.LocalFree.assert_called_once()
 
+    def test_private_directory_uses_the_user_sid_at_creation(self):
+        def descriptor(text, revision, result, length):
+            self.assertEqual(text, "O:synthetic-ownerD:P(A;OICI;FA;;;synthetic-owner)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+            result._obj.value = 5678
+            return True
+
+        self.api.ConvertStringSecurityDescriptorToSecurityDescriptorW = Mock(side_effect=descriptor)
+        self.kernel.CreateDirectoryW = Mock(return_value=True)
+        native_files.create_private_directory(self.path)
+        name, security = self.kernel.CreateDirectoryW.call_args.args
+        self.assertEqual(name, str(self.path))
+        self.assertEqual(security._obj.descriptor, 5678)
+        self.assertFalse(security._obj.inherit)
+        self.kernel.LocalFree.assert_called_once()
+
     def test_rejected_lock_metadata_closes_the_open_file(self):
         handle = Mock()
         handle.fileno.return_value = 5

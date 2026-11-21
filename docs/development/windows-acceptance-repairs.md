@@ -30,6 +30,12 @@ Codex 可将自己的 `hooks.state` 信任表写进托管标记范围。更新�
 
 用户已要求所有项目、无排除时，为实际存放项目的每个本地盘根传入 `--include-root`，不设置 `--exclude-root`；例如 `--include-root C:/` 仅覆盖该盘下的项目。不要据此猜测其他盘，或添加 `--non-project-root`。先检查精确预览，再使用该预览摘要准备元数据包，交由已有 Server operator 应用，最后 `global-configure --activate-packet <原包>`。激活先核对 Server 的池、设备与范围摘要；拒绝时保留错误代码和本地关闭状态，不扩大权限。
 
+## Codex Hook 的本地盘符路径
+
+0.8.27 的 Windows 来源校验由提交 `411200e` 引入，只接受普通盘符路径。提交 `473aa43` 引入的全局 Codex Hook 会逐字比较宿主上报的 CWD 和本地发现的 CWD，独立项目 Hook 也会逐字比较宿主 CWD 和项目设置中的根目录。同一目录分别写成 `C:\Synthetic\Project` 和 `\\?\C:\Synthetic\Project` 时，合成回归可以复现查询前校验失败和 Hook 提前退出。两次历史盲测缺少同期原生 Hook 记录，实际退出阶段仍待验证。
+
+来源发现使用原生路径访问文件，向本地来源路由和现有 Server 提供普通盘符元数据。全局与独立项目 Codex Hook 复用同一转换，后续入队仍使用原先绑定的目录值。当前 turn 的 rollout 也复用该转换。项目标识、授权和排除规则沿用原值。UNC、设备命名空间、相对路径、父目录跳转、备用数据流和有歧义的扩展路径继续拒绝。扩展语法会跳过常规 Win32 路径处理，因此只移除有等价普通盘符写法的精确前缀。 [Microsoft 路径规范](https://learn.microsoft.com/dotnet/standard/io/file-path-formats) · [Win32 命名规范](https://learn.microsoft.com/windows/win32/fileio/naming-a-file)
+
 ## 普通 MCP 的 L1/L2/L3 读取
 
 日常只读工具统一为 `memory_query`，参数为当前 `origin`、独立 reader `session_id`、`query` 和可选 `limit:1..3`。主动查询和自动召回均发送此方法，保留现有逐设备/逐来源批准、个人池与项目隔离。历史 `memory_recall` 和目录检索别名已移除，当前调用只使用 `memory_query`。

@@ -69,6 +69,7 @@ class ClientUninstall(unittest.TestCase):
                 patch.object(Path, 'home', return_value=self.home), \
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
                 patch.object(sys, 'stdout', output), \
+                patch.object(wizard, 'finish_install', side_effect=lambda home, value, **kwargs: value), \
                 patch.object(wizard, 'run', side_effect=run if execute else AssertionError('Invalid recovery must stop before installation')):
             code = __import__("agent_brain_client.interfaces.cli.install", fromlist=["main"]).main()
         return code, json.loads(output.getvalue())
@@ -519,6 +520,16 @@ class ClientUninstall(unittest.TestCase):
         self.assertEqual(self.f.config.read_bytes(), before)
         self.assertFalse(lifecycle.journal_path(self.home).exists())
 
+    def test_codex_unbind_preserves_legacy_shared_registration(self):
+        before = self.f.config.read_bytes()
+        shared = self.state / 'codex-mcp.json'
+        registered = shared.read_bytes()
+        result = lifecycle.unbind(self.home, harness='codex')
+        self.assertEqual((result['status'], result['native_changed']), ('host-unbind-shared-layout', False))
+        self.assertEqual(self.f.config.read_bytes(), before)
+        self.assertEqual(shared.read_bytes(), registered)
+        self.assertFalse(lifecycle.journal_path(self.home).exists())
+
     def test_pending_blocks_then_original_id_recovery_allows_removal(self):
         self.cloud.offline = True
         response = self.adapter.invoke(self.request())
@@ -603,7 +614,7 @@ class ClientUninstall(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self.remove()
         self.assertEqual(lifecycle.read_removal(self.home)['phase'], 'applying')
-        self.assertEqual(lifecycle.status(self.home)['status'], 'content-native-install-review-required')
+        self.assertEqual(lifecycle.status(self.home)['status'], 'uninstall-resume-required')
         self.assertEqual(lifecycle.repair(self.home)['status'], 'client-uninstalled')
         self.assertFalse((self.state / 'codex-mcp.json').exists())
 

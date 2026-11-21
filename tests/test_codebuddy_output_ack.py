@@ -44,7 +44,7 @@ class CodeBuddyOutputAck(unittest.TestCase):
         )
         private_directory(settings_path(self.home).parent)
 
-    def native_hook(self, home, stream, *, core, observe, defer):
+    def native_hook(self, home, stream, *, core, observe, defer, verified_release=False):
         self.assertEqual(home, self.home)
         items, state = handle(
             "UserPromptSubmit", prompt=self.query,
@@ -130,6 +130,22 @@ class CodeBuddyOutputAck(unittest.TestCase):
         self.assertEqual(sample['first_read_budget_ms'], {'request_ms': None, 'socket_ms': 90000})
         self.assertNotIn('control_started', sample['phase_offsets_ms'])
         self.assertNotIn('Synthetic private failure detail', sample_text)
+
+    def test_opt_in_success_timing_requires_flushed_stdout(self):
+        from agent_brain_client.application import control
+
+        sample_path = settings_path(self.home).with_name('last-recall-timing.json')
+        with patch.dict(os.environ, {control.RECALL_TIMING_ENV: '1'}):
+            self.run_cli(io.StringIO(), 'flush')
+            self.assertFalse(sample_path.exists())
+            self.assertEqual(self.run_cli(io.StringIO()), 0)
+        sample = json.loads(sample_path.read_text())
+        offsets = sample['phase_offsets_ms']
+        self.assertLessEqual(offsets['output_prepared'], offsets['output_flushed'])
+        self.assertLessEqual(offsets['output_flushed'], offsets['receipt_saved'])
+        self.assertNotIn('failed', offsets)
+        receipt = recall_receipts.recall_observation(self.value, sample['request_key'])
+        self.assertTrue(receipt['output_written'])
 
 
 if __name__ == "__main__":

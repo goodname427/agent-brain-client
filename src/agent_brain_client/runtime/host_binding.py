@@ -135,3 +135,29 @@ def execute_mcp(home, core, execute=os.execve, runner=subprocess.run):
         return runner(argv, env=environment, check=False).returncode
     execute(argv[0], argv, environment)
     return 0
+
+
+def run_native_hook(home, harness, settings=None):
+    """Dispatch in the verified child without importing the verifier's code."""
+    if harness not in ("codex", "codebuddy"):
+        raise ValueError("Explicit native Hook Harness required")
+    if settings is not None:
+        from agent_brain_client.adapters.storage.project_settings import installed_hook_pin
+        from agent_brain_client.interfaces.cli.project import main
+
+        try:
+            pin = installed_hook_pin(home, harness, settings)
+        except (OSError, ValueError, TypeError, KeyError):
+            print("{}", flush=True)
+            print("agent-brain Hook project registration unavailable", file=sys.stderr)
+            return 0
+        return main(["hook", "--harness", harness, "--settings", settings,
+                     "--settings-sha256", pin], verified_release=True)
+    if harness == "codex":
+        from agent_brain_client.interfaces.cli.collection import main
+
+        return main(["global-hook", "--harness", harness, "--device-home", home],
+                    verified_release=True)
+    from agent_brain_client.interfaces.cli.codebuddy import main
+
+    return main(["hook", "--device-home", home], verified_release=True)

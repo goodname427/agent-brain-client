@@ -58,21 +58,16 @@ def checkout_bytes(root, *, runner, git, env):
 
 def should_bootstrap(argv):
     """Refresh only the default install/reinstall entry, never local maintenance."""
-    args = list(argv)
-    action = None
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        if arg == "--action":
-            if index + 1 >= len(args):
-                return False
-            action = args[index + 1]
-            index += 2
-            continue
-        if arg.startswith("--action="):
-            action = arg.split("=", 1)[1]
-        index += 1
-    return action in (None, "install", "reinstall")
+    return request(argv).action in ("install", "reinstall")
+
+
+def request(argv):
+    # The interface parser deliberately runs on the macOS system Python before
+    # the installer's Python 3.11+ and the official checkout are prepared.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from agent_brain_client.interfaces.cli.install import parse_arguments
+
+    return parse_arguments(argv)
 
 
 def verified_one_shot(root, *, runner=subprocess.run, git="git"):
@@ -246,6 +241,11 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "--should-bootstrap":
         return 0 if should_bootstrap(argv[1:]) else 1
+    if argv and argv[0] == "--request-route":
+        try:
+            return 0 if should_bootstrap(argv[1:]) else 10
+        except SystemExit as error:
+            return 11 if error.code == 0 else error.code
     if argv != ["--ensure"]:
         return 2
     try:

@@ -232,7 +232,7 @@ class ReadHTTPResponse(http.client.HTTPResponse):
 
     def begin(self):
         if recall_timing_active():
-            with recall_response_headers():
+            with recall_timing_stage("response_headers"), recall_response_headers():
                 return super().begin()
         return super().begin()
 

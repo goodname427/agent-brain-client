@@ -8,6 +8,7 @@ import unicodedata
 from agent_brain_client.domain.validation import encode
 from agent_brain_client.domain.events import event_identifier
 from agent_brain_client.domain.privacy import private_recall_text
+from agent_brain_client.domain.scopes import ordinary_drive_path
 
 
 def recall_options(value):
@@ -75,7 +76,7 @@ def recall_origin(value):
     def path(raw):
         if not isinstance(raw, str) or any(c in raw for c in ("\x00", "\r", "\n")):
             raise ValueError("Absolute origin required")
-        raw = unicodedata.normalize("NFC", raw)
+        raw = unicodedata.normalize("NFC", ordinary_drive_path(raw))
         windows = PureWindowsPath(raw)
         if windows.drive:
             if (

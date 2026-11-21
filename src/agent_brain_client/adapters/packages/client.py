@@ -514,7 +514,19 @@ def launcher_package_files(package):
     return record.get("manifest", record)["files"]
 
 
+def single_entry_pin(package, files):
+    """Identify the verified, self-contained MCP launcher."""
+    pin = files.get(MCP_LAUNCHER_ENTRY)
+    if pin is None:
+        return None
+    source = private_package_bytes(Path(package) / MCP_LAUNCHER_ENTRY)
+    if source is None or hashlib.sha256(source).hexdigest() != pin:
+        raise UpdateBlocked("MCP launcher source changed after verification")
+    return pin if b"MCP_SINGLE_ENTRY_SUPERVISOR = 1" in source.splitlines() else None
+
+
 def fixed_launcher_files(files):
+    """Compatibility for the pre-single-entry gateway and launcher only."""
     return {
         name: sha for name, sha in files.items()
         if name.startswith("src/") and name not in (

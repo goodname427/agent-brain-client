@@ -237,8 +237,10 @@ def package_tools(package, content, grant):
 
     root = Path(__file__).resolve().parents[4]
     prefixes = ("src/agent_brain_client/domain/", "src/agent_brain_client/application/")
-    local = {n: h for n, h in runtime_pins(root).items() if n.startswith(prefixes)}
-    target = {n: h for n, h in runtime_pins(package).items() if n.startswith(prefixes)}
+    local_pins = runtime_pins(root)
+    target_pins = runtime_pins(package)
+    local = {n: h for n, h in local_pins.items() if n.startswith(prefixes)}
+    target = {n: h for n, h in target_pins.items() if n.startswith(prefixes)}
     if target == local:
         return tool_catalog.enabled_tools(content, grant)
     command = [

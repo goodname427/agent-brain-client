@@ -26,7 +26,7 @@ def config_busy(result):
         status="client-update-review-required",
         reason="config-edit-in-progress",
         update_available=None,
-        next_action="config.toml is still being edited. Let the editor finish, then rerun the same update entry; concurrent changes were preserved.",
+        next_action="A native configuration file is still being edited. Let the editor finish, then rerun the same update entry. Concurrent changes were preserved.",
     )
 
 
@@ -42,10 +42,12 @@ class ClientUpdate:
         result["reload_reason"] = "running-worker-unobserved"
         result["reload_check"] = {
             "active_package_changed": result.get("active_package_changed"),
-            "mcp_registration_changed": result.get("bootstrap_registration_changed"),
+            "mcp_registration_changed": result.get(
+                "mcp_registration_changed", result.get("bootstrap_registration_changed")
+            ),
             "hook_configuration_changed": result.get(
                 "hook_configuration_changed",
-                result.get("global_hook", {}).get("native_changed"),
+                result.get("global_hook", {}).get("hook_configuration_changed"),
             ),
             "host_tool_visibility": "unknown",
             "model_loaded": "unknown",
@@ -64,10 +66,10 @@ class ClientUpdate:
                     else "The verified local package is ready. "
                 )
                 + "Call an already available Agent Brain MCP tool and inspect its fresh client_runtime. "
-                "Compare running_worker_version AND running_worker_commit with active_package_version AND active_package_commit. "
-                "If both match, no MCP worker reload is needed. If they differ, normally reload only Agent Brain MCP after in-flight work completes. "
+                "If client_runtime.reload_required is false, no MCP worker reload is needed. For a compatible update, call again after in-flight work completes so the same connection can start the new worker. "
+                "Use the normal Agent Brain MCP reconnect if the worker still requires it or the host cannot see a newly required tool. "
                 "If the worker or commit is unobservable, report unknown; do not request a restart merely because update ran. "
-                "offered_tools describes the worker; compare with the tools actually available in this Codex session. "
+                "offered_tools describes the worker. Compare with the tools available in the current host session. "
                 "If a required offered tool is missing, refresh the host tool connection using normal host controls. "
                 "Hook configuration/trust and mapped Rules/Skills have separate host loading states; review them only when changed. "
                 "Do not infer model context loading from a package or worker version."
@@ -307,12 +309,14 @@ class ClientUpdate:
                         update_available=None,
                         next_action="The verified package is ready but the global Hook refresh is unconfirmed. Retry the same public update entry; preserve source approval and review the normal host Hook prompt.",
                     )
-                hook_changed = hook_changed or hook["native_changed"]
+                native_changed = hook_changed or hook["native_changed"]
+                hook_changed = hook_changed or hook.get("hook_configuration_changed", hook["native_changed"])
                 result.update(
                     global_hook=hook,
                     bootstrap_registration_changed=launcher_changed,
+                    mcp_registration_changed=launcher_changed or hook.get("mcp_registration_changed", False),
                     hook_configuration_changed=hook_changed,
-                    native_changed=launcher_changed or hook_changed,
+                    native_changed=launcher_changed or native_changed,
                     reload_required=None,
                 )
                 if hook["status"] == "global-hook-updated":

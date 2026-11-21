@@ -120,57 +120,56 @@ def mapping_refresh(home, policy, mcp, *, runner=subprocess.run):
     return value
 
 
-def source_setup(home, *, choose=input):
-    """Set up future collection, preserving an explicitly retained scope/pause."""
-    from agent_brain_client.runtime.source_enrollment import configure
-    from agent_brain_client.adapters.storage.reinstallation import read_journal
+def source_setup(home, *, choose=input, initialize=False):
+    """Reconcile a source; only installation completion may select its default."""
+    from agent_brain_client.runtime.source_enrollment import maintain
     from agent_brain_client.adapters.storage.reinstallation import (
+        read_journal,
         require_memory_verified,
     )
-    from agent_brain_client.adapters.storage.collection import load, settings_path
 
     require_memory_verified(home)
+    return maintain(home, initialize=initialize, retained=read_journal(home))
+
+
+def finish_windows_update(home, result):
+    """Retry the missing retained native binding after a confirmed Windows update."""
+    if os.name != "nt" or result.get("status") not in ("client-update-updated", "client-update-current"):
+        return result
+    from agent_brain_client.adapters.storage.reinstallation import read_journal
+
     fresh = read_journal(home)
-    retain_scope = fresh is not None and fresh.get("routing") is not None
-    if retain_scope:
-        value = load(home, verify_code=False)
-        if not value["enabled"] or (settings_path(home).parent / "global.off").exists():
-            return {
-                "status": "retained-source-paused",
-                "collection_enabled": False,
-                "next_action": "The original source remains paused. Use explicit global configuration/resume when you choose to enable it.",
-            }
-
-    result = configure(
-        SimpleNamespace(
-            device_home=str(home),
-            include_root=[],
-            isolate_root=[],
-            exclude_root=[],
-            non_project_root=[],
-            all_projects=not retain_scope,
-            preserve_scope=retain_scope,
-            activate_packet=None,
-            packet_output=None,
-        )
+    if (
+        fresh is None or fresh["phase"] != "complete" or fresh.get("native_bindings_restored")
+        or "codex" not in fresh["mapping"].get("registered_surfaces", {})
+    ):
+        return result
+    return complete(
+        home,
+        dict(result, installed=True, retained_archive=fresh["archive"],
+             old_identity_reused=False, old_queue_replayed=False),
+        bindings_only=True,
     )
-    return dict(result, collection_enabled=result.get("activated") is True)
 
 
-def complete(home, result, *, harness=None, choose=input, refresh=mapping_refresh):
+def complete(
+    home, result, *, harness=None, choose=input, refresh=mapping_refresh, bindings_only=False,
+):
     """Continue an authorized install; each stage reports independent evidence."""
     import agent_brain_client.adapters.installation.installation as ci
+    from agent_brain_client.adapters.storage.registration import CodexBindingStateBlocked
 
     value = dict(result)
     if result.get("installed") is not True:
         return value
     stages: dict[str, Any] = {
-        "mcp_registration": "verified",
+        "mcp_registration": "unverified",
         "worker": "unobserved",
         "model_context": "reload-unobserved",
     }
     value["installation_stages"] = stages
     value["installation_complete"] = False
+    value["local_setup_complete"] = False
     stage = "registration"
     try:
         from agent_brain_client.adapters.storage.reinstallation import (
@@ -182,16 +181,35 @@ def complete(home, result, *, harness=None, choose=input, refresh=mapping_refres
             Path(home) / ".config/agent-brain-client/codex-mcp.json"
         )
         policy, mcp, _, _ = ci.registered_context(home, meta)
+        stages["mcp_registration"] = "verified"
         selected = harness if harness is not None else mcp["args"][mcp["args"].index("--harness") + 1]
         if selected not in ("codex", "codebuddy"):
             raise ValueError("Explicit installation Harness required")
         if not policy["platform"].startswith(("win32-", "darwin-")):
             return result
         from agent_brain_client.runtime.fresh_installation import restore_native_bindings
-        restore_native_bindings(home)
+
+        stage = "retained-native-bindings"
         if selected == "codex":
+            stages["native_mcp"] = {"status": "pending"}
+        try:
+            native_mcp = restore_native_bindings(home, keep_configured=bindings_only)
+        except CodexBindingStateBlocked:
+            stage = "native-mcp"
+            raise
+        if native_mcp is not None:
+            stages["native_mcp"] = native_mcp
+        if bindings_only:
+            if native_mcp is not None and native_mcp["native_changed"]:
+                value["native_changed"] = True
+                value["reload_check"] = dict(
+                    value.get("reload_check", {}), mcp_registration_changed=True,
+                )
+            return value
+        if native_mcp is None and selected == "codex":
             stage = "native-mcp"
             from agent_brain_client.adapters.harnesses.codex import binding
+
             previous = binding.receipt(home)
             stages["native_mcp"] = (binding.install(home, native=Path(previous["native_home"]), enabled=previous["mcp"]["enabled"])
                                     if previous is not None and previous["removed"] else binding.install(home))
@@ -224,7 +242,7 @@ def complete(home, result, *, harness=None, choose=input, refresh=mapping_refres
 
         restore_source_routing(home)
         stage = "sources"
-        stages["sources"] = source_setup(home, choose=choose)
+        stages["sources"] = source_setup(home, choose=choose, initialize=True)
         value["local_setup_complete"] = (
             stages["mapping"].get("status") in ("content-current", "content-refreshed")
             and stages["sources"].get("collection_enabled") is True
@@ -232,9 +250,15 @@ def complete(home, result, *, harness=None, choose=input, refresh=mapping_refres
         value["next_action"] = (
             "Review installation_stages. Observe fresh MCP client_runtime version and commit before deciding whether only Agent Brain MCP needs a reload. If unobservable, report unknown. Review Hook trust in the selected host settings when pending; use a fresh conversation when mapped Rules/Skills need loading. Follow the sources next_action if source selection or Server admission is pending."
         )
-    except Exception:
+    except Exception as error:
         stages["setup"] = {"status": "pending-review-or-resume", "stage": stage}
+        if stage == "native-mcp":
+            stages["native_mcp"] = {"status": "blocked"}
+            if isinstance(error, CodexBindingStateBlocked):
+                stages["native_mcp"]["reason"] = "private-codex-binding-state-unverified"
+        entry = "update" if bindings_only else "install"
         value["next_action"] = (
-            "Rerun the normal Windows install entry to resume the incomplete stage. Preserve configuration and recovery receipts; MCP registration alone does not confirm mapping or global memory activation."
+            f"Rerun the normal Windows {entry} entry to resume the incomplete stage. "
+            "Preserve configuration and recovery receipts."
         )
     return value

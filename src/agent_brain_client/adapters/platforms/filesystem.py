@@ -153,21 +153,12 @@ def private_directory(path):
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
         return path
     if not path.exists():
-        # Create each missing ancestor separately so children inherit a private
-        # DACL before any body is written. Never alter an existing ancestor.
+        from agent_brain_client.adapters.platforms.windows.filesystem import create_private_directory
+
+        # Each missing component receives its final ownership before it is visible.
         if not path.parent.exists():
             private_directory(path.parent)
-        try:
-            path.mkdir(mode=0o700)
-        except FileExistsError:
-            pass
-        else:
-            if os.name == "nt":
-                from agent_brain_client.adapters.platforms.windows.native import (
-                    protect_new,
-                )
-
-                protect_new(path, directory=True)
+        create_private_directory(path)
     private_mode(path, directory=True, owner=True)
     return path
 

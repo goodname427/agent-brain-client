@@ -12,8 +12,8 @@
    sh bootstrap/macos/install.sh --action reinstall-check
    sh bootstrap/macos/install.sh --action reinstall --server 'https://your-server.example'
    # CodeBuddy IDE / CLI
-   sh bootstrap/macos/codebuddy.sh --action reinstall-check
-   sh bootstrap/macos/codebuddy.sh --action reinstall --server 'https://your-server.example'
+   sh bootstrap/macos/install.sh --action reinstall-check --harness codebuddy
+   sh bootstrap/macos/install.sh --action reinstall --harness codebuddy --server 'https://your-server.example'
    ```
 
    ```powershell
@@ -21,8 +21,8 @@
    & ./bootstrap/windows/install.ps1 -Action reinstall-check
    & ./bootstrap/windows/install.ps1 -Action reinstall -Server 'https://your-server.example'
    # CodeBuddy IDE / CLI
-   & ./bootstrap/windows/codebuddy.ps1 -Action reinstall-check
-   & ./bootstrap/windows/codebuddy.ps1 -Action reinstall -Server 'https://your-server.example'
+   & ./bootstrap/windows/install.ps1 -Action reinstall-check -Harness codebuddy
+   & ./bootstrap/windows/install.ps1 -Action reinstall -Harness codebuddy -Server 'https://your-server.example'
    ```
 
 3. 在本机隐藏输入中重新填写该 Server/账号的长期接入密钥。不要把密钥内容放进聊天、命令行或环境变量。已获授权的本机 Key 文件可通过 `--access-key-file`（Windows `-AccessKeyFile`）传入路径，免手动输入。安装器从该 Server 正常取得授权与发行信任信息；不会复用旧设备身份、伪造 pin、创建访问密钥或修改 Server 授权。账号或授权范围与原记忆不符时停止，不创建替代设备掩盖问题。

@@ -18,11 +18,12 @@ from agent_brain_client.adapters.storage.collection import (
     approved,
     admission_state,
 )
-from agent_brain_client.adapters.storage.origins import discover
+from agent_brain_client.adapters.storage.origins import discover, resolve_cwd
 from agent_brain_client.adapters.storage.recall_receipts import (
     save_recall_observation as save_recall_observation,
 )
 from agent_brain_client.adapters.storage import metadata as metadata_io
+from agent_brain_client.domain.scopes import ordinary_drive_path
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -79,7 +80,7 @@ def eligible(value, cwd):
         cwd,
         ports=SimpleNamespace(
             approved=lambda v: approved(v),
-            canonical=lambda path: str(Path(path).resolve()),
+            canonical=lambda path: ordinary_drive_path(str(resolve_cwd(path))),
             discover=lambda path: discover(path),
         ),
     )
@@ -184,7 +185,8 @@ def host_status(value):
     home = Path(value["device_home"])
     hosts = {}
     codex_receipt = settings_path(home).parent / "hook-install.json"
-    if codex_receipt.exists() or (home / ".config/agent-brain-client/codex/registration.json").exists():
+    from agent_brain_client.adapters.storage.registration import codex_registration_directory
+    if codex_receipt.exists() or (codex_registration_directory(home) / "registration.json").exists():
         from agent_brain_client.adapters.harnesses.codex.collection_installation import installation_status
         try:
             from agent_brain_client.adapters.harnesses.codex import binding

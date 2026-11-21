@@ -56,7 +56,7 @@ def capture_messages(core, value, local, payload, messages, phase):
     return result
 
 
-def hook(home, stream, *, core=None, defer=None, observe=None):
+def hook(home, stream, *, core=None, defer=None, observe=None, verified_release=False):
     from time import monotonic
     started = monotonic()
     core = core or (_ for _ in ()).throw(
@@ -92,7 +92,8 @@ def hook(home, stream, *, core=None, defer=None, observe=None):
             if harness != "codebuddy":
                 raise ValueError("CodeBuddy project binding required")
             return CodeBuddyContentPorts.location(home, runtime)
-        project = load_project(project_file, metadata_io.digest(project_file.read_bytes()), locate=locate)
+        project = load_project(project_file, metadata_io.digest(project_file.read_bytes()),
+                               locate=locate, verify_code=not verified_release)
         if project["capture_policy"] is not None:
             return {}, {"status": "project-source-delegated", "data_transferred": False}
     session = session_id(payload.get("session_id"))

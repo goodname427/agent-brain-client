@@ -196,31 +196,34 @@ class GlobalMemoryActivation(unittest.TestCase):
 class AutomaticCapture(unittest.TestCase):
     setUp = GlobalMemoryActivation.setUp
 
-    def test_automatic_setup_binds_failed_placeholder_and_retries_lost_resume(self):
+    def test_first_setup_binds_placeholder_and_update_reconciles_lost_resume_reply(self):
         from agent_brain_client.runtime.installation_completion import source_setup
         from agent_brain_client.domain.scopes import select
-        value = dict(self.value, enabled=False, server_scope_sha256=None)
+        scope = dict(self.scope, include_roots=[])
+        value = dict(self.value, enabled=False, scope=scope, approved_scope_sha256=None, server_scope_sha256=None)
         metadata.write(self.file, value)
         profile = self.file.parent/'synthetic-profile.json'
         metadata.write(profile, {'endpoint':'https://synthetic.invalid',
             'grant':{'actor':'synthetic-owner','platform':'win32-amd64','scopes':['read','put']}})
         runtime = {'https_profile':str(profile),'https_profile_sha256':metadata.digest(profile.read_bytes()),
             'content_policy_sha256':'f'*64}
-        state = {'scope':None,'fail_resume':True,'calls':[]}
+        state = {'scope':None, 'stopped':None, 'calls':[]}
         def wire(method, params, rid=None):
             state['calls'].append(method)
             scope = state['scope']
             if method == 'memory_global_status':
                 return {'result':{'metadata_only':True,'source_registered':scope is not None,
                     'source_device_id':'c'*32,'global_profile_id':'b'*32,
-                    'scope_sha256':digest(scope) if scope else None}}
+                    'scope_sha256':digest(scope) if scope else None, 'stopped':state['stopped']}}
             if method == 'memory_global_register':
                 self.assertEqual(params['scope']['profile_id'], 'b'*32)
                 state['scope'] = copy.deepcopy(params['scope'])
+                state['stopped'] = True
                 return {'result':{'source_registered':True,'source_device_id':'c'*32,
                     'global_profile_id':'b'*32,'scope_sha256':digest(state['scope'])}}
             if method == 'memory_global_resume':
-                return {'error':{'code':'transport_unconfirmed'}} if state['fail_resume'] else {'result':{'schema':1,'stopped':False}}
+                state['stopped'] = False
+                return {'error':{'code':'transport_unconfirmed'}}
             self.fail('No model or history request: ' + method)
         client = SimpleNamespace(harness="codex", device_id='c'*32, wire=wire)
         def load(*args, **kwargs): return metadata.private_json(self.file)
@@ -229,11 +232,11 @@ class AutomaticCapture(unittest.TestCase):
               patch('agent_brain_client.adapters.storage.registration.registration', return_value=(None, {'runtime':runtime})),
               patch.object(gm, 'discover', side_effect=AssertionError('No history scan'))):
             before = self.file.read_bytes()
-            self.assertFalse(source_setup(self.home, choose=lambda _:self.fail('No approval prompt'))['collection_enabled'])
+            self.assertFalse(source_setup(self.home, initialize=True, choose=lambda _:self.fail('No approval prompt'))['collection_enabled'])
             self.assertEqual(self.file.read_bytes(), before)
-            state['fail_resume'] = False
             self.assertTrue(source_setup(self.home)['collection_enabled'])
         self.assertEqual(state['calls'].count('memory_global_register'), 1)
+        self.assertEqual(state['calls'].count('memory_global_resume'), 1)
         stored = load()
         self.assertTrue(stored['scope']['all_projects'])
         self.assertTrue(source_policy.approved(stored))

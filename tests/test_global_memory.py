@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 import tempfile
 import tomllib
@@ -94,6 +95,63 @@ class GlobalMemoryFixtures(unittest.TestCase):
         value={'enabled':True,'device_home':str(self.root),'scope':self.scope,'approved_scope_sha256':digest(self.scope),'server_scope_sha256':digest(self.scope)}
         with patch.object(gm,'discover',side_effect=AssertionError('excluded repository probe')):
             self.assertIsNone(gm.eligible(value,'/synthetic/company/work'))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows working directory forms')
+    def test_windows_drive_spellings_share_global_origin_and_recall(self):
+        project = self.root / 'project'
+        (project / '.git').mkdir(parents=True)
+        ordinary = str(project)
+        extended = '\\\\?\\' + ordinary
+        self.assertTrue(os.path.samefile(ordinary, extended))
+        scope = dict(self.scope, all_projects=True, include_roots=[], exclude_roots=[],
+                     non_project_roots=[])
+
+        def settings(scope):
+            approval = digest(scope)
+            return dict(enabled=True, device_home=str(self.root), scope=scope, legacy_projects=[],
+                        approved_scope_sha256=approval, server_scope_sha256=approval)
+
+        value = settings(scope)
+        local = gm.eligible(value, ordinary)
+        self.assertEqual(local, dict(kind='project', cwd=ordinary,
+                                     project_root=ordinary, repository_root=ordinary))
+        self.assertEqual(gm.eligible(value, extended), local)
+        self.assertEqual(gm.discover(extended), local)
+        retained = {'root': extended}
+        self.assertIs(gm.legacy(dict(value, legacy_projects=[retained]), local), retained)
+        excluded = settings(dict(scope, exclude_roots=[ordinary]))
+        with patch.object(gm, 'discover', side_effect=AssertionError('excluded source probe')):
+            for cwd in (ordinary, extended):
+                self.assertIsNone(gm.eligible(excluded, cwd))
+
+        question = 'Synthetic project question'
+        for cwd, payload_cwd in ((ordinary, ordinary), (extended, ordinary),
+                                 (ordinary, extended), (extended, extended),
+                                 (extended, ordinary + '-different'),
+                                 (ordinary, extended + '\\..\\project')):
+            with self.subTest(cwd=cwd, payload_cwd=payload_cwd):
+                payload = dict(cwd=payload_cwd, hook_event_name='UserPromptSubmit',
+                               session_id='synthetic-session', turn_id='synthetic-turn',
+                               prompt=question)
+                stdin = SimpleNamespace(buffer=io.BytesIO(json.dumps(payload).encode()))
+                with (
+                    patch.object(os, 'getcwd', return_value=cwd),
+                    patch.object(sys, 'stdin', stdin),
+                    patch.object(sys, 'stderr', io.StringIO()),
+                    patch.object(gm, 'submit_hook', return_value={'status': 'staged'}) as capture,
+                    patch.object(gm, 'schedule_delivery'),
+                    patch.object(gm, 'recall_prompt', return_value=[{'content': 'Synthetic result'}]) as recall,
+                ):
+                    output = gm.hook(value)
+                if payload_cwd in (ordinary, extended):
+                    normalized = dict(payload, cwd=ordinary)
+                    self.assertIn('Synthetic result', output['hookSpecificOutput']['additionalContext'])
+                    capture.assert_called_once_with(value, local, normalized)
+                    recall.assert_called_once_with(value, local, normalized, question, observe=None)
+                else:
+                    self.assertEqual(output, {})
+                    capture.assert_not_called()
+                    recall.assert_not_called()
 
     def test_owned_project_capture_is_not_duplicated(self):
         local = self.origin('/synthetic/personal/one'); value = {'legacy_projects': [{'root': local['cwd']}]}

@@ -311,7 +311,10 @@ def unowned_config(config, owned):
     return result
 
 
-def block(value, *, root=None):
+def block(value, *, root=None, command=None):
+    if command is not None:
+        return command_block(command)
+    # Historical formatter for reproducing prior pinned transactions.
     source_root = Path(root) if root is not None else ROOT
     pins = value["code_sha256"]
     expanded = bool(pins.keys() - set(FILES))
@@ -340,6 +343,10 @@ def block(value, *, root=None):
     command = command_line(
         [os.path.realpath(os.sys.executable), "-I", "-B", "-c", guard]
     )
+    return command_block(command)
+
+
+def command_block(command):
     lines = [BEGIN]
     for event in ("SessionStart", "UserPromptSubmit", "Stop"):
         lines += [
@@ -359,11 +366,62 @@ def block(value, *, root=None):
     return "\n".join(lines) + "\n" + END + "\n"
 
 
+def fixed_command_block(previous, command):
+    if previous is None:
+        return command_block(command)
+    groups = owned_groups(tomllib.loads(previous))
+    for path, group in groups.items():
+        for handler in group["hooks"]:
+            changing = handler["command"] != command
+            handler["command"] = command
+            if "commandWindows" in handler:
+                handler["commandWindows"] = command
+            if changing and path[1] == "Stop" and "async" in handler:
+                handler["async"] = False  # Retire the older async Stop in this migration.
+    return BEGIN + "\n" + render_groups(groups) + END + "\n"
+
+
+def migrate_commands(before, previous, owned):
+    """Replace only command values in place so native trust keys keep their indices."""
+    from agent_brain_client.adapters.storage.toml_document import toml_get, toml_replace
+
+    old, new = map(lambda text: owned_groups(tomllib.loads(text)), (previous, owned))
+    new_groups = {path[1]: group for path, group in new.items()}
+    result = before.decode()
+    parsed = tomllib.loads(result)
+    paths = list(owned_groups(parsed))
+    if len(paths) != len(new_groups) or {p[1] for p in old} != new_groups.keys():
+        raise ValueError("Hook migration event scope changed")
+    expected = copy.deepcopy(parsed)
+    fields = {"command", "commandWindows"}
+    for path in paths:
+        base = toml_get(expected, path)
+        previous_hooks = owned_group(base)["hooks"]
+        next_hooks = new_groups[path[1]]["hooks"]
+        if len(previous_hooks) != len(next_hooks):
+            raise ValueError("Hook migration ownership changed")
+        slots = (i for i, hook in enumerate(base["hooks"]) if owned_hook(hook))
+        writable = fields | {"async"} if path[1] == "Stop" else fields
+        for i, left, right in zip(slots, previous_hooks, next_hooks):
+            if (left.keys() != right.keys()
+                    or {k: v for k, v in left.items() if k not in writable}
+                    != {k: v for k, v in right.items() if k not in writable}):
+                raise ValueError("Hook migration command metadata changed")
+            for key in sorted(writable & left.keys()):
+                if left[key] == right[key]:
+                    continue
+                result = toml_replace(result, path + ("hooks", i, key), right[key])
+                base["hooks"][i][key] = right[key]
+    if not typed_equal(tomllib.loads(result), expected):
+        raise ValueError("Unexpected native migration change")
+    return result.encode()
+
+
 def recover_record(file, receipt, record):
     """Restore only this journal's exact host images, without parsing live TOML."""
     from agent_brain_client.adapters.storage.host_files import host_restore
 
-    if record.get("schema") not in (2, 3) or set(record.get("host", {})) != {str(file)}:
+    if record.get("schema") not in (2, 3, 4) or set(record.get("host", {})) != {str(file)}:
         raise ValueError("Hook recovery scope changed")
     row = record["host"][str(file)]
     if (
@@ -381,6 +439,8 @@ def recover_record(file, receipt, record):
             + ("\n\n" + record["block"] if record["block"] is not None else "\n")
         ).encode()
         if record["schema"] == 2
+        else migrate_commands(before, previous, record["block"])
+        if record["schema"] == 4
         else render_owned(outside, record["block"])
     )
     if previous != record["previous_block"] or target != expected:
@@ -452,12 +512,12 @@ def verified_removal(home, previous, record):
     )
 
 
-def transact(native, directory, owned, *, remove=False):
+def transact(native, directory, owned, *, remove=False, migrate=False):
     from agent_brain_client.adapters.storage.host_files import HostConfigChanged
 
     for attempt in range(3):
         try:
-            return transact_once(native, directory, owned, remove=remove)
+            return transact_once(native, directory, owned, remove=remove, migrate=migrate)
         except HostConfigChanged:
             if attempt == 2:
                 raise HostConfigChanged(
@@ -465,7 +525,7 @@ def transact(native, directory, owned, *, remove=False):
                 ) from None
 
 
-def transact_once(native, directory, owned, *, remove=False):
+def transact_once(native, directory, owned, *, remove=False, migrate=False):
     from agent_brain_client.adapters.platforms.filesystem import locked
 
     file = metadata_io.canonical(native / "config.toml", existing=True)
@@ -498,7 +558,13 @@ def transact_once(native, directory, owned, *, remove=False):
             raise ValueError("Unowned global Hook block preserved")
         if remove and previous is None:
             return {"status": "global-hook-not-installed", "native_changed": False}
-        after = render_owned(outside, None if remove else owned)
+        replacing = migrate and previous is not None and not remove
+        if replacing:
+            wanted = owned_groups(tomllib.loads(owned))
+            command = next(iter(wanted.values()))["hooks"][0]["command"]
+            owned = fixed_command_block(previous, command)
+        after = (migrate_commands(before, previous, owned) if replacing
+                 else render_owned(outside, None if remove else owned))
         old_config, new_config = (
             tomllib.loads(before.decode()),
             tomllib.loads(after.decode()),
@@ -521,12 +587,6 @@ def transact_once(native, directory, owned, *, remove=False):
             unowned_config(new_config, None if remove else owned),
         ):
             raise ValueError("Unowned host configuration changed")
-        # Parse first; inline-table conflicts must fail before any write.
-        expected = tomllib.loads(
-            render_owned(outside, None if remove else owned).decode()
-        )
-        if not typed_equal(new_config, expected):
-            raise ValueError("Unexpected native configuration change")
         if before == after or (not remove and same_owned(previous, owned)):
             if record and record.get("phase") == "rolled-back":
                 metadata_io.write(
@@ -547,7 +607,7 @@ def transact_once(native, directory, owned, *, remove=False):
                 "trust": "normal-host-review-required-if-not-already-trusted",
             }
         journal = {
-            "schema": 3,
+            "schema": 4 if replacing else 3,
             "phase": "applying",
             "block": None if remove else owned,
             "previous_block": previous,
@@ -588,6 +648,7 @@ def transact_once(native, directory, owned, *, remove=False):
 
 
 def install(args):
+    from agent_brain_client.adapters.installation import launcher_update as hook_launcher
     from agent_brain_client.adapters.storage.collection_setup import prepare
     from agent_brain_client.adapters.storage.collection import settings_path, approved
     from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
@@ -595,10 +656,14 @@ def install(args):
         if harness != "codex":
             raise ValueError("Codex project binding required")
         return CodexContentPorts.location(home, runtime)
+    hook_launcher.prepare_native_hook(args.device_home)
     value = prepare(args, locate=locate)
     _, registered = registration_store.registration(args.device_home)
     file = settings_path(args.device_home)
-    result = transact(native_binding(args.device_home, registered), file.parent, block(value))
+    result = transact(
+        native_binding(args.device_home, registered), file.parent,
+        command_block(hook_launcher.native_hook_command(args.device_home, "codex")), migrate=True,
+    )
     return dict(result, expanded_sources_enabled=approved(value), automatic_all_projects=True,
                 legacy_project_roots=[row["root"] for row in value["legacy_projects"]],
                 settings=str(file), model_calls=0)
@@ -704,13 +769,10 @@ def refresh_hooks(home, *, check_only=False):
         return absent  # Explicit uninstall remains uninstalled.
     pins = runtime_pins(ROOT, fallback=FILES)
     target = dict(value, code_sha256=pins)
-    root = (
-        file.parent
-        / "code"
-        / metadata_io.digest(json.dumps(pins, sort_keys=True).encode())
-    )
-    owned = block(target, root=root)
-    available = value != target or not same_owned(previous, owned)
+    from agent_brain_client.adapters.installation import launcher_update as hook_launcher
+    owned = fixed_command_block(previous, hook_launcher.native_hook_command(home, "codex"))
+    migrating = not same_owned(previous, owned)
+    available = value != target or migrating or record["phase"] == "rolled-back"
     result = {
         "status": "global-hook-update-available"
         if available
@@ -719,10 +781,11 @@ def refresh_hooks(home, *, check_only=False):
         "native_changed": False,
         "sources_changed": False,
         "model_calls": 0,
-        "trust": "normal-host-review-required-if-not-already-trusted",
+        "trust": "native-review-required-for-new-command" if migrating else "command-unchanged",
     }
     if check_only:
         return result
+    hook_launcher.prepare_native_hook(home)
     with locked(file.parent / "code-refresh.lock"):
         recover_code(home)
         if file.read_bytes() != original:
@@ -749,7 +812,7 @@ def refresh_hooks(home, *, check_only=False):
         # Each write has its own journal and preserves outside edits on retry.
         metadata_io.write(journal, record)
         try:
-            changed = transact(native, file.parent, owned)
+            changed = transact(native, file.parent, owned, migrate=True)
             host_apply(record["host"], lambda: metadata_io.write(journal, record))
             metadata_io.write(journal, dict(record, phase="complete"))
         except Exception:

@@ -195,7 +195,9 @@ try:
     from agent_brain_client.adapters.harnesses.codebuddy.configuration import install, status
     install_sources(SimpleNamespace(device_home=str(f.home), profile_id=None, operator=None, operator_sha256=None))
     core = load_core(f.home)
-    install(f.home, pathlib.Path(sys.argv[1]).parent, core, surface='both')
+    from unittest.mock import patch
+    with patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook"):
+        install(f.home, pathlib.Path(sys.argv[1]).parent, core, surface='both')
     from agent_brain_client.adapters.installation.installation import inspect
     from unittest.mock import patch
     with patch("agent_brain_client.adapters.packages.client.ClientReleases.verified_active", return_value={"version":"synthetic-fixture"}):
@@ -213,7 +215,8 @@ finally:
 
 
 class ProjectParity(unittest.TestCase):
-    def test_project_settings_paths_and_native_hooks_are_host_isolated(self):
+    @patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook")
+    def test_project_settings_paths_and_native_hooks_are_host_isolated(self, prepare):
         from agent_brain_client.adapters.storage.project_settings import project_settings
         from agent_brain_client.adapters.harnesses.codebuddy.project_configuration import install
         from agent_brain_client.adapters.harnesses.codebuddy.configuration import Document
@@ -227,7 +230,8 @@ class ProjectParity(unittest.TestCase):
             self.assertNotEqual(codex, buddy)
             private_directory(buddy.parent)
             metadata.write(buddy, {"synthetic": True})
-            settings = {"harness": "codebuddy", "project_root": str(project), "source_mode": "recall-only"}
+            settings = {"harness": "codebuddy", "device_home": str(home),
+                        "project_root": str(project), "source_mode": "recall-only"}
             config = project / ".codebuddy/settings.local.json"
             config.parent.mkdir()
             original = '{// synthetic unrelated settings\n"model":"keep", "hooks":{"Stop":[{"hooks":[{"type":"command","command":"keep"}]}]}}'
@@ -361,7 +365,8 @@ with tempfile.TemporaryDirectory() as tmp:
                 self.assertEqual(session.queue_status()["confirmed"], 1)
                 self.assertTrue((session.cache / "snapshots").exists())
 
-    def test_codebuddy_hook_uninstall_and_update_preserve_explicit_pause(self):
+    @patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook")
+    def test_codebuddy_hook_uninstall_and_update_preserve_explicit_pause(self, prepare):
         from types import SimpleNamespace
         from agent_brain_client.adapters.harnesses.codebuddy import configuration
         from agent_brain_client.runtime.host_maintenance import global_entry
@@ -504,6 +509,9 @@ finally:
         switched = retained_installation(f.home, Path(record["native"]), target_host=content_host("codebuddy"))
         switched.restore_mapping(buddy_cache, f.content)
         codex_cache = f.root / "codex/content-cache"
+        if sys.platform == "win32":
+            from agent_brain_client.adapters.platforms.filesystem import private_mode
+            private_mode(codex_cache.parent, directory=True, owner=True)
         self.assertEqual(metadata.private_json(codex_cache / "owned.json", cache=True), record["mapping"]["owned"])
         self.assertEqual(metadata.private_json(buddy_cache / "owned.json", cache=True), original)
         self.assertFalse(old_queue.exists())
@@ -511,7 +519,8 @@ finally:
         self.assertEqual(f.memory_path.read_text(), "Keep the existing remembered fact.")
 
     @unittest.skipUnless(sys.platform == "darwin", "Native Mac installation contract")
-    def test_public_uninstall_checks_secondary_queue_then_removes_both_owned_projections(self):
+    @patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook")
+    def test_public_uninstall_checks_secondary_queue_then_removes_both_owned_projections(self, prepare):
         from test_client_uninstall import ClientUninstall
         from agent_brain_client.adapters.harnesses.codebuddy import configuration
         from agent_brain_client.runtime import client_lifecycle
@@ -551,9 +560,49 @@ finally:
             self.assertEqual(cli.main(["global-sync"]), 2)
         self.assertEqual(json.loads(output.getvalue())["status"], "global-queue-sync-incomplete")
 
+    @unittest.skipUnless(sys.platform == "darwin", "Native Mac installation contract")
+    @patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook")
+    def test_device_uninstall_can_resume_a_legacy_projection_only_receipt(self, prepare):
+        from test_client_uninstall import ClientUninstall
+        from agent_brain_client.adapters.installation import projection_removal
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration
+        from agent_brain_client.runtime import client_lifecycle
+
+        f = ClientUninstall("test_cancel_is_read_only_and_status_never_reads_credentials")
+        f.setUp()
+        self.addCleanup(f.doCleanups)
+        configuration.install(f.home, ROOT, None, surface="cli")
+        cache = f.state / "codebuddy/content-cache"
+        session = ContentSession(f.home, cache, f.adapter.policy, f.cloud, host=content_host("codebuddy"))
+        self.assertEqual(session.refresh()["status"], "content-refreshed")
+        skill = f.home / ".codebuddy/skills/synthetic-skill/SKILL.md"
+        original_unlink = Path.unlink
+
+        def interrupt_projection(path, *args, **options):
+            original_unlink(path, *args, **options)
+            if path == skill:
+                raise SystemExit("Synthetic interruption during legacy projection removal")
+
+        with patch.object(Path, "unlink", interrupt_projection), self.assertRaises(SystemExit):
+            projection_removal.remove(session)
+        self.assertFalse(client_lifecycle.journal_path(f.home).exists())
+        self.assertFalse(skill.exists())
+        self.assertEqual(client_lifecycle.uninstall(f.home, lambda message: "Cancel")["status"], "uninstall-cancelled")
+        self.assertFalse(skill.exists())
+        self.assertFalse(client_lifecycle.journal_path(f.home).exists())
+        self.assertEqual(client_lifecycle.uninstall(f.home, lambda message: "Continue")["status"], "client-uninstalled")
+        self.assertFalse(skill.exists())
+        self.assertFalse(session.mapping.owned_snapshot()["files"])
+        self.assertEqual(f.f.backend.record, f.identity)
+
 
 @unittest.skipUnless(sys.platform == "darwin", "Native Mac installation contract")
 class IndependentHostControl(unittest.TestCase):
+    def setUp(self):
+        prepare = patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook")
+        prepare.start()
+        self.addCleanup(prepare.stop)
+
     def shared_install(self, harness):
         from test_mac_first_install import FirstInstall
         f = FirstInstall("test_first_install_prepared_environment_and_exact_native_transaction")
@@ -703,6 +752,142 @@ class IndependentHostControl(unittest.TestCase):
         self.assertFalse(binding.status(f.home, policy["runtime"])["service_enabled"])
         self.assertIn(b"Agent Brain global memory", (native / "config.toml").read_bytes())
 
+    def test_interrupted_second_native_removal_resumes_device_uninstall_through_repair(self):
+        from agent_brain_client.adapters.harnesses.codex import binding
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration
+        from agent_brain_client.adapters.storage import metadata
+        from agent_brain_client.runtime import client_lifecycle
+
+        f = self.shared_install("codebuddy")
+        native = f.home / "selected-codex-profile"
+        private_directory(native)
+        codex_config = native / "config.toml"
+        codex_config.write_text('model = "synthetic-user-model"\n')
+        binding.install(f.home, native=native)
+        configuration.install(f.home, ROOT, None, surface="cli")
+        codebuddy_state = configuration.state_directory(f.home)
+        identity = copy.deepcopy(f.backend.record)
+        original_write = metadata.write
+        original_unlink = Path.unlink
+        registration = f.home / ".config/agent-brain-client/codex-mcp.json"
+
+        def crash_on_host_completion(path, record, **options):
+            if path == codebuddy_state / "transaction.json" and record["phase"] == "complete":
+                raise SystemExit("Synthetic interruption before CodeBuddy transaction completion")
+            return original_write(path, record, **options)
+
+        def crash_after_shared_registration(path, *args, **options):
+            original_unlink(path, *args, **options)
+            if path == registration:
+                raise SystemExit("Synthetic interruption after removing shared registration")
+
+        with patch("agent_brain_client.adapters.packages.client.ClientReleases.verified_active",
+                   return_value={"version": "synthetic"}):
+            with patch.object(metadata, "write", side_effect=crash_on_host_completion), self.assertRaises(SystemExit):
+                client_lifecycle.uninstall(f.home, lambda message: "Continue")
+            self.assertTrue(binding.receipt(f.home)["removed"])
+            self.assertTrue(metadata.private_json(codebuddy_state / "registration.json")["removed"])
+            self.assertEqual(client_lifecycle.status(f.home)["status"], "uninstall-resume-required")
+            with patch.object(Path, "unlink", crash_after_shared_registration), self.assertRaises(SystemExit):
+                client_lifecycle.repair(f.home)
+            self.assertFalse(registration.exists())
+            self.assertEqual(client_lifecycle.status(f.home)["status"], "uninstall-resume-required")
+            result = client_lifecycle.uninstall(f.home, lambda message: self.fail("Repeated confirmation"))
+            self.assertEqual(result["status"], "client-uninstalled")
+            self.assertTrue(client_lifecycle.status(f.home)["uninstall_verified"])
+
+        self.assertEqual(metadata.private_json(codebuddy_state / "transaction.json")["phase"], "complete")
+        self.assertEqual(codex_config.read_text().strip(), 'model = "synthetic-user-model"')
+        self.assertEqual(f.backend.record, identity)
+
+    def test_unbind_leaves_other_host_shared_control_and_original_outbox_intact(self):
+        from types import SimpleNamespace
+        from agent_brain_client.adapters.harnesses.codex import binding, collection_installation
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration
+        from agent_brain_client.adapters.storage.collection import settings_path
+        from agent_brain_client.adapters.storage.registration import registration
+        from agent_brain_client.adapters.storage.metadata import private_json
+        from agent_brain_client.runtime import client_lifecycle
+        from agent_brain_client.runtime.host_maintenance import install_sources
+
+        f = self.shared_install("codebuddy")
+        native = f.home / "selected-codex-profile"
+        private_directory(native)
+        config = native / "config.toml"
+        config.write_text('model = "synthetic-user-model"\n')
+        binding.install(f.home, native=native)
+        install_sources(SimpleNamespace(device_home=str(f.home), profile_id=None,
+                                         operator=None, operator_sha256=None, harness="codex"))
+        configuration.install(f.home, ROOT, None, surface="cli")
+        meta, policy = registration(f.home)
+        runtime = policy["runtime"]
+        port = content_host("codex")
+        actual, cache = port.location(f.home, runtime)
+        cloud = Cloud()
+        cloud.grant = copy.deepcopy(f.fixture_grant)
+        cloud.offline = True
+        content = private_json(runtime["content_policy"], runtime["content_policy_sha256"])
+        session = ContentSession(f.home, cache, content, cloud, host=port, native_home=actual)
+        request = {"request_id": "synthetic-unbind-pending", "method": "content_put", "params": {
+            "kind": "memory", "id": "synthetic-memory", "expected_revision": "missing", "record": MEMORY}}
+        session.invoke(request)
+        outbox = cache / "outbox/synthetic-unbind-pending.json"
+        buddy_receipt = configuration.state_directory(f.home) / "registration.json"
+        buddy_native = [Path(path) for path in private_json(buddy_receipt)["mcp_paths"]]
+        retained = {*buddy_native, buddy_receipt, f.config, settings_path(f.home), outbox}
+        before = {path: path.read_bytes() for path in retained}
+        identity = copy.deepcopy(f.backend.record)
+
+        result = client_lifecycle.unbind(f.home, harness="codex")
+        self.assertEqual((result["status"], result["native_changed"]), ("host-unbound", True))
+        self.assertEqual(config.read_text().strip(), 'model = "synthetic-user-model"')
+        self.assertIsNone(collection_installation.split_owned(config.read_bytes())[1])
+        self.assertFalse(client_lifecycle.unbind(f.home, harness="codex")["native_changed"])
+        self.assertEqual(registration(f.home)[0], meta)
+        self.assertEqual({path: path.read_bytes() for path in retained}, before)
+        self.assertFalse(client_lifecycle.journal_path(f.home).exists())
+        self.assertEqual(f.backend.record, identity)
+
+        with patch("agent_brain_client.adapters.packages.client.ClientReleases.verified_active",
+                   return_value={"version": "synthetic"}):
+            result = client_lifecycle.uninstall(f.home, lambda message: self.fail("Unconfirmed queue"))
+            self.assertEqual((result["status"], result["harness"]), ("uninstall-unconfirmed-writes", "codex"))
+            self.assertEqual({path: path.read_bytes() for path in retained}, before)
+            self.assertFalse(client_lifecycle.journal_path(f.home).exists())
+            cloud.offline = False
+            session.invoke(request)
+            queue_bytes = outbox.read_bytes()
+            result = client_lifecycle.uninstall(f.home, lambda message: "Continue")
+        self.assertEqual(result["status"], "client-uninstalled")
+        self.assertEqual(outbox.read_bytes(), queue_bytes)
+        self.assertEqual(f.backend.record, identity)
+
+    def test_codebuddy_unbind_preserves_codex_and_unrelated_codebuddy_config(self):
+        from agent_brain_client.adapters.harnesses.codex import binding
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration
+        from agent_brain_client.runtime import client_lifecycle
+
+        f = self.shared_install("codebuddy")
+        native = f.home / "selected-codex-profile"
+        binding.install(f.home, native=native)
+        buddy_home = f.home / ".codebuddy"
+        private_directory(buddy_home)
+        buddy_mcp = buddy_home / ".mcp.json"
+        buddy_mcp.write_text('{"mcpServers": {"other": {"command": "synthetic-user-server"}}}\n')
+        buddy_settings = buddy_home / "settings.json"
+        buddy_settings.write_text('{"userSetting": true}\n')
+        configuration.install(f.home, ROOT, None, surface="cli")
+        retained = (f.config, native / "config.toml", binding.directory(f.home) / "registration.json")
+        before = [path.read_bytes() for path in retained]
+
+        result = client_lifecycle.unbind(f.home, harness="codebuddy")
+        self.assertEqual((result["status"], result["native_changed"]), ("host-unbound", True))
+        self.assertEqual([path.read_bytes() for path in retained], before)
+        self.assertEqual(json.loads(buddy_mcp.read_text())["mcpServers"], {"other": {"command": "synthetic-user-server"}})
+        self.assertTrue(json.loads(buddy_settings.read_text())["userSetting"])
+        self.assertFalse(client_lifecycle.unbind(f.home, harness="codebuddy")["native_changed"])
+        self.assertFalse(client_lifecycle.journal_path(f.home).exists())
+
 
 class NativeBindingTransaction(unittest.TestCase):
     def test_native_codex_transaction_preserves_pause_and_unrelated_toml(self):
@@ -741,6 +926,16 @@ class NativeBindingTransaction(unittest.TestCase):
                 binding.install(home, remove=True)
                 self.assertNotIn(b"agent_brain_server", file.read_bytes())
                 self.assertIn(b'command = "preserve"', file.read_bytes())
+
+    def test_update_exit_requires_verified_registration_when_binding_recovery_runs(self):
+        from agent_brain_client.interfaces.cli.install import lifecycle_exit
+        update = {"status": "client-update-current", "channel_checked": True}
+        self.assertEqual(lifecycle_exit("update", update), 0)
+        recovery = dict(update, installation_stages={
+            "mcp_registration": "unverified",
+            "setup": {"stage": "registration", "status": "pending-review-or-resume"},
+        })
+        self.assertEqual(lifecycle_exit("update", recovery), 2)
 
     def test_native_collision_is_rejected_before_shared_enrollment(self):
         import os

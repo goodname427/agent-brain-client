@@ -145,7 +145,16 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
         private_directory(file.parent)
         metadata.write(file, value)
         args = SimpleNamespace(device_home=str(home), profile_id='b'*32, operator=None, operator_sha256=None)
-        with patch('agent_brain_client.adapters.storage.registration.registration', return_value=(None, {'runtime':{'codex_home':str(home)}})), patch.object(install, 'transact', return_value={}):
+        original = file.read_bytes()
+        with patch('agent_brain_client.adapters.installation.launcher_update.prepare_native_hook', side_effect=ValueError('Invalid Hook enrollment')):
+            with self.assertRaisesRegex(ValueError, 'Invalid Hook enrollment'):
+                install.install(args)
+        self.assertEqual(file.read_bytes(), original)
+        with (
+            patch('agent_brain_client.adapters.storage.registration.registration', return_value=(None, {'runtime':{'codex_home':str(home)}})),
+            patch('agent_brain_client.adapters.installation.launcher_update.prepare_native_hook'),
+            patch.object(install, 'transact', return_value={}),
+        ):
             result = install.install(args)
             self.assertFalse(result['expanded_sources_enabled'])
             stored = json.loads(file.read_bytes()); self.assertEqual(stored['scope']['profile_id'], 'b'*32)
@@ -186,7 +195,7 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
             result = operator.configure(args)
         self.assertEqual(result['status'], 'global-memory-registration-pending')
         packet = metadata.private_json(result['packet'])
-        self.assertEqual(packet['schema'], 2); self.assertEqual(packet['scope'], dict(scope, all_projects=True))
+        self.assertEqual(packet['schema'], 2); self.assertEqual(packet['scope'], scope)
         self.assertEqual(packet['client']['source_device_id'], self.device)
         self.assertEqual(client.wire.call_args.args, ('memory_global_register',packet,'source_'+digest(packet)))
         self.assertFalse((directory / 'global.off').exists())

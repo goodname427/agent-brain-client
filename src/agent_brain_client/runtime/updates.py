@@ -51,6 +51,13 @@ try:
     if sys.argv[4] == "codebuddy":
         code_changed = refresh_code(pathlib.Path(sys.argv[2]), package, check_only=sys.argv[3] == "check")
         result = dict(result, update_available=result["update_available"] or (code_changed and sys.argv[3] == "check"))
+    from agent_brain_client.runtime import project_memory
+    refresh_projects = getattr(project_memory, "refresh_project_hooks", None)
+    if refresh_projects is not None:
+        projects = refresh_projects(sys.argv[2], sys.argv[4], check_only=sys.argv[3] == "check")
+        result = dict(result, projects=projects,
+                      native_changed=result["native_changed"] or projects["native_changed"],
+                      update_available=result["update_available"] or projects["update_available"])
     value = {"result": result}
 except HostConfigChanged:
     value = {"host_edit_in_progress": True}
