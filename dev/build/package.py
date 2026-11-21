@@ -15,25 +15,10 @@ import argparse
 import json
 
 ROOT = Path(__file__).resolve().parents[2]
-from agent_brain_client.adapters.packages.client import (
-    CLIENT_FILES,
-    CONTENT_CLIENT_FILES,
-)
+from agent_brain_client.adapters.packages.client import CLIENT_FILES
 from agent_brain_client.adapters.packages.publication import require_publishable
 
 FILES = {n: n for n in CLIENT_FILES}
-PAIRING_FILES = {
-    n: n
-    for n in (
-        "src/agent_brain_client/application/installation/pairing.py",
-        "src/agent_brain_client/adapters/platforms/macos/native/DeviceComponent.swift",
-    )
-}
-CONTENT_FILES = {
-    n: n
-    for n in CONTENT_CLIENT_FILES
-    if n not in CLIENT_FILES and n not in PAIRING_FILES
-}
 
 
 def main():

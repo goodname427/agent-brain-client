@@ -323,13 +323,39 @@ if __name__ == '__main__':
 
 
 class EventTier(unittest.TestCase):
-    def test_only_release_dispatch_produces_full_evidence(self):
-        for event in ("pull_request", "push", "merge_group"):
-            plan = ci.tier_event(event, {})
-            self.assertFalse(plan["full"])
+    def test_documentation_uses_only_documentation_checks_on_normal_events(self):
+        h = GitHistory()
+        h.setUp()
+        self.addCleanup(h.doCleanups)
+        h.write('docs/page.md', '# Synthetic documentation edit\n')
+        docs = h.commit()
+        h.write("runtime.py", "pass\n")
+        mixed = h.commit()
+        for head, expected in ((docs, False), (mixed, True)):
+            events = {
+                "push": {"before": h.base, "after": head},
+                "pull_request": {"pull_request": {"base": {"sha": h.base}, "head": {"sha": head}}},
+                "merge_group": {"merge_group": {"base_sha": h.base, "head_sha": head}},
+            }
+            for name, event in events.items():
+                with self.subTest(event=name, mixed=expected):
+                    plan = ci.tier_event(name, event, h.root)
+                    self.assertEqual(plan["code"], expected)
+                    self.assertFalse(plan["full"])
         self.assertTrue(ci.tier_event("workflow_dispatch", {})["full"])
+        with self.assertRaises(KeyError):
+            ci.tier_event("push", {}, h.root)
         with self.assertRaises(ValueError):
             ci.tier_event("unknown", {})
+
+    def test_documentation_only_still_rejects_committed_whitespace(self):
+        h = GitHistory()
+        h.setUp()
+        self.addCleanup(h.doCleanups)
+        h.write("docs/page.md", "# Synthetic trailing whitespace \n")
+        head = h.commit()
+        with self.assertRaises(subprocess.CalledProcessError):
+            ci.tier_event("push", {"before": h.base, "after": head}, h.root)
 
     def test_quick_regressions_are_explicit_and_scope_directed(self):
         from dev.checks.quick import selected_tests

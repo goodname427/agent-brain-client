@@ -13,7 +13,6 @@ from agent_brain_client.adapters.storage.bounded_json import (
     digest,
     read_json,
 )
-from agent_brain_client.adapters.packages.layout import PYTHON_FILES
 from agent_brain_client.adapters.packages.frozen import (
     compatible_codebuddy_runtime,
     frozen_source_files,
@@ -69,9 +68,7 @@ def load_core(home):
         home, executing_root, executing_pins, root, pins
     ):
         raise ValueError("Refresh the Harness binding to the current Client runtime")
-    if (pins.keys() - set(PYTHON_FILES) or (root / "code.json").exists()) and (
-        runtime_pins(root) != pins or frozen_source_files(root) != pins.keys()
-    ):
+    if runtime_pins(root) != pins or frozen_source_files(root) != pins.keys():
         raise ValueError("Frozen Client membership changed")
     for name, pin in pins.items():
         path = PurePosixPath(name)

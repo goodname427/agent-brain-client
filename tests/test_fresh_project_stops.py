@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import test_fresh_installation as fixture
-from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+from agent_brain_client.adapters.packages.layout import source_python_members
 from agent_brain_client.adapters.platforms.filesystem import private_directory
 from agent_brain_client.adapters.storage import metadata
 from agent_brain_client.adapters.storage.collection import settings_path, approved
@@ -49,7 +49,7 @@ class ProjectStops(unittest.TestCase):
         self.off = self.controls / "memory.off"
         self.settings = self.controls / "settings.json"
         self.pins = {
-            name: metadata.digest((ROOT / name).read_bytes()) for name in PYTHON_FILES
+            name: metadata.digest((ROOT / name).read_bytes()) for name in source_python_members(ROOT)
         }
 
     def original(

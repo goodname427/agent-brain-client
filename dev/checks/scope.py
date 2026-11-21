@@ -216,8 +216,10 @@ def changed_paths(base, head, root=ROOT):
         name = fields[index + 1].decode("utf-8")
         # Root Markdown is part of fixed package/entrypoint file sets. Text-only
         # edits remain documentation-only; structural changes need build coverage.
-        if name.endswith(".md") and "/" not in name and status in ("A", "D"):
-            raise ValueError("Root documentation file set changed")
+        if name.endswith(".md") and status in ("A", "D") and (
+            "/" not in name or name in ("docs/reference/ADAPTERS.md", "docs/reference/PROTOCOL.md")
+        ):
+            raise ValueError("Fixed documentation file set changed")
         if name.endswith(".md") and any(
             mode not in ("000000", "100644") for mode in (old[1:], new)
         ):
@@ -226,23 +228,30 @@ def changed_paths(base, head, root=ROOT):
     return paths
 
 
+def event_range(event_name, event, root=ROOT):
+    if event_name == "pull_request":
+        base, head = event["pull_request"]["base"]["sha"], event["pull_request"]["head"]["sha"]
+    elif event_name == "push":
+        base, head = event["before"], event["after"]
+    elif event_name == "merge_group":
+        base, head = event["merge_group"]["base_sha"], event["merge_group"]["head_sha"]
+    else:
+        raise ValueError("Unsupported checks event")
+    for value in (base, head):
+        if not isinstance(value, str) or not SHA.fullmatch(value) or value == "0" * 40:
+            raise ValueError("Missing or invalid event commit")
+    if event_name == "pull_request":
+        base = git("merge-base", base, head, root=root).decode().strip()
+    return base, head
+
+
 def plan_event(event_name, event, root=ROOT):
     if event_name in ("workflow_dispatch", "merge_group"):
         return selection(reason="manual or merge queue full validation")
     try:
-        if event_name == "pull_request":
-            base = event["pull_request"]["base"]["sha"]
-            head = event["pull_request"]["head"]["sha"]
-            if not SHA.fullmatch(base) or not SHA.fullmatch(head):
-                raise ValueError("Missing PR commits")
-            base = git("merge-base", base, head, root=root).decode().strip()
-        elif event_name == "push":
-            base, head = event["before"], event["after"]
-            if not SHA.fullmatch(base) or not SHA.fullmatch(head) or base == "0" * 40:
-                raise ValueError("Missing push commits")
+        base, head = event_range(event_name, event, root)
+        if event_name == "push":
             git("merge-base", "--is-ancestor", base, head, root=root)
-        else:
-            raise ValueError("Unknown event")
         return classify(changed_paths(base, head, root))
     except (
         KeyError,
@@ -257,18 +266,31 @@ def plan_event(event_name, event, root=ROOT):
         )
 
 
-
 def tier_event(event_name, event, root=ROOT):
-    """Only an explicit release validation dispatch may certify full checks.
-
-    PR, main push and merge queue use basic blocking checks. Unknown/damaged
-    events fail rather than silently certifying a reduced or full result.
-    """
+    """Only an explicit release validation dispatch may certify full checks."""
     if event_name == "workflow_dispatch":
         return selection(reason="explicit release full validation")
-    if event_name not in ("pull_request", "push", "merge_group"):
-        raise ValueError("Unsupported checks event")
-    return dict(code=True, mac=False, windows=False, full=False, tests=[], reason="fast blocking checks; full validation deferred to release")
+    base, head = event_range(event_name, event, root)
+    try:
+        paths = changed_paths(base, head, root)
+    except (ValueError, UnicodeError):
+        paths = []  # Unrecognized or structural changes keep the quick checks.
+    if not broad_classify(paths)["code"]:
+        git("diff", "--check", base, head, "--", root=root)
+        from agent_brain_client.adapters.packages.publication import require_publishable
+
+        checkout = root.resolve()
+        docs = {}
+        for name in paths:
+            path = checkout / name
+            if path.resolve() != path:
+                raise ValueError("Linked documentation cannot be scanned")
+            if path.is_file():
+                docs[name] = path.read_bytes()
+        require_publishable(docs)
+        return selection(False, False, "documentation only")
+    return dict(code=True, mac=False, windows=False, full=False, tests=[],
+                reason="fast blocking checks; full validation deferred to release")
 
 
 def verify_results(needs):
