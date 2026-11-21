@@ -34,7 +34,7 @@ import agent_brain_client.adapters.harnesses.codex.collection_installation as ho
 import agent_brain_client.runtime.installation as wizard
 import agent_brain_client.runtime.installation_completion as guide
 import agent_brain_client.interfaces.cli.access as access_install
-from agent_brain_client.domain.scopes import digest
+from agent_brain_client.domain.scopes import digest, select
 from test_content_outbox import Cloud, POLICY, RULE, SKILL
 import test_content_install as install_fixture
 import test_client_uninstall as lifecycle_fixture
@@ -833,13 +833,18 @@ class SourceClosure(unittest.TestCase):
             exclude_roots=[str(self.home / "excluded")],
             non_project_roots=[str(self.home / "notes")],
         )
-        pin = digest(old)
-        for flag, field in (("exclude_root", "exclude_roots"),
-                            ("non_project_root", "non_project_roots")):
-            with self.subTest(flag=flag):
-                metadata.write(file, dict(value, enabled=True, scope=old,
+        for flag, field, all_directories in (
+            ("exclude_root", "exclude_roots", False),
+            ("exclude_root", "exclude_roots", True),
+            ("non_project_root", "non_project_roots", False),
+            ("non_project_root", "non_project_roots", True),
+        ):
+            with self.subTest(flag=flag, all_directories=all_directories):
+                original = dict(old, all_non_projects=True) if all_directories else old
+                pin = digest(original)
+                metadata.write(file, dict(value, enabled=True, scope=original,
                                           approved_scope_sha256=pin, server_scope_sha256=pin))
-                state, client = self.server(old)
+                state, client = self.server(original)
                 root = str(self.home / flag)
                 args = dict(include_root=[], isolate_root=[], exclude_root=[], non_project_root=[])
                 args[flag] = [root]
@@ -847,10 +852,24 @@ class SourceClosure(unittest.TestCase):
                     result = configure(SimpleNamespace(
                         device_home=str(self.home), activate_packet=None, all_projects=False, **args,
                     ))
-                expected = dict(old, **{field: [root]})
+                expected = dict(original, **{field: [root]})
+                if flag == "non_project_root":
+                    expected.pop("all_non_projects", None)
                 self.assertTrue(result["activated"])
+                [(packet, _)] = state["registrations"]
+                self.assertEqual(packet["scope"], expected)
+                self.assertEqual(packet["approved_scope_sha256"], digest(expected))
                 self.assertEqual(state["scope"], expected)
                 self.assertEqual(source_policy.load(self.home)["scope"], expected)
+                if flag == "non_project_root":
+                    for name in (flag, "notes", "unlisted", "excluded", "isolated"):
+                        origin = dict(kind="non-project", cwd=str(self.home / name),
+                                      project_root=None, repository_root=None)
+                        for recall in (False, True):
+                            self.assertEqual(
+                                select(state["scope"], origin, recall=recall) is not None,
+                                name == flag,
+                            )
 
     def test_ordinary_update_reports_an_active_server_source_with_missing_local_approval(self):
         from agent_brain_client.application.installation.update import ClientUpdate
