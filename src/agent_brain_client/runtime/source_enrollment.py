@@ -164,6 +164,20 @@ def matching_registration(state, scope, device_id):
     )
 
 
+def report_existing_source(state):
+    """Report authenticated Server state without claiming local admission."""
+    if state["source_registered"]:
+        if state.get("stopped") is True:
+            return paused(server=True)
+        if state.get("stopped") is False:
+            return source_result(
+                "global-memory-server-active-local-unconfirmed",
+                source_registered=True,
+                server_stopped=False,
+            )
+    return source_result("global-memory-source-preserved")
+
+
 def activate(value, scope, *, automatic=False, newly_registered=False, state=None):
     """Finalize exact admission, respecting stops on automatic paths."""
     from agent_brain_client.adapters.server.collection import CollectionClient
@@ -343,8 +357,6 @@ def maintain(home, *, initialize=False, retained=None):
     pending = settings_path(home).with_name("pending-scope.json")
     initial = initial_scope(value, retained) if not bound else None
     recover = initial is not None and pending.exists()
-    if not bound and not recover and not (initialize and initial is not None):
-        return source_result("global-memory-source-preserved")
     client, state, failure = preflight(value)
     if failure:
         return dict(failure, collection_enabled=False)
@@ -353,41 +365,37 @@ def maintain(home, *, initialize=False, retained=None):
     if bound:
         pin = digest(scope)
         if (
-            matching_registration(state, scope, client.device_id)
+            state.get("stopped") is False
+            and matching_registration(state, scope, client.device_id)
             and value["approved_scope_sha256"] == value["server_scope_sha256"] == pin
             and has_origins(scope)
         ):
-            if state.get("stopped") is True:
-                return paused(server=True)
-            if state.get("stopped") is False:
-                return {
-                    "status": "global-memory-source-current",
-                    "collection_enabled": True,
-                    "scope_sha256": pin,
-                    "source_device_id": client.device_id,
-                    "model_calls": 0,
-                }
-        return source_result("global-memory-source-preserved")
+            return {
+                "status": "global-memory-source-current",
+                "collection_enabled": True,
+                "scope_sha256": pin,
+                "source_device_id": client.device_id,
+                "model_calls": 0,
+            }
+        return report_existing_source(state)
     if recover:
         saved = validate(metadata_io.private_json(pending))
         if saved["profile_id"] != state["global_profile_id"] or (
             retained is not None and saved != dict(initial, profile_id=saved["profile_id"])
         ):
-            return source_result("global-memory-source-preserved")
+            return report_existing_source(state)
         packet = packet_for(value, saved, client)
         target = packet_path(pending, packet)
         if not target.exists() or metadata_io.private_json(target) != packet:
-            return source_result("global-memory-source-preserved")
+            return report_existing_source(state)
         if state["source_registered"]:
             if not matching_registration(state, saved, client.device_id):
-                return source_result("global-memory-source-preserved")
+                return report_existing_source(state)
             result = activate(value, saved, automatic=True, state=state)
             return dict(result, packet=str(target), packet_sha256=metadata_io.digest(target.read_bytes()))
     else:
-        if state["source_registered"]:
-            if state.get("stopped") is True:
-                return paused(server=True)
-            return source_result("global-memory-source-preserved")
+        if state["source_registered"] or not initialize or initial is None:
+            return report_existing_source(state)
         packet = packet_for(value, dict(initial, profile_id=state["global_profile_id"]), client)
     if local_stop(home):
         return paused(retained=retained_scope, local_fence=True)
@@ -402,26 +410,24 @@ def configure(args):
     pending = settings_path(args.device_home).with_name("pending-scope.json")
     packet_input = getattr(args, "activate_packet", None)
     all_projects = getattr(args, "all_projects", False)
-    explicit_roots = args.include_root or args.isolate_root or args.exclude_root or args.non_project_root
     scope = copy.deepcopy(value["scope"])
     if packet_input:
         previous = metadata_io.private_json(packet_input)
         scope = validate(previous["scope"])
-    elif explicit_roots:
+    else:
         def canonical(root):
             return str(Path(root).expanduser().resolve())
 
-        scope.update(
-            all_projects=all_projects,
-            include_roots=[
+        if all_projects or args.include_root or args.isolate_root:
+            scope["all_projects"] = all_projects
+        if args.include_root or args.isolate_root:
+            scope["include_roots"] = [
                 {"root": canonical(x), "sharing": "personal"} for x in args.include_root
-            ]
-            + [{"root": canonical(x), "sharing": "project"} for x in args.isolate_root],
-            exclude_roots=[canonical(x) for x in args.exclude_root],
-            non_project_roots=[canonical(x) for x in args.non_project_root],
-        )
-    elif all_projects:
-        scope["all_projects"] = True
+            ] + [{"root": canonical(x), "sharing": "project"} for x in args.isolate_root]
+        if args.exclude_root:
+            scope["exclude_roots"] = [canonical(x) for x in args.exclude_root]
+        if args.non_project_root:
+            scope["non_project_roots"] = [canonical(x) for x in args.non_project_root]
     validate(scope)
     if not has_origins(scope):
         return source_result(

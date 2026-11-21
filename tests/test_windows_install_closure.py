@@ -821,6 +821,66 @@ class SourceClosure(unittest.TestCase):
         self.assertEqual(state['scope'], dict(old, all_projects=False,
                                              include_roots=[{'root': root, 'sharing': 'project'}]))
 
+    def test_explicit_exclusion_or_non_project_edit_preserves_other_source_choices(self):
+        from agent_brain_client.runtime.source_enrollment import configure
+
+        file = source_policy.settings_path(self.home)
+        value = source_policy.load(self.home)
+        old = dict(
+            value["scope"], profile_id="e" * 32, all_projects=True,
+            include_roots=[{"root": str(self.home / "isolated"), "sharing": "project"}],
+            exclude_roots=[str(self.home / "excluded")],
+            non_project_roots=[str(self.home / "notes")],
+        )
+        pin = digest(old)
+        for flag, field in (("exclude_root", "exclude_roots"),
+                            ("non_project_root", "non_project_roots")):
+            with self.subTest(flag=flag):
+                metadata.write(file, dict(value, enabled=True, scope=old,
+                                          approved_scope_sha256=pin, server_scope_sha256=pin))
+                state, client = self.server(old)
+                root = str(self.home / flag)
+                args = dict(include_root=[], isolate_root=[], exclude_root=[], non_project_root=[])
+                args[flag] = [root]
+                with patch('agent_brain_client.adapters.server.collection.CollectionClient', client):
+                    result = configure(SimpleNamespace(
+                        device_home=str(self.home), activate_packet=None, all_projects=False, **args,
+                    ))
+                expected = dict(old, **{field: [root]})
+                self.assertTrue(result["activated"])
+                self.assertEqual(state["scope"], expected)
+                self.assertEqual(source_policy.load(self.home)["scope"], expected)
+
+    def test_ordinary_update_reports_an_active_server_source_with_missing_local_approval(self):
+        from agent_brain_client.application.installation.update import ClientUpdate
+
+        file = source_policy.settings_path(self.home)
+        value = source_policy.load(self.home)
+        scope = dict(value["scope"], profile_id="e" * 32, all_projects=False,
+                     non_project_roots=[str(self.home / "notes")])
+        for local in (
+            value,
+            dict(value, enabled=True, scope=scope),
+            dict(value, enabled=True, scope=scope, server_scope_sha256=digest(scope)),
+        ):
+            with self.subTest(enabled=local["enabled"], server_pin=local["server_scope_sha256"]):
+                metadata.write(file, local)
+                before = file.read_bytes()
+                state, client = self.server(scope)
+                with (
+                    patch.object(ClientUpdate, "_run", return_value={"status": "client-update-current"}),
+                    patch('agent_brain_client.adapters.server.collection.CollectionClient', client),
+                ):
+                    result = runtime_updates.manage_update(self.home, "update")["source_setup"]
+                self.assertEqual(result["status"], "global-memory-server-active-local-unconfirmed")
+                self.assertTrue(result["source_registered"])
+                self.assertIs(result["server_stopped"], False)
+                self.assertFalse(result["collection_enabled"])
+                self.assertEqual(state["calls"], ["memory_global_status"])
+                self.assertEqual(state["scope"], scope)
+                self.assertEqual(file.read_bytes(), before)
+                self.assertFalse((file.parent / "pending-scope.json").exists())
+
     def test_maintenance_does_not_initialize_an_unconfigured_source(self):
         file = source_policy.settings_path(self.home)
         before = file.read_bytes()
@@ -828,7 +888,7 @@ class SourceClosure(unittest.TestCase):
         with patch('agent_brain_client.adapters.server.collection.CollectionClient', client):
             result = guide.source_setup(self.home)
         self.assertFalse(result['collection_enabled'])
-        self.assertEqual(state['calls'], [])
+        self.assertEqual(state['calls'], ['memory_global_status'])
         self.assertEqual(file.read_bytes(), before)
 
     def test_hook_torn_write_recovers_and_keeps_user_toml_and_mcp(self):
