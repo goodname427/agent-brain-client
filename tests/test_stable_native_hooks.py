@@ -74,7 +74,8 @@ class StableHooks(unittest.TestCase):
         self.bundle = bundle
         credential = ("windows/native.py" if os.name == "nt" else "macos/native/CredentialStore.swift")
         policy = {
-            "schema": 1, "adapter": "codex", "platform": platform, "origin": str(self.repository),
+            "schema": 1, "adapter": "codex", "platform": platform,
+            "origin": "https://synthetic.invalid/client.git" if os.name == "nt" else str(self.repository),
             "ref": "refs/heads/synthetic", "anchor_commit": "1" * 40, "channel": "stable",
             "core_api": 1, "state_schema": 1, "capabilities": HTTPS_CONTENT_CAPABILITIES,
             "file_prefixes": list(https_files(platform)), "repository": str(self.repository),
