@@ -321,8 +321,8 @@ def main():
     if (os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch" and event.get("repository")
             and os.environ.get("GITHUB_REF") == "refs/heads/verify/native-hooks-windows-db7914a"):
         plan = dict(code=True, mac=False, windows=True, full=False,
-                    tests=["test_stable_native_hooks", "test_windows_acceptance_repairs"],
-                    reason="Native Windows Hook evidence only")
+                    tests=["test_stable_native_hooks"],
+                    reason="Native Windows long-path Hook evidence only")
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         output.write("tests=" + json.dumps(plan.get("tests", [])) + "\n")
         for key in ("code", "mac", "windows", "full"):
