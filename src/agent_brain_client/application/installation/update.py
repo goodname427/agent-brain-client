@@ -152,6 +152,8 @@ class ClientUpdate:
             if not state.get("registration_verified") or state.get(
                 "installation_state"
             ) not in ("verified", "verified-disabled"):
+                if "registration_failure" in state:
+                    result["registration_failure"] = state["registration_failure"]
                 if state.get("reason") == "mcp-binding-changed":
                     return config_conflict(
                         result, self.installation.mcp_config_field, state["reason"]

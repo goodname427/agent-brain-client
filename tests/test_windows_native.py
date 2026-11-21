@@ -752,6 +752,135 @@ class WindowsNative(unittest.TestCase):
             self.assertNotIn(hooks.BEGIN, config.read_text(encoding='utf-8'))
             self.assertTrue(content_install.inspect(self.home)['registration_verified'])
 
+    def test_public_windows_update_reports_0825_shared_registration_preflight(self):
+        from unittest.mock import patch
+        from agent_brain_client.adapters.installation import installation
+        from agent_brain_client.adapters.packages.client import ClientReleases
+        from agent_brain_client.runtime import installation as installer
+        from dev.build.package import release
+
+        native = self.home / "Codex user home"
+        native.mkdir()
+        shared = private_directory(self.home / ".config/agent-brain-client/shared-native")
+        platform = native_platform()
+        # Same registered shape as 0.8.25 after a retained reinstall. The
+        # package, grant and channel are local fixtures with no live endpoint.
+        connection = {
+            "schema": 1,
+            "endpoint": "https://synthetic.invalid",
+            "grant": {
+                "adapter": "codex", "platform": platform, "actor": "synthetic-owner",
+                "scopes": ["read", "put"], "artifact_types": ["memory", "rule", "skill"],
+                "ids": {kind: "personal-owner" for kind in ("memory", "rule", "skill")},
+            },
+            "release": {
+                "origin": "https://127.0.0.1:1/synthetic",
+                "ref": "refs/heads/releases/personal-https-windows-stable",
+                "anchor_commit": "a" * 40,
+            },
+        }
+        materials = runtime_dependencies.prepare_dependencies(self.home)
+        payload = self.root / "synthetic-release"
+        release(ROOT, payload, "0.8.25", data_mode="personal-content-https", target_platform=platform)
+        manifest = json.loads((payload / "releases/manifest.json").read_bytes())
+
+        class Source:
+            def latest(self):
+                return "a" * 40, manifest, lambda name: (payload / name).read_bytes()
+
+        def update_fixture():
+            policy = self.home / ".config/agent-brain-client/first-install/release-policy.json"
+            client = ClientReleases(policy, adapters_storage_install_state.sha(policy.read_bytes()))
+            client.engine.source = Source()
+            result = client.engine.check()
+            result["active"] = client.verified_active()
+            return result
+
+        with patch.dict(os.environ, CODEX_HOME=str(native)):
+            plan, pin, _ = installer.prepare_materials(
+                materials, self.home, shared, connection,
+                adapters_storage_install_state.sha(installer.canonical(connection)),
+                harness="codex", updater=update_fixture,
+            )
+            result = installation.apply(plan, pin, lambda value: None)
+            self.assertTrue(result["installed"], result)
+            checked = installation.inspect(self.home)
+            self.assertTrue(checked["registration_verified"], checked)
+            self.assertEqual(checked["installed_version"], "0.8.25")
+            self.assertEqual(Path(plan["codex_home"]), shared)
+            self.check_rejected_public_update(plan, native)
+
+    def check_rejected_public_update(self, plan, native):
+        from agent_brain_client.adapters.installation import installation
+        from agent_brain_client.adapters.storage.private_files import private_json
+
+        state = self.home / ".config/agent-brain-client"
+        registration = state / "codex-mcp.json"
+        receipt = state / "content-install-receipt.json"
+        meta = private_json(registration)
+        policy = Path(meta["release_policy"])
+        reviewed = private_json(policy)
+        runtime = reviewed["runtime"]
+        active = Path(reviewed["cache"]) / "active.json"
+        config = Path(plan["codex_home"]) / "config.toml"
+        profile = Path(runtime["https_profile"])
+        dependency = Path(runtime["dependency_policy"])
+        launcher = Path(meta["package"]) / "src/agent_brain_client/interfaces/mcp/launcher.py"
+        archive = state / "synthetic-archive"
+        archive.mkdir()
+        retained = archive / "retained.json"
+        retained.write_bytes(b'{"fixture":"retained-local-data"}')
+        preserved = (registration, receipt, active, retained)
+        before = {path: path.read_bytes() for path in preserved}
+        shell = shutil.which("pwsh.exe") or shutil.which("powershell.exe")
+        self.assertIsNotNone(shell, "The public Windows entry requires PowerShell")
+        command = [
+            shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-File",
+            str(ROOT / "bootstrap/windows/install.ps1"), "-Action", "update",
+        ]
+        environment = dict(os.environ, HOME=str(self.home), USERPROFILE=str(self.home),
+                           CODEX_HOME=str(native))
+        for path, replacement, component, category in (
+            (policy, policy.read_bytes() + b"\n", "release-policy", "integrity"),
+            (dependency, dependency.read_bytes() + b"\n", "dependency-policy", "integrity"),
+            (config, b"mcp_servers = [", "shared-config", "malformed"),
+            (profile, profile.read_bytes() + b"\n", "connection-profile", "integrity"),
+            (launcher, None, "registered-launcher", "missing"),
+        ):
+            with self.subTest(component=component):
+                original = path.read_bytes()
+                saved = path.with_name(path.name + ".synthetic-displaced")
+                if replacement is None:
+                    path.rename(saved)
+                else:
+                    path.write_bytes(replacement)
+                try:
+                    run = subprocess.run(command, env=environment, capture_output=True,
+                                         text=True, encoding="utf-8", timeout=60)
+                    self.assertEqual(run.returncode, 2, run.stderr or run.stdout)
+                    result = json.loads(run.stdout)
+                    self.assertEqual(result["status"], "client-update-review-required")
+                    self.assertEqual(result["reason"], "policy-profile-bootstrap-review-required")
+                    self.assertEqual(result["registration_failure"], {
+                        "component": component, "category": category,
+                    })
+                    for field in ("channel_checked", "active_package_changed",
+                                  "native_changed", "device_credentials_accessed"):
+                        self.assertFalse(result[field], field)
+                    self.assertNotIn("installation_stages", result)
+                    self.assertNotIn(str(self.home), run.stdout)
+                    self.assertEqual({item: item.read_bytes() for item in preserved}, before)
+                    if replacement is None:
+                        self.assertFalse(path.exists())
+                    else:
+                        self.assertEqual(path.read_bytes(), replacement)
+                finally:
+                    if replacement is None:
+                        saved.rename(path)
+                    else:
+                        path.write_bytes(original)
+        self.assertTrue(installation.inspect(self.home)["registration_verified"])
+
     def test_uninstall_new_private_lease_keeps_existing_host_security_separate(self):
         from agent_brain_client.runtime.client_lifecycle import lease
         directory=private_directory(self.home/'private-lease-state')

@@ -5,6 +5,7 @@ import agent_brain_client.adapters.storage.collection as source_policy
 """Public update actions with verified synthetic registration; no real device."""
 
 import copy
+from contextlib import contextmanager
 import io
 import json
 import os
@@ -111,6 +112,91 @@ class PublicUpdate(unittest.TestCase):
         )
         self.assertEqual(self.f.f.backend.record, self.identity_before)
         return result
+
+    def test_registered_update_failures_preserve_gate_and_report_only_codes(self):
+        from agent_brain_client.adapters.installation import installation
+        from agent_brain_client.adapters.platforms.windows.filesystem import WindowsOwnerMismatch
+        from agent_brain_client.adapters.server import https
+        from agent_brain_client.adapters.storage.private_files import private_json
+
+        registration = private_json(self.f.state / "codex-mcp.json")
+        policy = Path(registration["release_policy"])
+        runtime = private_json(policy)["runtime"]
+        dependency = Path(runtime["dependency_policy"])
+        python = Path(private_json(dependency)["python"])
+        profile = Path(runtime["https_profile"])
+        launcher = Path(registration["package"]) / "src/agent_brain_client/interfaces/mcp/launcher.py"
+        config = self.f.f.config
+
+        @contextmanager
+        def change(path, value):
+            before = path.read_bytes()
+            if value is None:
+                path.unlink()
+            else:
+                path.write_bytes(value)
+            try:
+                yield
+            finally:
+                path.write_bytes(before)
+                if path == launcher:
+                    path.chmod(0o600)
+
+        def reject(component, category, *, reason="policy-profile-bootstrap-review-required"):
+            for action in ("check-update", "update"):
+                output = io.StringIO()
+                with (
+                    patch.object(Path, "home", return_value=self.home),
+                    patch.dict(os.environ, CODEX_HOME=str(self.f.native)),
+                    patch.object(sys, "argv", ["install.py", "--action", action, "--harness", "codex"]),
+                    patch.object(sys, "stdout", output),
+                    patch.object(codex_updates.RegisteredClientInstallation, "open_channel",
+                                 side_effect=AssertionError("Rejected preflight must stop before the channel")) as channel,
+                    patch.object(https.HTTPSContentClient, "activate_identity",
+                                 side_effect=AssertionError("Preflight must not read credentials")) as identity,
+                    patch.object(self.f.f.backend, "load", side_effect=AssertionError("No credential access")) as credential,
+                    patch("agent_brain_client.runtime.installation_completion.complete",
+                          side_effect=AssertionError("Rejected preflight must stop before native completion")) as completion,
+                ):
+                    code = interfaces_cli_install.main()
+                result = json.loads(output.getvalue())
+                self.assertEqual((code, result["status"], result["reason"]),
+                                 (2, "client-update-review-required", reason), result)
+                self.assertEqual(result["registration_failure"],
+                                 {"component": component, "category": category})
+                self.assertFalse(result["channel_checked"])
+                self.assertFalse(result["native_changed"])
+                self.assertFalse(result["active_package_changed"])
+                self.assertFalse(result["device_credentials_accessed"])
+                self.assertNotIn("installation_stages", result)
+                self.assertNotIn(str(self.home), output.getvalue())
+                self.assertNotIn("synthetic-sensitive-exception", output.getvalue())
+                self.assertNotIn("S-1-5-32-544", output.getvalue())
+                channel.assert_not_called()
+                identity.assert_not_called()
+                credential.assert_not_called()
+                completion.assert_not_called()
+
+        for file, value, component, category in (
+            (policy, policy.read_bytes() + b"\n", "release-policy", "integrity"),
+            (dependency, dependency.read_bytes() + b"\n", "dependency-policy", "integrity"),
+            (python, python.read_bytes() + b"\n", "dependency-policy", "integrity"),
+            (config, None, "shared-config", "missing"),
+            (config, b"mcp_servers = [", "shared-config", "malformed"),
+            (profile, profile.read_bytes() + b"\n", "connection-profile", "integrity"),
+            (launcher, None, "registered-launcher", "missing"),
+        ):
+            with self.subTest(component=component, category=category), change(file, value):
+                reject(component, category)
+        with change(config, config.read_bytes().replace(b"tool_timeout_sec = 120", b"tool_timeout_sec = 121")):
+            reject("shared-config", "binding", reason="mcp-binding-changed")
+        with patch.object(https, "profile_file", side_effect=WindowsOwnerMismatch("S-1-5-32-544")):
+            reject("connection-profile", "owner")
+        with patch.object(installation, "package_tools", side_effect=ValueError("synthetic-sensitive-exception")):
+            reject("tool-contract", "validation")
+        checked = self.action("check-update")
+        self.assertEqual(checked["status"], "client-update-available", checked)
+        self.assertNotIn("registration_failure", checked)
 
     def test_check_discovers_pinned_channel_without_activating_or_claiming_worker(self):
         before = copy.deepcopy(self.active)

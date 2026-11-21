@@ -139,7 +139,7 @@ CONTENT_RUNTIME = {
 }
 
 
-def policy_file(path, expected_sha, *, runtime_check=True):
+def policy_file(path, expected_sha, *, runtime_check=True, checkpoint=None):
     require_platform("release-update")
     path = Path(path)
     if (
@@ -202,6 +202,8 @@ def policy_file(path, expected_sha, *, runtime_check=True):
         ):
             raise UpdateBlocked("Separate resolved native/cache paths required")
     if policy["capabilities"] == HTTPS_CONTENT_CAPABILITIES:
+        if checkpoint is not None:
+            checkpoint("dependency-policy")
         dependency_environment(policy, runtime_check=runtime_check)
     return policy
 
