@@ -79,7 +79,7 @@ class StableHooks(unittest.TestCase):
             "ref": "refs/heads/synthetic", "anchor_commit": "1" * 40, "channel": "stable",
             "core_api": 1, "state_schema": 1, "capabilities": HTTPS_CONTENT_CAPABILITIES,
             "file_prefixes": list(https_files(platform)), "repository": str(self.repository),
-            "cache": str(self.root / "releases"), "runtime": {
+            "cache": str((self.state if os.name == "nt" else self.root) / "releases"), "runtime": {
                 "device_home": str(self.home), "codex_home": str(self.native),
                 "content_cache": str(self.state / "cache"), "https_profile": str(profile),
                 "https_profile_sha256": profile_pin, "content_policy": str(content),

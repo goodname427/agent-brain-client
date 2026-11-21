@@ -522,7 +522,7 @@ def native_hook_command(home, harness, settings=None):
         registration = powershell_quote(str(Path(home) / ".config/agent-brain-client/codex-mcp.json"))
         # This Python literal contains no double quotes, which Windows PowerShell's legacy argument forwarding may otherwise drop.
         invocation = (
-            "$ErrorActionPreference='Stop';try{$cwd=$PWD.ProviderPath;"
+            "$ProgressPreference='SilentlyContinue';$ErrorActionPreference='Stop';try{$cwd=$PWD.ProviderPath;"
             "$env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules');"
             "Set-Location -LiteralPath $PSHOME;[Environment]::CurrentDirectory=$PSHOME;"
             "$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
