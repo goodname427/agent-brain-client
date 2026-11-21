@@ -352,21 +352,22 @@ def powershell_command(invocation, *, executable="powershell.exe", compact=False
         + invocation
         + "; exit $LASTEXITCODE"
     )
+    launch = subprocess.list2cmdline([executable]) + " -NoLogo -NoProfile -NonInteractive"
     if compact:
-        # Keep the approved literal source below cmd.exe's 8191-character
-        # ceiling. DeflateStream reads raw DEFLATE, without a zlib header.
+        # Only this fixed ASCII decoder and the base64 payload reach cmd.exe.
+        # UTF-16LE -EncodedCommand would expand this already ASCII wrapper.
         import zlib
+
         compressor = zlib.compressobj(9, wbits=-15)
         payload = base64.b64encode(compressor.compress(script.encode()) + compressor.flush()).decode()
-        script = (
+        decoder = (
             "&([ScriptBlock]::Create([IO.StreamReader]::new([IO.Compression.DeflateStream]::new("
             "[IO.MemoryStream]::new([Convert]::FromBase64String('" + payload
             + "')),[IO.Compression.CompressionMode]::Decompress)).ReadToEnd()))"
         )
+        return launch + ' -Command "' + decoder + '"'
     encoded = base64.b64encode(script.encode("utf-16le")).decode()
-    return (
-        subprocess.list2cmdline([executable]) + " -NoLogo -NoProfile -NonInteractive -EncodedCommand " + encoded
-    )
+    return launch + " -EncodedCommand " + encoded
 
 
 def resource_users(path):
