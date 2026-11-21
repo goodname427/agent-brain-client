@@ -239,7 +239,7 @@ class StableHooks(unittest.TestCase):
             rogue.write_text(f"#!/bin/sh\nprintf ran > {shlex.quote(str(marker))}\n")
             rogue.chmod(0o700)
         replacement = f"from pathlib import Path\nPath({str(marker)!r}).touch()\n".encode()
-        (root / "python.txt").write_text(str(rogue) + "\n")
+        (root / "python.txt").write_text(str(rogue) + "\n", encoding="utf-8")
         (root / "launcher.py").write_bytes(replacement)
         metadata.write(root / "binding.json", {
             "schema": 2, "launcher_sha256": digest(replacement),
