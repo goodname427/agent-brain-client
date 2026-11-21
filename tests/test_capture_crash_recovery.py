@@ -247,6 +247,18 @@ class CaptureRecovery(unittest.TestCase):
                          "excluded-local-only-or-sensitive")
         self.assertEqual(self.queued_messages(), [("user", prompt)])
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows working directory forms')
+    def test_codex_rollout_accepts_extended_spelling_of_bound_workspace(self):
+        extended = '\\\\?\\' + str(self.home)
+        first, next_prompt = 'Synthetic first question', 'Synthetic follow-up'
+        path = self.rollout(self.native_user('msg-first', first), cwd=extended)
+        self.assertEqual(self.submit('UserPromptSubmit', first, path)['status'], 'staged')
+        self.append_rollout(path, ('turn_context', {
+            'turn_id': 'synthetic-turn', 'root_turn_id': 'synthetic-turn', 'cwd': extended,
+        }), self.native_user('msg-next', next_prompt))
+        self.assertEqual(self.submit('UserPromptSubmit', next_prompt, path)['status'], 'staged')
+        self.assertEqual(self.queued_messages(), [('user', first), ('user', next_prompt)])
+
     def test_codex_same_turn_prompts_use_native_ids_including_identical_text(self):
         prior = self.native_user("msg-unobserved-same", "Synthetic repeated text")
         first = self.native_user("msg-first", "Synthetic repeated text")

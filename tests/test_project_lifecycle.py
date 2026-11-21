@@ -66,6 +66,28 @@ class ProjectLifecycle(unittest.TestCase):
             call('/synthetic/home', '/synthetic/settings', 'e' * 64, verified_release=False),
         ])
 
+    def test_codex_project_hook_checks_extended_cwd_against_pinned_root(self):
+        plain = r'C:\Synthetic\Project'
+        extended = r'\\?\C:\Synthetic\Project'
+        for root, cwd, allowed in ((plain, plain, True), (plain, extended, True),
+                                   (extended, plain, True),
+                                   (plain, extended + '-sibling', False),
+                                   (plain, extended + r'\..\Project', False)):
+            with self.subTest(root=root, cwd=cwd):
+                self.p['project_root'] = root
+                self.payload['cwd'] = cwd
+                stage = Mock(return_value={'status': 'staged'})
+                recall = Mock(return_value=[{'content': 'Synthetic project result'}])
+                result = self.hook('UserPromptSubmit', stage=stage, recall=recall, schedule=Mock())
+                if allowed:
+                    stage.assert_called_once_with(self.p, dict(self.payload, cwd=root))
+                    recall.assert_called_once_with(self.p, 'session', 'Current question')
+                    self.assertIn('Synthetic project result', result['hookSpecificOutput']['additionalContext'])
+                else:
+                    stage.assert_not_called()
+                    recall.assert_not_called()
+                    self.assertEqual(result, {})
+
     def test_project_recall_preserves_policy_identity_limit_and_all_layers(self):
         policy = {'schema': 1, 'project_id': 'project-bound', 'recall_sessions': ['session'],
                   'source_sessions': ['source-bound']}

@@ -14,7 +14,7 @@ from agent_brain_client.adapters.platforms.source_files import (
 )
 from agent_brain_client.adapters.storage.metadata import digest, unique
 from agent_brain_client.domain import contract, privacy
-from agent_brain_client.domain.scopes import restricted
+from agent_brain_client.domain.scopes import ordinary_drive_path, restricted
 
 
 # Bound the read independently of session length. Codex can also omit the path.
@@ -310,7 +310,8 @@ def _pin_scope(rows, turn_id, cwd):
     current = rows[1:]
     for offset, context_sha, row in current:
         if row.get("type") == "turn_context" and row["payload"].get("turn_id") == turn_id:
-            if row["payload"].get("root_turn_id") != turn_id or row["payload"].get("cwd") != cwd:
+            if (row["payload"].get("root_turn_id") != turn_id
+                    or ordinary_drive_path(row["payload"].get("cwd")) != ordinary_drive_path(cwd)):
                 raise ValueError("Current Codex rollout workspace changed")
             return [[start, checksum], [offset, context_sha]], current
     raise RolloutScopeUnavailable("Current Codex rollout workspace unavailable")
@@ -398,8 +399,8 @@ def _check_increment(rows, turn_id, cwd, allow_next):
                 return rows[:index], offset
             raise ValueError("Current Codex rollout turn changed")
         if row.get("type") == "turn_context" and (
-            item.get("turn_id"), item.get("root_turn_id"), item.get("cwd")
-        ) != (turn_id, turn_id, cwd):
+            item.get("turn_id"), item.get("root_turn_id"), ordinary_drive_path(item.get("cwd"))
+        ) != (turn_id, turn_id, ordinary_drive_path(cwd)):
             raise ValueError("Current Codex rollout workspace changed")
     return rows, None
 

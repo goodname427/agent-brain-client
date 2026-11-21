@@ -9,7 +9,7 @@ import time
 import tempfile
 from agent_brain_client.adapters.platforms.filesystem import command_line
 from agent_brain_client.domain.privacy import private_content
-from agent_brain_client.domain.scopes import restricted
+from agent_brain_client.domain.scopes import ordinary_drive_path, restricted
 from agent_brain_client.adapters.storage.registration import registration
 from agent_brain_client.adapters.storage.metadata import (
     canonical,
@@ -717,8 +717,12 @@ def hook_payload(p, *, settings_path=None, settings_sha256=None, verified_releas
         else:
             from agent_brain_client.adapters.harnesses.codebuddy.events import session_id
             payload = dict(payload, session_id=session_id(payload.get("session_id")))
-    if payload.get("cwd") != p["project_root"]:
+    cwd, root = payload.get("cwd"), p["project_root"]
+    if p["harness"] == "codex":
+        cwd, root = ordinary_drive_path(cwd), ordinary_drive_path(root)
+    if cwd != root:
         return {}
+    payload["cwd"] = p["project_root"]
     event = payload.get("hook_event_name")
     from agent_brain_client.application.memory.lifecycle import handle
     from agent_brain_client.runtime.delivery import schedule_project

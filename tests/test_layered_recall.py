@@ -12,7 +12,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 import unicodedata
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / name) for name in ('src', 'src', 'src', 'src')]
@@ -133,6 +133,27 @@ class LayeredRecall(unittest.TestCase):
         self.assertNotEqual(recall_origin(self.origin('/synthetic/ProjectA')),
                             recall_origin(self.origin('/synthetic/Project\uff21')))
 
+    def test_explicit_windows_origin_reaches_transport_in_existing_wire_form(self):
+        from agent_brain_client.adapters.server.https import HTTPSContentClient
+
+        self.local = self.foreign = self.origin(r'C:\Synthetic\Project')
+        extended = self.origin(r'\\?\C:\Synthetic\Project')
+        params = dict(origin=extended, session_id='synthetic-reader',
+                      query='synthetic question', limit=3)
+        request = dict(request_id='synthetic-query', method='memory_query', params=params)
+        result = {'schema': 1, 'namespace_results': [self.group()]}
+        client = HTTPSContentClient.__new__(HTTPSContentClient)
+        client.device_task = client.recall_policy = None
+        client.grant = {'scopes': ['read'], 'artifact_types': ['memory']}
+        client.device_id = self.device
+        client.transport = Mock()
+        client.transport.request.return_value = {'request_id': request['request_id'], 'result': result}
+        self.assertEqual(client.recall(request)['result'], result)
+        client.transport.request.assert_called_once_with(
+            dict(request, params=dict(params, origin=self.foreign))
+        )
+        self.assertEqual(request['params']['origin']['cwd'], r'\\?\C:\Synthetic\Project')
+
     def test_both_device_directions_accept_verified_peer_L2_L3(self):
         for local, foreign in ((self.origin('/synthetic/mac/current'), self.origin('c:/synthetic/windows/source')),
                                (self.origin('c:/synthetic/windows/current'), self.origin('/synthetic/mac/source'))):
@@ -195,6 +216,39 @@ class LayeredRecall(unittest.TestCase):
         prompt = self.prompt() if question is None else self.prompt(question)
         with patch.object(gm, 'eligible', return_value=self.local), patch.object(gm, 'submit_hook', return_value={'status': 'staged'}), patch.object(sys, 'stdin', prompt):
             return gm.hook(self.value, **kwargs)
+
+    def test_codex_hook_recall_keeps_provenance_for_equivalent_windows_cwd(self):
+        self.local = self.origin(r'C:\Synthetic\Project')
+        self.foreign = self.local
+        self.value['scope']['include_roots'] = [{'root': 'C:/Synthetic', 'sharing': 'personal'}]
+        pin = digest(self.value['scope'])
+        self.value.update(approved_scope_sha256=pin, server_scope_sha256=pin)
+        self.response['result']['namespace_results'] = [self.group()]
+        question = 'Synthetic question marker'
+        for cwd, allowed in ((r'C:\Synthetic\Project-sibling', False),
+                             (r'\\?\C:\Synthetic\Project\.', False),
+                             (self.local['cwd'], True), (r'\\?\C:\Synthetic\Project', True)):
+            with self.subTest(cwd=cwd):
+                self.sent.clear()
+                payload = dict(cwd=cwd, hook_event_name='UserPromptSubmit', session_id='synthetic-reader',
+                               turn_id='synthetic-turn', prompt=question)
+                stdin = SimpleNamespace(buffer=io.BytesIO(json.dumps(payload).encode()))
+                with (patch.object(gm, 'eligible', return_value=self.local),
+                      patch.object(gm, 'submit_hook', return_value={'status': 'staged'}) as stage,
+                      patch.object(sys, 'stdin', stdin)):
+                    result = gm.hook(self.value)
+                if allowed:
+                    stage.assert_called_once_with(self.value, self.local, dict(payload, cwd=self.local['cwd']))
+                    context = result['hookSpecificOutput']['additionalContext']
+                    rows = [json.loads(line) for line in context.split('\n')[1:]]
+                    self.assertCountEqual([row['layer'] for row in rows], ['L1', 'L2', 'L3'])
+                    self.assertTrue(all(row['source_context']['relation'] == 'current-source' for row in rows))
+                    self.assertEqual(len(self.sent), 1)
+                    self.assertEqual(self.sent[0][1]['origin'], self.local)
+                else:
+                    self.assertEqual(result, {})
+                    stage.assert_not_called()
+                    self.assertEqual(self.sent, [])
 
     def fitted_hook(self, question):
         output = self.run_hook(question=question)

@@ -11,6 +11,7 @@ from agent_brain_client.domain.scopes import (
     namespace,
     digest,
     restricted,
+    ordinary_drive_path,
 )
 from agent_brain_client.adapters.storage import (
     registration as registration_store,
@@ -108,8 +109,9 @@ def hook(value, *, services, observe=None):
     if len(raw) > 1048576:
         raise ValueError("Bounded native payload required")
     payload = json.loads(raw, object_pairs_hook=metadata_io.unique)
-    if payload.get("cwd") != local["cwd"]:
+    if ordinary_drive_path(payload.get("cwd")) != local["cwd"]:
         return {}
+    payload["cwd"] = local["cwd"]
     kind = payload.get("hook_event_name")
     from agent_brain_client.application.memory.lifecycle import handle
 
