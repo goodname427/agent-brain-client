@@ -640,10 +640,12 @@ class WindowsNative(unittest.TestCase):
         self.assertEqual(run.stdout.strip(), expected)
 
     def test_real_shared_installer_and_owned_global_hook_transaction(self):
-        import agent_brain_client.runtime.installation as installer
         import agent_brain_client.adapters.installation.installation as content_install
         import agent_brain_client.adapters.harnesses.codex.collection_installation as hooks
-        import agent_brain_client.runtime.collection as global_memory
+        from agent_brain_client.adapters.packages.releases import GitReleaseSource
+        from agent_brain_client.adapters.storage.content_session import ContentSession
+        from agent_brain_client.runtime import installation as installer, installation_completion
+        from test_content_outbox import Cloud, MEMORY
         from types import SimpleNamespace
         native = self.home / 'codex'; native.mkdir()
         parent_security = self.host_acl(native)
@@ -658,7 +660,7 @@ class WindowsNative(unittest.TestCase):
         from dev.build.package import release
         from agent_brain_client.adapters.packages.client import ClientReleases
         payload = self.root / 'synthetic-release'
-        release(ROOT, payload, '0.5.0', data_mode='personal-content-https', target_platform=native_platform())
+        release(ROOT, payload, '0.8.30', data_mode='personal-content-https', target_platform=native_platform())
         manifest = json.loads((payload / 'releases/manifest.json').read_bytes())
         class Source:
             def latest(self):
@@ -689,6 +691,7 @@ class WindowsNative(unittest.TestCase):
             self.assertTrue(result['installed'], result)
             inspected = content_install.inspect(self.home)
             self.assertTrue(inspected.get('registration_verified'), inspected)
+            self.assertTrue(content_install.apply(plan, pin, lambda value: None)['installed'])
             # A process can stop after registration is written but before the
             # receipt is committed. Retry the normal no-argument CLI, preserving
             # the profile and using the existing owned journal recovery.
@@ -698,6 +701,24 @@ class WindowsNative(unittest.TestCase):
             adapters_storage_private_files.save(state / 'content-install-receipt.json', receipt)
             adapters_storage_install_state.same_private(state / 'access-bootstrap/endpoint.json', {'schema': 1, 'endpoint': connection['endpoint']})
             adapters_storage_install_state.same_private(state / 'access-bootstrap/connection.json', connection)
+            policy_path = Path(plan['release_policy'])
+            policy_before = policy_path.read_bytes()
+            off = private_directory(source_policy.settings_path(self.home).parent) / 'global.off'
+            metadata.write(off, {'reason': 'synthetic-user-pause'})
+            off_before = off.read_bytes()
+            runtime = json.loads(policy_before)['runtime']
+            cloud = Cloud()
+            cloud.grant = connection['grant']
+            cloud.offline = True
+            session = ContentSession(self.home, runtime['content_cache'],
+                metadata.private_json(runtime['content_policy'], runtime['content_policy_sha256']),
+                cloud, host=CodexContentPorts, native_home=native)
+            request = {'request_id': 'synthetic_pending', 'method': 'content_put',
+                       'params': {'kind': 'memory', 'id': 'personal-owner', 'record': MEMORY,
+                                  'expected_revision': 'missing'}}
+            self.assertTrue(session.invoke(request)['local_queue']['saved'])
+            queue = session.cache / 'outbox' / 'synthetic_pending.json'
+            queue_before = queue.read_bytes(), host_security(queue)
             original_run = installer.run
             def resume(home, codex, value, digest, **options):
                 return original_run(home, codex, value, digest, **options,
@@ -707,12 +728,32 @@ class WindowsNative(unittest.TestCase):
                     updater=lambda: self.fail('No replacement release'),
                     installer=lambda p, d: content_install.apply(p, d, lambda value: None))
             import io
-            with patch.object(Path, 'home', return_value=self.home), patch.object(sys, 'argv', ['agent_brain_client.runtime.installation.py', "--harness", "codex"]), patch.object(installer, 'run', side_effect=resume), patch.object(sys, 'stdout', io.StringIO()) as output:
-                self.assertEqual(interfaces_cli_install.main(), 0, output.getvalue())
-            self.assertTrue(json.loads(output.getvalue())['installed'])
+            complete = installation_completion.complete
+            # Serve the same synthetic pinned release to the real launcher handover.
+            # Mapping's authenticated Server I/O is outside this transaction test.
+            with (
+                patch.object(Path, 'home', return_value=self.home),
+                patch.object(installer, 'run', side_effect=resume) as resumed,
+                patch.object(GitReleaseSource, 'latest', return_value=Source().latest()),
+                patch.object(installation_completion, 'complete', side_effect=lambda home, value, **kwargs:
+                             complete(home, value, **kwargs, refresh=lambda *args: {'status': 'content-current'})),
+                patch.object(sys, 'stdout', io.StringIO()) as output,
+            ):
+                self.assertEqual(interfaces_cli_install.main(['--harness', 'codex']), 0, output.getvalue())
+            resumed.assert_called_once()
+            resumed_result = json.loads(output.getvalue())
+            self.assertTrue(resumed_result['installed'])
+            launcher = resumed_result['launcher_update']
+            self.assertTrue(launcher['channel_checked'])
+            self.assertEqual(launcher['active_package_commit'], 'a'*40)
+            self.assertEqual(launcher['registered_launcher_package'], plan['package'])
+            self.assertTrue(resumed_result['installation_stages']['sources']['local_stop_fence'])
+            self.assertFalse((state / 'launcher-handover.json').exists())
+            self.assertEqual(adapters_storage_private_files.private_json(state / 'content-install-receipt.json')['phase'], 'complete')
+            self.assertEqual(policy_path.read_bytes(), policy_before)
+            self.assertEqual(off.read_bytes(), off_before)
+            self.assertEqual((queue.read_bytes(), host_security(queue)), queue_before)
             self.assertTrue(content_install.inspect(self.home).get('registration_verified'))
-            again = content_install.apply(plan, pin, lambda value: None)
-            self.assertTrue(again['installed'])
             self.assertEqual(host_security(native), parent_security)
             self.assertEqual(host_security(config), file_security)
             args = SimpleNamespace(device_home=str(self.home), operator=None, operator_sha256=None, profile_id='f'*32)
@@ -748,8 +789,11 @@ class WindowsNative(unittest.TestCase):
                     with self.subTest(shell=shell, script=script):
                         command = [shell, '-NoLogo', '-NoProfile', '-NonInteractive', '-File', str(checkout / script), *arguments]
                         run = subprocess.run(command, env=environment, capture_output=True, text=True, encoding='utf-8', timeout=60)
-                        self.assertEqual(run.returncode, 0, run.stderr)
-                        self.assertTrue(json.loads(run.stdout)[field], run.stdout)
+                        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                        reported = json.loads(run.stdout)
+                        self.assertTrue(reported[field], run.stdout)
+                        if field == 'installed':
+                            self.assertEqual(reported['queue']['pending'], 1)
             hooks.uninstall(args)
             self.assertNotIn(hooks.BEGIN, config.read_text(encoding='utf-8'))
             self.assertTrue(content_install.inspect(self.home)['registration_verified'])

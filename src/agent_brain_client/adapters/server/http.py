@@ -112,10 +112,14 @@ def _resolve_address(address):
     # finish late; it cannot send HTTP, touch the adapter or publish its result.
     threading.Thread(target=resolve, name="content-read-dns", daemon=True).start()
     control.register(done.set)
-    resolved = done.wait(request_timeout(90))
+    io_deadline = time.monotonic() + 90
+    while not done.wait(request_timeout(io_deadline - time.monotonic())):
+        # The native wait can time out before the monotonic clock reaches
+        # either deadline. Recheck cancellation and wait out the remainder.
+        control.check()
+        if time.monotonic() >= io_deadline:
+            raise TimeoutError("Name resolution timed out")
     control.check()
-    if not resolved:
-        raise TimeoutError("Name resolution timed out")
     if errors:
         raise errors[0]
     return result[0]

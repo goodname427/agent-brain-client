@@ -17,6 +17,7 @@ from unittest.mock import Mock, patch
 
 import agent_brain_client.runtime.collection as gm
 import agent_brain_client.runtime.source_enrollment as operator
+from agent_brain_client.adapters.platforms.filesystem import private_directory
 from agent_brain_client.domain.scopes import digest
 
 
@@ -26,7 +27,7 @@ class GlobalMemoryActivation(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.home = Path(temp.name).resolve()
         self.file = source_policy.settings_path(self.home)
-        self.file.parent.mkdir(parents=True, mode=0o700)
+        private_directory(self.file.parent)
         self.scope = {'schema':1, 'profile_id':'a' * 32,
                       'include_roots':[{'root':str(self.home), 'sharing':'personal'}],
                       'exclude_roots':[], 'non_project_roots':[], 'recall_personal':True}

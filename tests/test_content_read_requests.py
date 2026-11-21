@@ -75,18 +75,21 @@ class Output:
 class DNSReadBudget(unittest.TestCase):
     def test_dns_wait_distinguishes_io_limit_total_deadline_and_cancellation(self):
         cases = (
-            ("io-timeout", 0, False, False, 90, TimeoutError, None),
-            ("total-deadline", 30, False, False, 80, RequestStopped, "request_deadline_exceeded"),
-            ("cancel-at-timeout", 0, True, False, 90, RequestStopped, "request_cancelled"),
-            ("cancel-wakes-wait", 0, True, True, 90, RequestStopped, "request_cancelled"),
+            ("io-timeout", 0, False, False, [(90, 90)], TimeoutError, None),
+            ("total-deadline", 30, False, False, [(80, 80)], RequestStopped, "request_deadline_exceeded"),
+            ("early-io-wake", 0, False, False, [(90, 89), (1, 1)], TimeoutError, None),
+            ("early-deadline-wake", 30, False, False, [(80, 79), (1, 1)], RequestStopped, "request_deadline_exceeded"),
+            ("cancel-at-timeout", 0, True, False, [(90, 90)], RequestStopped, "request_cancelled"),
+            ("cancel-wakes-wait", 0, True, True, [(90, 90)], RequestStopped, "request_cancelled"),
         )
-        for name, start, cancel, signaled, budget, error_type, reason in cases:
+        for name, start, cancel, signaled, waits, error_type, reason in cases:
             with self.subTest(case=name):
                 resolving = threading.Event()
                 release = threading.Event()
                 dns_event = threading.Event()
                 threads = []
                 clock = SimpleNamespace(now=0, monotonic=lambda: clock.now)
+                expected_waits = iter(waits)
 
                 def lookup(*args, **kwargs):
                     resolving.set()
@@ -96,8 +99,9 @@ class DNSReadBudget(unittest.TestCase):
 
                 def wait(dns_timeout):
                     self.assertTrue(resolving.wait(1))
+                    budget, elapsed = next(expected_waits)
                     self.assertEqual(dns_timeout, budget)
-                    clock.now += dns_timeout
+                    clock.now += elapsed
                     if cancel:
                         request.cancel()
                         self.assertTrue(dns_event.is_set())
@@ -110,6 +114,7 @@ class DNSReadBudget(unittest.TestCase):
 
                 with (
                     patch("agent_brain_client.application.control.time", clock),
+                    patch.object(http_transport, "time", clock),
                     patch.object(dns_event, "wait", side_effect=wait),
                     patch.object(
                         http_transport, "threading",
@@ -128,6 +133,7 @@ class DNSReadBudget(unittest.TestCase):
                             http_transport._read_socket(("127.0.0.1", 1))
                         self.assertEqual(getattr(raised.exception, "reason", None), reason)
                         self.assertEqual(request.reason, reason)
+                        self.assertIsNone(next(expected_waits, None))
                     finally:
                         request.close()
                         release.set()
