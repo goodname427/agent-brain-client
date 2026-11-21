@@ -790,7 +790,7 @@ def refresh_hooks(home, *, check_only=False):
         recover_code(home)
         if file.read_bytes() != original:
             raise ValueError("Global settings changed before refresh")
-        freeze_code(file.parent, pins, source=ROOT)
+        freeze_code(file.parent, pins, source=ROOT, required=FILES)
         if not available:
             return result
         journal = file.parent / "code-refresh.json"

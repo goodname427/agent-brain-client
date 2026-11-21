@@ -7,6 +7,14 @@ from agent_brain_client.adapters.platforms.filesystem import cache_locked
 from agent_brain_client.domain import contract
 
 
+RECEIPT = "projection-removal.json"
+
+
+def removal_in_progress(session):
+    record = session._load(RECEIPT)
+    return record is not None and record.get("phase") == "applying"
+
+
 def prepare(session):
     counts = lifecycle.queue_counts(session)
     if any(counts[state] for state in ("pending", "conflict", "blocked")):
@@ -23,10 +31,9 @@ def prepare(session):
 
 def remove(session):
     """Idempotent removal with a bounded, identity checked projection journal."""
-    file = session.cache / "projection-removal.json"
     with (cache_locked(session.cache / ".content-runtime.lock", timeout=0),
           cache_locked(session.cache / "content.lock", timeout=0)):
-        record = session._load(file.name)
+        record = session._load(RECEIPT)
         if record is not None and record.get("phase") == "complete" and session.mapping.owned_snapshot()["files"]:
             # A later verified mapping is a new installation generation. Keep
             # the completed receipt instead of treating it as current removal.
@@ -48,7 +55,7 @@ def remove(session):
             if not scope <= set(rows):
                 raise ValueError("Retained projection removal is incomplete")
             if record.get("phase") == "applying":
-                host_restore(rows, lambda: session._save(file.name, record))
+                host_restore(rows, lambda: session._save(RECEIPT, record))
             elif record.get("phase") != "complete":
                 raise ValueError("Unknown retained projection removal phase")
             if record.get("phase") == "complete":
@@ -62,12 +69,12 @@ def remove(session):
         # private-store replacement would incorrectly require a user-owned ACL.
         record = {"schema": 1, "binding": session.binding, "policy_sha": session.policy_sha,
                   "phase": "applying", "host": host_plan(payload)}
-        session._save(file.name, record)
+        session._save(RECEIPT, record)
         try:
-            host_apply(record["host"], lambda: session._save(file.name, record))
+            host_apply(record["host"], lambda: session._save(RECEIPT, record))
             record["phase"] = "complete"
-            session._save(file.name, record)
+            session._save(RECEIPT, record)
         except Exception:
-            host_restore(record["host"], lambda: session._save(file.name, record))
+            host_restore(record["host"], lambda: session._save(RECEIPT, record))
             raise
         session.mapping._prune_skill_directories({})

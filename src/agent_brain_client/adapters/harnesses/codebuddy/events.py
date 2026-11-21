@@ -7,6 +7,7 @@ relabelled, credential copied, history read or second memory engine created.
 from agent_brain_client.adapters.storage.bounded_json import digest, unique
 import agent_brain_client.adapters.harnesses.hook_output as hook_output
 import agent_brain_client.adapters.storage.metadata as metadata_io
+from agent_brain_client.domain.scopes import select
 import json
 from pathlib import Path
 
@@ -18,7 +19,7 @@ def session_id(value):
 
 
 def admission(core, value, local, client, session):
-    from agent_brain_client.domain.scopes import digest as scope_digest, select
+    from agent_brain_client.domain.scopes import digest as scope_digest
 
     current = core.load(value["device_home"])
     return (
@@ -35,7 +36,7 @@ def open_queue(core, value, local):
 
 def capture_messages(core, value, local, payload, messages, phase):
     from agent_brain_client.application.memory.observations import stage_messages
-    from agent_brain_client.domain.scopes import source_id, namespace, select
+    from agent_brain_client.domain.scopes import source_id, namespace
     import uuid
 
     client, queue = open_queue(core, value, local)
@@ -77,11 +78,12 @@ def hook(home, stream, *, core=None, defer=None, observe=None, verified_release=
     ):
         raise ValueError("Unsupported CodeBuddy hook event")
     from agent_brain_client.adapters.storage.project_settings import source_active
-    if not source_active(home, payload.get("cwd"), "codebuddy"):
-        return {}, {"status": "retained-project-source-stopped", "data_transferred": False}
-    local = core.eligible(value, payload.get("cwd"))
+    kind = payload["hook_event_name"]
+    local = core.eligible(value, payload.get("cwd"), prompt=kind == "UserPromptSubmit")
     if local is None:
         return {}, {"status": "outside-approved-source", "data_transferred": False}
+    if not source_active(home, local["cwd"], "codebuddy"):
+        return {}, {"status": "retained-project-source-stopped", "data_transferred": False}
     # A bound project has its own pinned Hook and queue. Its presence is scoped
     # to this host, so another host's project controls never suppress capture.
     from agent_brain_client.adapters.storage.project_settings import project_settings, load as load_project
@@ -97,7 +99,9 @@ def hook(home, stream, *, core=None, defer=None, observe=None, verified_release=
         if project["capture_policy"] is not None:
             return {}, {"status": "project-source-delegated", "data_transferred": False}
     session = session_id(payload.get("session_id"))
-    kind = payload["hook_event_name"]
+    scope = value["scope"]
+    capture = select(scope, local) is not None
+    recall = kind == "UserPromptSubmit" and select(scope, local, recall=True) is not None
     import agent_brain_client.adapters.harnesses.codebuddy.transcript as transcript
     from agent_brain_client.application.memory.lifecycle import handle
     import uuid
@@ -141,10 +145,10 @@ def hook(home, stream, *, core=None, defer=None, observe=None, verified_release=
                       turn_id=payload.get("generation_id") or uuid.uuid4().hex)
     initialized = monotonic()
     items, diagnostic = handle(
-        kind, prompt=prompt, stage=stage,
-        schedule=lambda: core.schedule_delivery(home, "codebuddy", local),
-        recall=lambda query: core.recall_prompt(value, local, normalized, query,
-            **({"observe": observe} if observe is not None else {})),
+        kind, prompt=prompt, stage=stage if capture else None,
+        schedule=(lambda: core.schedule_delivery(home, "codebuddy", local)) if capture else None,
+        recall=(lambda query: core.recall_prompt(value, local, normalized, query,
+            **({"observe": observe} if observe is not None else {}))) if recall else None,
     )
     diagnostic["timing_ms"]["initialization_ms"] = round((initialized - started) * 1000, 3)
     diagnostic["timing_ms"]["adapter_total_ms"] = round((monotonic() - started) * 1000, 3)
@@ -197,7 +201,7 @@ def _finish_assistant(home, core, value, local, payload):
 def resume_observed_assistant(home, core, turn_id):
     """One shared-worker attempt of one observed Stop; never inspect history."""
     import re
-    from agent_brain_client.domain.scopes import digest as scope_digest
+    from agent_brain_client.domain.scopes import digest as scope_digest, ordinary_default
     import agent_brain_client.adapters.harnesses.codebuddy.transcript as transcript
 
     if not re.fullmatch(r"[a-f0-9]{64}", turn_id):
@@ -214,9 +218,23 @@ def resume_observed_assistant(home, core, turn_id):
     if not source_active(home, binding["cwd"], "codebuddy"):
         return True
     local = core.eligible(value, binding["cwd"])
-    if (not core.approved(value) or local is None
-            or row.get("completion_scope_sha256", scope_digest(value["scope"])) != scope_digest(value["scope"])):
+    if not core.approved(value) or local is None:
         return True  # Retain paused work, without reading or sending its content.
+    scope = value["scope"]
+    current = scope_digest(scope)
+    pinned = row.get("completion_scope_sha256", current)
+    if pinned != current:
+        prior = {key: val for key, val in scope.items() if key != "all_non_projects"}
+        # Continue observations already authorized by the exact predecessor of
+        # a default expansion. A new directory or a different policy cannot
+        # release an earlier transcript.
+        if (
+            scope.get("all_non_projects") is not True
+            or not ordinary_default(prior)
+            or pinned != scope_digest(prior)
+            or select(prior, local) is None
+        ):
+            return True
     native = dict(binding, hook_event_name="Stop", stop_hook_active=False,
                   transcript_path=binding["path"])
     try:

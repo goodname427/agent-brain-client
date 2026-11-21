@@ -120,41 +120,16 @@ def mapping_refresh(home, policy, mcp, *, runner=subprocess.run):
     return value
 
 
-def source_setup(home, *, choose=input):
-    """Set up future collection, preserving an explicitly retained scope/pause."""
-    from agent_brain_client.runtime.source_enrollment import configure
-    from agent_brain_client.adapters.storage.reinstallation import read_journal
+def source_setup(home, *, choose=input, initialize=False):
+    """Reconcile a source; only installation completion may select its default."""
+    from agent_brain_client.runtime.source_enrollment import maintain
     from agent_brain_client.adapters.storage.reinstallation import (
+        read_journal,
         require_memory_verified,
     )
-    from agent_brain_client.adapters.storage.collection import load, settings_path
 
     require_memory_verified(home)
-    fresh = read_journal(home)
-    retain_scope = fresh is not None and fresh.get("routing") is not None
-    if retain_scope:
-        value = load(home, verify_code=False)
-        if not value["enabled"] or (settings_path(home).parent / "global.off").exists():
-            return {
-                "status": "retained-source-paused",
-                "collection_enabled": False,
-                "next_action": "The original source remains paused. Use explicit global configuration/resume when you choose to enable it.",
-            }
-
-    result = configure(
-        SimpleNamespace(
-            device_home=str(home),
-            include_root=[],
-            isolate_root=[],
-            exclude_root=[],
-            non_project_root=[],
-            all_projects=not retain_scope,
-            preserve_scope=retain_scope,
-            activate_packet=None,
-            packet_output=None,
-        )
-    )
-    return dict(result, collection_enabled=result.get("activated") is True)
+    return maintain(home, initialize=initialize, retained=read_journal(home))
 
 
 def finish_windows_update(home, result):
@@ -267,7 +242,7 @@ def complete(
 
         restore_source_routing(home)
         stage = "sources"
-        stages["sources"] = source_setup(home, choose=choose)
+        stages["sources"] = source_setup(home, choose=choose, initialize=True)
         value["local_setup_complete"] = (
             stages["mapping"].get("status") in ("content-current", "content-refreshed")
             and stages["sources"].get("collection_enabled") is True
