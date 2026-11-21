@@ -283,14 +283,19 @@ def run_checks(scope, output, record=False, *, ci=False):
             env.pop(name, None)
         commands = COMMANDS[scope]
         if ci and scope == "windows":
-            # Verification branch only: make the exact public historical object
-            # available to the native regression in a shallow checkout.
-            subprocess.run(
-                ["git", "fetch", "--no-tags", "--depth=1", ORIGIN + ".git",
-                 "refs/tags/client-0.8.26-windows"],
-                cwd=ROOT, env=env, check=True, stdin=subprocess.DEVNULL, timeout=60,
+            focused_hooks = (
+                sys.platform == "win32"
+                and env.get("GITHUB_REF") == "refs/heads/verify/native-hooks-windows-db7914a"
             )
-            git("cat-file", "-e", "22b7522e93bac0812907192433016ea45c541d9a^{commit}")
+            if focused_hooks:
+                # Isolated evidence only. Keep the distant public tag bytes
+                # available in the native runner's otherwise shallow checkout.
+                subprocess.run(
+                    ["git", "fetch", "--no-tags", "--depth=1", ORIGIN + ".git",
+                     "refs/tags/client-0.8.26-windows"],
+                    cwd=ROOT, env=env, check=True, stdin=subprocess.DEVNULL, timeout=60,
+                )
+                git("cat-file", "-e", "22b7522e93bac0812907192433016ea45c541d9a^{commit}")
             # Same selectors on both Python versions; independent process homes
             # permit two native workers without sharing synthetic device state.
             selectors = list(
@@ -301,6 +306,8 @@ def run_checks(scope, output, record=False, *, ci=False):
                     for test in command[4:]
                 )
             )
+            if focused_hooks:
+                selectors = ["test_stable_native_hooks", "test_global_memory_update"]
             commands = [
                 [
                     "python",
