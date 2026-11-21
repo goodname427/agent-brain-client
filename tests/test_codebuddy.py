@@ -383,7 +383,7 @@ class Installation(unittest.TestCase):
                     self.assertEqual(metadata.private_json(receipt)["surface"], surface)
                     code, removed = invoke("--action", "uninstall")
                     self.assertEqual(code, 0, removed)
-                    self.assertIn(removed["status"], ("codebuddy-uninstalled", "host-unbound"))
+                    self.assertEqual(removed["status"], "host-unbound")
                     self.assertTrue(metadata.private_json(receipt)["removed"])
                     self.assertTrue(settings.exists())
 

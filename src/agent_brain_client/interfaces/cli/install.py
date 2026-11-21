@@ -129,26 +129,6 @@ def absent_status(home):
     return True
 
 
-def unbind_host(home, *, harness):
-    from agent_brain_client.runtime import client_lifecycle
-
-    detach = getattr(client_lifecycle, "unbind", None)
-    if detach is not None:
-        return detach(home, harness=harness)
-    # Keep the existing CodeBuddy operation while older installer trees lack
-    # the common runtime port.
-    if harness == "codebuddy":
-        from agent_brain_client.interfaces.cli.codebuddy import unbind_binding
-
-        return unbind_binding(home)
-    return {
-        "status": "host-unbind-unavailable",
-        "harness": harness,
-        "native_changed": False,
-        "next_action": "Use an installer with the verified host-unbind operation.",
-    }
-
-
 def selected_native(home, harness):
     if harness not in ("codex", "codebuddy"):
         raise ValueError("Install and reinstall require an explicit --harness")
@@ -321,10 +301,11 @@ def main(argv=None):
         home = Path.home().resolve()
         if args.action in ("probe", "unbind"):
             from agent_brain_client.interfaces.cli.codebuddy import binding_review, probe
+            from agent_brain_client.runtime.client_lifecycle import unbind
 
             try:
                 value = (
-                    unbind_host(home, harness=args.harness)
+                    unbind(home, harness=args.harness)
                     if args.action == "unbind"
                     else probe(home, None, harness=args.harness or "codex")
                 )

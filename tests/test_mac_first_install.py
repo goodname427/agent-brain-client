@@ -847,7 +847,7 @@ class LifecycleExitCodes(unittest.TestCase):
                 patch.object(Path, "home", return_value=home),
                 patch.object(sys, "platform", "darwin"),
                 patch("platform.machine", return_value="arm64"),
-                patch.object(client_lifecycle, "unbind", create=True, return_value={"status": status}) as unbind,
+                patch.object(client_lifecycle, "unbind", return_value={"status": status}) as unbind,
                 patch.object(client_lifecycle, "uninstall", side_effect=AssertionError("Host-only request")),
                 patch.object(sys, "stdout", io.StringIO()) as output,
             ):

@@ -214,9 +214,9 @@ def main(argv=None, *, verified_release=False):
             value = binding_status(home)
         elif args.action == "uninstall":
             if args.surface is None:
-                from agent_brain_client.interfaces.cli.install import unbind_host
+                from agent_brain_client.runtime.client_lifecycle import unbind
 
-                value = unbind_host(home, harness="codebuddy")
+                value = unbind(home, harness="codebuddy")
                 if value["status"] == "host-unbound":
                     value["status"] = "codebuddy-uninstalled" if value["native_changed"] else "codebuddy-not-installed"
             else:
