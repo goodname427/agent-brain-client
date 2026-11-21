@@ -9,9 +9,41 @@ from agent_brain_client.domain.scopes import (
     restricted,
 )
 from agent_brain_client.domain import privacy as privacy
-from agent_brain_client.application.memory.context import bounded_context_items
+from agent_brain_client.application.memory.context import select_context_items
 from agent_brain_client.application.control import recall_timing_stage
 import re
+
+
+def _fit_context(items, references, query, observe, *, cached=False):
+    selected = select_context_items(
+        items, references, query, cached=cached, automatic=observe is not None
+    )
+    returned = [
+        {key: ref[key] for key in ("layer", "record_sha256", "content_sha256")}
+        for ref in references
+    ]
+    refs = []
+    for index, item in selected.items():
+        if index >= len(returned):
+            continue  # Legacy private caches did not record the original ID.
+        ref = returned[index]
+        if "presentation" in item:
+            ref = dict(
+                ref,
+                presentation=item["presentation"],
+                output_content_sha256=digest(item["content"]),
+            )
+            if "index_metadata" in item:
+                ref["index_metadata_sha256"] = digest(item["index_metadata"])
+        refs.append(ref)
+    if observe is not None:
+        observe.update(
+            candidate_count=len(items),
+            returned=returned,
+            selected=refs,
+            omitted_for_budget=len(items) - len(selected),
+        )
+    return list(selected.values()), refs
 
 
 def recall(
@@ -31,14 +63,15 @@ def recall(
     )
     params["recall"] = options
     cache_query = digest([query, params["limit"], options])
+    automatic = observe is not None
+    cache = services.settings_path(value["device_home"]).parent / (
+        "recall-" + digest(local) + ".json"
+    )
     with recall_timing_stage("wire"):
         response = client.wire(
             "memory_query", params, **({"rid": request_id} if request_id else {})
         )
     if "error" in response:
-        cache = services.settings_path(value["device_home"]).parent / (
-            "recall-" + digest(local) + ".json"
-        )
         if response["error"].get(
             "code"
         ) == "transport_unconfirmed" and services.cache_exists(cache):
@@ -46,6 +79,7 @@ def recall(
             if (
                 saved.get("scope_sha256") == digest(value["scope"])
                 and saved.get("query_sha256") == cache_query
+                and ("evidence_selected" not in saved or saved["evidence_selected"] is automatic)
                 and services.approved(value)
                 and select(value["scope"], local) is not None
             ):
@@ -53,19 +87,27 @@ def recall(
                     dict(item, offline_cache=True, remote_confirmation=False)
                     for item in saved["items"]
                 ]
-                selected = bounded_context_items(items)
-                refs = [
-                    ref
-                    for item, ref in zip(items, saved.get("selected", []))
-                    if any(item is kept for kept in selected)
-                ]
-                if observe is not None:
-                    observe.update(
-                        candidate_count=len(items),
-                        returned=saved.get("selected", []),
-                        selected=refs,
-                        omitted_for_budget=len(items) - len(selected),
+                cached_evidence = saved.get("evidence_selected") is True
+                references = saved.get("selected", [])
+                for index, item in enumerate(items):
+                    if "presentation" not in item:
+                        continue
+                    ref = references[index] if index < len(references) else {}
+                    index_digest = (
+                        digest(item["index_metadata"]) if "index_metadata" in item else None
                     )
+                    if (
+                        not cached_evidence
+                        or ref.get("layer") != item["layer"]
+                        or ref.get("record_sha256") != item["record_sha256"]
+                        or ref.get("presentation") != item["presentation"]
+                        or ref.get("output_content_sha256") != digest(item["content"])
+                        or ref.get("index_metadata_sha256") != index_digest
+                    ):
+                        raise ValueError("Cached recall excerpt changed")
+                selected, _ = _fit_context(
+                    items, references, query, observe, cached=cached_evidence
+                )
                 return selected
         raise ValueError("Global recall unavailable")
     data = response["result"]
@@ -174,23 +216,11 @@ def recall(
                         "content_sha256": digest(row["content"]),
                     }
                 )
-    selected = bounded_context_items(items)
-    refs = [
-        ref
-        for item, ref in zip(items, references)
-        if any(item is kept for kept in selected)
-    ]
-    if observe is not None:
-        observe.update(
-            candidate_count=len(items),
-            returned=references,
-            selected=refs,
-            omitted_for_budget=len(items) - len(selected),
-        )
-    items = selected
-    cache = services.settings_path(value["device_home"]).parent / (
-        "recall-" + digest(local) + ".json"
-    )
+                if layer == "L2" and isinstance(row.get("path"), str):
+                    # Keep the authorized logical path transient. Only a
+                    # screened leaf name may appear in a projected index.
+                    references[-1]["scenario_path"] = row["path"]
+    items, refs = _fit_context(items, references, query, observe)
     services.write_cache(
         cache,
         {
@@ -198,6 +228,7 @@ def recall(
             "query_sha256": cache_query,
             "items": items,
             "selected": refs,
+            "evidence_selected": automatic,
         },
     )
     return items

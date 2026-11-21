@@ -29,7 +29,7 @@ from agent_brain_client.runtime.project_memory import (
 )
 
 
-def main():
+def main(argv=None, *, verified_release=False):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "action",
@@ -73,7 +73,7 @@ def main():
         help="Read one event diagnostic with server-status; requires --session-id",
     )
     parser.add_argument("--input")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.event_id is not None and (
         args.action != "server-status" or args.session_id is None
     ):
@@ -119,7 +119,8 @@ def main():
                 args.settings_sha256 = digest(Path(args.settings).read_bytes())
             if not args.settings or not args.settings_sha256:
                 parser.error("exact --settings and --settings-sha256 are required")
-            p = load(args.settings, args.settings_sha256)
+            p = load(args.settings, args.settings_sha256,
+                     verified_release=verified_release or args.action == "install")
             if p["harness"] != args.harness:
                 raise ValueError("Project Harness binding changed")
             if args.action == "install":
@@ -180,7 +181,8 @@ def main():
                     session_id=args.session_id if args.event_id is not None else None,
                 )
             elif args.action == "hook":
-                result = hook(p, settings_path=args.settings, settings_sha256=args.settings_sha256)
+                result = hook(p, settings_path=args.settings, settings_sha256=args.settings_sha256,
+                              verified_release=verified_release)
             elif args.action == "record":
                 if not args.input:
                     parser.error("record requires an explicit private --input file")
