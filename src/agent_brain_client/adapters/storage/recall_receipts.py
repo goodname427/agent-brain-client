@@ -10,9 +10,15 @@ from agent_brain_client.application.control import saved_recall_timing
 
 def save_recall_observation(value, receipt):
     directory = settings_path(value["device_home"]).parent
-    if receipt.get("output_written") is True and receipt.get("status") != "failed":
-        metadata.write(directory / ("prompt-" + receipt["request_key"] + ".json"),
-                       {"at": receipt["at"]})
+    try:
+        if receipt.get("output_written") is True and receipt.get("status") != "failed":
+            metadata.write(directory / ("prompt-" + receipt["request_key"] + ".json"),
+                           {"at": receipt["at"]})
+    finally:
+        _save_diagnostics(directory, receipt)
+
+
+def _save_diagnostics(directory, receipt):
     receipts = directory / "recall-receipts"
     private_directory(receipts)
     receipt_sha256 = metadata.write(receipts / (receipt["request_key"] + ".json"), receipt)
@@ -63,6 +69,7 @@ def recall_observation(value, request_key=None):
         }
         counts = saved.get("layer_counts", {})
         retrieval = saved.get("retrieval", {})
+        retrieval_fields = {"candidate_count", "returned", "selected", "omitted_for_budget"}
         if (
             set(saved) != fields
             or saved.get("stage") != "agentbrain-global-recall"
@@ -97,8 +104,8 @@ def recall_observation(value, request_key=None):
             or saved["error_type"] is not None
             and not re.fullmatch("[A-Za-z][A-Za-z0-9_]{0,63}", saved["error_type"])
             or not isinstance(retrieval, dict)
-            or set(retrieval)
-            != {"candidate_count", "returned", "selected", "omitted_for_budget"}
+            or set(retrieval) not in (retrieval_fields, retrieval_fields | {"partial"})
+            or type(retrieval.get("partial", False)) is not bool
             or any(
                 type(retrieval.get(k)) is not int or retrieval[k] < 0
                 for k in ("candidate_count", "omitted_for_budget")

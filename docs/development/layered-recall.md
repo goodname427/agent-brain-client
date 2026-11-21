@@ -42,7 +42,12 @@ Mac and Windows use the same implementation:
 The shared question Hook validates each complete source group before adding
 any of its rows. A rejected group leaves independently verified groups
 available. A response with only rejected groups and no usable rows fails the
-recall, and a partial response does not replace the offline cache.
+recall. A partial response does not replace the offline cache. The receipt's
+optional `retrieval.partial` flag indicates this outcome without recording
+rejected sources or their hashes. Complete recalls retain the earlier schema
+2 receipt shape.
+The offline snapshot is eligible after a retryable transport failure.
+An explicit authorization denial leaves it unread.
 
 `tests/test_layered_recall.py` covers both path directions, valid L2/L3 output,
 legacy compatibility, negative scope/provenance cases and bounded empty groups.
@@ -64,8 +69,9 @@ summaries remain readable but cannot establish request identity.
 
 An optional recall cache or diagnostic receipt write can fail after the
 verified context is ready. The Hook can still emit the context. After stdout
-flushes, the CLI saves the output deduplication stamp before updating the
-diagnostic receipt.
+flushes, the CLI attempts the output deduplication stamp and independently
+updates the diagnostic receipt. A stamp write failure leaves the turn eligible
+for retry even when the receipt confirms the earlier output.
 
 Use `global-status --request-key <request_key>` to inspect the exact attempt.
 The matching key is included in the Hook's content-free stderr receipt and its

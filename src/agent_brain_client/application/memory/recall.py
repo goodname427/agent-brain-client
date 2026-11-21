@@ -37,9 +37,12 @@ def recall(
         cache = services.settings_path(value["device_home"]).parent / (
             "recall-" + digest(local) + ".json"
         )
-        if response["error"].get(
-            "code"
-        ) == "transport_unconfirmed" and services.cache_exists(cache):
+        error = response["error"]
+        if (
+            error.get("code") == "transport_unconfirmed"
+            and error.get("retryable") is True
+            and services.cache_exists(cache)
+        ):
             saved = services.read_cache(cache)
             if (
                 saved.get("scope_sha256") == digest(value["scope"])
@@ -109,6 +112,8 @@ def recall(
             selected=refs,
             omitted_for_budget=len(items) - len(selected),
         )
+        if invalid_group is not None:
+            observe["partial"] = True
     if invalid_group is None:  # Keep the last complete offline snapshot.
         cache = services.settings_path(value["device_home"]).parent / (
             "recall-" + digest(local) + ".json"
