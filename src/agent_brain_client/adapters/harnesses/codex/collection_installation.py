@@ -772,7 +772,7 @@ def refresh_hooks(home, *, check_only=False):
     from agent_brain_client.adapters.installation import launcher_update as hook_launcher
     owned = fixed_command_block(previous, hook_launcher.native_hook_command(home, "codex"))
     migrating = not same_owned(previous, owned)
-    available = value != target or migrating
+    available = value != target or migrating or record["phase"] == "rolled-back"
     result = {
         "status": "global-hook-update-available"
         if available
