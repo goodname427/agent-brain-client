@@ -60,4 +60,4 @@ Server 的 `setup_daily_memory.py` 根据明确批准的来源和累计额度生
 sh bin/memory.sh activate-bundle --project-root /absolute/project --activation /private/bundle/activation.json --activation-sha256 REVIEWED_SHA256
 ```
 
-它验证原 owner、profile 和目标 Server，导入策略、保留旧设置并安装本项目 Hook，无需用户手改会话或拼策略。软件更新后 `enable --project-root ...` 刷新代码摘要。软件包已更新、来源已启用、实际宿主事件已交付是三个不同状态。
+它验证原 owner、profile 和目标 Server，导入策略、保留旧设置并安装本项目 Hook，无需用户手改会话或拼策略。正常软件更新后，已登记项目的命令继续使用原 Hook 回执中的设置摘要，保留当前来源状态和队列。软件包已更新、来源已启用、实际宿主事件已交付是三个不同状态。

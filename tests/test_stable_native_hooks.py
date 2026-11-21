@@ -427,6 +427,55 @@ class StableHooks(unittest.TestCase):
         self.assertEqual(render_json(installed.decode(), definitions, definitions, hooks=True), installed)
         self.assertIn(b'"permissions":{"deny":["synthetic"]}', installed)
 
+    def test_codex_project_commands_use_the_existing_registration_after_update(self):
+        self.check_project_commands_after_update("codex")
+
+    def test_codebuddy_project_commands_use_the_existing_registration_after_update(self):
+        self.check_project_commands_after_update("codebuddy")
+
+    def check_project_commands_after_update(self, harness):
+        from agent_brain_client.adapters.storage.project_settings import (
+            hook_registration,
+            project_settings,
+        )
+
+        first = self.release("0.8.29", "2" * 40)
+        project = private_directory(self.home / "registered project")
+        settings = project_settings(self.home, project, harness=harness)
+
+        def command(pointer, action, *arguments):
+            script = Path(pointer["package"]) / "src/agent_brain_client/interfaces/cli/project.py"
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", str(script), action, "--harness", harness,
+                 "--device-home", str(self.home), "--project-root", str(project), *arguments],
+                capture_output=True, text=True, timeout=20,
+            )
+            return result.returncode, json.loads(result.stdout)
+
+        code, setup = command(first, "setup", "--output", str(settings))
+        self.assertEqual(code, 0, setup)
+        code, installed = command(first, "install")
+        self.assertEqual(code, 0, installed)
+        native, receipt = hook_registration(harness, settings, project)
+        before = {file: file.read_bytes() for file in (settings, native, receipt)}
+
+        # Only the unrelated runtime file instrumented by release() changed.
+        second = self.release("0.8.30", "3" * 40)
+        code, status = command(second, "status")
+        self.assertEqual(code, 0, status)
+        self.assertEqual(status["status"], "enabled")
+        code, stopped = command(second, "stop")
+        self.assertEqual(code, 0, stopped)
+        self.assertTrue(stopped["local_source_stopped"])
+        self.assertEqual(command(second, "status")[1]["status"], "stopped")
+        self.assertEqual({file: file.read_bytes() for file in before}, before)
+
+        # Project-root lookup must not silently adopt edited private settings.
+        metadata.write(settings, dict(metadata.private_json(settings), query="unreviewed"))
+        code, result = command(second, "status")
+        self.assertEqual(code, 2, result)
+        self.assertEqual(result["status"], "memory-operation-review-required")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,10 @@
 """Exact public allowlist and client-only registration, without native changes."""
+from contextlib import redirect_stdout
 import importlib.util
+import io
 import hashlib
 import json
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +15,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'));sys.path.insert(0,str(ROOT/'src'));sys.path.insert(0, str(ROOT / 'src'))
 import dev.build.package as build_client_export
+from agent_brain_client.adapters.packages.layout import source_python_members
 spec = importlib.util.spec_from_file_location('remote_connect', ROOT / 'dev/integration/checkpoint.py')
 connector = importlib.util.module_from_spec(spec);spec.loader.exec_module(connector)
 
@@ -27,13 +31,13 @@ class FakeClient:
 class ClientExport(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
-        self.base = Path(self.temp.name)
+        self.base = Path(self.temp.name).resolve()
 
     def test_export_has_only_exact_client_files_and_no_git_or_core(self):
         output = self.base / 'public-client'
         manifest = build_client_export.export(ROOT, output)
         names = {str(p.relative_to(output)) for p in output.rglob('*') if p.is_file()}
-        self.assertEqual(names, set(build_client_export.FILES.values()) | {'export-manifest.json'})
+        self.assertEqual(names, set(build_client_export.FILES.values()) | set(source_python_members(ROOT)) | {'export-manifest.json'})
         self.assertFalse((output / '.git').exists());self.assertFalse((output / 'memory').exists())
         self.assertFalse((output / 'scripts/brain_core.py').exists())
         self.assertFalse(manifest['core_exported']);self.assertFalse(manifest['git_history_copied'])
@@ -48,7 +52,7 @@ class ClientExport(unittest.TestCase):
         relative = 'src/agent_brain_client/adapters/harnesses/codex/notify.py'
         self.assertNotIn(relative, manifest['files'])
         self.assertFalse((output / relative).exists())
-        self.assertEqual(manifest['release_policy_scope_delta'], {'added': sorted(__import__('agent_brain_client.adapters.packages.client',fromlist=['SSH_CONTENT_CLIENT_FILES']).SSH_CONTENT_CLIENT_FILES), 'removed': []})
+        self.assertEqual(manifest['release_policy_scope_delta'], {'added': sorted(set(build_client_export.FILES) | set(source_python_members(ROOT))), 'removed': []})
         self.assertEqual(manifest['production_release_policy_scope_compatibility'], 'current-layout-reinstall')
         self.assertFalse(manifest['production_release_policy_compatible'])
         self.assertIn('production_release_policy_compatibility_reason', manifest)
@@ -83,6 +87,67 @@ class ClientExport(unittest.TestCase):
             self.assertEqual((output / name).read_bytes(), source.read_bytes(), name)
         self.assertFalse((output / 'releases/manifest.json').exists())
         self.assertEqual((ROOT / 'releases/manifest.json').read_bytes(), frozen)
+
+    def test_https_export_selects_committed_modules_and_excludes_local_python(self):
+        from agent_brain_client.adapters.packages import build
+        from agent_brain_client.adapters.packages.client import https_files
+
+        source = self.base / "source"
+        ordinary = "src/agent_brain_client/domain/contract.py"
+        domain = "src/agent_brain_client/domain/__init__.py"
+        initial_files = {ordinary, domain}
+        for name in set(https_files("darwin-arm64")) | initial_files:
+            relative = build.PACKAGE_SOURCE_PATHS.get(name, name)
+            path = source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"# Synthetic package fixture\n")
+
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(source), *args])
+
+        git("init", "-q")
+        committed = "src/agent_brain_client/domain/fixture_feature.py"
+        ignored = "src/agent_brain_client/domain/fixture_local.py"
+        (source / committed).write_bytes(b"VALUE = 42\n")
+        git("add", "--all")
+        git("-c", "user.name=Synthetic", "-c", "user.email=fixture@example.invalid",
+            "commit", "-qm", "Synthetic runtime source")
+        (source / ignored).write_bytes(b"VALUE = 0\n")
+        with (source / ".git/info/exclude").open("a") as exclude:
+            exclude.write("\n/" + ignored + "\n")
+        self.assertEqual(git("status", "--porcelain"), b"")
+
+        archive_source = self.base / "archive-source"
+        shutil.copytree(source, archive_source, ignore=shutil.ignore_patterns(".git", "fixture_local.py"))
+        for platform in ("darwin-arm64", "win32-amd64"):
+            with self.subTest(platform=platform):
+                inventories = []
+                for layout in (source, archive_source):
+                    output = self.base / (layout.name + "-" + platform)
+                    arguments = ["package.py", "--output", str(output), "--platform", platform]
+                    with (
+                        patch.object(build, "ROOT", layout),
+                        patch.object(build_client_export, "ROOT", layout),
+                        patch.object(sys, "argv", arguments),
+                        redirect_stdout(io.StringIO()) as summary,
+                    ):
+                        build_client_export.main()
+                    manifest = json.loads(summary.getvalue())
+                    self.assertEqual(set(manifest["files"]), set(https_files(platform)) | initial_files | {committed})
+                    self.assertFalse((output / ignored).exists())
+                    self.assertEqual((output / committed).read_bytes(), b"VALUE = 42\n")
+                    inventories.append(manifest["files"])
+                self.assertEqual(inventories[0], inventories[1])
+
+        moved = "src/agent_brain_client/domain/fixture_renamed.py"
+        git("mv", "--", committed, moved)
+        git("rm", "--", ordinary)
+        git("-c", "user.name=Synthetic", "-c", "user.email=fixture@example.invalid",
+            "commit", "-qm", "Move and remove ordinary modules")
+        output = self.base / "edited"
+        with patch.object(build, "ROOT", source):
+            manifest = build.export(source, output, https_content_candidate=True, target_platform="darwin-arm64")
+        self.assertEqual(set(manifest["files"]), set(https_files("darwin-arm64")) | {domain, moved})
 
     def test_registration_is_idempotent_and_service_drift_is_preserved(self):
         home = self.base / 'client-home';token = self.base / 'client.token'

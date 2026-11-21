@@ -22,7 +22,7 @@ def worker(mode):
     from agent_brain_client.adapters.storage import metadata, registration
     from agent_brain_client.adapters.storage import project_settings as ps
     from agent_brain_client.adapters.storage.collection import settings_path
-    from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+    from agent_brain_client.adapters.packages.layout import source_python_members
     from agent_brain_client.adapters.platforms.filesystem import private_directory
     home = private_directory(Path.home().resolve())
     content = {"schema": 1, "adapter": "codex", "kinds": ["memory", "rule", "skill"],
@@ -43,7 +43,7 @@ def worker(mode):
     codex_reg = home / ".config/agent-brain-client/codex/registration.json"
     private_directory(codex_reg.parent)
     metadata.write(codex_reg, {"schema": 1, "native_home": str(home / ".codex"), "mcp": {}, "removed": False})
-    pins = {name: metadata.digest((SOURCE / name).read_bytes()) for name in PYTHON_FILES}
+    pins = {name: metadata.digest((SOURCE / name).read_bytes()) for name in source_python_members(SOURCE)}
     records, rows = [], []
     for index in range(2):
         project = home / ("project-a" if index == 0 else "project-b")

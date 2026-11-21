@@ -119,8 +119,12 @@ def main(argv=None, *, verified_release=False):
                 args.settings_sha256 = digest(Path(args.settings).read_bytes())
             if not args.settings or not args.settings_sha256:
                 parser.error("exact --settings and --settings-sha256 are required")
-            p = load(args.settings, args.settings_sha256,
-                     verified_release=verified_release or args.action == "install")
+            p = load(
+                args.settings,
+                args.settings_sha256,
+                verified_release=verified_release or args.action == "install",
+                use_registration=args.action != "hook",
+            )
             if p["harness"] != args.harness:
                 raise ValueError("Project Harness binding changed")
             if args.action == "install":

@@ -8,9 +8,9 @@ PR、main push 和 merge queue 运行既有快速检查。`Client checks require
 | 发布前手动 Client checks | 完整文档、源码、macOS 和 Windows 检查，含 lint、类型检查及原生回归 | 全部必需任务成功后才是 |
 | 发布准备及发布 | 现有完整包验证、精确源码树／attempt、不可变资产和回读门禁 | 仍全部必需 |
 
-文档任务负责文档链接及 CI 合同回归。[快速源码检查](../../dev/checks/quick.py) 检查事件提交范围的空白，运行架构回归、公开扫描和源码边界检查。`TARGETS` 为主机入口、采集控制、发布工具及其他匹配路径追加对应回归。无法解析提交范围、检查失败或超时都会使快速检查失败。
+文档任务负责文档链接及 CI 合同回归。纯 Markdown 改动还会检查事件提交范围的空白，并对变更后的文档执行公开扫描。[快速源码检查](../../dev/checks/quick.py) 检查事件提交范围的空白，运行架构回归、公开扫描和源码边界检查。`TARGETS` 为主机入口、采集控制、发布工具及其他匹配路径追加对应回归。无法解析提交范围、检查失败或超时都会使快速检查失败。
 
-普通事件的 `full=false`，源码任务照常运行，macOS 和 Windows 原生任务跳过。发布前在 **Client checks → Run workflow** 选择最终 main。手动触发运行完整检查，可同时启动发布资产准备。
+普通事件的 `full=false`，macOS 和 Windows 原生任务跳过。普通 Markdown 改动跳过源码任务。混合改动、固定随包文档或根文档的文件集合变化、链接或执行位变化继续运行快速源码检查。发布前在 **Client checks → Run workflow** 选择最终 main。手动触发运行完整检查，可同时启动发布资产准备。
 
 发布在写入远端前核验同树、同次 attempt 的完整成功结果，包含 `Client full validation`。资产准备复用该结果，并执行四架构包构建、自检、公开扫描及资产校验。发布权限和回退见[发布流程](release-pipeline.md)。
 

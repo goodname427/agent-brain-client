@@ -27,11 +27,14 @@ from agent_brain_client.adapters.packages.frozen import runtime_pins
 from agent_brain_client.adapters.storage.project_settings import active, project_settings, project_harness
 
 
-def load(path, sha, *, verified_release=False):
+def load(path, sha, *, verified_release=False, use_registration=False):
     from agent_brain_client.adapters.storage.project_settings import load as read_settings
     from agent_brain_client.runtime.harness_content import content_host
     return read_settings(
-        path, sha, verify_code=not verified_release,
+        path,
+        sha,
+        verify_code=not verified_release,
+        use_registration=use_registration,
         locate=lambda home, runtime, harness: content_host(harness).location(home, runtime),
     )
 

@@ -135,10 +135,10 @@ assert not any(n.startswith(('agent_brain_client.adapters','agent_brain_client.r
             capture_output=True,
         )
         self.assertEqual(run.returncode, 0, run.stderr.decode())
-        from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+        from agent_brain_client.adapters.packages.layout import source_python_members
 
         for name in ("domain/hook_coverage.py", "application/memory/rule_fallback.py"):
-            self.assertIn("src/agent_brain_client/" + name, PYTHON_FILES)
+            self.assertIn("src/agent_brain_client/" + name, source_python_members(ROOT))
         for owner in ("adapters/harnesses", "interfaces", "runtime"):
             for path in (ROOT / "src/agent_brain_client" / owner).rglob("*.py"):
                 self.assertNotIn("rule_fallback", path.read_text(encoding="utf-8"))
