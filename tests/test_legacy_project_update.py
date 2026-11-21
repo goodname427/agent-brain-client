@@ -214,7 +214,8 @@ print(json.dumps(install(SimpleNamespace(device_home=sys.argv[2], profile_id=Non
                                   str(self.home)], text=True, capture_output=True, timeout=20)
             self.assertEqual(run.returncode, 0, run.stderr)
             result = json.loads(run.stdout)
-            self.assertEqual(result['legacy_project_roots'], [str(self.root)])
+            expected_roots = [str(self.root)] if self.value['source_mode'] == 'codex-project' else []
+            self.assertEqual(result['legacy_project_roots'], expected_roots)
         else:
             freeze_code(state.parent, value['code_sha256'], source=self.old_package)
             buddy.install(self.home, self.old_package, None, surface='cli')
@@ -246,6 +247,12 @@ print(json.dumps(install(SimpleNamespace(device_home=sys.argv[2], profile_id=Non
         run = self.run_hook(harness, cwd, **kwargs)
         self.assertEqual(run.returncode, 0, run.stderr)
         return json.loads(run.stdout), run.stderr
+
+    def project_command(self, package, harness, action):
+        return subprocess.run([sys.executable, '-I', '-B', str(package / PROJECT_ENTRY),
+                               action, '--harness', harness, '--settings', str(self.file),
+                               '--settings-sha256', self.pin],
+                              cwd=self.root, text=True, capture_output=True, timeout=20)
 
     def update(self):
         self.select_release(self.new_release)
@@ -297,6 +304,47 @@ print(queue._load('outbox/' + sys.argv[4])['state'])
         self.new_release = self.same_members_release
         self.exercise_update('codebuddy')
 
+    def test_codex_read_only_link_does_not_own_global_capture(self):
+        self.assert_read_only_link_does_not_own_global_capture('codex')
+
+    def test_codebuddy_read_only_link_does_not_own_global_capture(self):
+        self.assert_read_only_link_does_not_own_global_capture('codebuddy')
+
+    def assert_read_only_link_does_not_own_global_capture(self, harness):
+        self.settings(harness)
+        self.expire_recall(source_mode='recall-only', capture_policy=None, capture_policy_sha256=None)
+        self.install(harness, self.alias)
+        self.assertEqual(self.update()['status'], 'client-update-updated')
+        self.point_entry(self.new_package)
+        self.assertEqual(self.hook(harness, self.root, project=True, turn='read-only-expired')[0], {})
+
+        def assert_global_capture(label, roots):
+            for cwd in roots:
+                _, diagnostics = self.hook(harness, cwd, project=False, turn=label + '-' + cwd.name)
+                self.assertIn('"status": "staged"', diagnostics)
+
+        allowed = (self.root, self.child, self.neighbor)
+        assert_global_capture('read-only-expired', allowed)
+        self.value = dict(self.value, enabled=False)
+        self.pin = metadata.write(self.file, self.value)
+        self.install_project_hook(harness, self.alias)
+        assert_global_capture('read-only-disabled', allowed)
+
+        recall = Path(self.value['recall_policy'])
+        recall_bytes = recall.read_bytes()
+        recall.unlink()
+        assert_global_capture('read-only-missing-policy', allowed)
+        recall.write_bytes(recall_bytes)
+        recall.chmod(0o600)
+
+        stopped = self.project_command(self.new_package, harness, 'stop')
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        self.assertTrue(json.loads(stopped.stdout)['local_source_stopped'])
+        recall.unlink()
+        self.assert_no_project_access(harness, 'read-only-stopped')
+        self.assert_no_project_access(harness, 'read-only-stopped-child', cwd=self.child)
+        assert_global_capture('read-only-stopped', (self.neighbor,))
+
     def assert_no_project_access(self, harness, turn, *, cwd=None):
         wire = self.log.read_bytes()
         cache = Path(self.value['cache'])
@@ -324,20 +372,26 @@ print(queue._load('outbox/' + sys.argv[4])['state'])
         capture_before = metadata.private_json(capture)
         metadata.write(capture, dict(capture_before, enabled=False))
         self.assert_no_project_access(harness, 'synthetic-unverified-policy-turn')
+        self.assert_no_project_access(harness, 'synthetic-unverified-policy-child', cwd=self.child)
         self.assertEqual(metadata.write(capture, capture_before), self.value['capture_policy_sha256'])
 
         # Install the command for a real legacy finite record whose window
         # already expired. The global route stays reserved on both hosts.
+        self.expire_recall()
+        self.install_project_hook(harness, self.alias)
+        self.assert_no_project_access(harness, 'synthetic-expired-turn')
+        self.assert_no_project_access(harness, 'synthetic-expired-child', cwd=self.child)
+
+    def expire_recall(self, **settings):
         old = metadata.private_json(self.value['recall_policy'])
         expired = {key: old[key] for key in ('actor', 'device_id', 'endpoint',
                                              'profile_sha256', 'project_id', 'max_results', 'off_file')}
         expired.update(schema=1, enabled=True, not_before=1, expires_at=60,
                        source_sessions=['synthetic-source'], recall_sessions=['synthetic-reader'])
         file = self.file.parent / 'expired-recall.json'
-        self.value = dict(self.value, recall_policy=str(file), recall_policy_sha256=metadata.write(file, expired))
+        self.value = dict(self.value, **settings)
+        self.value.update(recall_policy=str(file), recall_policy_sha256=metadata.write(file, expired))
         self.pin = metadata.write(self.file, self.value)
-        self.install_project_hook(harness, self.alias)
-        self.assert_no_project_access(harness, 'synthetic-expired-turn')
 
     def exercise_update(self, harness):
         project = self.settings(harness)
@@ -447,4 +501,30 @@ print(queue._load('outbox/' + sys.argv[4])['state'])
         self.assertIn('AssertionError', run.stderr)
         self.assertEqual(self.hook(harness, self.root, project=False, turn='synthetic-entry-sha-changed')[0], {})
         self.assertEqual(self.log.read_bytes(), wire)
+        self.assertEqual(outbox.read_bytes(), original)
+
+        # The public project install command refreshes only the owned Hook
+        # from the serving package while retaining the existing settings pin.
+        target = self.root / '.codex/hooks.json'
+        owned = target.read_bytes()
+        edited = owned.replace(b'"timeout": 30', b'"timeout": 31', 1)
+        self.assertNotEqual(edited, owned)
+        target.write_bytes(edited)
+        serving = Path(self.channel.verified_active(serving=True)['package'])
+        refused = self.project_command(serving, harness, 'install')
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertEqual(target.read_bytes(), edited)
+        target.write_bytes(owned)
+
+        marker = Path(self.value['off_file'])
+        metadata.write(marker, {'synthetic': 'stopped-before-hook-refresh'})
+        stopped = marker.read_bytes()
+        rebound = self.project_command(serving, harness, 'install')
+        self.assertEqual(rebound.returncode, 0, rebound.stdout + rebound.stderr)
+        self.assertEqual(json.loads(rebound.stdout)['status'], 'project-memory-hook-configured')
+        self.assertEqual(marker.read_bytes(), stopped)
+        self.assert_no_project_access(harness, 'synthetic-rebound-stopped')
+        marker.unlink()
+        self.assert_project_turn(harness, project, 'synthetic-rebound-entry')
+        self.assertEqual(self.file.read_bytes(), settings)
         self.assertEqual(outbox.read_bytes(), original)

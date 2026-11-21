@@ -60,6 +60,9 @@ def project_harness(value):
 
 def load(path, sha, *, locate):
     p = load_binding(path, sha, locate=locate)
+    for name in ("capture_policy", "recall_policy"):
+        if p[name]:
+            private_json(p[name], p[name + "_sha256"])
     pins = p["code_sha256"]
     if pins.keys() == runtime_pins(ROOT).keys() and all(
         digest(canonical(ROOT / name, existing=True).read_bytes()) == pin
@@ -92,7 +95,7 @@ def load(path, sha, *, locate):
 
 
 def load_binding(path, sha, *, locate):
-    """Read verified project metadata without authorizing a project executable."""
+    """Validate the project binding and policy references without opening the policies."""
     p = private_json(path, sha)
     fields = FIELDS
     harness = project_harness(p)
@@ -144,8 +147,6 @@ def load_binding(path, sha, *, locate):
     for name in ("capture_policy", "recall_policy"):
         if bool(p[name]) != bool(p[name + "_sha256"]):
             raise ValueError("Complete policy pin required")
-        if p[name]:
-            private_json(p[name], p[name + "_sha256"])
     if p["source_mode"] == "shared-memory" and any(
         p[n] is not None for n in ("capture_policy", "recall_policy")
     ):
@@ -163,11 +164,14 @@ def load_binding(path, sha, *, locate):
     return p
 
 
-def active(p):
+def has_stop_marker(p):
     marker = Path(p["off_file"])
     global_marker = marker.with_name("global-memory.off")
-    if (not p["enabled"] or marker.exists() or marker.is_symlink()
-            or global_marker.exists() or global_marker.is_symlink()):
+    return any(path.exists() or path.is_symlink() for path in (marker, global_marker))
+
+
+def active(p):
+    if not p["enabled"] or has_stop_marker(p):
         return False
     if p["recall_policy"]:
         value = private_json(p["recall_policy"], p["recall_policy_sha256"])
@@ -332,7 +336,15 @@ def source_control(home, cwd, harness):
             harness, str(Path(home)), str(root)
         ):
             raise ValueError("Existing project source binding changed")
-        if not active(project):
+        # Read-only links never own collection. Their recall lifecycle can
+        # end independently of globally approved capture, while an explicit
+        # stop marker still applies to this host's project and descendants.
+        if project["capture_policy"] is None:
+            stopped = has_stop_marker(project)
+        else:
+            private_json(project["capture_policy"], project["capture_policy_sha256"])
+            stopped = not active(project)
+        if stopped:
             return False, None
         if root == current:
             exact = project
