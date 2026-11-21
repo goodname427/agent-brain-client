@@ -45,6 +45,38 @@ It runs in the full Mac suite and Windows contract jobs. The subprocess fixture
 `tests/layered_recall_bridge.py` supports an explicit Server integration runner;
 it is never part of a release and never activates host credentials.
 
+## Question context selection
+
+The Hook selects and presents evidence from its existing authorized
+`memory_query` result on every turn, regardless of the candidates' total size.
+It keeps native L1 relative order and does not use a missing literal match
+to disqualify a native hit. Distinguishing query terms and current-source
+applicability can promote a derived result. This uses the existing approved
+source context and does not assign cross-layer relevance scores.
+
+Short relevant records are written whole. Long records with direct query
+evidence use an original sentence when it fits, or a bounded verbatim
+`excerpt`. A long native hit can also use an excerpt when no distinguishing
+text is available. Other supported long records can use an `index` containing
+a short locator quote. These forms carry the verified source context and
+a record digest. The existing `memory_query` with its normal origin and
+authorization can search the quote again. The digest is a correlation
+reference. There is no exact read-by-digest or read-by-path route in the
+client's current grant.
+
+The final serialization is limited to 24 KiB of UTF-8 including JSON row
+metadata, the policy prefix and separators. Complete short records and
+excerpts get space before indexes. The Server's 240,000-byte envelope and
+native candidate limits stay independent. The Hook makes one wire request
+and formats only the candidates returned by it. The approved offline fallback
+keeps the selected presentation and refits any added offline metadata.
+
+The paired Tencent Core already supplies native L1 order and score, and the
+Server adapter uses its scenario list, scenario read and core profile handlers.
+The scenario list can include native descriptions. The current AB results
+contain verified scene bodies and provenance, while list descriptions and
+the Server's exact scenario reader are internal to the adapter.
+
 ## Content-free receipts
 
 The question Hook now saves one private `recall-receipts/<request_key>.json`
@@ -52,7 +84,10 @@ per attempt as well as the latest summary in `last-recall.json`. The request key
 binds the approved scope, origin, session, turn and full question. The wire
 request ID is `global_recall_<request_key>`. Schema 2 receipts contain hashes of
 the session, turn, actual query, returned and selected record IDs/content, and emitted
-context, plus layer/count/byte totals and the number omitted for budget. They
+context, plus layer/count/byte totals, the number omitted for budget and, for
+the evidence selector, `unselected_without_evidence`. For a selected excerpt or
+index, `content_sha256` identifies the verified candidate and
+`output_content_sha256` identifies the text actually presented. They
 contain no query, memory text, source paths, credentials or exception values.
 Later queries cannot overwrite a different request's evidence. Old schema 1
 summaries remain readable but cannot establish request identity.
@@ -71,11 +106,6 @@ function in `global_memory_scope.digest`, including for string values.
   stderr `hook-output-written` receipt carries the same request key and context
   hash. Neither proves host acceptance or model use; `model_used` stays `unknown`.
 
-The Hook fits whole native-selected results to 24 KiB of actual UTF-8 context,
-including origin metadata and the policy prefix. It does not measure escaped
-ASCII JSON or fail the entire recall because another candidate is too large.
-Oversized candidates are omitted with a count; stored memory is never truncated.
-
 For isolated diagnosis, a Hook process started with `AGENT_BRAIN_RECALL_TIMING=1`
 can write a private `last-recall-timing.json` beside `last-recall.json`. The
 sampling is off by default. The file is replaced after a sampled failure or
@@ -90,9 +120,8 @@ from failure to saving the normal receipts. Response header timing
 keeps the read count, the first eight spans and the final span. CodeBuddy's
 normal Hook has no Client request deadline, so its request budget is null. The
 sample contains no response bytes, prompt text, credentials or addresses. The
-normal receipt format and Hook output are unchanged, and failure to save a
-sample leaves the original recall outcome intact. Context fitting counts each
-whole row's encoded bytes once against the same 24 KiB budget.
+timing sample is separate from the normal receipt and Hook output, and failure
+to save a sample leaves the original recall outcome intact.
 
 The owned Stop Hook is synchronous, with the existing 120-second host timeout
 and 110-second client deadline. This lets a short-lived `codex exec --json` wait

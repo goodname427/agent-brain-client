@@ -9,9 +9,40 @@ from agent_brain_client.domain.scopes import (
     restricted,
 )
 from agent_brain_client.domain import privacy as privacy
-from agent_brain_client.application.memory.context import bounded_context_items
+from agent_brain_client.application.memory.context import select_context_items
 from agent_brain_client.application.control import recall_timing_stage
 import re
+
+
+def _fit_context(items, references, query, observe, *, cached=False):
+    selected, uncorroborated = select_context_items(
+        items, references, query, cached=cached, automatic=observe is not None
+    )
+    returned = [
+        {key: ref[key] for key in ("layer", "record_sha256", "content_sha256")}
+        for ref in references
+    ]
+    refs = []
+    for index, item in selected.items():
+        if index >= len(returned):
+            continue  # Legacy private caches did not record the original ID.
+        ref = returned[index]
+        if "presentation" in item:
+            ref = dict(
+                ref,
+                presentation=item["presentation"],
+                output_content_sha256=digest(item["content"]),
+            )
+        refs.append(ref)
+    if observe is not None:
+        observe.update(
+            candidate_count=len(items),
+            returned=returned,
+            selected=refs,
+            omitted_for_budget=len(items) - uncorroborated - len(selected),
+            unselected_without_evidence=uncorroborated,
+        )
+    return list(selected.values()), refs
 
 
 def recall(
@@ -53,19 +84,21 @@ def recall(
                     dict(item, offline_cache=True, remote_confirmation=False)
                     for item in saved["items"]
                 ]
-                selected = bounded_context_items(items)
-                refs = [
-                    ref
-                    for item, ref in zip(items, saved.get("selected", []))
-                    if any(item is kept for kept in selected)
-                ]
-                if observe is not None:
-                    observe.update(
-                        candidate_count=len(items),
-                        returned=saved.get("selected", []),
-                        selected=refs,
-                        omitted_for_budget=len(items) - len(selected),
-                    )
+                references = saved.get("selected", [])
+                for index, item in enumerate(items):
+                    if "presentation" not in item:
+                        continue
+                    ref = references[index] if index < len(references) else {}
+                    if (
+                        ref.get("layer") != item["layer"]
+                        or ref.get("record_sha256") != item["record_sha256"]
+                        or ref.get("presentation") != item["presentation"]
+                        or ref.get("output_content_sha256") != digest(item["content"])
+                    ):
+                        raise ValueError("Cached recall excerpt changed")
+                selected, _ = _fit_context(
+                    items, references, query, observe, cached=saved.get("evidence_selected") is True
+                )
                 return selected
         raise ValueError("Global recall unavailable")
     data = response["result"]
@@ -174,20 +207,7 @@ def recall(
                         "content_sha256": digest(row["content"]),
                     }
                 )
-    selected = bounded_context_items(items)
-    refs = [
-        ref
-        for item, ref in zip(items, references)
-        if any(item is kept for kept in selected)
-    ]
-    if observe is not None:
-        observe.update(
-            candidate_count=len(items),
-            returned=references,
-            selected=refs,
-            omitted_for_budget=len(items) - len(selected),
-        )
-    items = selected
+    items, refs = _fit_context(items, references, query, observe)
     cache = services.settings_path(value["device_home"]).parent / (
         "recall-" + digest(local) + ".json"
     )
@@ -198,6 +218,7 @@ def recall(
             "query_sha256": cache_query,
             "items": items,
             "selected": refs,
+            "evidence_selected": observe is not None,
         },
     )
     return items
