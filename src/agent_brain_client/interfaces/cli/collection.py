@@ -14,6 +14,49 @@ import time
 from agent_brain_client.runtime import collection as core
 
 
+def _global_hook(args, started, diagnostic):
+    from agent_brain_client.application.control import (
+        RECALL_TIMING_ENV, RequestControl, mark_recall_timing, recall_timing_scope,
+    )
+    from agent_brain_client.adapters.storage.content import operation_diagnostics
+
+    observation = {}
+    with recall_timing_scope(os.environ.get(RECALL_TIMING_ENV) == "1", started=started):
+        value = core.load(args.device_home, verify_code=True)
+        initialized = time.monotonic()
+        mark_recall_timing("hook_initialized")
+        control = RequestControl(110)
+        try:
+            with operation_diagnostics() as progress:
+                try:
+                    with control.activate():
+                        result = core.hook(value, harness=args.harness or "codex",
+                                           observe=observation.update)
+                finally:
+                    diagnostic.update(progress)
+        finally:
+            control.close()
+        mark_recall_timing("output_prepared")
+        print(json.dumps(result, ensure_ascii=False), flush=True)
+        mark_recall_timing("output_flushed")
+        print(json.dumps({"operation": "global-hook-timing", "timing_ms": {
+            "initialization_ms": round((initialized - started) * 1000, 3),
+            "total_ms": round((time.monotonic() - started) * 1000, 3),
+        }}), file=sys.stderr)
+        if observation and observation["status"] != "failed":
+            observation["output_written"] = True
+            try:
+                core.save_recall_observation(value, observation)
+            except (OSError, ValueError):
+                pass  # stdout is already flushed; never emit a second JSON result.
+            print(
+                json.dumps(dict(observation, status="hook-output-written",
+                                recall_status=observation["status"])),
+                file=sys.stderr,
+            )
+    return 0
+
+
 def main(argv=None):
     started = time.monotonic()
     p = argparse.ArgumentParser(description=__doc__)
@@ -74,9 +117,10 @@ def main(argv=None):
             )
         if a.request_key is not None:
             p.error("Event diagnostics cannot be combined with a recall --request-key")
-    observation = {}
     diagnostic = {"stage": "global-settings"}
     try:
+        if a.action == "global-hook":
+            return _global_hook(a, started, diagnostic)
         if a.action in ("global-install", "global-uninstall"):
             from agent_brain_client.runtime.host_maintenance import global_entry
             if a.harness is None:
@@ -106,26 +150,6 @@ def main(argv=None):
                     json.loads(a.recall_options) if a.recall_options is not None else {}
                 )
                 result = core.configure_recall(value, options)
-            elif a.action == "global-hook":
-                from agent_brain_client.application.control import (
-                    RECALL_TIMING_ENV, RequestControl, recall_timing_scope,
-                )
-                from agent_brain_client.adapters.storage.content import (
-                    operation_diagnostics,
-                )
-
-                initialized = time.monotonic()
-                with recall_timing_scope(os.environ.get(RECALL_TIMING_ENV) == "1"):
-                    control = RequestControl(110)
-                    try:
-                        with operation_diagnostics() as progress:
-                            try:
-                                with control.activate():
-                                    result = core.hook(value, harness=a.harness or "codex", observe=observation.update)
-                            finally:
-                                diagnostic.update(progress)
-                    finally:
-                        control.close()
             elif a.action == "global-status":
                 result = core.status(
                     value,
@@ -151,27 +175,6 @@ def main(argv=None):
                     "native_hook_verified": False,
                 }
         print(json.dumps(result, ensure_ascii=False), flush=True)
-        if a.action == "global-hook":
-            print(json.dumps({"operation": "global-hook-timing", "timing_ms": {
-                "initialization_ms": round((initialized - started) * 1000, 3),
-                "total_ms": round((time.monotonic() - started) * 1000, 3),
-            }}), file=sys.stderr)
-        if a.action == "global-hook" and observation and observation["status"] != "failed":
-            observation["output_written"] = True
-            try:
-                core.save_recall_observation(value, observation)
-            except (OSError, ValueError):
-                pass  # stdout is already flushed; never emit a second JSON result.
-            print(
-                json.dumps(
-                    dict(
-                        observation,
-                        status="hook-output-written",
-                        recall_status=observation["status"],
-                    )
-                ),
-                file=sys.stderr,
-            )
         failed_activation = (
             a.action == "global-configure" and result.get("activated") is not True
         )

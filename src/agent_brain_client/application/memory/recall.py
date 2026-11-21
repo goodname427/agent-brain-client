@@ -10,6 +10,7 @@ from agent_brain_client.domain.scopes import (
 )
 from agent_brain_client.domain import privacy as privacy
 from agent_brain_client.application.memory.context import bounded_context_items
+from agent_brain_client.application.control import recall_timing_stage
 import re
 
 
@@ -30,9 +31,10 @@ def recall(
     )
     params["recall"] = options
     cache_query = digest([query, params["limit"], options])
-    response = client.wire(
-        "memory_query", params, **({"rid": request_id} if request_id else {})
-    )
+    with recall_timing_stage("wire"):
+        response = client.wire(
+            "memory_query", params, **({"rid": request_id} if request_id else {})
+        )
     if "error" in response:
         cache = services.settings_path(value["device_home"]).parent / (
             "recall-" + digest(local) + ".json"

@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from agent_brain_client.adapters.storage import metadata
 from agent_brain_client.adapters.storage.collection import settings_path
-from agent_brain_client.adapters.storage.registration import registration
+from agent_brain_client.adapters.storage.registration import codex_registration, registration
 from agent_brain_client.adapters.packages.frozen import freeze_code, runtime_pins
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -31,9 +31,9 @@ def host_errors(operation):
 def registered_hosts(home):
     base = Path(home) / ".config/agent-brain-client"
     hosts = []
-    codex = base / "codex/registration.json"
-    if ((codex.exists() and metadata.private_json(codex).get("removed") is not True)
-            or not codex.exists() and (base / "global-memory/hook-install.json").exists()):
+    codex = codex_registration(home)
+    if (codex is not None and not codex["removed"]
+            or codex is None and (base / "global-memory/hook-install.json").exists()):
         hosts.append("codex")
     buddy = base / "codebuddy/registration.json"
     if buddy.exists() and metadata.private_json(buddy).get("removed") is not True:
