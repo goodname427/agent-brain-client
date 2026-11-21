@@ -643,7 +643,9 @@ class WindowsNative(unittest.TestCase):
         import agent_brain_client.adapters.installation.installation as content_install
         import agent_brain_client.adapters.harnesses.codex.collection_installation as hooks
         from agent_brain_client.adapters.packages.releases import GitReleaseSource
+        from agent_brain_client.adapters.storage.content_session import ContentSession
         from agent_brain_client.runtime import installation as installer, installation_completion
+        from test_content_outbox import Cloud, MEMORY
         from types import SimpleNamespace
         native = self.home / 'codex'; native.mkdir()
         parent_security = self.host_acl(native)
@@ -704,9 +706,18 @@ class WindowsNative(unittest.TestCase):
             off = private_directory(source_policy.settings_path(self.home).parent) / 'global.off'
             metadata.write(off, {'reason': 'synthetic-user-pause'})
             off_before = off.read_bytes()
-            queue = Path(json.loads(policy_before)['runtime']['content_cache']) / 'outbox' / 'synthetic_pending.json'
-            private_directory(queue.parent)
-            metadata.write(queue, {'request_id': 'synthetic_pending'})
+            runtime = json.loads(policy_before)['runtime']
+            cloud = Cloud()
+            cloud.grant = connection['grant']
+            cloud.offline = True
+            session = ContentSession(self.home, runtime['content_cache'],
+                metadata.private_json(runtime['content_policy'], runtime['content_policy_sha256']),
+                cloud, host=CodexContentPorts, native_home=native)
+            request = {'request_id': 'synthetic_pending', 'method': 'content_put',
+                       'params': {'kind': 'memory', 'id': 'personal-owner', 'record': MEMORY,
+                                  'expected_revision': 'missing'}}
+            self.assertTrue(session.invoke(request)['local_queue']['saved'])
+            queue = session.cache / 'outbox' / 'synthetic_pending.json'
             queue_before = queue.read_bytes(), host_security(queue)
             original_run = installer.run
             def resume(home, codex, value, digest, **options):
@@ -778,8 +789,11 @@ class WindowsNative(unittest.TestCase):
                     with self.subTest(shell=shell, script=script):
                         command = [shell, '-NoLogo', '-NoProfile', '-NonInteractive', '-File', str(checkout / script), *arguments]
                         run = subprocess.run(command, env=environment, capture_output=True, text=True, encoding='utf-8', timeout=60)
-                        self.assertEqual(run.returncode, 0, run.stderr)
-                        self.assertTrue(json.loads(run.stdout)[field], run.stdout)
+                        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                        reported = json.loads(run.stdout)
+                        self.assertTrue(reported[field], run.stdout)
+                        if field == 'installed':
+                            self.assertEqual(reported['queue']['pending'], 1)
             hooks.uninstall(args)
             self.assertNotIn(hooks.BEGIN, config.read_text(encoding='utf-8'))
             self.assertTrue(content_install.inspect(self.home)['registration_verified'])
