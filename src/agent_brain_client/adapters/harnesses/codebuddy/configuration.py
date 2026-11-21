@@ -11,7 +11,6 @@ import sys
 from agent_brain_client.adapters.storage.bounded_json import (
     canonical,
     digest,
-    read_json,
 )
 
 NAME = "agent_brain_server"
@@ -448,7 +447,7 @@ def mcp_unchanged_during_transaction(record, receipt_file, receipt):
         return False
 
 
-def install(home, source, core, *, surface="both", remove=False, enable_hooks=None,
+def install(home, source, core, *, surface=None, remove=False, enable_hooks=None,
             maintenance=False):
     from agent_brain_client.adapters.platforms.filesystem import (
         locked,
@@ -473,10 +472,6 @@ def install(home, source, core, *, surface="both", remove=False, enable_hooks=No
         if maintenance and (receipt is None or receipt.get("removed")):
             return {"status": "codebuddy-not-installed", "native_changed": False,
                     "update_available": False}
-        if receipt and receipt["surface"] != surface:
-            raise ValueError(
-                "Uninstall the original CodeBuddy surface before changing its scope"
-            )
         if remove and (receipt is None or receipt.get("removed")):
             return {
                 "status": "codebuddy-not-installed",
@@ -485,6 +480,12 @@ def install(home, source, core, *, surface="both", remove=False, enable_hooks=No
             }
         if receipt and receipt.get("removed"):
             receipt = None
+        if surface is None:
+            surface = receipt["surface"] if receipt else "both"
+        if receipt and receipt["surface"] != surface:
+            raise ValueError(
+                "Unbind the original CodeBuddy surface before changing its scope"
+            )
         paths = (
             [Path(p) for p in receipt["mcp_paths"]]
             if receipt
@@ -555,16 +556,21 @@ def install(home, source, core, *, surface="both", remove=False, enable_hooks=No
             "surface": surface,
             "host": host_plan(payload, private_paths=(receipt_file,)),
         }
-        native_changed = any(
-            row["before_sha"] != row["target_sha"]
+        changed_paths = {
+            name
             for name, row in record["host"].items()
-            if name != str(receipt_file)
-        )
+            if name != str(receipt_file) and row["before_sha"] != row["target_sha"]
+        }
+        native_changes = {
+            "mcp": bool(changed_paths & set(map(str, paths))),
+            "hooks": str(settings) in changed_paths,
+            "guidance": bool(changed_paths & set(map(str, (*previous_paths, *wanted_paths)))),
+        }
         if maintenance and all(
             row["before_sha"] == row["target_sha"] for row in record["host"].values()
         ):
             return {"status": "codebuddy-current", "native_changed": False,
-                    "update_available": False}
+                    "update_available": False, "native_changes": native_changes}
         journal = directory / "transaction.json"
         metadata_io.write(journal, record)
         try:
@@ -584,10 +590,11 @@ def install(home, source, core, *, surface="both", remove=False, enable_hooks=No
     return {
         "status": "codebuddy-uninstalled" if remove else "codebuddy-configured",
         "installed": not remove,
-        "native_changed": native_changed if maintenance else True,
+        "native_changed": bool(changed_paths),
+        "native_changes": native_changes,
         "update_available": False,
         "surface": surface,
-        "model_loaded": False,
+        "model_loaded": "unknown",
         "automatic_capture": "future-observed-turns" if hooks_enabled and not remove else "hooks-uninstalled",
         "assistant_capture": "current-generation-native-transcript",
         "automatic_recall": hooks_enabled and not remove,
@@ -597,7 +604,15 @@ def install(home, source, core, *, surface="both", remove=False, enable_hooks=No
 
 
 def status(home, core, *, backend_check):
-    receipt = read_json(state_directory(home) / "registration.json")
+    directory = state_directory(home)
+    journal = directory / "transaction.json"
+    if (journal.exists() or journal.is_symlink()) and metadata_io.private_json(journal)["phase"] == "applying":
+        return {"status": "codebuddy-review-or-resume-required", "installed": False,
+                "reason": "native-binding-transaction-pending", "native_changed": False}
+    file = directory / "registration.json"
+    if not (file.exists() or file.is_symlink()):
+        return {"status": "codebuddy-not-installed", "installed": False, "native_changed": False}
+    receipt = metadata_io.private_json(file)
     if receipt.get("removed"):
         return {"status": "codebuddy-uninstalled", "installed": False}
     if set(map(str, mcp_paths(home, receipt["surface"]))) != set(receipt["mcp_paths"]):
@@ -620,7 +635,7 @@ def status(home, core, *, backend_check):
         "collection_hooks_installed": receipt.get("hooks_enabled", True),
         "backend_status": checked["status"],
         "service_enabled": checked.get("installed"),
-        "model_loaded": False,
+        "model_loaded": "unknown",
         "permissions_changed": False,
     }
 

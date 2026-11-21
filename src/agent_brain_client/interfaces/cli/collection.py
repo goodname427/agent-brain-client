@@ -80,7 +80,9 @@ def main(argv=None, *, verified_release=False):
     p.add_argument("--include-root", action="append", default=[])
     p.add_argument("--isolate-root", action="append", default=[])
     p.add_argument("--exclude-root", action="append", default=[])
-    p.add_argument("--non-project-root", action="append", default=[])
+    ordinary = p.add_mutually_exclusive_group()
+    ordinary.add_argument("--non-project-root", action="append", default=[])
+    ordinary.add_argument("--all-directories", action="store_true")
     p.add_argument("--all-projects", action="store_true")
     p.add_argument("--profile-id")
     p.add_argument("--packet-output")
@@ -165,7 +167,7 @@ def main(argv=None, *, verified_release=False):
             elif a.action == "global-sync":
                 result = core.flush(value)
             else:
-                local = core.eligible(value, os.getcwd())
+                local = core.eligible(value, os.getcwd(), prompt=True)
                 if local is None:
                     raise ValueError("Current origin not approved")
                 result = {

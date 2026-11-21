@@ -5,7 +5,7 @@ from pathlib import Path
 from agent_brain_client.adapters.storage import metadata as metadata
 from agent_brain_client.adapters.storage import registration as registration_store
 from agent_brain_client.adapters.platforms.filesystem import private_mode
-from agent_brain_client.domain.scopes import validate, digest
+from agent_brain_client.domain.scopes import validate, digest, has_origins
 from agent_brain_client.adapters.packages.layout import PYTHON_FILES as FILES
 from agent_brain_client.adapters.packages.frozen import (
     compatible_codebuddy_runtime,
@@ -95,11 +95,7 @@ def approved(value):
     pin = digest(value["scope"])
     locally_approved = (
         value["enabled"]
-        and bool(
-            value["scope"].get("all_projects")
-            or value["scope"]["include_roots"]
-            or value["scope"]["non_project_roots"]
-        )
+        and has_origins(value["scope"])
         and value["approved_scope_sha256"] == pin
         and value["server_scope_sha256"] == pin
         and not (settings_path(value["device_home"]).parent / "global.off").exists()
@@ -119,11 +115,7 @@ def admission_state(value):
     reasons = []
     if not value["enabled"]:
         reasons.append("capture-disabled")
-    if not (
-        value["scope"].get("all_projects")
-        or value["scope"]["include_roots"]
-        or value["scope"]["non_project_roots"]
-    ):
+    if not has_origins(value["scope"]):
         reasons.append("source-scope-empty")
     if value["approved_scope_sha256"] != pin:
         reasons.append("local-source-approval-required")
@@ -182,6 +174,7 @@ def retained_routing(home):
     return {
         "preferences": {
             **{key: scope[key] for key in keys},
+            **({"all_non_projects": scope["all_non_projects"]} if "all_non_projects" in scope else {}),
             "all_projects": scope.get("all_projects", False),
             "enabled": value["enabled"],
             "global_off": off.exists(),
@@ -223,7 +216,7 @@ def seed_retained_routing(home, preferences):
     value = load(home, verify_code=False)
     if value["server_scope_sha256"] is not None:
         return  # Never replace a later authenticated source policy.
-    if set(preferences) != {
+    if set(preferences) - {"all_non_projects"} != {
         "include_roots",
         "exclude_roots",
         "non_project_roots",

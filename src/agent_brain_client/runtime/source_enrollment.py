@@ -12,7 +12,8 @@ from pathlib import Path
 import subprocess
 from urllib.parse import urlsplit
 
-from agent_brain_client.domain.scopes import validate, digest
+from agent_brain_client.adapters.platforms.filesystem import locked
+from agent_brain_client.domain.scopes import validate, digest, has_origins, ordinary_default
 
 
 def operator(value, packet):
@@ -127,51 +128,115 @@ def preflight(value):
     return client, result, None
 
 
-def activate(value, scope):
-    """Read back registration and resume, without fencing an already active source."""
+def source_result(status, *, next_action=None, **fields):
+    result = dict(status=status, collection_enabled=False, activated=False,
+                  preserve_existing_state=True, model_calls=0, **fields)
+    if next_action is not None:
+        result["next_action"] = next_action
+    return result
+
+
+def local_stop(home):
+    from agent_brain_client.adapters.storage.collection import settings_path
+
+    off = settings_path(home).parent / "global.off"
+    return off.exists() or off.is_symlink()
+
+
+def paused(*, retained=False, local_fence=False, server=False, pending=False):
+    return source_result(
+        "retained-source-paused" if retained else "global-memory-source-paused",
+        local_stop_fence=local_fence,
+        server_stopped=True if server else None,
+        next_action=(
+            "Use global-configure --activate-packet with the saved device packet to finish this stopped registration."
+            if pending else
+            "Use explicit global-resume for the approved source, or global-configure to change source settings."
+        ),
+    )
+
+
+def matching_registration(state, scope, device_id):
+    return (
+        state.get("source_registered") is True
+        and state.get("scope_sha256") == digest(scope)
+        and state.get("global_profile_id") == scope["profile_id"]
+        and state.get("source_device_id") == device_id
+    )
+
+
+def report_existing_source(state):
+    """Report authenticated Server state without claiming local admission."""
+    if state["source_registered"]:
+        if state.get("stopped") is True:
+            return paused(server=True)
+        if state.get("stopped") is False:
+            return source_result(
+                "global-memory-server-active-local-unconfirmed",
+                source_registered=True,
+                server_stopped=False,
+            )
+    return source_result("global-memory-source-preserved")
+
+
+def activate(value, scope, *, automatic=False, newly_registered=False, state=None):
+    """Finalize exact admission, respecting stops on automatic paths."""
     from agent_brain_client.adapters.server.collection import CollectionClient
     from agent_brain_client.adapters.storage.collection import settings_path
 
+    home = value["device_home"]
     client = CollectionClient(value)
-    response = client.wire("memory_global_status", {})
+    response = (
+        client.wire("memory_global_status", {}) if state is None else {"result": state}
+    )
     result = response.get("result", {})
+    if "error" in response or not matching_registration(result, scope, client.device_id):
+        return source_result(
+            "global-memory-admission-pending",
+            server_error=response.get("error"),
+            next_action="Retry the same source setup with the saved packet.",
+        )
+    if automatic and local_stop(home):
+        return paused(local_fence=True)
+    if not automatic or result.get("stopped") is not False:
+        # Only a newly confirmed registration in this call can explain the
+        # Server's initial stop. A later stop has the same status representation.
+        if automatic and not newly_registered:
+            if result.get("stopped") is True:
+                return paused(server=True, pending=True)
+            return source_result("global-memory-admission-pending")
+        response = client.wire("memory_global_resume", {})
+        result = response.get("result", {})
+        if (
+            "error" in response
+            or result.get("schema") != 1
+            or result.get("stopped") is not False
+        ):
+            return source_result(
+                "global-memory-resume-unconfirmed",
+                server_error=response.get("error"),
+                next_action="Retry the same source setup to read back the saved registration.",
+            )
+    if automatic:
+        from agent_brain_client.adapters.storage.collection import load
+
+        # Keep a stop set during registration and avoid overwriting a later
+        # source choice. Use current metadata so a code-pin refresh survives.
+        latest = load(home, verify_code=False)
+        if local_stop(home):
+            return paused(local_fence=True)
+        if any(latest[key] != value[key] for key in (
+            "enabled", "scope", "approved_scope_sha256", "server_scope_sha256",
+        )):
+            return source_result("global-memory-source-preserved")
+        value = latest
     pin = digest(scope)
-    if (
-        "error" in response
-        or result.get("source_registered") is not True
-        or result.get("scope_sha256") != pin
-        or result.get("global_profile_id") != scope["profile_id"]
-        or result.get("source_device_id") != client.device_id
-    ):
-        return {
-            "status": "global-memory-admission-pending",
-            "activated": False,
-            "collection_enabled": False,
-            "server_error": response.get("error"),
-            "preserve_existing_state": True,
-            "next_action": "Retry the normal install or update entry; no new authorization is needed.",
-            "model_calls": 0,
-        }
-    response = client.wire("memory_global_resume", {})
-    result = response.get("result", {})
-    if (
-        "error" in response
-        or result.get("schema") != 1
-        or result.get("stopped") is not False
-    ):
-        return {
-            "status": "global-memory-resume-unconfirmed",
-            "activated": False,
-            "collection_enabled": False,
-            "server_error": response.get("error"),
-            "next_action": "Retry the normal install or update entry.",
-            "model_calls": 0,
-        }
     value.update(
         scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin, enabled=True
     )
     metadata_io.write(settings_path(value["device_home"]), value)
-    (settings_path(value["device_home"]).parent / "global.off").unlink(missing_ok=True)
+    if not automatic:
+        (settings_path(home).parent / "global.off").unlink(missing_ok=True)
     return {
         "status": "global-memory-configured",
         "scope_sha256": pin,
@@ -183,7 +248,7 @@ def activate(value, scope):
     }
 
 
-def register(value, packet):
+def register(value, packet, *, automatic=False):
     """Register this enrolled device; retries retain the exact packet identity."""
     from agent_brain_client.adapters.server.collection import CollectionClient
 
@@ -192,112 +257,263 @@ def register(value, packet):
         packet["scope"]
     ):
         raise ValueError("Original device packet required")
+    if automatic and local_stop(value["device_home"]):
+        return paused(local_fence=True)
     client = CollectionClient(value)
     if packet["client"]["source_device_id"] != client.device_id:
         raise ValueError("Original enrolled device required")
     response = client.wire("memory_global_register", packet, "source_" + digest(packet))
     result = response.get("result", {})
-    if (
-        "error" in response
-        or result.get("source_registered") is not True
-        or result.get("scope_sha256") != digest(packet["scope"])
-        or result.get("source_device_id") != client.device_id
-        or result.get("global_profile_id") != packet["scope"]["profile_id"]
+    if "error" in response or not matching_registration(
+        result, packet["scope"], client.device_id
     ):
-        return {
-            "status": "global-memory-registration-pending",
-            "activated": False,
-            "server_error": response.get("error"),
-            "model_calls": 0,
-            "preserve_existing_state": True,
-            "next_action": "Retry the normal install or update entry; the saved packet and existing device are reused.",
-        }
+        return source_result(
+            "global-memory-registration-pending",
+            server_error=response.get("error"),
+            next_action="Retry the same source setup with the saved packet and device.",
+        )
+    if automatic:
+        return activate(value, packet["scope"], automatic=True, newly_registered=True)
     return activate(value, packet["scope"])
 
 
-def configure(args):
-    from agent_brain_client.adapters.storage.collection import load, settings_path
+def packet_for(value, scope, client):
+    from agent_brain_client.adapters.storage.collection import settings_path
 
-    value = load(args.device_home, verify_code=False)
-    directory = settings_path(args.device_home).parent
-    pending = directory / "pending-scope.json"
-    explicit = (
-        args.include_root
-        or args.isolate_root
-        or args.exclude_root
-        or args.non_project_root
-    )
-    packet_path = getattr(args, "activate_packet", None)
-    if packet_path:
-        previous = metadata_io.private_json(packet_path)
-        scope = copy.deepcopy(validate(previous["scope"]))
-    elif explicit:
-        scope = copy.deepcopy(value["scope"])
-
-        def canonical(root):
-            return str(Path(root).expanduser().resolve())
-
-        scope.update(
-            include_roots=[
-                {"root": canonical(x), "sharing": "personal"} for x in args.include_root
-            ]
-            + [{"root": canonical(x), "sharing": "project"} for x in args.isolate_root],
-            exclude_roots=[canonical(x) for x in args.exclude_root],
-            non_project_roots=[canonical(x) for x in args.non_project_root],
-        )
-    elif pending.exists():
-        scope = copy.deepcopy(validate(metadata_io.private_json(pending)))
-    else:
-        scope = copy.deepcopy(value["scope"])
-    if (
-        getattr(args, "all_projects", False)
-        or not getattr(args, "preserve_scope", False)
-        and not (explicit or packet_path or pending.exists())
-    ):
-        scope["all_projects"] = True
-    validate(scope)
-    client, state, failure = preflight(value)
-    if failure:
-        return failure
-    # A local placeholder (including an unsuccessfully approved one) is not a
-    # Server identity. Bind to the authenticated existing pool before registration.
-    scope["profile_id"] = state["global_profile_id"]
-    pin = digest(scope)
-    if state["source_registered"] and state.get("scope_sha256") == pin:
-        return activate(value, scope)
-    _, registered = registration_store.registration(args.device_home)
+    _, registered = registration_store.registration(value["device_home"])
     runtime = registered["runtime"]
     profile = metadata_io.private_json(
         runtime["https_profile"], runtime["https_profile_sha256"]
     )
-    packet = {
+    return {
         "schema": 2,
         "scope": scope,
-        "approved_scope_sha256": pin,
+        "approved_scope_sha256": digest(scope),
         "client": {
             "profile_sha256": runtime["https_profile_sha256"],
             "content_policy_sha256": runtime["content_policy_sha256"],
             "endpoint": profile["endpoint"],
-            "directory": str(directory),
+            "directory": str(settings_path(value["device_home"]).parent),
             "legacy_projects": {},
             "actor": profile["grant"]["actor"],
             "source_device_id": client.device_id,
             "grant": profile["grant"],
         },
     }
-    # Persist intent separately: connection/registration failure must never
-    # disable the previous source, remove its approvals, or stop legacy capture.
-    metadata_io.write(pending, scope)
-    target = directory / ("device-packet-" + digest(packet) + ".json")
-    if not target.exists():
+
+
+def packet_path(pending, packet):
+    return pending.with_name("device-packet-" + digest(packet) + ".json")
+
+
+def save_packet(pending, packet):
+    target = packet_path(pending, packet)
+    if target.exists():
+        if metadata_io.private_json(target) != packet:
+            raise ValueError("Saved source packet changed")
+    else:
         metadata_io.write(target, packet)
-    result = register(value, packet)
-    if result.get("activated"):
-        output = getattr(args, "packet_output", None)
-        if output:
-            metadata_io.write(metadata_io.canonical(output), packet)
-    return dict(
-        result,
-        packet=str(target),
-        packet_sha256=metadata_io.digest(target.read_bytes()),
+    return target
+
+
+def apply_packet(value, pending, packet, *, automatic=False):
+    target = save_packet(pending, packet)
+    # A recoverable scope always has its matching device packet on disk.
+    metadata_io.write(pending, packet["scope"])
+    result = register(value, packet, automatic=True) if automatic else register(value, packet)
+    return dict(result, packet=str(target), packet_sha256=metadata_io.digest(target.read_bytes()))
+
+
+def initial_scope(value, retained):
+    """Recognize untouched source defaults and the exact retained routing."""
+    scope = value["scope"]
+    if retained is not None and retained.get("routing") is not None:
+        return scope if value["enabled"] and has_origins(scope) else None
+    exclusions = retained["project_controls"]["blocked_roots"] if retained else []
+    if (
+        not value["enabled"]
+        and not value["legacy_projects"]
+        and "all_projects" not in scope
+        and not has_origins(scope)
+        and scope["recall_personal"] is True
+        and all(root in exclusions for root in scope["exclude_roots"])
+    ):
+        return dict(scope, all_projects=True, all_non_projects=True)
+    return None
+
+
+def maintain(home, *, initialize=False, retained=None):
+    from agent_brain_client.adapters.storage.collection import settings_path
+
+    retained_scope = retained is not None and retained.get("routing") is not None
+    if local_stop(home):
+        return paused(retained=retained_scope, local_fence=True)
+    lock = metadata_io.canonical(settings_path(home).with_name("source-enrollment.lock"))
+    with locked(lock):
+        return _maintain(home, initialize=initialize, retained=retained)
+
+
+def _maintain(home, *, initialize, retained):
+    from agent_brain_client.adapters.storage.collection import load, settings_path
+
+    retained_scope = retained is not None and retained.get("routing") is not None
+    if local_stop(home):
+        return paused(retained=retained_scope, local_fence=True)
+    value = load(home, verify_code=False)
+    bound = (
+        value["approved_scope_sha256"] is not None
+        or value["server_scope_sha256"] is not None
     )
+    if not value["enabled"] and (bound or retained_scope):
+        return paused(retained=retained_scope)
+    pending = settings_path(home).with_name("pending-scope.json")
+    initial = initial_scope(value, retained) if not bound else None
+    recover = initial is not None and pending.exists()
+    client, state, failure = preflight(value)
+    if failure:
+        return dict(failure, collection_enabled=False)
+    if local_stop(home):
+        return paused(retained=retained_scope, local_fence=True)
+    if bound:
+        return maintain_bound(value, client, state, pending, expand=not initialize)
+    if recover:
+        saved = validate(metadata_io.private_json(pending))
+        if saved["profile_id"] != state["global_profile_id"] or (
+            retained is not None and saved != dict(initial, profile_id=saved["profile_id"])
+        ):
+            return report_existing_source(state)
+        packet = packet_for(value, saved, client)
+        target = packet_path(pending, packet)
+        if not target.exists() or metadata_io.private_json(target) != packet:
+            return report_existing_source(state)
+        if state["source_registered"]:
+            if not matching_registration(state, saved, client.device_id):
+                return report_existing_source(state)
+            result = activate(value, saved, automatic=True, state=state)
+            return dict(result, packet=str(target), packet_sha256=metadata_io.digest(target.read_bytes()))
+    else:
+        if state["source_registered"] or not initialize or initial is None:
+            return report_existing_source(state)
+        packet = packet_for(value, dict(initial, profile_id=state["global_profile_id"]), client)
+    if local_stop(home):
+        return paused(retained=retained_scope, local_fence=True)
+    return apply_packet(value, pending, packet, automatic=True)
+
+
+def maintain_bound(value, client, state, pending, *, expand):
+    """Expand only an authenticated default and settle lost replies by readback."""
+    scope = value["scope"]
+    pin = digest(scope)
+    if (
+        state.get("stopped") is not False
+        or value["approved_scope_sha256"] != pin
+        or value["server_scope_sha256"] != pin
+        or not has_origins(scope)
+    ):
+        return report_existing_source(state)
+    current = matching_registration(state, scope, client.device_id)
+    result = (
+        {
+            "status": "global-memory-source-current",
+            "collection_enabled": True,
+            "scope_sha256": pin,
+            "source_device_id": client.device_id,
+            "model_calls": 0,
+        }
+        if current else report_existing_source(state)
+    )
+    if not expand or not ordinary_default(scope):
+        return result
+    expanded = dict(scope, all_non_projects=True)
+    if not current and not matching_registration(state, expanded, client.device_id):
+        return result
+    if pending.exists() and metadata_io.private_json(pending) not in (scope, expanded):
+        return result  # An explicit, unfinished scope choice takes priority.
+    packet = dict(packet_for(value, expanded, client), previous_scope_sha256=pin)
+    if current:
+        save_packet(pending, packet)
+        if local_stop(value["device_home"]):
+            return paused(local_fence=True)
+        reply = client.wire("memory_global_register", packet, "source_" + digest(packet))
+        confirmed = reply.get("result", {})
+        if not matching_registration(confirmed, expanded, client.device_id):
+            error = reply.get("error")
+            if error and error.get("code") == "global_source_stopped":
+                return paused(server=True)
+            return dict(result, ordinary_directory_collection_pending=True,
+                        server_error=error)
+        state = confirmed
+    else:
+        # A matching digest alone could belong to a separate explicit setup.
+        file = packet_path(pending, packet)
+        if not file.exists() or metadata_io.private_json(file) != packet:
+            return result
+    # This update never calls resume, even if a stop raced the registration.
+    if state.get("stopped") is True:
+        return paused(server=True)
+    return activate(value, expanded, automatic=True, state=state)
+
+
+def configure(args):
+    """Apply an explicitly chosen scope or the original saved packet."""
+    from agent_brain_client.adapters.storage.collection import settings_path
+
+    lock = metadata_io.canonical(
+        settings_path(args.device_home).with_name("source-enrollment.lock")
+    )
+    with locked(lock):
+        return _configure(args)
+
+
+def _configure(args):
+    from agent_brain_client.adapters.storage.collection import load, settings_path
+
+    value = load(args.device_home, verify_code=False)
+    pending = settings_path(args.device_home).with_name("pending-scope.json")
+    packet_input = getattr(args, "activate_packet", None)
+    all_projects = getattr(args, "all_projects", False)
+    all_directories = getattr(args, "all_directories", False)
+    scope = copy.deepcopy(value["scope"])
+    if packet_input:
+        previous = metadata_io.private_json(packet_input)
+        scope = validate(previous["scope"])
+    else:
+        def canonical(root):
+            return str(Path(root).expanduser().resolve())
+
+        if all_directories or all_projects or args.include_root or args.isolate_root:
+            scope["all_projects"] = all_directories or all_projects
+        if all_directories:
+            scope["all_non_projects"] = True
+        if args.include_root or args.isolate_root:
+            scope["include_roots"] = [
+                {"root": canonical(x), "sharing": "personal"} for x in args.include_root
+            ] + [{"root": canonical(x), "sharing": "project"} for x in args.isolate_root]
+        if args.exclude_root:
+            scope["exclude_roots"] = [canonical(x) for x in args.exclude_root]
+        if args.non_project_root:
+            # The nonempty list expresses the restriction on both Server contracts.
+            scope.pop("all_non_projects", None)
+            scope["non_project_roots"] = [canonical(x) for x in args.non_project_root]
+    validate(scope)
+    if not has_origins(scope):
+        return source_result(
+            "global-memory-activation-required",
+            next_action="Choose source roots or pass --all-directories to configure future collection.",
+        )
+    client, state, failure = preflight(value)
+    if failure:
+        return failure
+    scope = dict(scope, profile_id=state["global_profile_id"])
+    packet = packet_for(value, scope, client) if packet_input else None
+    if packet_input and previous != packet:
+        raise ValueError("Original device and scope packet required")
+    if matching_registration(state, scope, client.device_id):
+        return activate(value, scope)
+    if packet is None:
+        packet = packet_for(value, scope, client)
+    result = apply_packet(value, pending, packet)
+    output = getattr(args, "packet_output", None)
+    if result.get("activated") and output:
+        metadata_io.write(metadata_io.canonical(output), packet)
+    return result

@@ -12,7 +12,8 @@ def deliverable(row):
                         for message in row['request']['params']['event'].get('messages', [])))
 
 
-def deliver_pending(queue, *, allowed, limit=16, after="", attempted=lambda key: None, allowed_event=lambda event: True):
+def deliver_pending(queue, *, allowed, limit=16, after="", attempted=lambda key: None,
+                    allowed_event=lambda event: True, local_precheck=None):
     """A bounded fair pass; an unknown response keeps its original request ID."""
     from agent_brain_client.application.memory.observations import resume_staging
 
@@ -25,7 +26,18 @@ def deliver_pending(queue, *, allowed, limit=16, after="", attempted=lambda key:
         session = request['params']['event']['session_id']
         attempted(request["request_id"])
         event = request['params']['event']
-        if not allowed(session) or not allowed_event(event):
+        ready = allowed(session) if local_precheck is None else local_precheck()
+        if not ready or not allowed_event(event):
             break
-        queue.invoke(request, event_gate=lambda: allowed(session) and allowed_event(event))
+        admitted = True
+
+        def event_gate():
+            nonlocal admitted
+            admitted = False
+            admitted = allowed(session) and allowed_event(event)
+            return admitted
+
+        queue.invoke(request, event_gate=event_gate)
+        if local_precheck is not None and not admitted:
+            break
     return staging or any(deliverable(row) for row in queue._queued())

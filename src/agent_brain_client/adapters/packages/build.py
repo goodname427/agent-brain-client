@@ -3,12 +3,12 @@
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 from agent_brain_client.adapters.packages.client import (
     CLIENT_FILES,
     CONTENT_CLIENT_FILES,
     SSH_CONTENT_CLIENT_FILES,
-    HTTPS_CONTENT_CLIENT_FILES,
-    WINDOWS_HTTPS_CONTENT_CLIENT_FILES,
+    https_files,
     CAPABILITIES,
     PERSONAL_CAPABILITIES,
     CONTENT_CAPABILITIES,
@@ -16,7 +16,6 @@ from agent_brain_client.adapters.packages.client import (
     HTTPS_CONTENT_CAPABILITIES,
 )
 from agent_brain_client.adapters.packages.layout import (
-    PYTHON_FILES,
     source_python_members,
 )
 from agent_brain_client.adapters.packages.publication import require_publishable
@@ -54,11 +53,7 @@ def export(
     if ssh_content_candidate and any((pairing_candidate, content_candidate)):
         raise ValueError("Separate reviewed transport capability required")
     names = (
-        (
-            WINDOWS_HTTPS_CONTENT_CLIENT_FILES
-            if target_platform and target_platform.startswith("win32-")
-            else HTTPS_CONTENT_CLIENT_FILES
-        )
+        https_files(target_platform)
         if https_content_candidate
         else SSH_CONTENT_CLIENT_FILES
         if ssh_content_candidate
@@ -72,17 +67,22 @@ def export(
         if pairing_candidate
         else CLIENT_FILES
     )
-    if https_content_candidate:
-        names += tuple(
-            name for name in source_python_members(ROOT) if name not in PYTHON_FILES
-        )
+    commit = (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, timeout=30).strip()
+        if (ROOT / ".git").exists() else None
+    )
+    names = tuple(dict.fromkeys((*names, *source_python_members(ROOT, commit=commit))))
     prior = ()
     payload = {}
     for name in names:
-        p = ROOT / PACKAGE_SOURCE_PATHS.get(name, name)
-        if not p.is_file() or p.is_symlink():
+        relative = PACKAGE_SOURCE_PATHS.get(name, name)
+        path = ROOT / relative
+        if path.resolve() != path or not path.is_file():
             raise ValueError("Missing or linked local source")
-        payload[name] = p.read_bytes()
+        payload[name] = (
+            subprocess.check_output(["git", "show", f"{commit}:{relative}"], cwd=ROOT, timeout=30)
+            if commit else path.read_bytes()
+        )
     require_publishable(payload)
     output.mkdir(parents=True)
     for name, data in payload.items():

@@ -30,7 +30,11 @@ def _valid_reference(ref, counts, *, emitted=False):
 
 def _valid_retrieval(retrieval, counts, item_count):
     required = {"candidate_count", "returned", "selected", "omitted_for_budget"}
-    if not isinstance(retrieval, dict) or set(retrieval) - {"unselected_without_evidence"} != required:
+    if (
+        not isinstance(retrieval, dict)
+        or set(retrieval) - {"unselected_without_evidence", "partial"} != required
+        or type(retrieval.get("partial", False)) is not bool
+    ):
         return False
     if (
         not isinstance(retrieval["returned"], list)
@@ -56,13 +60,19 @@ def _valid_retrieval(retrieval, counts, item_count):
 
 def save_recall_observation(value, receipt):
     directory = settings_path(value["device_home"]).parent
+    try:
+        if receipt.get("output_written") is True and receipt.get("status") != "failed":
+            metadata.write(directory / ("prompt-" + receipt["request_key"] + ".json"),
+                           {"at": receipt["at"]})
+    finally:
+        _save_diagnostics(directory, receipt)
+
+
+def _save_diagnostics(directory, receipt):
     receipts = directory / "recall-receipts"
     private_directory(receipts)
     receipt_sha256 = metadata.write(receipts / (receipt["request_key"] + ".json"), receipt)
     metadata.write(directory / "last-recall.json", receipt)
-    if receipt.get("output_written") is True and receipt.get("status") != "failed":
-        metadata.write(directory / ("prompt-" + receipt["request_key"] + ".json"),
-                       {"at": receipt["at"]})
     sample = saved_recall_timing(receipt["request_key"])
     if sample is not None:
         sample["receipt_sha256"] = receipt_sha256

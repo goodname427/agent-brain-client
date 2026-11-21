@@ -62,7 +62,7 @@ def native_services(*, verify_code=True):
         discover=lambda cwd: discover(cwd),
         settings_path=lambda home: settings_path(home),
         CollectionClient=lambda *args: CollectionClient(*args),
-        eligible=lambda *args: eligible(*args),
+        eligible=lambda *args, **kwargs: eligible(*args, **kwargs),
         legacy=lambda *args: legacy(*args),
         adapter=lambda *args: adapter(*args),
         submit_hook=lambda *args: submit_hook(*args),
@@ -74,10 +74,11 @@ def native_services(*, verify_code=True):
     )
 
 
-def eligible(value, cwd):
+def eligible(value, cwd, *, prompt=False):
     return routing.eligible(
         value,
         cwd,
+        prompt=prompt,
         ports=SimpleNamespace(
             approved=lambda v: approved(v),
             canonical=lambda path: ordinary_drive_path(str(resolve_cwd(path))),

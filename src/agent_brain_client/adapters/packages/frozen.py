@@ -48,14 +48,17 @@ def runtime_pins(source=ROOT, *, fallback=PYTHON_FILES, manifest_sha256=None):
     elif exported.exists() or exported.is_symlink():
         files = read_json(exported)["files"]
     else:
-        # Historical caches have no inventory sidecar and keep their original set.
-        # The actual installer source checkout can enumerate reviewed source files.
-        names = (
-            source_python_members(source)
-            if fallback == PYTHON_FILES and (source / "dev/build/package.py").is_file()
-            else fallback
-        )
-        return {name: metadata_io.digest((source / name).read_bytes()) for name in names}
+        # Source checkouts and installer source archives provide their inventory.
+        # A frozen image without a sidecar must match its own digest directory.
+        checkout = (source / "dev/build/package.py").is_file()
+        frozen_image = source.parent.name == "code" and re.fullmatch("[a-f0-9]{64}", source.name)
+        names = source_python_members(source) if fallback == PYTHON_FILES and (
+            checkout or frozen_image
+        ) else fallback
+        pins = {name: metadata_io.digest((source / name).read_bytes()) for name in names}
+        if frozen_image and source.name != metadata_io.digest(json.dumps(pins, sort_keys=True).encode()):
+            raise ValueError("Frozen Python inventory escaped its digest directory")
+        return validate_python_pins(pins, required=fallback)
     pins = {name: pin for name, pin in files.items() if name.endswith(".py")}
     return validate_python_pins(pins, required=fallback)
 
@@ -94,10 +97,11 @@ def compatible_codebuddy_runtime(home, executing, executing_pins, configured, co
     return compatible_managed_workers(executing, executing_pins, configured, configured_pins)
 
 
-def freeze_code(directory, pins, *, source=ROOT):
+def freeze_code(directory, pins, *, source=ROOT, required=PYTHON_FILES):
     """Keep executable Hook code in a private immutable cache, never a checkout."""
     from agent_brain_client.adapters.storage.host_files import atomic
 
+    validate_python_pins(pins, required=required)
     root = (
         directory
         / "code"
@@ -107,9 +111,6 @@ def freeze_code(directory, pins, *, source=ROOT):
     for parent in (directory / "code", root):
         private_directory(parent)
         private_mode(parent, directory=True, owner=True)
-    expanded = bool(pins.keys() - set(PYTHON_FILES))
-    if expanded:
-        validate_python_pins(pins)
     for name, pin in pins.items():
         target = root / name
         metadata_io.canonical(target)
@@ -128,14 +129,13 @@ def freeze_code(directory, pins, *, source=ROOT):
         if metadata_io.digest(raw) != pin:
             raise ValueError("Global update source changed")
         atomic(target, raw, 0o600)
-    if expanded:
-        if frozen_source_files(root) != pins.keys():
-            raise ValueError("Unlisted frozen Python file")
-        record = root / "code.json"
-        value = {"schema": 1, "files": pins}
-        if record.exists() or record.is_symlink():
-            if read_json(record) != value:
-                raise ValueError("Frozen Python inventory changed")
-        else:
-            metadata_io.write(record, value)
+    if frozen_source_files(root) != pins.keys():
+        raise ValueError("Unlisted frozen Python file")
+    record = root / "code.json"
+    value = {"schema": 1, "files": pins}
+    if record.exists() or record.is_symlink():
+        if read_json(record) != value:
+            raise ValueError("Frozen Python inventory changed")
+    else:
+        metadata_io.write(record, value)
     return root

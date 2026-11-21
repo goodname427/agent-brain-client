@@ -142,20 +142,27 @@ def deliver_origin(home, task, core):
         )
     scope = digest(value['scope'])
 
-    def allowed(session):
+    def current_client():
         current = core.load(home)
         if (not source_active(home, local['cwd'], task['harness'])
                 or not core.approved(current) or digest(current['scope']) != scope
                 or select(current['scope'], local) is None):
-            return False
+            return None
         fresh, _ = core.build_delivery_queue(current, local, task['harness'])
-        return (fresh.queue_identity == client.queue_identity
-                and fresh.status(session).get('source_admitted') is True)
+        return fresh if fresh.queue_identity == client.queue_identity else None
 
-    return deliver_with_cursor(home, [task['harness'], local], queue, allowed) or pending_capture
+    def allowed(session):
+        fresh = current_client()
+        return fresh is not None and fresh.status(session).get('source_admitted') is True
+
+    return deliver_with_cursor(
+        home, [task['harness'], local], queue, allowed,
+        local_precheck=lambda: current_client() is not None,
+    ) or pending_capture
 
 
-def deliver_with_cursor(home, identity, queue, allowed, allowed_event=lambda event: True):
+def deliver_with_cursor(home, identity, queue, allowed, allowed_event=lambda event: True,
+                        *, local_precheck=None):
     from agent_brain_client.application.queue.delivery import deliver_pending
 
     progress = directory(home) / 'progress'
@@ -163,6 +170,7 @@ def deliver_with_cursor(home, identity, queue, allowed, allowed_event=lambda eve
     cursor = progress / (digest(identity) + '.json')
     after = metadata.private_json(cursor, cache=True).get('after', '') if cursor.exists() else ''
     return deliver_pending(queue, allowed=allowed, allowed_event=allowed_event, after=after,
+                           local_precheck=local_precheck,
                            attempted=lambda key: metadata.write(
                                cursor, {'after': key}, cache=True))
 

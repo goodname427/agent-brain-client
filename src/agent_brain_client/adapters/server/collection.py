@@ -137,10 +137,10 @@ class CollectionClient:
             raise ValueError("Global response identity changed")
         return result
 
-    def params(self, session):
+    def params(self, session, *, recall=False):
         if (
             self.local is None
-            or select(self.value["scope"], self.local) is None
+            or select(self.value["scope"], self.local, recall=recall) is None
             or not approved(self.value)
         ):
             raise ValueError("Origin no longer approved")
