@@ -307,7 +307,10 @@ def run_checks(scope, output, record=False, *, ci=False):
                 )
             )
             if focused_hooks:
-                selectors = ["test_stable_native_hooks"]
+                selectors = [
+                    "test_stable_native_hooks.StableHooks.test_host_bootstrap_rejects_mutable_code_before_execution",
+                    "test_windows_acceptance_repairs.WindowsAcceptanceRepairs.test_empty_never_approved_install_can_explicitly_select_existing_pool",
+                ]
             commands = [
                 [
                     "python",
