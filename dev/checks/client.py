@@ -307,7 +307,10 @@ def run_checks(scope, output, record=False, *, ci=False):
                 )
             )
             if focused_hooks:
-                selectors = ["test_stable_native_hooks"]
+                selectors = [
+                    "test_stable_native_hooks.StableHooks.test_first_migration_recovers_exact_published_0826",
+                    "test_stable_native_hooks.StableHooks.test_host_bootstrap_rejects_mutable_code_before_execution",
+                ]
             commands = [
                 [
                     "python",
