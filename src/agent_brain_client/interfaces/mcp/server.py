@@ -4,7 +4,6 @@ from typing import Any
 from agent_brain_client.interfaces.mcp.framing import (
     ProtocolError,
     pairs,
-    keys,
     write_response,
     MAX_MESSAGE,
     ContentParameterError,
@@ -12,7 +11,6 @@ from agent_brain_client.interfaces.mcp.framing import (
 )
 from collections import deque
 import json
-import sys
 import threading
 import time
 from agent_brain_client.application.control import RequestControl, RequestStopped
