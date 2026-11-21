@@ -313,8 +313,8 @@ def run_checks(scope, output, record=False, *, ci=False):
                 ),
             ]
         if exact_combined:
-            source = "4a73c90d99c99e68735da0455d5c6daf54b0d189"
-            tree = "7403a29bf6f6431cae76f14a2f637dea8538faa9"
+            source = "44ba325b3c60a64a50c1ce6002a3cc74a7fb88ff"
+            tree = "001078cc8e97e21235cbb65ba0419699c5a42539"
             subprocess.run(
                 ["git", "fetch", "--no-tags", "--depth=1", "origin",
                  "refs/heads/verify/client-190-192-193", "refs/tags/client-0.8.25-windows",
