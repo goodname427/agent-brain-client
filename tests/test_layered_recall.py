@@ -232,6 +232,21 @@ class LayeredRecall(unittest.TestCase):
         self.assertEqual(receipt['item_count'], 3)
         self.assertEqual(receipt['retrieval']['omitted_for_budget'], 0)
 
+    def test_context_budget_counts_every_rendered_row_and_separator(self):
+        from agent_brain_client.application.memory.context import (
+            bounded_context_items, render_context,
+        )
+
+        first = {'content': '界' * 6500}
+        second = {'content': 'a'}
+        base_bytes = len(render_context([first, second]).encode('utf-8'))
+        second['content'] += 'x' * (24576 - base_bytes)
+        # The first row's repeated object cannot reenter the output over budget.
+        self.assertEqual(bounded_context_items([first, first, second]), [first, second])
+        self.assertEqual(len(render_context([first, second]).encode('utf-8')), 24576)
+        second['content'] += 'x'
+        self.assertEqual(bounded_context_items([first, second]), [first])
+
     def test_oversized_context_skips_whole_row_and_retains_other_results(self):
         group = self.response['result']['namespace_results'][0]
         group['recall']['L1'][0]['content'] = 'x' * 25000
@@ -314,6 +329,7 @@ class LayeredRecall(unittest.TestCase):
 
         with (patch.dict(os.environ, {control.RECALL_TIMING_ENV: '1'}),
               patch.object(control, 'time', clock),
+              patch.object(collection_cli, 'time', clock),
               patch.object(recall_receipts.metadata, 'write', side_effect=timed_write),
               patch.object(gm, 'load', return_value=self.value),
               patch.object(gm, 'eligible', return_value=self.local),
@@ -340,6 +356,50 @@ class LayeredRecall(unittest.TestCase):
         self.assertFalse(receipt['output_written'])
         self.assertNotIn('FICTIONAL_PRIVATE_ERROR', sample_text)
         self.assertNotIn('/synthetic/', sample_text)
+
+    def test_opt_in_codex_success_timing_includes_stdout_flush_and_exact_receipt(self):
+        from agent_brain_client.application import control
+
+        clock = SimpleNamespace(now=0, monotonic=lambda: clock.now)
+        original_recall = gm.recall
+
+        def recall(*args, **kwargs):
+            with control.recall_timing_stage('response_headers'):
+                clock.now = 0.2
+            return original_recall(*args, **kwargs)
+
+        class Output(io.StringIO):
+            def flush(self):
+                self_test.assertFalse((self_test.root / 'last-recall-timing.json').exists())
+                clock.now = 0.3
+                super().flush()
+
+        self_test = self
+        output = Output()
+        with (patch.dict(os.environ, {control.RECALL_TIMING_ENV: '1'}),
+              patch.object(control, 'time', clock),
+              patch.object(collection_cli, 'time', clock),
+              patch.object(gm, 'load', return_value=self.value),
+              patch.object(gm, 'eligible', return_value=self.local),
+              patch.object(gm, 'submit_hook', return_value={'status': 'staged'}),
+              patch.object(gm, 'recall', side_effect=recall),
+              patch.object(sys, 'stdin', self.prompt()),
+              patch.object(sys, 'stdout', output),
+              patch.object(sys, 'stderr', io.StringIO())):
+            self.assertEqual(collection_cli.main(['global-hook']), 0)
+        self.assertIn('additionalContext', json.loads(output.getvalue())['hookSpecificOutput'])
+        sample_text = (self.root / 'last-recall-timing.json').read_text()
+        sample = json.loads(sample_text)
+        offsets = sample['phase_offsets_ms']
+        self.assertEqual(offsets['response_headers'], [0, 200])
+        self.assertEqual(offsets['output_prepared'], 200)
+        self.assertEqual(offsets['output_flushed'], 300)
+        self.assertNotIn('failed', offsets)
+        receipt = recall_receipts.recall_observation(self.value, sample['request_key'])
+        exact = self.root / 'recall-receipts' / (receipt['request_key'] + '.json')
+        self.assertTrue(receipt['output_written'])
+        self.assertEqual(sample['receipt_sha256'], recall_receipts.metadata.digest(exact.read_bytes()))
+        self.assertNotIn('Synthetic L1 answer marker', sample_text)
 
     def test_stdout_write_and_flush_interruption_allow_same_turn_recall_retry(self):
         class Interrupted(BaseException):

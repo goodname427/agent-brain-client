@@ -3,7 +3,11 @@
 import time
 from agent_brain_client.domain import privacy
 from agent_brain_client.domain.scopes import digest, restricted
-from agent_brain_client.application.control import recall_timing_failed, start_recall_timing
+from agent_brain_client.application.control import (
+    recall_timing_failed,
+    recall_timing_stage,
+    start_recall_timing,
+)
 from agent_brain_client.application.memory.context import render_context
 
 
@@ -60,7 +64,7 @@ def recall_prompt(value, local, payload, query, *, services, observe=None):
             },
         }
         try:
-            with services.operation_stage("global-recall"):
+            with services.operation_stage("global-recall"), recall_timing_stage("recall"):
                 items = services.recall(
                     value,
                     local,
@@ -93,7 +97,8 @@ def recall_prompt(value, local, payload, query, *, services, observe=None):
                 ),
             }
         )
-        services.save_observation(value, receipt)
+        with recall_timing_stage("prepared_receipt_write"):
+            services.save_observation(value, receipt)
         # Preparation is not output acknowledgement. Only the stdout boundary
         # may commit the deduplication stamp; a crash here must permit replay.
     if observe is not None:
