@@ -15,6 +15,32 @@ def digest(value):
     ).hexdigest()
 
 
+def ordinary_drive_path(value):
+    """Strip only an extended local drive prefix with an equivalent DOS path."""
+    if not isinstance(value, str) or not value.startswith("\\\\?\\"):
+        return value
+    candidate = value[4:]
+    if not re.match(r"^[A-Za-z]:\\", candidate):
+        return value
+
+    # The extended syntax skips normal Win32 path processing. A segment must
+    # mean the same thing under both spellings before we remove the prefix.
+    tail = candidate[3:]
+    for part in tail.removesuffix("\\").split("\\") if tail else ():
+        if (
+            not part
+            or part.startswith(" ")
+            or part.endswith((" ", "."))
+            or re.search(r'[<>:"/|?*\x00-\x1f]', part)
+            or re.fullmatch(
+                r"CON(?:IN\$|OUT\$)?|PRN|AUX|NUL|(?:COM|LPT)[0-9¹²³]",
+                part.partition(".")[0].rstrip(" ").upper(),
+            )
+        ):
+            return value
+    return candidate
+
+
 def path(value):
     if not isinstance(value, str) or any(c in value for c in ("\x00", "\r", "\n")):
         raise ValueError("Absolute source metadata required")

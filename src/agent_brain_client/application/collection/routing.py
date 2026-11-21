@@ -1,7 +1,7 @@
 """Shared source admission and per-project delegation, independent of a Harness."""
 
 from typing import Protocol
-from agent_brain_client.domain.scopes import within, select
+from agent_brain_client.domain.scopes import ordinary_drive_path, within, select
 
 
 class OriginPorts(Protocol):
@@ -29,11 +29,12 @@ def eligible(value, cwd, *, ports: OriginPorts):
 
 
 def delegated_project(value, local):
+    cwd = ordinary_drive_path(local["cwd"])
     return next(
         (
             row
             for row in value["legacy_projects"]
-            if row["root"] == local["cwd"] and row.get("capture_delegated", True)
+            if ordinary_drive_path(row["root"]) == cwd and row.get("capture_delegated", True)
         ),
         None,
     )
