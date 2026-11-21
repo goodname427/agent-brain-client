@@ -247,7 +247,6 @@ _TOOL_CATALOG_ENTRIES = (
     "src/agent_brain_client/application/__init__.py",
     "src/agent_brain_client/interfaces/__init__.py",
     "src/agent_brain_client/interfaces/mcp/__init__.py",
-    "src/agent_brain_client/interfaces/mcp/content.py",
 )
 
 
@@ -266,8 +265,9 @@ def package_tools(package, content, grant, *, inspected_windows_package_sha=None
     if target == local:
         return tool_catalog.enabled_tools(content, grant)
     if inspected_windows_package_sha == _WINDOWS_0825_PACKAGE_SHA:
-        # Inspection has already verified every package member. Recall
-        # application changes in 0.8.26 do not change these catalog inputs.
+        # The exact, fully verified 0.8.25 inventory already pins its audited
+        # descriptor. Compare the pure catalog inputs, which can stay identical
+        # when the current worker's startup or lease changes.
         def catalog_pins(pins):
             return {
                 name: digest for name, digest in pins.items()
