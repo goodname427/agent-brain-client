@@ -61,9 +61,9 @@ def probe(home, core, runner=subprocess.run):
     }
 
 
-def main():
+def main(argv=None, *, verified_release=False):
     started = time.monotonic()
-    if sys.argv[1:] == ["backend-home"]:
+    if (sys.argv[1:] if argv is None else argv) == ["backend-home"]:
         print(backend_home(Path.home()))
         return 0
     parser = argparse.ArgumentParser(description=__doc__)
@@ -72,13 +72,18 @@ def main():
     )
     parser.add_argument("--surface", choices=("ide", "cli", "both"), default="both")
     parser.add_argument("--device-home", type=Path, default=Path.home())
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
-        verify_adapter()
+        if not verified_release:
+            verify_adapter()
         import agent_brain_client.adapters.harnesses.codebuddy.events as runtime
 
         home = bounded_json.canonical(args.device_home)
-        core = host_binding.load_core(home)
+        if verified_release and args.action == "hook":
+            from agent_brain_client.runtime.collection import native_services
+            core = native_services(verify_code=False)
+        else:
+            core = host_binding.load_core(home)
         from agent_brain_client.adapters.platforms.filesystem import require_platform
 
         require_platform("codebuddy-host")
@@ -95,7 +100,7 @@ def main():
                 mark_recall_timing("hook_initialized")
                 output, state = runtime.hook(home, sys.stdin.buffer, core=core,
                     defer=lambda turn: schedule_assistant_completion(home, turn),
-                    observe=observation.update)
+                    observe=observation.update, verified_release=verified_release)
                 state["cli_timing_ms"] = {
                     "initialization_ms": round((initialized - started) * 1000, 3),
                     "total_ms": round((time.monotonic() - started) * 1000, 3),

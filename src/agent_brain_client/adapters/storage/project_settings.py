@@ -54,7 +54,7 @@ def project_harness(value):
             return value["harness"]
     raise ValueError("Exact project Harness record required")
 
-def load(path, sha, *, locate):
+def load(path, sha, *, locate, verify_code=True):
     p = private_json(path, sha)
     fields = FIELDS
     harness = project_harness(p)
@@ -83,12 +83,16 @@ def load(path, sha, *, locate):
         or not isinstance(p["query"], str)
         or len(p["query"]) > 1024
         or not isinstance(p["code_sha256"], dict)
-        or p["code_sha256"].keys() != runtime_pins(ROOT).keys()
+        or verify_code and p["code_sha256"].keys() != runtime_pins(ROOT).keys()
     ):
         raise ValueError("Bounded project memory settings required")
-    for n, h in p["code_sha256"].items():
-        if digest(canonical(ROOT / n, existing=True).read_bytes()) != h:
-            raise ValueError("Memory code changed; refresh the owned project setup")
+    if verify_code:
+        for n, h in p["code_sha256"].items():
+            if digest(canonical(ROOT / n, existing=True).read_bytes()) != h:
+                raise ValueError("Memory code changed; refresh the owned project setup")
+    else:
+        from agent_brain_client.adapters.packages.frozen import validate_python_pins
+        validate_python_pins(p["code_sha256"])
     project = canonical(p["project_root"], existing=True)
     if not project.is_dir():
         raise ValueError("Existing project directory required")
@@ -275,3 +279,31 @@ def clear_host_stop(home, project, harness):
     if root in value["hosts"][harness]:
         value["hosts"][harness].remove(root)
         write(file, value)
+
+
+def hook_registration(harness, settings_path, project_root):
+    """Identify the existing per-project ownership receipt for this host."""
+    if harness == "codex":
+        target = canonical(Path(project_root) / ".codex/hooks.json")
+        name = "hooks-install-" + digest(str(target).encode())[:16] + ".json"
+    elif harness == "codebuddy":
+        target = canonical(Path(project_root) / ".codebuddy/settings.local.json")
+        name = "codebuddy-hooks-install.json"
+    else:
+        raise ValueError("Explicit project Hook Harness required")
+    return target, canonical(Path(settings_path).parent / name)
+
+
+def installed_hook_pin(home, harness, settings_path):
+    """Move the exact settings pin to its existing private installation receipt."""
+    saved = private_json(settings_path)
+    if saved.get("device_home") != home or project_harness(saved) != harness:
+        raise ValueError("Project Hook identity changed")
+    target, receipt = hook_registration(harness, settings_path, saved["project_root"])
+    binding = private_json(receipt)
+    if binding.get("phase") != "complete" or binding.get("target") != str(target):
+        raise ValueError("Project Hook registration unavailable")
+    pin = binding.get("settings_sha256")
+    if not isinstance(pin, str) or len(pin) != 64:
+        raise ValueError("Exact project settings digest required")
+    return pin

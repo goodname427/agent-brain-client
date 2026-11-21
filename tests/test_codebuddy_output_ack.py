@@ -44,7 +44,7 @@ class CodeBuddyOutputAck(unittest.TestCase):
         )
         private_directory(settings_path(self.home).parent)
 
-    def native_hook(self, home, stream, *, core, observe, defer):
+    def native_hook(self, home, stream, *, core, observe, defer, verified_release=False):
         self.assertEqual(home, self.home)
         items, state = handle(
             "UserPromptSubmit", prompt=self.query,

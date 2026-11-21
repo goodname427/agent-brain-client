@@ -133,7 +133,14 @@ class HostMaintenance:
                 from agent_brain_client.adapters.harnesses.codex import collection_installation as hooks
                 if pins == runtime_pins(hooks.ROOT, fallback=hooks.FILES):
                     try:
-                        hosts[host] = hooks.refresh(self.home, check_only=check_only)
+                        from agent_brain_client.runtime.project_memory import refresh_project_hooks
+                        row = hooks.refresh(self.home, check_only=check_only)
+                        projects = refresh_project_hooks(self.home, host, check_only=check_only)
+                        hosts[host] = dict(
+                            row, projects=projects,
+                            native_changed=row["native_changed"] or projects["native_changed"],
+                            update_available=row["update_available"] or projects["update_available"],
+                        )
                     except hooks.ManagedHookConflict as error:
                         from agent_brain_client.application.installation.update_ports import ManagedConfigurationConflict
                         raise ManagedConfigurationConflict(error.field) from None
@@ -145,9 +152,18 @@ class HostMaintenance:
                 raise ValueError("Active package changed during host maintenance")
         changed = any(row["native_changed"] for row in hosts.values())
         available = any(row["update_available"] for row in hosts.values())
-        return {"status": "global-hook-updated" if changed else "global-hook-update-available" if available else "global-hook-current",
-                "native_changed": changed, "update_available": available, "hosts": hosts,
-                "source_package_version": active["version"], "source_package_commit": active["commit"]}
+        result = {"status": "global-hook-updated" if changed else "global-hook-update-available" if available else "global-hook-current",
+                  "native_changed": changed, "update_available": available, "hosts": hosts,
+                  "source_package_version": active["version"], "source_package_commit": active["commit"]}
+        codex = hosts.get("codex", {})
+        review = "native-review-required-for-new-command"
+        if review in (codex.get("trust"), codex.get("projects", {}).get("trust")):
+            result["next_action"] = (
+                "Review the migrated Agent Brain Hooks once in Codex after applying the update."
+                if check_only else
+                "Review the migrated Agent Brain Hooks once in Codex."
+            )
+        return result
 
     def registration_preimage(self):
         if "codex" not in self.hosts():

@@ -716,14 +716,16 @@ class WindowsNative(unittest.TestCase):
             self.assertEqual(host_security(native), parent_security)
             self.assertEqual(host_security(config), file_security)
             args = SimpleNamespace(device_home=str(self.home), operator=None, operator_sha256=None, profile_id='f'*32)
-            hooks.install(args)
+            with patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook"):
+                hooks.install(args)
             from test_windows_install_closure import torn_hook
             before_hook=torn_hook(self,self.home,native)
             self.assertFalse(content_install.inspect(self.home).get('registration_verified'))
             with patch.object(Path,'home',return_value=self.home),patch.object(sys,'argv',['agent_brain_client.runtime.installation.py', "--harness", "codex"]),patch.object(installer,'run',side_effect=lambda *a,**k:content_install.inspect(self.home)),patch.object(installer,'finish_install',side_effect=lambda home,value,**kwargs:value),patch.object(sys,'stdout',io.StringIO()) as output:
                 self.assertEqual(interfaces_cli_install.main(),0,output.getvalue())
             self.assertEqual(config.read_bytes(),before_hook)
-            hooks.install(args)
+            with patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook"):
+                hooks.install(args)
             self.assertTrue(hooks.installation_status(source_policy.load(self.home)))
             self.assertEqual(host_security(native),parent_security)
             self.assertEqual(host_security(config),file_security)
