@@ -35,17 +35,31 @@ class ContentInstall(unittest.TestCase):
         self.policy=copy.deepcopy(f.policy);self.policy.update(capabilities=releases.CONTENT_CAPABILITIES,file_prefixes=list(releases.CONTENT_CLIENT_FILES),repository=str(f.repository.resolve()),cache=str(self.base/'runtime'),runtime={'device_plan':str(self.device_plan),'device_plan_sha256':install.sha(self.device_plan.read_bytes()),'signing_policy':str(self.signing),'signing_policy_sha256':install.sha(self.signing.read_bytes()),'content_policy':str(self.content),'content_policy_sha256':install.sha(self.content.read_bytes()),'device_home':str(self.home),'codex_home':str(self.native),'content_cache':str(self.base/'content-cache')})
         self.policy['runtime']['component_source_sha256']=install.sha((ROOT/'src/agent_brain_client/adapters/platforms/macos/native/DeviceComponent.swift').read_bytes())
         self.policy_path=self.base/'approved-policy.json';self.policy_path.write_text(json.dumps(self.policy));self.policy_path.chmod(0o600);self.policy_sha=install.sha(self.policy_path.read_bytes())
-        self.channel=releases.ClientReleases(self.policy_path,self.policy_sha);self.publish();self.active=self.channel.update()['active'];self.package=Path(self.active['package'])
+        self.channel = releases.ClientReleases(self.policy_path, self.policy_sha)
+        self.manifest = self.publish()
+        result = self.channel.update()
+        self.assertEqual(result['status'], 'updated', result)
+        self.active = result['active']
+        self.package = Path(self.active['package'])
         self.platform=patch('sys.platform','darwin');self.platform.start();self.addCleanup(self.platform.stop)
         self.machine=patch('platform.machine',return_value='arm64');self.machine.start();self.addCleanup(self.machine.stop)
 
-    def publish(self,version='0.2.0',mutate=None):
-        f=self.fixture;out=self.base/('content-release-'+version);manifest=build(ROOT,out,version,'personal-content')
-        if mutate:mutate(manifest,out)
-        (out/'releases/manifest.json').write_text(json.dumps(manifest))
-        for name in [*releases.CONTENT_CLIENT_FILES,'releases/manifest.json']:
-            destination=f.publisher/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(out/name,destination)
-        f.git(f.publisher,'add','--',*releases.CONTENT_CLIENT_FILES,'releases/manifest.json');f.git(f.publisher,'commit','-m','synthetic content '+version);f.git(f.publisher,'push','origin','releases/stable')
+    def publish(self, version='0.2.0', mutate=None):
+        fixture = self.fixture
+        out = self.base / ('content-release-' + version)
+        manifest = build(ROOT, out, version, 'personal-content')
+        members = (*manifest['files'], 'releases/manifest.json')
+        if mutate:
+            mutate(manifest, out)
+        (out / 'releases/manifest.json').write_text(json.dumps(manifest))
+        for name in members:
+            destination = fixture.publisher / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(out / name, destination)
+        fixture.git(fixture.publisher, 'add', '--', *members)
+        fixture.git(fixture.publisher, 'commit', '-m', 'synthetic content ' + version)
+        fixture.git(fixture.publisher, 'push', 'origin', 'releases/stable')
+        return manifest
 
     def plan(self,replace=False):return install.prepare(self.home,self.package,self.policy_path,self.policy_sha,replace, harness="codex")
     def digest(self,plan):return install.sha(install.contract.encode(plan))
@@ -223,7 +237,9 @@ class ContentInstall(unittest.TestCase):
 
 
     def test_content_release_discovery_update_failure_offline_and_startup_wiring(self):
-        report=self.channel.discover('codex','darwin-arm64','0.1.0');self.assertEqual(report['status'],'compatible-update');self.assertEqual(set(report['releases'][0]['manifest']['files']),set(releases.CONTENT_CLIENT_FILES))
+        report = self.channel.discover('codex', 'darwin-arm64', '0.1.0')
+        self.assertEqual(report['status'], 'compatible-update')
+        self.assertEqual(report['releases'][0]['manifest'], self.manifest)
         old=self.channel.engine.active();self.publish('0.2.1');self.assertEqual(self.channel.update()['status'],'updated');self.assertEqual(install.apply(self.plan(),self.digest(self.plan()),lambda p:None)['installed'],True);self.assertEqual(install.inspect(self.home)['installed_version'],'0.2.1')
         def bad(manifest,out):
             p=out/'src/agent_brain_client/interfaces/mcp/content.py';p.write_text('BAD PYTHON (');manifest['files']['src/agent_brain_client/interfaces/mcp/content.py']=install.sha(p.read_bytes())

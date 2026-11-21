@@ -373,7 +373,17 @@ def probe(mode, harness):
     elif mode == "global-hook":
         from agent_brain_client.interfaces.cli import collection
         core = collection.core
-        value = {"device_home": str(home)}
+        value = {
+            "device_home": str(home),
+            "scope": {
+                "schema": 1,
+                "profile_id": "a" * 32,
+                "include_roots": [],
+                "exclude_roots": [],
+                "non_project_roots": [str(home)],
+                "recall_personal": True,
+            },
+        }
         local = {"kind": "non-project", "cwd": str(home), "project_root": None, "repository_root": None}
         staged, scheduled, recalls = [], [], []
         # Native parsing/routing/lifecycle remain real; fake only service I/O.
