@@ -11,11 +11,21 @@ import time
 import unittest
 
 
+OWNER_CASES = {
+    "test_windows_native.WindowsNative.test_codex_completed_reinstall_recovers_admin_default_owner_and_serves_stdio",
+    "test_windows_native.WindowsNative.test_codex_completed_reinstall_refuses_private_path_with_other_principal",
+}
+
+
 def summaries(log):
     """Keep successful Actions logs compact while retaining phase evidence."""
     totals = Counter()
     rows = []
     for line in log.splitlines():
+        _, outcome, test_result = line.partition("TEST_CASE_OUTCOME ")
+        if outcome:
+            yield outcome + test_result
+            continue
         _, separator, payload = line.partition("TEST_PHASES ")
         if not separator:
             continue
@@ -33,6 +43,21 @@ def summaries(log):
 
 
 class TimingResult(unittest.TextTestResult):
+    def report_owner_case(self, test, outcome, reason=None):
+        if test.id() in OWNER_CASES:
+            row = {"id": test.id(), "outcome": outcome}
+            if reason is not None:
+                row["reason"] = reason
+            self.stream.writeln("TEST_CASE_OUTCOME " + json.dumps(row, sort_keys=True))
+
+    def addSuccess(self, test):
+        self.report_owner_case(test, "passed")
+        super().addSuccess(test)
+
+    def addSkip(self, test, reason):
+        self.report_owner_case(test, "skipped", reason)
+        super().addSkip(test, reason)
+
     def startTest(self, test):
         super().startTest(test)
         self._phases = {}

@@ -351,7 +351,7 @@ def run_checks(scope, output, record=False, *, ci=False):
                 # complete per-case output stays in the worker log.
                 for line in log_path.read_text(errors="replace").splitlines():
                     if (line.startswith("test_") and "s, exit " in line) or line.startswith(
-                        ("TEST_PHASE_TOTALS ", "TEST_SLOW_CASE ")
+                        ("TEST_PHASE_TOTALS ", "TEST_SLOW_CASE ", "TEST_CASE_OUTCOME ")
                     ):
                         print(line, flush=True)
             results.append(
