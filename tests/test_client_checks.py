@@ -217,7 +217,7 @@ class LocalChecks(unittest.TestCase):
         self.assertIn('ruff==0.14.0 mypy==1.18.2', workflow)
         self.assertIn('test_codebuddy', {item for command in cc.COMMANDS['windows'] for item in command})
         self.assertIn('test_native_source_files', {item for command in cc.COMMANDS['windows'] for item in command})
-        for name in ('bootstrap/windows/install.ps1', 'bin/memory.ps1', 'bootstrap/windows/codebuddy.ps1'):
+        for name in ('bootstrap/windows/install.ps1', 'bin/memory.ps1', 'bootstrap/windows/python.ps1'):
             self.assertIn(name, cc.COMMANDS['windows'][-1][-1])
         self.assertTrue(any('src' in command and 'ruff' in command for command in cc.COMMANDS['source']))
 
@@ -250,7 +250,7 @@ class LocalChecks(unittest.TestCase):
         commands = [call.args[0] for call in run.call_args_list]
         self.assertIn('dev/checks/tests.py', commands[0])
         self.assertFalse(any('dev/build/credentials.py' in command for command in commands))
-        self.assertTrue(any('bootstrap/macos/codebuddy.sh' in command for command in commands))
+        self.assertIn(['sh', '-n', 'bootstrap/macos/install.sh'], commands)
 
 
 if __name__ == '__main__':

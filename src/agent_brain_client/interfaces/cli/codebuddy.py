@@ -21,12 +21,6 @@ import time
 ROOT = Path(__file__).resolve().parents[4]
 
 
-def backend_home(home):
-    """Metadata-only bootstrap path; works before a Python runtime is prepared."""
-    from agent_brain_client.adapters.storage.registration import registry_home
-    return registry_home(home)
-
-
 def verify_adapter():
     pin = ROOT / "code.json"
     if not pin.exists() and not pin.is_symlink():
@@ -112,15 +106,6 @@ def configure_binding(home, *, surface=None, source=ROOT):
     return value
 
 
-def unbind_binding(home, *, surface=None):
-    from agent_brain_client.adapters.harnesses.codebuddy import configuration
-
-    directory = configuration.state_directory(home)
-    if not (directory.exists() or directory.is_symlink()):
-        return {"status": "codebuddy-not-installed", "installed": False, "native_changed": False}
-    return configuration.install(home, ROOT, None, surface=surface, remove=True)
-
-
 def binding_review(action, error):
     return {
         "status": "codebuddy-review-or-resume-required",
@@ -133,14 +118,8 @@ def binding_review(action, error):
 
 def main(argv=None, *, verified_release=False):
     started = time.monotonic()
-    if (sys.argv[1:] if argv is None else argv) == ["backend-home"]:
-        print(backend_home(Path.home()))
-        return 0
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "action", choices=("install", "status", "uninstall", "probe", "serve", "hook")
-    )
-    parser.add_argument("--surface", choices=("ide", "cli", "both"))
+    parser.add_argument("action", choices=("serve", "hook"))
     parser.add_argument("--device-home", type=Path, default=Path.home())
     args = parser.parse_args(argv)
     try:
@@ -152,86 +131,67 @@ def main(argv=None, *, verified_release=False):
         require_platform("codebuddy-host")
         if args.action == "serve":
             return host_binding.execute_mcp(home, host_binding.load_core(home))
-        if args.action == "hook":
-            import agent_brain_client.adapters.harnesses.codebuddy.events as runtime
-            if verified_release:
-                from agent_brain_client.runtime.collection import native_services
-                core = native_services(verify_code=False)
-            else:
-                core = host_binding.load_core(home)
-            initialized = time.monotonic()
-            from agent_brain_client.application.control import (
-                RECALL_TIMING_ENV, mark_recall_timing, recall_timing_scope,
-            )
-            from agent_brain_client.runtime.delivery import schedule_assistant_completion
-            observation = {}
-            with recall_timing_scope(os.environ.get(RECALL_TIMING_ENV) == "1", started=started):
-                mark_recall_timing("hook_initialized")
-                output, state = runtime.hook(home, sys.stdin.buffer, core=core,
-                    defer=lambda turn: schedule_assistant_completion(home, turn),
-                    observe=observation.update, verified_release=verified_release)
-                state["cli_timing_ms"] = {
-                    "initialization_ms": round((initialized - started) * 1000, 3),
-                    "total_ms": round((time.monotonic() - started) * 1000, 3),
-                }
-                mark_recall_timing("output_prepared")
-                print(json.dumps(output, ensure_ascii=False), flush=True)
-                mark_recall_timing("output_flushed")
-                if observation and observation["status"] != "failed":
-                    from agent_brain_client.adapters.storage.recall_receipts import save_recall_observation
-
-                    observation["output_written"] = True
-                    try:
-                        save_recall_observation({"device_home": str(home)}, observation)
-                    except (OSError, ValueError):
-                        pass  # Flushed stdout is already observable; never emit it twice.
-            # Keep diagnostics content-free. A pending queue is not a save.
-            diagnostic = {
-                key: state[key]
-                for key in (
-                    "status",
-                    "error_type",
-                    "recall_status",
-                    "recall_error_type",
-                    "assistant_capture",
-                    "timing_ms",
-                    "cli_timing_ms",
-                    "delivery_schedule",
-                    "schedule_error_type",
-                )
-                if key in state
-            }
-            if state.get("error"):
-                diagnostic["capture_error"] = state["error"].get("code", "unconfirmed")
-            print(
-                json.dumps(dict(operation="codebuddy-hook", **diagnostic)),
-                file=sys.stderr,
-            )
-            return 0
-        if args.action == "probe":
-            value = probe(home, None)
-        elif args.action == "status":
-            value = binding_status(home)
-        elif args.action == "uninstall":
-            if args.surface is None:
-                from agent_brain_client.runtime.client_lifecycle import unbind
-
-                value = unbind(home, harness="codebuddy")
-                if value["status"] == "host-unbound":
-                    value["status"] = "codebuddy-uninstalled" if value["native_changed"] else "codebuddy-not-installed"
-            else:
-                # The historical explicit surface is checked under the native lock.
-                value = unbind_binding(home, surface=args.surface)
+        import agent_brain_client.adapters.harnesses.codebuddy.events as runtime
+        if verified_release:
+            from agent_brain_client.runtime.collection import native_services
+            core = native_services(verify_code=False)
         else:
-            value = configure_binding(home, surface=args.surface)
-        print(json.dumps(value, ensure_ascii=False))
-        return 2 if value["status"] == "codebuddy-review-or-resume-required" else 0
+            core = host_binding.load_core(home)
+        initialized = time.monotonic()
+        from agent_brain_client.application.control import (
+            RECALL_TIMING_ENV, mark_recall_timing, recall_timing_scope,
+        )
+        from agent_brain_client.runtime.delivery import schedule_assistant_completion
+        observation = {}
+        with recall_timing_scope(os.environ.get(RECALL_TIMING_ENV) == "1", started=started):
+            mark_recall_timing("hook_initialized")
+            output, state = runtime.hook(home, sys.stdin.buffer, core=core,
+                defer=lambda turn: schedule_assistant_completion(home, turn),
+                observe=observation.update, verified_release=verified_release)
+            state["cli_timing_ms"] = {
+                "initialization_ms": round((initialized - started) * 1000, 3),
+                "total_ms": round((time.monotonic() - started) * 1000, 3),
+            }
+            mark_recall_timing("output_prepared")
+            print(json.dumps(output, ensure_ascii=False), flush=True)
+            mark_recall_timing("output_flushed")
+            if observation and observation["status"] != "failed":
+                from agent_brain_client.adapters.storage.recall_receipts import save_recall_observation
+
+                observation["output_written"] = True
+                try:
+                    save_recall_observation({"device_home": str(home)}, observation)
+                except (OSError, ValueError):
+                    pass  # Flushed stdout is already observable; never emit it twice.
+        # Keep diagnostics content-free. A pending queue is not a save.
+        diagnostic = {
+            key: state[key]
+            for key in (
+                "status",
+                "error_type",
+                "recall_status",
+                "recall_error_type",
+                "assistant_capture",
+                "timing_ms",
+                "cli_timing_ms",
+                "delivery_schedule",
+                "schedule_error_type",
+            )
+            if key in state
+        }
+        if state.get("error"):
+            diagnostic["capture_error"] = state["error"].get("code", "unconfirmed")
+        print(
+            json.dumps(dict(operation="codebuddy-hook", **diagnostic)),
+            file=sys.stderr,
+        )
+        return 0
     except Exception as error:
         if args.action == "hook":
             print("{}")
         print(
             json.dumps(binding_review(args.action, error)),
-            file=sys.stderr if args.action in ("hook", "serve") else sys.stdout,
+            file=sys.stderr,
         )
         return 0 if args.action == "hook" else 2
 

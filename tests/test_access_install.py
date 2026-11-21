@@ -202,9 +202,6 @@ class AddressInstall(unittest.TestCase):
         entry = (root / "bootstrap/windows/install.ps1").read_text()
         self.assertIn("@('--access-key-file', $AccessKeyFile)", entry)
         self.assertIn("install.ps1') @PSBoundParameters", entry)
-        buddy = (root / "bootstrap/windows/codebuddy.ps1").read_text()
-        self.assertIn("[string]$AccessKeyFile", buddy)
-        self.assertIn("-CodeBuddyEntry @PSBoundParameters", buddy)
 
     def test_only_address_and_hidden_key_no_public_secret_and_no_false_success(self):
         self.assertTrue(self.run_install()["installed"])

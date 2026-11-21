@@ -65,7 +65,7 @@ def install_sources(args):
     freeze_code(settings_path(home).parent, value["code_sha256"])
     return {"status": "shared-source-runtime-prepared", "native_changed": False,
             "harness": harness, "settings": str(settings_path(home)),
-            "host_binding": "codebuddy-entry-installs-selected-surface"}
+            "host_binding": "installer-configures-selected-codebuddy-surface"}
 
 
 def recover_pending(home, native):

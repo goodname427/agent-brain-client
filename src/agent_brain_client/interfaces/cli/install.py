@@ -177,14 +177,7 @@ def parse_arguments(argv=None):
     parser.add_argument("--connection", type=Path)
     parser.add_argument("--expected-connection-sha256")
     parser.add_argument("--surface", choices=("ide", "cli", "both"))
-    parser.add_argument("--codebuddy-entry", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if args.codebuddy_entry:
-        if args.harness not in (None, "codebuddy"):
-            parser.error("CodeBuddy compatibility entry requires its own Harness")
-        args.harness = "codebuddy"
-        if args.action == "uninstall":
-            args.action = "unbind"
     if args.action in ("install", "reinstall"):
         args.harness = args.harness or "codex"
     if args.surface is not None and (

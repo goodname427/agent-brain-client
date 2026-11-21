@@ -17,11 +17,11 @@
 | `adapters/harnesses/codebuddy/configuration.py` | JSONC、配置优先级、自有 MCP/Hooks/说明块，调用共用文件事务 |
 | `adapters/harnesses/codebuddy/events.py` | 原生身份、长文本分批、当前轮事件与重试 |
 | `adapters/harnesses/codebuddy/transcript.py` | 当前轮游标、IDE generation、CLI JSONL 增量与读取边界 |
-| `interfaces/cli/codebuddy.py` | 安装、状态、协议检查、MCP、Hook 的输入分发 |
+| `interfaces/cli/codebuddy.py` | 启动 MCP、接收原生 Hook，为统一安装器提供绑定、状态及协议检查 |
 | `runtime/host_binding.py` | 校验既有共享运行库与原登记，绑定共用传输和来源服务 |
-| `bootstrap/{macos,windows}/codebuddy.*` | 解释器和官方安装入口的顺序协调 |
+| `bootstrap/macos/install.sh`、`bootstrap/windows/install.ps1` | 共用安装、更新和维护流程，通过宿主参数选择 CodeBuddy |
 
-冻结包包含当前完整 Python 运行库，逐项记录并验证摘要，可脱离源码 checkout 启动。共享运行库和正在执行的 Harness 包必须匹配；普通更新在共享代码刷新后同步刷新已经登记的 CodeBuddy 绑定；也可重新运行官方 CodeBuddy 安装入口刷新绑定，不加载不匹配版本，也不改设备身份、队列或来源范围。
+冻结包包含当前完整 Python 运行库，逐项记录并验证摘要，可脱离源码 checkout 启动。共享运行库和正在执行的 Harness 包必须匹配。普通更新在共享代码刷新后同步刷新已经登记的 CodeBuddy 绑定，沿用原设备身份、队列和来源范围。
 
 跨宿主更新顺序由 `runtime/updates.py` 的组合端口协调：Codex 适配器只刷新自己的 Hook，CodeBuddy 从同一已验证活动包的隔离进程刷新自己的绑定。两端仍各自使用原有锁与文件事务，失败保留可重试状态，不宣称跨宿主原子提交。
 
