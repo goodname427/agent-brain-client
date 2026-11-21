@@ -11,7 +11,7 @@ from agent_brain_client.adapters.storage.metadata import (
 from agent_brain_client.adapters.platforms.filesystem import (
     private_mode,
 )
-from agent_brain_client.adapters.packages.frozen import runtime_pins
+from agent_brain_client.adapters.packages.frozen import runtime_pins, validate_python_pins
 
 ROOT = Path(__file__).resolve().parents[4]
 ENTRY = ROOT / "src/agent_brain_client/interfaces/cli/project.py"
@@ -55,6 +55,34 @@ def project_harness(value):
     raise ValueError("Exact project Harness record required")
 
 def load(path, sha, *, locate):
+    p = load_binding(path, sha, locate=locate)
+    pins = p["code_sha256"]
+    if pins.keys() == runtime_pins(ROOT).keys() and all(
+        digest(canonical(ROOT / name, existing=True).read_bytes()) == pin
+        for name, pin in pins.items()
+    ):
+        return p
+
+    # A native project Hook can keep the same settings across an update. Keep
+    # the original code proof for standalone entries and accept a changed
+    # runtime only if it is the enrolled, health-checked serving package.
+    if (ROOT / "verified.json").is_file():
+        from agent_brain_client.adapters.packages.client import ClientReleases
+        from agent_brain_client.adapters.packages.releases import UpdateBlocked
+
+        try:
+            channel = ClientReleases(p["release_policy"], p["release_policy_sha256"])
+            if channel.policy["runtime"]["device_home"] == p["device_home"]:
+                serving = channel.verified_active(serving=True)
+                if serving is not None and Path(serving["package"]) == ROOT:
+                    return p
+        except UpdateBlocked as error:
+            raise ValueError("Serving project package verification failed") from error
+    raise ValueError("Memory code changed; use the verified serving project package")
+
+
+def load_binding(path, sha, *, locate):
+    """Read verified project metadata without authorizing a project executable."""
     p = private_json(path, sha)
     fields = FIELDS
     harness = project_harness(p)
@@ -82,13 +110,9 @@ def load(path, sha, *, locate):
         or not 1024 <= p["max_context_bytes"] <= 16384
         or not isinstance(p["query"], str)
         or len(p["query"]) > 1024
-        or not isinstance(p["code_sha256"], dict)
-        or p["code_sha256"].keys() != runtime_pins(ROOT).keys()
     ):
         raise ValueError("Bounded project memory settings required")
-    for n, h in p["code_sha256"].items():
-        if digest(canonical(ROOT / n, existing=True).read_bytes()) != h:
-            raise ValueError("Memory code changed; refresh the owned project setup")
+    validate_python_pins(p["code_sha256"])
     project = canonical(p["project_root"], existing=True)
     if not project.is_dir():
         raise ValueError("Existing project directory required")

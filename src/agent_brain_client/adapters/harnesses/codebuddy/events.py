@@ -84,15 +84,21 @@ def hook(home, stream, *, core=None, defer=None, observe=None):
         return {}, {"status": "outside-approved-source", "data_transferred": False}
     # A bound project has its own pinned Hook and queue. Its presence is scoped
     # to this host, so another host's project controls never suppress capture.
-    from agent_brain_client.adapters.storage.project_settings import project_settings, load as load_project
+    from agent_brain_client.adapters.storage.project_settings import active, load_binding, project_settings
     project_file = project_settings(home, payload["cwd"], harness="codebuddy")
-    if project_file.exists():
+    if project_file.exists() or project_file.is_symlink():
         from agent_brain_client.adapters.harnesses.codebuddy.content_ports import CodeBuddyContentPorts
         def locate(home, runtime, harness):
             if harness != "codebuddy":
                 raise ValueError("CodeBuddy project binding required")
             return CodeBuddyContentPorts.location(home, runtime)
-        project = load_project(project_file, metadata_io.digest(project_file.read_bytes()), locate=locate)
+        # This Hook has already verified its own frozen runtime. Only the
+        # project's binding is needed to decide ownership at this exact cwd.
+        project = load_binding(project_file, None, locate=locate)
+        if project["device_home"] != str(home) or project["project_root"] != local["cwd"]:
+            raise ValueError("Existing CodeBuddy project origin changed")
+        if not active(project):
+            return {}, {"status": "project-source-stopped", "data_transferred": False}
         if project["capture_policy"] is not None:
             return {}, {"status": "project-source-delegated", "data_transferred": False}
     session = session_id(payload.get("session_id"))
