@@ -492,7 +492,8 @@ def _configure(args):
         if args.exclude_root:
             scope["exclude_roots"] = [canonical(x) for x in args.exclude_root]
         if args.non_project_root:
-            scope["all_non_projects"] = False
+            # The nonempty list expresses the restriction on both Server contracts.
+            scope.pop("all_non_projects", None)
             scope["non_project_roots"] = [canonical(x) for x in args.non_project_root]
     validate(scope)
     if not has_origins(scope):

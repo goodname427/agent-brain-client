@@ -43,7 +43,7 @@ Client 使用现有设备 HTTPS 凭据将无凭据来源元数据登记到同一
 
 `global-status --check-server` 分别报告 `source_registered`、`recall_authorized` 和采集停止状态。`source_registered=false` 不妨碍已授权的个人池召回；空范围仍不允许采集。当前 checkout 与 Hook pin 不一致时先走正常 update，不能手改摘要。
 
-如果服务端来源已启用而本地批准未确认，更新回执分别报告这两个状态，并保留原设置。单独传 `--exclude-root` 或 `--non-project-root` 只替换对应目录列表，保留项目范围和其余目录列表。
+如果服务端来源已启用而本地批准未确认，更新回执分别报告这两个状态，并保留原设置。`--exclude-root` 只替换排除列表。`--non-project-root` 将普通目录的采集和召回限制在指定目录，保留项目范围、排除和隔离规则。Client 使用 Server 0.3.7 也能接受的 `non_project_roots` 清单登记这一范围。
 
 全目录采集范围由 `all_projects: true` 和 `all_non_projects: true` 表示，新盘上的项目和普通目录同样适用。已启用个人召回且未限制普通目录的旧全项目策略会在普通更新时自动纳入今后普通目录采集。Server 0.3.7 会保留旧采集范围，Server 支持后再运行普通更新即可续完。同一设备身份、排除目录、隔离规则和原队列继续保留。
 
