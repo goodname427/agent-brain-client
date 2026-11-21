@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import unittest
 import unicodedata
 from unittest.mock import Mock, patch
+from urllib.error import HTTPError, URLError
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / name) for name in ('src', 'src', 'src', 'src')]
@@ -207,6 +208,65 @@ class LayeredRecall(unittest.TestCase):
         self.response['result']['namespace_results'] = [empty] * 19
         with self.assertRaises(ValueError): self.read()
 
+    def test_bad_source_does_not_erase_an_independently_verified_source(self):
+        valid, invalid = self.group(), self.group()
+        self.response['result']['namespace_results'] = [valid]
+        self.run_hook(question='Complete synthetic question')
+        cache, = self.root.glob('recall-*.json')
+        complete_snapshot = cache.read_bytes()
+        invalid['source_device_id'] = 'd' * 32
+        for layer in ('L1', 'L2'):
+            item = invalid['recall'][layer][0]
+            item.update(id='rejected-' + layer, content='Unverified source fixture')
+            item['provenance']['sources'][0]['identity']['device_id'] = 'd' * 32
+        proof = invalid['recall']['L3']['provenance']
+        for sources in ([None], [dict(proof['sources'][0], identity=None)], proof['sources']):
+            proof['sources'] = sources
+            for groups in ([invalid, valid], [valid, invalid]):
+                with self.subTest(sources=sources, bad_first=groups[0] is invalid):
+                    self.response['result']['namespace_results'] = groups
+                    result = self.run_hook()
+                    context = result['hookSpecificOutput']['additionalContext']
+                    for layer in ('L1', 'L2', 'L3'):
+                        self.assertIn('Synthetic ' + layer + ' answer marker', context)
+                    self.assertNotIn('Unverified source fixture', context)
+                    receipt = recall_receipts.recall_observation(self.value)
+                    self.assertEqual(receipt['item_count'], 3)
+                    evidence = receipt['retrieval']
+                    self.assertIs(evidence['partial'], True)
+                    for key in ('returned', 'selected'):
+                        self.assertEqual([ref['record_sha256'] for ref in evidence[key]],
+                                         [digest('synthetic-' + layer) for layer in ('L1', 'L2', 'L3')])
+                        self.assertNotIn(digest('Unverified source fixture'),
+                                         [ref['content_sha256'] for ref in evidence[key]])
+        self.assertEqual(cache.read_bytes(), complete_snapshot)
+
+    def test_old_cache_is_only_read_on_retryable_transport_failure(self):
+        from agent_brain_client.adapters.server.collection import CollectionClient
+
+        self.assertEqual(len(self.read()), 3)
+        read_cache = recall_receipts.metadata.private_json
+        wire_client = object.__new__(CollectionClient)
+        opener = Mock()
+        wire_client.base = SimpleNamespace(
+            _credential=lambda: 'fictional-token',
+            profile={'endpoint': 'https://fixture.invalid'},
+            transport=SimpleNamespace(opener=opener),
+        )
+        with (patch.object(gm.CollectionClient.return_value, 'wire', wire_client.wire),
+              patch.object(recall_receipts.metadata, 'private_json', wraps=read_cache) as read):
+            for code in ('global_source_device_denied', 'transport_unconfirmed'):
+                body = json.dumps({'error': {'code': code}}).encode()
+                opener.open.side_effect = HTTPError('https://fixture.invalid', 403, 'denied', None, io.BytesIO(body))
+                with self.assertRaisesRegex(ValueError, 'Global recall unavailable'):
+                    self.read()
+            read.assert_not_called()
+            opener.open.side_effect = URLError('Fictional transport failure')
+            items = self.read()
+            read.assert_called_once()
+        self.assertEqual(len(items), 3)
+        self.assertTrue(all(row['offline_cache'] and not row['remote_confirmation'] for row in items))
+
     def prompt(self, question='Synthetic question marker'):
         payload = {'cwd': self.local['cwd'], 'hook_event_name': 'UserPromptSubmit',
                    'session_id': 'synthetic-reader', 'turn_id': 'synthetic-turn', 'prompt': question}
@@ -265,6 +325,7 @@ class LayeredRecall(unittest.TestCase):
         self.assertIn('Synthetic L2 answer marker', context); self.assertIn('Synthetic L3 answer marker', context)
         receipt = recall_receipts.recall_observation(self.value)
         self.assertEqual(receipt, observed[0]); self.assertEqual(receipt['layer_counts'], {'L1': 1, 'L2': 1, 'L3': 1})
+        self.assertNotIn('partial', receipt['retrieval'])
         self.assertEqual(receipt['status'], 'context-prepared'); self.assertEqual(receipt['model_used'], 'unknown')
         self.assertEqual(receipt['context_bytes'], len(context.encode()))
         for forbidden in ('answer marker', 'question marker', 'synthetic-reader', '/synthetic', self.peer):
@@ -274,6 +335,61 @@ class LayeredRecall(unittest.TestCase):
         receipt['output_written'] = True
         recall_receipts.save_recall_observation(self.value, receipt)
         self.assertEqual(self.run_hook(), {}); self.assertEqual(len(self.sent), 2)
+
+    def test_optional_cache_and_receipt_failures_preserve_hook_output_and_stamp(self):
+        observed = []
+        write = recall_receipts.metadata.write
+
+        def fail_optional(path, value, **kwargs):
+            if path.name.startswith('prompt-'):
+                return write(path, value, **kwargs)
+            raise OSError('Fictional optional write failure')
+
+        with patch.object(recall_receipts.metadata, 'write', side_effect=fail_optional):
+            result = self.run_hook(observe=observed.append)
+            self.assertIn('Synthetic L1 answer marker', result['hookSpecificOutput']['additionalContext'])
+            self.assertEqual(observed[0]['status'], 'context-prepared')
+            self.assertFalse(list(self.root.glob('prompt-*.json')))
+            result = io.StringIO()
+            with (patch.object(gm, 'load', return_value=self.value),
+                  patch.object(gm, 'eligible', return_value=self.local),
+                  patch.object(gm, 'submit_hook', return_value={'status': 'staged'}),
+                  patch.object(sys, 'stdin', self.prompt()),
+                  patch.object(sys, 'stdout', result),
+                  patch.object(sys, 'stderr', io.StringIO())):
+                self.assertEqual(collection_cli.main(['global-hook']), 0)
+            self.assertIn('additionalContext', result.getvalue())
+            self.assertEqual(self.run_hook(), {})
+            self.assertEqual(len(self.sent), 2)
+
+    def test_stamp_write_failure_still_records_output_and_allows_retry(self):
+        write = recall_receipts.metadata.write
+
+        def fail_stamp(path, value, **kwargs):
+            if path.name.startswith('prompt-'):
+                raise OSError('Fictional prompt stamp failure')
+            return write(path, value, **kwargs)
+
+        output, diagnostic = io.StringIO(), io.StringIO()
+        with (patch.object(recall_receipts.metadata, 'write', side_effect=fail_stamp),
+              patch.object(gm, 'load', return_value=self.value),
+              patch.object(gm, 'eligible', return_value=self.local),
+              patch.object(gm, 'submit_hook', return_value={'status': 'staged'}),
+              patch.object(sys, 'stdin', self.prompt()),
+              patch.object(sys, 'stdout', output),
+              patch.object(sys, 'stderr', diagnostic)):
+            self.assertEqual(collection_cli.main(['global-hook']), 0)
+        self.assertIn('Synthetic L1 answer marker', output.getvalue())
+        entries = [json.loads(line) for line in diagnostic.getvalue().splitlines()]
+        acknowledgement = next(row for row in entries if row.get('status') == 'hook-output-written')
+        self.assertIs(acknowledgement['output_written'], True)
+        self.assertNotIn('Fictional prompt stamp failure', diagnostic.getvalue())
+        self.assertFalse(list(self.root.glob('prompt-*.json')))
+        receipt = recall_receipts.recall_observation(self.value, acknowledgement['request_key'])
+        self.assertEqual(receipt, recall_receipts.recall_observation(self.value))
+        self.assertIs(receipt['output_written'], True)
+        self.assertTrue(self.run_hook())
+        self.assertEqual(len(self.sent), 2)
 
     def test_empty_recall_and_unobserved_are_distinct(self):
         self.assertEqual(recall_receipts.recall_observation(self.value), {'status': 'unobserved', 'model_used': 'unknown'})
@@ -500,7 +616,7 @@ class LayeredRecall(unittest.TestCase):
         self.assertNotIn('背景说明', cache.read_text(encoding='utf-8'))
         self.assertNotIn('synthetic-internal-directory', cache.read_text(encoding='utf-8'))
 
-        self.response = {'error': {'code': 'transport_unconfirmed'}}
+        self.response = {'error': {'code': 'transport_unconfirmed', 'retryable': True}}
         offline, receipt = self.fitted_hook(question)
         self.assertEqual(offline, [dict(row, offline_cache=True, remote_confirmation=False)])
         self.assertEqual(receipt['retrieval']['selected'], [ref])
@@ -590,7 +706,7 @@ class LayeredRecall(unittest.TestCase):
         self.assertEqual(saved['items'], rows)
         self.assertEqual(saved['selected'], [ref])
 
-        self.response = {'error': {'code': 'transport_unconfirmed'}}
+        self.response = {'error': {'code': 'transport_unconfirmed', 'retryable': True}}
         offline, receipt = self.fitted_hook(question)
         self.assertEqual(offline, [dict(row, offline_cache=True, remote_confirmation=False)])
         self.assertEqual(receipt['retrieval']['selected'], [ref])
@@ -668,7 +784,7 @@ class LayeredRecall(unittest.TestCase):
         saved = json.loads(cache.read_bytes())
         saved.pop('evidence_selected')
         recall_receipts.metadata.write(cache, saved)
-        self.response = {'error': {'code': 'transport_unconfirmed'}}
+        self.response = {'error': {'code': 'transport_unconfirmed', 'retryable': True}}
         rows, receipt = self.fitted_hook(question)
         self.assertEqual(rows, [
             dict(manual[i], offline_cache=True, remote_confirmation=False) for i in (1, 0)
@@ -684,7 +800,7 @@ class LayeredRecall(unittest.TestCase):
         target = dict(self.row('L1'), content=original)
         group['recall'].update(L1=[target], L2=[], L3={'content': None, 'provenance': {}})
         online = copy.deepcopy(self.response)
-        offline = {'error': {'code': 'transport_unconfirmed'}}
+        offline = {'error': {'code': 'transport_unconfirmed', 'retryable': True}}
 
         projected, _ = self.fitted_hook(question)
         self.assertEqual(projected[0]['presentation'], 'excerpt')
@@ -723,7 +839,7 @@ class LayeredRecall(unittest.TestCase):
         saved = json.loads(cache.read_bytes())
         saved.pop('evidence_selected')
         recall_receipts.metadata.write(cache, saved)
-        self.response = {'error': {'code': 'transport_unconfirmed'}}
+        self.response = {'error': {'code': 'transport_unconfirmed', 'retryable': True}}
         with self.assertRaisesRegex(ValueError, 'Cached recall excerpt changed'):
             gm.recall(self.value, self.local, 'synthetic-reader', question)
         self.assertEqual(self.run_hook(question=question), {})

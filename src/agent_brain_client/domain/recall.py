@@ -137,8 +137,11 @@ def global_recall_params(params):
 
 
 def verified_memory_sources(proof, device, project, direct_l1=False):
+    if not isinstance(proof, dict):
+        return False
     sources = proof.get("sources", [])
     manual = proof.get("manual_sources", [])
+    event_ids = proof.get("event_ids", [])
     if (
         proof.get("status")
         not in ("verified-native-generation-graph", "verified-l1-source-graph")
@@ -149,24 +152,33 @@ def verified_memory_sources(proof, device, project, direct_l1=False):
         or not isinstance(sources, list)
         or not isinstance(manual, list)
         or len(sources) + len(manual) > 100
-        or set(proof.get("event_ids", [])) != {s.get("event_id") for s in sources}
+        or not isinstance(event_ids, list)
+        or any(not isinstance(event_id, str) for event_id in event_ids)
     ):
         return False
+    committed_ids = set()
     for source in sources:
         if (
             not isinstance(source, dict)
+            or not isinstance(source.get("event_id"), str)
+            or not isinstance(source.get("identity"), dict)
             or source.get("state") != "committed"
-            or source.get("identity", {}).get("device_id") != device
-            or source.get("identity", {}).get("project_id") != project
+            or source["identity"].get("device_id") != device
+            or source["identity"].get("project_id") != project
         ):
             return False
+        committed_ids.add(source["event_id"])
+    if set(event_ids) != committed_ids:
+        return False
     for source in manual:
         if (
-            proof.get("status") != "verified-l1-source-graph"
+            not isinstance(source, dict)
+            or not isinstance(source.get("identity"), dict)
+            or proof.get("status") != "verified-l1-source-graph"
             or source.get("kind") not in ("agent", "legacy-import")
             or source.get("state") != "committed"
-            or source.get("identity", {}).get("project_id") != project
-            or source.get("identity", {}).get("device_id") != source.get("device_id")
+            or source["identity"].get("project_id") != project
+            or source["identity"].get("device_id") != source.get("device_id")
             or not re.fullmatch("abm-[a-f0-9]{64}", str(source.get("record_id")))
             or not re.fullmatch("[a-f0-9]{64}", str(source.get("revision")))
             or not re.fullmatch(

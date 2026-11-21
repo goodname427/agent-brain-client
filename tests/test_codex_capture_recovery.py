@@ -67,6 +67,37 @@ class CaptureRecovery(unittest.TestCase):
         self.recover()
         self.assertEqual(self.sent, [request])
 
+    def test_detached_global_delivery_checks_status_at_the_outbox_boundaries(self):
+        from agent_brain_client.runtime import delivery
+
+        home = self.fixture.fixture.home
+        request = self.stage('global-approved')
+        self.fixture.fixture.cloud.request = self.send
+        local = {'cwd': '/synthetic'}
+        task = {'schema': 1, 'harness': 'codebuddy', 'origin': local}
+        core = Mock()
+        core.load.return_value = {'scope': {}}
+        core.approved.return_value = True
+        self.client.queue_identity = {'device': 'fixture-device'}
+        core.build_delivery_queue.return_value = (self.client, self.queue)
+        with (patch('agent_brain_client.domain.scopes.select', return_value={}),
+              patch('agent_brain_client.adapters.storage.project_settings.source_active', return_value=True)):
+            self.assertFalse(delivery.deliver_origin(home, task, core))
+            self.assertEqual(self.client.status.call_count, 2)
+            self.assertEqual(self.sent, [request])
+            self.stage('global-revoked')
+            self.stage('global-later')
+            self.fixture.fixture.cloud.request = self.send
+            self.client.status.reset_mock()
+            # Admission is lost just before dispatch, after the row is loaded.
+            self.client.status.side_effect = [
+                {'source_admitted': True}, {'source_admitted': False},
+            ]
+            self.assertTrue(delivery.deliver_origin(home, task, core))
+        self.assertEqual(self.client.status.call_count, 2)
+        self.assertEqual(self.sent, [request])
+        self.assertEqual(self.queue.queue_status()['pending'], 2)
+
     def test_bounded_background_pass_rotates_past_unavailable_event(self):
         requests = sorted([self.stage('a'), self.stage('b')], key=lambda x: x['request_id'])
         def admission(*args):
