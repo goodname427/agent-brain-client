@@ -22,7 +22,6 @@ from agent_brain_client.adapters.packages.client import (
     DEPENDENCY_RUNTIME,
     MCP_CONTENT_ENTRY,
     MCP_LAUNCHER_ENTRY,
-    fixed_launcher_files,
     launcher_package_files,
     managed_worker_abi,
     UpdateBlocked,
@@ -88,7 +87,7 @@ def content_runtime_blocker(active, policy):
     return None
 
 
-def serve_content(command, active, policy, status, *, run_live=None):
+def serve_content(command, active, policy, status):
     """Keep the fixed guard valid until the actual mapping worker exits.
 
     Legacy workers take an exclusive lease; compatible workers share a lease.
@@ -140,10 +139,7 @@ def serve_content(command, active, policy, status, *, run_live=None):
             if blocked:
                 return blocked
             options = {} if os.name == "nt" else {"pass_fds": (lease.fileno(),)}
-            exit_code = (
-                run_live(options) if run_live is not None
-                else subprocess.run(command, **options).returncode
-            )
+            exit_code = subprocess.run(command, **options).returncode
             return {"status": status, "served": True, "exit_code": exit_code}
     except RuntimeError:
         return {
@@ -191,10 +187,6 @@ def content_worker(active, runtime, harness):
     if abi is None:
         return None
     return WorkerSpec(tuple(content_command(active, runtime, harness)), runtime_fingerprint(runtime_files(manifest)), abi)
-
-
-def launcher_files(package):
-    return fixed_launcher_files(launcher_package_files(package))
 
 
 def registration_stamp(runtime, harness):
@@ -254,36 +246,93 @@ def registration_stamp(runtime, harness):
     return before["package"], before, owned
 
 
-def observe_content_worker(releases, runtime, harness, registered, fixed_files):
-    """Watch the verified local pointer without discovery or package activation."""
-    seen = None
+def isolated_stdio_operation(policy_path, policy_sha256, harness, mode, ticket, protocol):
+    """Run in a transient verified-release authority/worker bootstrap."""
+    releases = ClientReleases(policy_path, policy_sha256)
+    if releases.policy["capabilities"] != HTTPS_CONTENT_CAPABILITIES:
+        if mode == "plan":
+            return {"legacy": True}
+        if mode == "worker" and ticket is None and protocol is None:
+            return startup(policy_path, policy_sha256, harness=harness)
+        raise UpdateBlocked("Managed HTTPS policy required")
 
-    def read(path):
-        try:
-            return path.read_bytes()
-        except FileNotFoundError:
-            return None
+    runtime = releases.policy["runtime"]
+    require_memory_verified(runtime["device_home"], runtime.get("https_profile_sha256"))
+    registered = registration_stamp(runtime, harness)
+    if (
+        registered is None
+        or Path(registered[0]) != Path(__file__).resolve().parents[3]
+        or registered[1]["release_policy"] != str(policy_path)
+        or registered[1]["release_policy_sha256"] != policy_sha256
+    ):
+        raise UpdateBlocked("Verified native MCP registration required")
+    from agent_brain_client.interfaces.mcp.launcher import runtime_fingerprint
 
-    def observe():
-        nonlocal seen
-        journal, pointer = releases.engine.journal, releases.engine.pointer
-        token = (read(journal), read(pointer))
-        if token == seen:
-            return None
-        if registration_stamp(runtime, harness) != registered:
-            return False
+    stamp = runtime_fingerprint(registered)
+    request = json.loads(ticket, object_pairs_hook=private_files.pairs) if ticket is not None else None
+    if mode == "check":
+        return {"current": request == {"registration": stamp}}
+    if mode == "discover":
+        if request is not None or protocol is not None:
+            raise UpdateBlocked("Distinct background discovery required")
+        releases.startup_check()
+        return {}
+    if mode == "plan":
+        if request is not None or protocol is not None:
+            raise UpdateBlocked("Read-only worker plan required")
         active = releases.verified_active(serving=True)
-        if active is None or content_runtime_blocker(active, releases.policy):
-            return False
-        if launcher_files(active["package"]) != fixed_files:
-            return False
-        candidate = content_worker(active, runtime, harness)
-        if token == (read(journal), read(pointer)):
-            seen = token
-            return candidate if candidate is not None else False
-        return None
-
-    return observe
+    elif mode == "resolve":
+        if (
+            not isinstance(request, dict)
+            or set(request) != {"registration", "active"}
+            or request["registration"] != stamp
+            or protocol is not None
+        ):
+            raise UpdateBlocked("Exact planned MCP worker required")
+        # The parent ticket never authorizes arbitrary cache bytes: only the
+        # verified serving pointer or its exact retained journal predecessor.
+        active = releases.verified_active(serving=True)
+        if request["active"] != active:
+            journal = releases.engine.journal
+            before = private_files.raw(journal)
+            row = json.loads(before, object_pairs_hook=private_files.pairs)
+            if (
+                set(row) != {"phase", "target", "before", "backup", "completed"}
+                or row["phase"] != "complete"
+                or row["target"] != active
+                or row["before"] is None
+                or row["before"] != request["active"]
+            ):
+                raise UpdateBlocked("MCP worker ticket no longer matches an admitted snapshot")
+            active = releases.engine.active(request["active"])
+            if active is None:
+                raise UpdateBlocked("Verified predecessor required")
+            package, manifest = runtime_manifest(active)
+            releases.engine.adapter.preflight(package, manifest)
+            if private_files.raw(journal) != before or releases.verified_active(serving=True) != row["target"]:
+                raise UpdateBlocked("MCP release changed during predecessor verification")
+    else:
+        raise UpdateBlocked("Unknown private stdio operation")
+    if active is None or content_runtime_blocker(active, releases.policy):
+        raise UpdateBlocked("Verified serving MCP worker required")
+    fixed = launcher_package_files(registered[0]).get(MCP_LAUNCHER_ENTRY)
+    if fixed is None or launcher_package_files(active["package"]).get(MCP_LAUNCHER_ENTRY) != fixed:
+        raise UpdateBlocked("Reconnect to the changed MCP supervisor")
+    worker = content_worker(active, runtime, harness)
+    if worker is None:
+        raise UpdateBlocked("Managed MCP worker unavailable")
+    if mode == "plan":
+        return {
+            "ticket": {"registration": stamp, "active": active},
+            "fingerprint": worker.fingerprint,
+            "cache_abi": worker.cache_abi,
+            "watch": list(map(str, (releases.engine.journal, releases.engine.pointer))),
+        }
+    return {
+        "command": [*worker.command, "--own-runtime-lease"],
+        "fingerprint": worker.fingerprint,
+        "cache_abi": worker.cache_abi,
+    }
 
 
 def startup(
@@ -431,37 +480,7 @@ def startup(
                 "served": True,
                 "exit_code": subprocess.run(command).returncode,
             }
-        run_live = None
-        if not event_hook and releases.policy["capabilities"] == HTTPS_CONTENT_CAPABILITIES:
-            try:
-                initial = content_worker(active, runtime, harness)
-                registered = registration_stamp(runtime, harness) if initial is not None else None
-                if registered is not None:
-                    package = Path(active["package"])
-                    fixed_files = launcher_files(registered[0])
-                    if (
-                        MCP_LAUNCHER_ENTRY not in fixed_files
-                        or launcher_files(package) != fixed_files
-                    ):
-                        registered = None
-            except (OSError, ValueError, KeyError, TypeError, UpdateBlocked):
-                registered = None
-            if registered is not None:
-                from agent_brain_client.interfaces.mcp.server import supervise_stdio
-
-                def run_live(options):
-                    return supervise_stdio(
-                        initial,
-                        observe_content_worker(releases, runtime, harness, registered, fixed_files),
-                        sys.stdin.buffer,
-                        sys.stdout,
-                        options,
-                        can_switch=lambda: registration_stamp(runtime, harness) == registered,
-                    )
-
-        if run_live is None:
-            return serve_content(command, active, releases.policy, result["status"])
-        return serve_content(command, active, releases.policy, result["status"], run_live=run_live)
+        return serve_content(command, active, releases.policy, result["status"])
     if installation_check:
         return {"status": "content-runtime-review-required", "served": False}
     manifest = json.loads((Path(active["package"]) / "verified.json").read_bytes())[

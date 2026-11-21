@@ -386,14 +386,16 @@ class ProductWorkerTests(unittest.TestCase):
         })["tools"], ready["tools"])
 
 
-def isolated_content_package(root, label, abi, *, fixed="fixed", managed=True):
+def isolated_content_package(root, label, abi, *, fixed="fixed", managed=True, single_entry=False):
     package = root / label
     sources = {
         "src/agent_brain_client/interfaces/mcp/content.py": (
             ("MCP_WORKER_HANDOFF = 1\n" if managed else "") + "# Worker " + label + "\n"
         ),
         "src/agent_brain_client/adapters/storage/content.py": f'CONTENT_CACHE_ABI = "{abi}"\n',
-        "src/agent_brain_client/interfaces/mcp/launcher.py": "# " + fixed + "\n",
+        "src/agent_brain_client/interfaces/mcp/launcher.py": (
+            ("MCP_SINGLE_ENTRY_SUPERVISOR = 1\n" if single_entry else "") + "# " + fixed + "\n"
+        ),
     }
     manifest = {"files": {}}
     for name, source in sources.items():
@@ -420,8 +422,6 @@ class LauncherScopeTests(unittest.TestCase):
         self.launcher = launcher
         self.runtime = {"device_home": str(self.home), "content_cache": str(self.home / "cache")}
         self.active = isolated_content_package(self.home, "active", CONTENT_CACHE_ABI)
-        self.fixed = self.active["package"]
-        self.registration = (self.fixed, {"package": self.fixed}, {"enabled": True})
         self.release = SimpleNamespace(
             policy={"runtime": self.runtime, "capabilities": HTTPS_CONTENT_CAPABILITIES},
             verified_active=Mock(return_value=self.active),
@@ -429,47 +429,25 @@ class LauncherScopeTests(unittest.TestCase):
         )
 
     def start(self, harness, *, event_hook=None):
-        def serve(command, active, policy, status, *, run_live=None):
-            if run_live is not None:
-                run_live({})
-            return {"command": command, "managed": run_live is not None}
-
         with (
             patch.object(self.launcher, "ClientReleases", return_value=self.release),
             patch.object(self.launcher, "require_memory_verified"),
             patch("agent_brain_client.adapters.installation.installation.inspect",
                   return_value={"installed": True}),
-            patch.object(self.launcher, "registration_stamp", return_value=self.registration),
-            patch.object(self.launcher, "serve_content", side_effect=serve),
             patch("agent_brain_client.interfaces.mcp.server.supervise_stdio") as manager,
+            patch.object(self.launcher, "serve_content",
+                         side_effect=lambda command, *args: {"command": command}),
         ):
             response = self.launcher.startup(
                 "fixture", "a" * 64, harness=harness, event_hook=event_hook,
             )
             return response, manager.call_count
 
-    def test_codex_and_codebuddy_can_enter_same_supervisor(self):
-        for harness in ("codex", "codebuddy"):
-            with self.subTest(harness=harness):
-                result, uses_manager = self.start(harness)
-                self.assertEqual(uses_manager, 1)
-                self.assertTrue(result["managed"])
-                args = result["command"]
-                self.assertEqual(args[args.index("--harness") + 1], harness)
-
-    def test_fixed_launcher_change_keeps_formal_one_shot_launch(self):
-        different = isolated_content_package(self.home, "new-launcher", CONTENT_CACHE_ABI, fixed="changed")
-        self.release.verified_active.return_value = different
-        result, uses_manager = self.start("codex")
-        self.assertEqual(uses_manager, 0)
-        self.assertFalse(result["managed"])
-
     def test_finite_mcp_hook_uses_original_active_package_and_arguments(self):
         different = isolated_content_package(self.home, "new-abi-hook", "content-ledgers-v2")
         self.release.verified_active.return_value = different
         result, uses_manager = self.start("codex", event_hook=("fixture-hook", "b" * 64))
         self.assertEqual(uses_manager, 0)
-        self.assertFalse(result["managed"])
         args = result["command"]
         self.assertEqual(args[3], str(Path(different["package"]) / "src/agent_brain_client/interfaces/mcp/content.py"))
         self.assertEqual(args[-5:], [
@@ -479,31 +457,8 @@ class LauncherScopeTests(unittest.TestCase):
 
     def test_ssh_does_not_enable_the_supervisor(self):
         self.release.policy["capabilities"] = SSH_CONTENT_CAPABILITIES
-        result, uses_manager = self.start("codex")
+        _, uses_manager = self.start("codex")
         self.assertEqual(uses_manager, 0)
-        self.assertFalse(result["managed"])
-
-    def test_unchanged_registration_observes_only_worker_changes(self):
-        journal = self.home / "journal.json"
-        pointer = self.home / "active.json"
-        self.release.engine = SimpleNamespace(journal=journal, pointer=pointer)
-        observe = self.launcher.observe_content_worker(
-            self.release, self.runtime, "codebuddy", self.registration,
-            self.launcher.launcher_files(self.fixed),
-        )
-        new = isolated_content_package(self.home, "worker-only", CONTENT_CACHE_ABI)
-        self.release.verified_active.return_value = new
-        pointer.write_text("worker-only", encoding="utf-8")
-        with patch.object(self.launcher, "registration_stamp", return_value=self.registration):
-            self.assertEqual(observe().cache_abi, CONTENT_CACHE_ABI)
-            self.assertIsNone(observe())
-            fixed_changed = isolated_content_package(self.home, "modified-fixed-code", CONTENT_CACHE_ABI, fixed="new")
-            self.release.verified_active.return_value = fixed_changed
-            pointer.write_text("modified-fixed-code", encoding="utf-8")
-            self.assertIs(observe(), False)
-        with patch.object(self.launcher, "registration_stamp", return_value=None):
-            pointer.write_text("native-change", encoding="utf-8")
-            self.assertIs(observe(), False)
 
 
 @unittest.skipUnless(sys.platform in ("darwin", "win32"), "Native ownership readers")
@@ -705,7 +660,8 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
         reader.start()
 
         def close():
-            child.stdin.close()
+            if not child.stdin.closed:
+                child.stdin.close()
             try:
                 child.wait(timeout=8)
             except subprocess.TimeoutExpired:
@@ -842,9 +798,14 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
             "policy_sha256": digest(json.dumps(channel.policy, sort_keys=True).encode()),
             "checked_at": time.time(),
         })
-        # Start with the command that an existing 0.8.26 installation registered.
+        # Start with the migrated shared MCP entry and Hook maintenance pending.
         definitions = host.definitions
-        with patch.object(host, "definitions", side_effect=lambda entry, home, **_: definitions(entry, home)):
+        def pending_hooks(entry, home, **_):
+            mcp, _ = definitions(entry, home, fixed_hooks=True)
+            _, hooks = definitions(entry, home)
+            return mcp, hooks
+
+        with patch.object(host, "definitions", side_effect=pending_hooks):
             host.install(self.home, source, None, surface="cli")
         receipt_file = host.state_directory(self.home) / "registration.json"
         receipt = metadata.private_json(receipt_file)
@@ -927,7 +888,7 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
         self.assertEqual(settings["approved_scope_sha256"], settings["server_scope_sha256"])
         self.assertEqual(settings["code_sha256"], runtime_pins(active))
 
-        # A restarted host can still use the preserved frozen MCP registration.
+        # A restarted host can still use the preserved MCP registration.
         _, restarted = self.start_registered(after["mcp"])
         restarted("initialize", INIT)
         restarted("notifications/initialized", notification=True)
@@ -982,13 +943,14 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
         self.assertEqual(config.read_bytes(), drift)
         self.assertEqual(settings.read_bytes(), hook_bytes)
 
-    def test_changed_binding_or_abi_is_outside_manual_noop(self):
+    def test_only_changed_host_entry_rewrites_single_entry_registration(self):
         from agent_brain_client.adapters.installation.launcher_update import can_retain_launcher
 
         root = self.home
-        old = isolated_content_package(root, "manual-old", CONTENT_CACHE_ABI)
-        new = isolated_content_package(root, "manual-new", CONTENT_CACHE_ABI)
-        changed_abi = isolated_content_package(root, "manual-different-abi", "content-ledgers-v2")
+        old = isolated_content_package(root, "manual-old", CONTENT_CACHE_ABI, single_entry=True)
+        new = isolated_content_package(root, "manual-new", CONTENT_CACHE_ABI, single_entry=True)
+        changed_abi = isolated_content_package(root, "manual-different-abi", "content-ledgers-v2", single_entry=True)
+        changed_entry = isolated_content_package(root, "manual-different-entry", CONTENT_CACHE_ABI, fixed="changed", single_entry=True)
         entry = "src/agent_brain_client/interfaces/mcp/launcher.py"
         registered = {"args": [str(Path(old["package"]) / entry)], "enabled": True}
         desired = {"args": [str(Path(new["package"]) / entry)], "enabled": True}
@@ -999,7 +961,8 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
 
         self.assertTrue(allowed(new, desired))
         self.assertFalse(allowed(new, dict(desired, enabled=False)))
-        self.assertFalse(allowed(changed_abi, dict(desired, args=[str(Path(changed_abi["package"]) / entry)])))
+        self.assertTrue(allowed(changed_abi, dict(desired, args=[str(Path(changed_abi["package"]) / entry)])))
+        self.assertFalse(allowed(changed_entry, dict(desired, args=[str(Path(changed_entry["package"]) / entry)])))
 
 
 if __name__ == "__main__":

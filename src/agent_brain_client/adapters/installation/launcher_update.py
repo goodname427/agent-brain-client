@@ -9,9 +9,8 @@ from agent_brain_client.adapters.packages.client import (
     HTTPS_CONTENT_CAPABILITIES,
     MCP_LAUNCHER_ENTRY,
     UpdateBlocked,
-    fixed_launcher_files,
     launcher_package_files,
-    managed_worker_abi,
+    single_entry_pin,
 )
 from agent_brain_client.adapters.storage.private_files import private_json, safe
 import agent_brain_client.adapters.storage.private_files as private_files
@@ -108,23 +107,9 @@ def can_retain_launcher(policy, installed, registered, candidate, desired, befor
             old_entry if arg == new_entry else arg for arg in desired["args"]
         ]):
             return False
-        old_files = launcher_package_files(installed)
-        target_files = launcher_package_files(candidate)
-        previous = Path(before["package"])
-        previous_files = launcher_package_files(previous)
-        fixed = fixed_launcher_files(old_files)
-        if (
-            MCP_LAUNCHER_ENTRY not in fixed
-            or fixed != fixed_launcher_files(target_files)
-            or fixed != fixed_launcher_files(previous_files)
-        ):
-            return False
-        installed_abi = managed_worker_abi(installed, old_files)
-        return (
-            installed_abi is not None
-            and installed_abi == managed_worker_abi(previous, previous_files)
-            and installed_abi == managed_worker_abi(candidate, target_files)
-        )
+        entry_pin = single_entry_pin(installed, launcher_package_files(installed))
+        # Worker compatibility is negotiated on the existing MCP session.
+        return entry_pin is not None and entry_pin == launcher_package_files(candidate).get(MCP_LAUNCHER_ENTRY)
     except (OSError, ValueError, KeyError, TypeError, UpdateBlocked):
         return False
 
