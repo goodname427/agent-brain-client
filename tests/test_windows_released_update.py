@@ -69,7 +69,12 @@ class ReleasedWindowsUpdate(unittest.TestCase):
                 self.assertTrue(has_release(repository, commit), "Published history fixture commit differs")
 
         def archive(commit, output):
-            raw = subprocess.check_output(["git", "archive", commit], cwd=repository, timeout=30)
+            # The 0.8.25 export predates the LF attribute. Archive must yield
+            # the Git blob bytes that production release manifests hash.
+            raw = subprocess.check_output(
+                ["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "archive", commit],
+                cwd=repository, timeout=30,
+            )
             with tarfile.open(fileobj=io.BytesIO(raw)) as packed:
                 # Both inputs are the exact public Git commits above.
                 packed.extractall(output, filter="data")
