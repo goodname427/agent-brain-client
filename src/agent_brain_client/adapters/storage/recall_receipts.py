@@ -6,6 +6,52 @@ from agent_brain_client.adapters.storage.collection import settings_path
 from agent_brain_client.adapters.storage import metadata as metadata
 from agent_brain_client.adapters.platforms.filesystem import private_directory
 from agent_brain_client.application.control import saved_recall_timing
+from agent_brain_client.application.memory.context import CONTEXT_BYTES
+
+
+def _valid_reference(ref, counts, *, emitted=False):
+    fields = {"layer", "record_sha256", "content_sha256"}
+    if not isinstance(ref, dict):
+        return False
+    if emitted and ref.get("presentation") in ("excerpt", "index"):
+        fields |= {"presentation", "output_content_sha256"}
+        if ref["presentation"] == "index" and "index_metadata_sha256" in ref:
+            fields.add("index_metadata_sha256")
+    return (
+        set(ref) == fields
+        and isinstance(ref["layer"], str)
+        and ref["layer"] in counts
+        and all(
+            isinstance(ref[key], str) and re.fullmatch("[a-f0-9]{64}", ref[key])
+            for key in fields - {"layer", "presentation"}
+        )
+    )
+
+
+def _valid_retrieval(retrieval, counts, item_count):
+    required = {"candidate_count", "returned", "selected", "omitted_for_budget"}
+    if not isinstance(retrieval, dict) or set(retrieval) - {"unselected_without_evidence"} != required:
+        return False
+    if (
+        not isinstance(retrieval["returned"], list)
+        or not isinstance(retrieval["selected"], list)
+        or any(
+            type(retrieval[key]) is not int or retrieval[key] < 0
+            for key in ("candidate_count", "omitted_for_budget")
+        )
+        or not all(_valid_reference(ref, counts) for ref in retrieval["returned"])
+        or not all(_valid_reference(ref, counts, emitted=True) for ref in retrieval["selected"])
+    ):
+        return False
+    if "unselected_without_evidence" not in retrieval:
+        return True  # Existing schema 2 receipts predate evidence selection.
+    unselected = retrieval["unselected_without_evidence"]
+    return (
+        type(unselected) is int
+        and unselected >= 0
+        and retrieval["candidate_count"]
+        == item_count + retrieval["omitted_for_budget"] + unselected
+    )
 
 
 def save_recall_observation(value, receipt):
@@ -88,33 +134,14 @@ def recall_observation(value, request_key=None):
             or type(saved.get("item_count")) is not int
             or saved["item_count"] != sum(counts.values())
             or type(saved.get("context_bytes")) is not int
-            or not 0 <= saved["context_bytes"] <= 24576
+            or not 0 <= saved["context_bytes"] <= CONTEXT_BYTES
             or type(saved.get("at")) not in (int, float)
             or not math.isfinite(saved["at"])
             or saved["context_sha256"] is not None
             and not re.fullmatch("[a-f0-9]{64}", saved["context_sha256"])
             or saved["error_type"] is not None
             and not re.fullmatch("[A-Za-z][A-Za-z0-9_]{0,63}", saved["error_type"])
-            or not isinstance(retrieval, dict)
-            or set(retrieval)
-            != {"candidate_count", "returned", "selected", "omitted_for_budget"}
-            or any(
-                type(retrieval.get(k)) is not int or retrieval[k] < 0
-                for k in ("candidate_count", "omitted_for_budget")
-            )
-            or not isinstance(retrieval.get("selected"), list)
-            or not isinstance(retrieval.get("returned"), list)
-            or any(
-                not isinstance(ref, dict)
-                or set(ref) != {"layer", "record_sha256", "content_sha256"}
-                or ref["layer"] not in counts
-                or any(
-                    not isinstance(ref[k], str)
-                    or not re.fullmatch("[a-f0-9]{64}", ref[k])
-                    for k in ("record_sha256", "content_sha256")
-                )
-                for ref in [*retrieval["selected"], *retrieval["returned"]]
-            )
+            or not _valid_retrieval(retrieval, counts, saved["item_count"])
         ):
             raise ValueError("Invalid request recall receipt")
         return saved

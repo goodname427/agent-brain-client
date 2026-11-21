@@ -336,15 +336,38 @@ def command_line(argv):
         # Isolated Python ignores PYTHONIOENCODING. Its own UTF-8 switch
         # keeps Hook input/output Unicode-safe on legacy Windows consoles.
         argv[1:1] = ["-X", "utf8"]
+    return powershell_command("& " + " ".join(map(powershell_quote, argv)))
+
+
+def powershell_quote(value):
+    return "'" + value.replace("'", "''") + "'"
+
+
+def powershell_command(invocation, *, executable="powershell.exe", compact=False):
+    import base64
+    import subprocess
+
     script = (
-        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; $env:PYTHONIOENCODING='utf-8'; & "
-        + " ".join("'" + item.replace("'", "''") + "'" for item in argv)
+        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; $env:PYTHONIOENCODING='utf-8'; "
+        + invocation
         + "; exit $LASTEXITCODE"
     )
+    launch = subprocess.list2cmdline([executable]) + " -NoLogo -NoProfile -NonInteractive"
+    if compact:
+        # Only this fixed ASCII decoder and the base64 payload reach cmd.exe.
+        # UTF-16LE -EncodedCommand would expand this already ASCII wrapper.
+        import zlib
+
+        compressor = zlib.compressobj(9, wbits=-15)
+        payload = base64.b64encode(compressor.compress(script.encode()) + compressor.flush()).decode()
+        decoder = (
+            "&([ScriptBlock]::Create([IO.StreamReader]::new([IO.Compression.DeflateStream]::new("
+            "[IO.MemoryStream]::new([Convert]::FromBase64String('" + payload
+            + "')),[IO.Compression.CompressionMode]::Decompress)).ReadToEnd()))"
+        )
+        return launch + ' -Command "' + decoder + '"'
     encoded = base64.b64encode(script.encode("utf-16le")).decode()
-    return (
-        "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " + encoded
-    )
+    return launch + " -EncodedCommand " + encoded
 
 
 def resource_users(path):
