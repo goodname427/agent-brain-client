@@ -160,6 +160,43 @@ class VerifiedPackageTools(unittest.TestCase):
             ):
                 ci.package_tools(package, POLICY, self.grant)
 
+    def test_reviewed_windows_catalog_reuse_requires_exact_package_and_catalog_pins(self):
+        package = self.root / "reviewed-windows-package"
+        release(ROOT, package, "0.8.25", "personal-content-https", "win32-amd64")
+        name = "src/agent_brain_client/application/control.py"
+        self.write_candidate_source(package, name, (package / name).read_text() + "\n# Different recall code\n")
+        failed = subprocess.CompletedProcess(args=[], returncode=1, stdout=b"")
+
+        def package_sha():
+            files = json.loads((package / "export-manifest.json").read_bytes())["files"]
+            return ci.sha(ci.contract.encode(files))
+
+        reviewed = package_sha()
+        with (
+            patch.object(ci, "_WINDOWS_0825_PACKAGE_SHA", reviewed),
+            patch.object(ci.subprocess, "run", return_value=failed) as child,
+        ):
+            tools = ci.package_tools(package, POLICY, self.grant, inspected_windows_package_sha=reviewed)
+            self.assertIn("content_put", tools)
+            child.assert_not_called()
+            for unknown in (None, "0" * 64):
+                with self.subTest(unknown=unknown), self.assertRaisesRegex(
+                    ci.InstallBlocked, "Verified package tool contract unavailable",
+                ):
+                    ci.package_tools(package, POLICY, self.grant, inspected_windows_package_sha=unknown)
+
+        source = (package / self.catalog_path).read_text()
+        self.write_candidate_source(package, self.catalog_path, source + "\n# New catalog revision\n")
+        revised = package_sha()
+        # Even an exact approved inventory must match the inspector's catalog.
+        with (
+            patch.object(ci, "_WINDOWS_0825_PACKAGE_SHA", revised),
+            patch.object(ci.subprocess, "run", return_value=failed) as child,
+            self.assertRaisesRegex(ci.InstallBlocked, "Verified package tool contract unavailable"),
+        ):
+            ci.package_tools(package, POLICY, self.grant, inspected_windows_package_sha=revised)
+        child.assert_called_once()
+
     def test_package_check_rejects_catalog_with_stale_export_digest(self):
         package = self.root / 'changed-after-export'
         export(ROOT, package)
