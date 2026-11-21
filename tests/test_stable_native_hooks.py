@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import random
 import shlex
 import shutil
 import subprocess
@@ -59,7 +60,15 @@ class StableHooks(unittest.TestCase):
         temp = tempfile.TemporaryDirectory(prefix="synthetic-stable-hook-")
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
-        self.home = private_directory(self.root / "fictional home")
+        home_name = "fictional home"
+        if os.name == "nt":
+            # A normal long profile with spaces, Unicode and shell punctuation.
+            # Use varied characters so DEFLATE cannot hide the path length.
+            home_name = "fictional home 样例 %AB_HOOK_TEST% & ! ' "
+            remaining = 154 - len(str(self.root / home_name))
+            alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+            home_name += "".join(random.Random(7).choices(alphabet, k=max(0, remaining)))
+        self.home = private_directory(self.root / home_name)
         self.native = private_directory(self.home / ".codex")
         self.state = private_directory(self.home / ".config/agent-brain-client")
         self.repository = private_directory(self.root / "repo")
@@ -367,6 +376,9 @@ class StableHooks(unittest.TestCase):
         project = private_directory(self.home / "fictional project")
         for harness, adapter in (("codex", codex_project), ("codebuddy", buddy_project)):
             path = project_settings(self.home, project, harness=harness)
+            if os.name == "nt":
+                self.assertGreaterEqual(len(str(self.home)), 154)
+                self.assertGreaterEqual(len(str(path)), 235)
             prepared = project_memory.setup(SimpleNamespace(
                 device_home=self.home, project_root=project, harness=harness,
                 output=path, server_bundle=None, query="synthetic",
@@ -391,14 +403,19 @@ class StableHooks(unittest.TestCase):
             self.assertEqual(result["migrated"], 1, result)
             self.assertEqual(path.read_bytes(), before)
             self.assertEqual(marker.read_text(), "paused")
-            output, diagnostic = self.run_hook(hook_launcher.native_hook_command(self.home, harness, path), harness=harness)
+            native = (project / ".codex/hooks.json" if harness == "codex"
+                      else project / ".codebuddy/settings.local.json")
+            native_before = native.read_bytes()
+            command = json.loads(native_before)["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            output, diagnostic = self.run_hook(command, harness=harness)
             self.assertEqual(output, {})
             self.assertEqual(diagnostic, "")
             self.assertFalse(project_memory.refresh_project_hooks(self.home, harness)["native_changed"])
+            self.assertEqual(native.read_bytes(), native_before)
 
             # The stable command must never recalculate trust from modified settings.
             metadata.write(path, dict(settings, query="unapproved"))
-            output, diagnostic = self.run_hook(hook_launcher.native_hook_command(self.home, harness, path), harness=harness)
+            output, diagnostic = self.run_hook(command, harness=harness)
             self.assertEqual(output, {})
             self.assertIn("review-required", diagnostic)
 

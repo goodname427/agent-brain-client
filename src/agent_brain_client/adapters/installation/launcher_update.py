@@ -553,7 +553,7 @@ def native_hook_command(home, harness, settings=None):
         powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
         command = powershell_command(invocation, executable=str(powershell), compact=True)
         if len(command.encode("utf-16le")) // 2 > 8120:  # room for cmd.exe /C and outer quotes
-            raise ValueError("Native Hook command exceeds Windows shell limit")
+            raise ValueError("Native Hook registration exceeds the Windows cmd.exe length limit")
         return command
     return command_line([
         "/usr/bin/env", "-u", "DEVELOPER_DIR", "-u", "TOOLCHAINS",
