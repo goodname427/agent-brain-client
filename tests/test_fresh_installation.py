@@ -634,7 +634,7 @@ class FreshInstallation(unittest.TestCase):
         self.assert_address_resume_preserves_archive(self.root / "shared-native", "codex")
 
     def test_codebuddy_shared_native_home_and_bootstrap_resume_are_preserved(self):
-        from agent_brain_client.interfaces.cli.codebuddy import backend_home
+        from agent_brain_client.adapters.storage.registration import registry_home
 
         shared = self.root / "shared-native"
         self.native.rename(shared)
@@ -656,7 +656,7 @@ class FreshInstallation(unittest.TestCase):
         io.write(self.cache / "owned.json", self.owned)
         self.port = retained_installation(self.home, shared)
         self.prepare()
-        self.assertEqual(backend_home(self.home), shared)
+        self.assertEqual(registry_home(self.home), shared)
         self.assert_address_resume_preserves_archive(shared, "codebuddy")
         self.assertTrue((shared / "memories/existing.md").exists())
         self.assertNotIn("agent_brain_server", self.config.read_text())
@@ -1101,7 +1101,7 @@ class FreshInstallation(unittest.TestCase):
         self.assertEqual(io.private_json(settings_path(self.home)), current)
 
     def test_codebuddy_bootstrap_recovers_when_policy_moved_before_registration(self):
-        from agent_brain_client.interfaces.cli.codebuddy import backend_home
+        from agent_brain_client.adapters.storage.registration import registry_home
         from agent_brain_client.adapters.storage import reinstallation as storage
 
         plan = self.port.plan
@@ -1134,7 +1134,7 @@ class FreshInstallation(unittest.TestCase):
             self.prepare()
         self.assertTrue((self.root / "codex-mcp.json").exists())
         self.assertFalse((self.root / "first-install/release-policy.json").exists())
-        self.assertEqual(backend_home(self.home), self.native)
+        self.assertEqual(registry_home(self.home), self.native)
         self.assertEqual(self.prepare()["status"], "fresh-install-ready")
 
     def test_memory_probe_rejects_missing_record_and_catalog_protocol_error(self):

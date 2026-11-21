@@ -87,7 +87,6 @@ COMMANDS = {
     "macos": [
         ["python", "-B", "-m", "unittest", "discover", "-s", "tests"],
         ["sh", "-n", "bootstrap/macos/install.sh"],
-        ["sh", "-n", "bootstrap/macos/codebuddy.sh"],
         ["sh", "-n", "bin/memory.sh"],
         ["git", "diff", "--check"],
         [
@@ -195,7 +194,7 @@ COMMANDS = {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "$ErrorActionPreference = 'Stop'; foreach ($file in @('bootstrap/windows/install.ps1', 'bin/memory.ps1', 'bootstrap/windows/codebuddy.ps1', 'bootstrap/windows/python.ps1')) { $errors = $null; [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd $file), [ref]$null, [ref]$errors) | Out-Null; if ($errors.Count) { throw ($errors | Out-String) } }",
+            "$ErrorActionPreference = 'Stop'; foreach ($file in @('bootstrap/windows/install.ps1', 'bin/memory.ps1', 'bootstrap/windows/python.ps1')) { $errors = $null; [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd $file), [ref]$null, [ref]$errors) | Out-Null; if ($errors.Count) { throw ($errors | Out-String) } }",
         ],
     ],
 }
