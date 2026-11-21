@@ -65,6 +65,7 @@ from agent_brain_client.adapters.platforms.filesystem import (
     native_platform,
 )
 from agent_brain_client.adapters.packages.releases import ReleaseEngine, UpdateBlocked
+from agent_brain_client.adapters.platforms.windows.filesystem import WindowsOwnerMismatch
 
 
 def package_check(package, policy):
@@ -76,14 +77,20 @@ def package_check(package, policy):
             policy["cache"], policy, None, ClientPackage(policy), {}
         ).validate(manifest, None)
     else:
-        manifest = json.loads(raw(package / "export-manifest.json"))
+        exported = raw(package / "export-manifest.json")
+        if exported is None:
+            raise InstallBlocked("Registered launcher manifest missing")
+        manifest = json.loads(exported)
     adapter = ClientPackage(policy)
     try:
         adapter.package_files(manifest)
     except UpdateBlocked:
         raise InstallBlocked("Candidate package membership changed") from None
     for name, digest in manifest["files"].items():
-        if sha(raw(package / name)) != digest:
+        data = raw(package / name)
+        if data is None:
+            raise InstallBlocked("Registered launcher file missing")
+        if sha(data) != digest:
             raise InstallBlocked("Candidate package changed")
     ClientPackage(policy).preflight(
         package,
@@ -106,13 +113,23 @@ def command_harness(command):
     return harness
 
 
-def context(home, package, policy_path, policy_sha, *, harness, inspection=False):
+def _ignore_checkpoint(component):
+    pass
+
+
+def context(home, package, policy_path, policy_sha, *, harness, inspection=False,
+            checkpoint=_ignore_checkpoint):
+    checkpoint("device-binding")
     if harness not in (None, "codex", "codebuddy"):
         raise InstallBlocked("Explicit supported Harness required")
     require_platform("native-install")
     home = safe(home)
+    checkpoint("release-policy")
     policy_path = safe(policy_path)
-    policy = policy_file(policy_path, policy_sha, runtime_check=not inspection)
+    policy = policy_file(
+        policy_path, policy_sha, runtime_check=not inspection, checkpoint=checkpoint
+    )
+    checkpoint("device-binding")
     if (
         policy["capabilities"]
         not in (
@@ -139,6 +156,7 @@ def context(home, package, policy_path, policy_sha, *, harness, inspection=False
         )
     ):
         raise InstallBlocked("Native/cache overlap")
+    checkpoint("retained-host-state")
     override = raw(native / "AGENTS.override.md")
     if override and override.strip():
         raise InstallBlocked("Existing instruction override preserved")
@@ -157,7 +175,9 @@ def context(home, package, policy_path, policy_sha, *, harness, inspection=False
             )
     elif "legacy_binding_sha256" in runtime:
         raise InstallBlocked("Reviewed preserved legacy binding changed")
+    checkpoint("content-policy")
     content = pinned(runtime["content_policy"], runtime["content_policy_sha256"])
+    checkpoint("connection-profile")
     if policy["capabilities"] == HTTPS_CONTENT_CAPABILITIES:
         from agent_brain_client.adapters.server.https import HTTPSContentClient
 
@@ -188,9 +208,13 @@ def context(home, package, policy_path, policy_sha, *, harness, inspection=False
         )
     if client.data_mode != "personal":
         raise InstallBlocked("Personal content profile required")
+    checkpoint("content-policy")
     validate_policy(content, client.grant)
+    checkpoint("registered-launcher")
     package_sha = package_check(package, policy)
+    checkpoint("tool-contract")
     methods = package_tools(package, content, client.grant)
+    checkpoint("registered-launcher")
     metadata = json.loads(
         raw(
             safe(package)
@@ -223,6 +247,7 @@ def context(home, package, policy_path, policy_sha, *, harness, inspection=False
         "enabled_tools": methods,
         "default_tools_approval_mode": "writes",
     }
+    checkpoint("dependency-policy")
     environment = dependency_environment(policy, runtime_check=not inspection)
     if environment is not None:
         mcp["env"] = environment
@@ -283,7 +308,7 @@ def render(config, mcp, existing):
     return desired
 
 
-def registered_context(home, metadata, config_image=None):
+def registered_context(home, metadata, config_image=None, *, checkpoint=_ignore_checkpoint):
     """Verify the original pinned command, independently of the inspecting Python.
 
     Prepare still selects the installing interpreter. Inspection/removal uses
@@ -291,9 +316,18 @@ def registered_context(home, metadata, config_image=None):
     changing command/args/env never becomes acceptable by running another Python.
     config_image is only an uninstall journal's validated original config image.
     """
-    pinned_policy = policy_file(metadata["release_policy"], metadata["release_policy_sha256"], runtime_check=False)
+    checkpoint("release-policy")
+    pinned_policy = policy_file(
+        metadata["release_policy"], metadata["release_policy_sha256"],
+        runtime_check=False, checkpoint=checkpoint,
+    )
+    checkpoint("device-binding")
     native = safe(pinned_policy["runtime"]["codex_home"])
-    recorded = tomllib.loads((raw(native / "config.toml") if config_image is None else config_image).decode()).get("mcp_servers", {}).get(NAME)
+    checkpoint("shared-config")
+    config = raw(native / "config.toml") if config_image is None else config_image
+    if config is None:
+        raise InstallBlocked("Installed shared configuration missing")
+    recorded = tomllib.loads(config.decode()).get("mcp_servers", {}).get(NAME)
     if not isinstance(recorded, dict) or registered_mcp_digest(
         recorded
     ) != metadata.get("mcp_sha256"):
@@ -302,10 +336,19 @@ def registered_context(home, metadata, config_image=None):
     # Missing host arguments are accepted only as exact authenticated retained
     # command data. Current launchers always require an explicit native host.
     harness = arguments[arguments.index("--harness") + 1] if "--harness" in arguments else None
-    if harness is None and b'"--harness"' in raw(safe(metadata["package"]) / "src/agent_brain_client/interfaces/mcp/launcher.py"):
-        raise InstallBlocked("Explicit installed Harness command required")
-    policy, mcp, package_sha, native = context(home, metadata["package"], metadata["release_policy"],
-                                              metadata["release_policy_sha256"], inspection=True, harness=harness)
+    if harness is None:
+        checkpoint("registered-launcher")
+        launcher = raw(safe(metadata["package"]) / "src/agent_brain_client/interfaces/mcp/launcher.py")
+        if launcher is None:
+            raise InstallBlocked("Registered launcher file missing")
+        if b'"--harness"' in launcher:
+            checkpoint("shared-config")
+            raise InstallBlocked("Explicit installed Harness command required")
+    policy, mcp, package_sha, native = context(
+        home, metadata["package"], metadata["release_policy"], metadata["release_policy_sha256"],
+        inspection=True, harness=harness, checkpoint=checkpoint,
+    )
+    checkpoint("registered-interpreter")
     command = recorded.get("command")
     if not isinstance(command, str):
         raise InstallBlocked("Installed interpreter unavailable")
@@ -317,12 +360,15 @@ def registered_context(home, metadata, config_image=None):
     ):
         raise InstallBlocked("Installed interpreter unavailable")
     if "dependency_policy" in policy["runtime"]:
+        checkpoint("dependency-policy")
         dependencies = private_json(policy["runtime"]["dependency_policy"])
+        checkpoint("registered-interpreter")
         if command != str(Path(dependencies["python"]).resolve()):
             raise InstallBlocked("Installed interpreter dependency binding changed")
     mcp["command"] = command
     if recorded.get("enabled") is False:
         mcp["enabled"] = False
+    checkpoint("shared-config")
     if recorded != mcp:
         raise InstallBlocked("Installed MCP binding drift")
     return policy, mcp, package_sha, native
@@ -410,6 +456,68 @@ INSPECTION_REASONS = {
         "Preserve user instructions and the content cache. Review the owned mapping before removal; no user edits are overwritten.",
     ),
 }
+
+
+# Diagnostics are a closed vocabulary. Existing public status/reason codes
+# still decide how maintenance handles each failure.
+INSPECTION_CATEGORIES = {
+    "Installed shared configuration missing": "missing",
+    "Registered launcher file missing": "missing",
+    "Registered launcher manifest missing": "missing",
+    "Installed MCP binding drift": "binding",
+    "Explicit installed Harness command required": "binding",
+    "Explicit supported Harness required": "binding",
+    "Installed interpreter dependency binding changed": "binding",
+    "Installed interpreter unavailable": "unavailable",
+    "Device binding changed": "binding",
+    "HTTPS credential runtime binding changed": "binding",
+    "Native/cache overlap": "path",
+    "Canonical local path required": "path",
+    "Linked/noncanonical path": "path",
+    "Linked runtime path": "path",
+    "Reparse points are not supported for private storage": "path",
+    "Owned canonical path required": "path",
+    "Windows item accessible to another principal": "acl",
+    "Windows DACL could not be checked": "access-unverified",
+    "Windows DACL unavailable": "access-unverified",
+    "Windows private metadata unavailable": "access-unverified",
+    "Windows identity unavailable": "access-unverified",
+    "Owned private Windows item required": "private-item",
+    "Unsupported native file": "file-type-or-limit",
+    "Private filesystem item required": "private-item",
+    "Owned private filesystem item required": "private-item",
+    "Private dependency policy required": "unavailable",
+    "Reviewed release policy and digest required": "unavailable",
+    "Release policy changed; review required": "integrity",
+    "Dependencies changed": "integrity",
+    "Prepared executable changed": "integrity",
+    "Profile changed": "integrity",
+    "Candidate package changed": "integrity",
+    "Package membership changed during inspection": "integrity",
+    "Client release file scope changed": "scope",
+    "Candidate package membership changed": "scope",
+    "Verified package tool contract unavailable": "unavailable",
+    "Current tool contract required": "scope",
+    "Git HTTPS transport required": "unavailable",
+}
+
+
+def inspection_category(error):
+    if isinstance(error, WindowsOwnerMismatch):
+        return "owner"
+    if isinstance(error, FileNotFoundError):
+        return "missing"
+    if isinstance(error, PermissionError):
+        return "denied"
+    if isinstance(error, (json.JSONDecodeError, tomllib.TOMLDecodeError, UnicodeError)):
+        return "malformed"
+    if isinstance(error, (KeyError, TypeError, AttributeError, IndexError)):
+        return "schema"
+    if isinstance(error, subprocess.TimeoutExpired):
+        return "timeout"
+    if isinstance(error, OSError):
+        return "io"
+    return INSPECTION_CATEGORIES.get(str(error), "validation")
 
 
 def prepare(home, package, policy_path, policy_sha, replace_existing=False, *, harness):
@@ -1065,6 +1173,12 @@ def apply(plan, approved_digest, check=probe):
 def inspect(home):
     present = False
     stage = "installation-path-review-required"
+    component = None
+
+    def checkpoint(name):
+        nonlocal component
+        component = name
+
     try:
         require_platform("native-install")
         home = safe(home)
@@ -1101,7 +1215,8 @@ def inspect(home):
                 "reason": "unsupported-registration",
             }
         stage = "policy-profile-bootstrap-review-required"
-        policy, mcp, package_sha, native = registered_context(home, meta)
+        policy, mcp, package_sha, native = registered_context(home, meta, checkpoint=checkpoint)
+        component = None
         stage = "install-receipt-review-required"
         receipt = private_json(state / "content-install-receipt.json")
         expected = {str(native / "config.toml"), str(registration)}
@@ -1190,7 +1305,7 @@ def inspect(home):
                 "Preserve native files, registration and recovery receipts. Review the named local integrity checkpoint; do not delete state, rewrite digests or reset Keychain.",
             ),
         )
-        return {
+        result = {
             "status": "content-native-install-review-required",
             "installed": False,
             "installation_present": present,
@@ -1201,3 +1316,9 @@ def inspect(home):
             "reason": reason,
             "next_action": action,
         }
+        if component is not None:
+            result["registration_failure"] = {
+                "component": component,
+                "category": inspection_category(error),
+            }
+        return result

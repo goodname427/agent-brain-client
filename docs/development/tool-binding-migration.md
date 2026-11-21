@@ -9,3 +9,5 @@
 `adapters/harnesses/codex/launcher_update.py` 负责 Mac/Windows 当前固定启动器的事务和中断恢复。只读检查不改登记；显式更新用原 policy、信任锚、解释器、身份、权限及暂停状态，保留第三方配置和原请求队列。完成重装标记的直接前驱核验用于保留事务证据，不接受旧执行代码。
 
 `tool_discovery` 报告活动包的工具声明、登记过滤和被过滤工具。MCP 的 `client_runtime.offered_tools` 表示实际 worker 提供的工具；CLI 无法观察 worker 或模型时保持 unknown。活动包、固定启动器、正在运行的 worker 和模型采用指令是四个独立状态，不能互相代替。
+
+已有注册的策略、共享配置和固定启动器预检失败时，`status`、`check-update` 和 `update` 可附带 `registration_failure`。其中 `component` 是失败组件，`category` 是固定分类。原有 `reason` 和退出状态仍决定流程。分类只在原检查到达对应组件后给出，并省略本机路径、异常文本、配置和凭据。
