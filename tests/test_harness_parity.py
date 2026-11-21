@@ -504,6 +504,9 @@ finally:
         switched = retained_installation(f.home, Path(record["native"]), target_host=content_host("codebuddy"))
         switched.restore_mapping(buddy_cache, f.content)
         codex_cache = f.root / "codex/content-cache"
+        if sys.platform == "win32":
+            from agent_brain_client.adapters.platforms.filesystem import private_mode
+            private_mode(codex_cache.parent, directory=True, owner=True)
         self.assertEqual(metadata.private_json(codex_cache / "owned.json", cache=True), record["mapping"]["owned"])
         self.assertEqual(metadata.private_json(buddy_cache / "owned.json", cache=True), original)
         self.assertFalse(old_queue.exists())
