@@ -62,7 +62,7 @@ Client 使用现有设备 HTTPS 凭据将无凭据来源元数据登记到同一
 
 升级复用现有 policy、凭据、信任锚、缓存和幂等队列；不重新配对。不确定/冲突回执保留，断网读明确标为旧缓存，恢复后重放原 request_id。卸载前正常停止该 MCP worker，再移除 owned Hook；普通卸载不清凭据和记忆。显示 `review-required` 时保留原材料，用 status/repair 处理未完成事务。安装目录或 Python/Git 被移动/升级而摘要变化时，需要精确依赖迁移，不能替换摘要掩盖漂移。
 
-正常 update 同时交接旧固定启动器，安装或刷新全局 Hook，并自动登记及开启全项目今后采集，包含旧设备和非交互更新。现有数据、队列、排除目录、隔离规则和设备身份保留。Hook 变更需要审核时，按 Codex 正常提示处理。检查新鲜 MCP 响应的 `client_runtime.reload_required`，兼容 worker 有机会在原连接切换。复查后仍需重新加载时，使用 Agent Brain MCP 的宿主重载。check-update 仅报告候选和 Hook 待刷新状态。Hook 刷新未确认时即使活动包已更新也退出非零；重试同一 update 入口恢复事务，不重复批准来源或配对。
+正常 update 同时交接旧固定启动器，安装或刷新全局 Hook，并自动登记及开启全项目今后采集，包含旧设备和非交互更新。现有数据、队列、排除目录、隔离规则和设备身份保留。按 Codex 正常提示审核更新后的 Hook，再重新加载 Agent Brain。check-update 仅报告候选和 Hook 待刷新状态。Hook 刷新未确认时即使活动包已更新也退出非零；重试同一 update 入口恢复事务，不重复批准来源或配对。
 
 Windows 凭据使用用户 Credential Manager；私有状态检查 DACL、owner 和 reparse point，锁使用 LockFileEx。没有轮询聊天目录的本地常驻采集器；后台提取消费在 Server，MCP worker 由 Codex 管理生命周期。0.5.9 已包含 Mac／Windows 的有界原生 `CODEX_HOME/memories` 导入，具体边界见 [现有接口说明](../reference/memory-behavior.md)；该能力不包含 `memories_v2`、SQLite 或聊天历史，今后 Hook 采集不要求重复来源批准。未实现 DeepSeek Harness；DeepSeek 当前只是提取 provider。
 

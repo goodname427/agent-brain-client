@@ -822,6 +822,17 @@ class PreparingReset(unittest.TestCase):
 
 
 class LifecycleExitCodes(unittest.TestCase):
+    def test_update_reports_preserved_capture_separately_from_pending_setup(self):
+        value = {"status": "client-update-current", "channel_checked": True}
+        for status, code in (
+            ("global-memory-source-paused", 0),
+            ("global-memory-source-preserved", 0),
+            ("global-memory-registration-pending", 2),
+        ):
+            with self.subTest(status=status):
+                result = dict(value, source_setup={"status": status, "collection_enabled": False})
+                self.assertEqual(interfaces_cli_install.lifecycle_exit("update", result), code)
+
     def test_unbind_dispatches_only_to_the_selected_host_port(self):
         from agent_brain_client.runtime import client_lifecycle
 

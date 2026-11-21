@@ -31,13 +31,21 @@ def lifecycle_exit(action, value):
         stages = value.get("installation_stages", {})
         setup = stages.get("setup", {})
         sources = stages.get("sources") or value.get("source_setup", {})
+        source_status = sources.get("status")
+        source_preserved = (
+            source_status == "global-memory-source-preserved"
+            and (action == "update" or value.get("update_check_performed") is False)
+        )
         launcher = value.get("launcher_update", {})
         if (
             setup.get("stage") is not None
             or stages.get("mapping", {}).get("status") == "mapping-pending"
             or (
                 sources.get("collection_enabled") is False
-                and sources.get("status") not in ("paused", "retained-source-paused")
+                and source_status not in (
+                    "paused", "retained-source-paused", "global-memory-source-paused",
+                )
+                and not source_preserved
             )
             or (
                 launcher
