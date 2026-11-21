@@ -195,7 +195,7 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
             result = operator.configure(args)
         self.assertEqual(result['status'], 'global-memory-registration-pending')
         packet = metadata.private_json(result['packet'])
-        self.assertEqual(packet['schema'], 2); self.assertEqual(packet['scope'], dict(scope, all_projects=True))
+        self.assertEqual(packet['schema'], 2); self.assertEqual(packet['scope'], scope)
         self.assertEqual(packet['client']['source_device_id'], self.device)
         self.assertEqual(client.wire.call_args.args, ('memory_global_register',packet,'source_'+digest(packet)))
         self.assertFalse((directory / 'global.off').exists())

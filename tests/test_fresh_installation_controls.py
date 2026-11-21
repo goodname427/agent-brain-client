@@ -172,7 +172,7 @@ class FreshControls(unittest.TestCase):
     def test_disabled_source_stays_paused_without_register_or_resume(self):
         self.reconnect(enabled=False)
         with patch(
-            "agent_brain_client.runtime.source_enrollment.configure",
+            "agent_brain_client.runtime.source_enrollment.preflight",
             side_effect=AssertionError("Paused source must not auto-register/resume"),
         ):
             result = source_setup(self.f.home)
@@ -182,7 +182,7 @@ class FreshControls(unittest.TestCase):
     def test_global_stop_fence_stays_stopped_without_register_or_resume(self):
         self.reconnect(stopped=True)
         with patch(
-            "agent_brain_client.runtime.source_enrollment.configure",
+            "agent_brain_client.runtime.source_enrollment.preflight",
             side_effect=AssertionError("Stopped source must not auto-register/resume"),
         ):
             result = source_setup(self.f.home)
@@ -199,7 +199,8 @@ class FreshControls(unittest.TestCase):
         packets = []
         client = SimpleNamespace(device_id="synthetic-new-source")
 
-        def register(value, packet):
+        def register(value, packet, *, automatic):
+            self.assertTrue(automatic)
             packets.append(packet)
             return {"activated": False, "status": "synthetic-registration-pending"}
 
@@ -209,7 +210,7 @@ class FreshControls(unittest.TestCase):
             ),
             patch.object(source_enrollment, "register", side_effect=register),
         ):
-            source_setup(self.f.home)
+            source_setup(self.f.home, initialize=True)
         self.assertEqual(packets[0]["scope"], value["scope"])
         self.assertFalse(packets[0]["scope"]["all_projects"])
 
