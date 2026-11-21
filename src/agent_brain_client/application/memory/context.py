@@ -18,19 +18,24 @@ def bounded_context_items(items):
     must not discard all other valid results or mutate the saved memory.
     """
     selected: list[dict] = []
+    size = len(CONTEXT_POLICY.encode("utf-8"))
     for item in items:
-        candidate = [*selected, item]
-        context = render_context(candidate)
-        if len(context.encode("utf-8")) <= 24576:
+        row_size = 1 + len(_render_item(item).encode("utf-8"))
+        if size + row_size <= 24576:
             selected.append(item)
-    return [item for item in items if any(item is kept for kept in selected)]
+            size += row_size
+    return selected
+
+
+def _render_item(item):
+    return json.dumps(item, ensure_ascii=False)
 
 
 def render_context(items):
     return (
         CONTEXT_POLICY
         + "\n"
-        + "\n".join(json.dumps(x, ensure_ascii=False) for x in items)
+        + "\n".join(_render_item(item) for item in items)
         if items
         else ""
     )

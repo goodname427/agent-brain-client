@@ -14,17 +14,16 @@ def save_recall_observation(value, receipt):
     private_directory(receipts)
     receipt_sha256 = metadata.write(receipts / (receipt["request_key"] + ".json"), receipt)
     metadata.write(directory / "last-recall.json", receipt)
-    if receipt.get("status") == "failed":
-        sample = saved_recall_timing(receipt["request_key"])
-        if sample is not None:
-            sample["receipt_sha256"] = receipt_sha256
-            try:
-                metadata.write(directory / "last-recall-timing.json", sample)
-            except (OSError, ValueError):
-                pass  # Diagnostic I/O must not replace the original failure.
     if receipt.get("output_written") is True and receipt.get("status") != "failed":
         metadata.write(directory / ("prompt-" + receipt["request_key"] + ".json"),
                        {"at": receipt["at"]})
+    sample = saved_recall_timing(receipt["request_key"])
+    if sample is not None:
+        sample["receipt_sha256"] = receipt_sha256
+        try:
+            metadata.write(directory / "last-recall-timing.json", sample)
+        except (OSError, ValueError):
+            pass  # Keep optional timing separate from the normal receipt and stamp.
 
 
 def recall_observation(value, request_key=None):
