@@ -233,7 +233,7 @@ class StableHooks(unittest.TestCase):
         marker = self.home / "synthetic-unexpected-execution"
         if os.name == "nt":
             rogue = self.home / "rogue.cmd"
-            rogue.write_text(f'@echo ran>"{marker}"\n')
+            rogue.write_text(f'@echo ran>"%~dp0{marker.name}"\n', encoding="ascii")
         else:
             rogue = self.home / "rogue"
             rogue.write_text(f"#!/bin/sh\nprintf ran > {shlex.quote(str(marker))}\n")
@@ -299,7 +299,7 @@ class StableHooks(unittest.TestCase):
         settings = project_settings(self.home, project, harness="codex")
         private_directory(settings.parent)
         old_entry = Path(legacy["package"]) / "src/agent_brain_client/interfaces/cli/project.py"
-        old_cli = [sys.executable, "-I", "-B", str(old_entry)]
+        old_cli = [sys.executable, "-X", "utf8", "-I", "-B", str(old_entry)]
         created = subprocess.check_output([
             *old_cli, "setup", "--harness", "codex", "--device-home", str(self.home),
             "--project-root", str(project), "--output", str(settings),
