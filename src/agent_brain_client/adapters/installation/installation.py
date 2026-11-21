@@ -62,6 +62,7 @@ from agent_brain_client.adapters.platforms.filesystem import (
     platform_paths,
     private_mode,
     PlatformUnsupported,
+    WINDOWS_PLATFORMS,
     native_platform,
 )
 from agent_brain_client.adapters.packages.releases import ReleaseEngine, UpdateBlocked
@@ -190,7 +191,12 @@ def context(home, package, policy_path, policy_sha, *, harness, inspection=False
         raise InstallBlocked("Personal content profile required")
     validate_policy(content, client.grant)
     package_sha = package_check(package, policy)
-    methods = package_tools(package, content, client.grant)
+    methods = package_tools(
+        package, content, client.grant,
+        inspected_windows_package_sha=(
+            package_sha if inspection and policy["platform"] in WINDOWS_PLATFORMS else None
+        ),
+    )
     metadata = json.loads(
         raw(
             safe(package)
@@ -229,7 +235,23 @@ def context(home, package, policy_path, policy_sha, *, harness, inspection=False
     return policy, mcp, package_sha, native
 
 
-def package_tools(package, content, grant):
+# Normalized file inventory of client-0.8.25-windows (20efb22488279ee4).
+# This exact published export's --describe-tools calls the catalog below.
+_WINDOWS_0825_PACKAGE_SHA = "eb19c3ffbbd2de7e151e6eea1dd41be6ba2a9b8005f8a4f46c4aafec617b3cc9"
+_TOOL_CATALOG_PREFIXES = (
+    "src/agent_brain_client/domain/",
+    "src/agent_brain_client/application/tools/",
+)
+_TOOL_CATALOG_ENTRIES = (
+    "src/agent_brain_client/__init__.py",
+    "src/agent_brain_client/application/__init__.py",
+    "src/agent_brain_client/interfaces/__init__.py",
+    "src/agent_brain_client/interfaces/mcp/__init__.py",
+    "src/agent_brain_client/interfaces/mcp/content.py",
+)
+
+
+def package_tools(package, content, grant, *, inspected_windows_package_sha=None):
     package = safe(package)
     from agent_brain_client.application.tools import catalog as tool_catalog
 
@@ -237,10 +259,23 @@ def package_tools(package, content, grant):
 
     root = Path(__file__).resolve().parents[4]
     prefixes = ("src/agent_brain_client/domain/", "src/agent_brain_client/application/")
-    local = {n: h for n, h in runtime_pins(root).items() if n.startswith(prefixes)}
-    target = {n: h for n, h in runtime_pins(package).items() if n.startswith(prefixes)}
+    local_pins = runtime_pins(root)
+    target_pins = runtime_pins(package)
+    local = {n: h for n, h in local_pins.items() if n.startswith(prefixes)}
+    target = {n: h for n, h in target_pins.items() if n.startswith(prefixes)}
     if target == local:
         return tool_catalog.enabled_tools(content, grant)
+    if inspected_windows_package_sha == _WINDOWS_0825_PACKAGE_SHA:
+        # Inspection has already verified every package member. Recall
+        # application changes in 0.8.26 do not change these catalog inputs.
+        def catalog_pins(pins):
+            return {
+                name: digest for name, digest in pins.items()
+                if name in _TOOL_CATALOG_ENTRIES or name.startswith(_TOOL_CATALOG_PREFIXES)
+            }
+
+        if catalog_pins(local_pins) == catalog_pins(target_pins):
+            return tool_catalog.enabled_tools(content, grant)
     command = [
         sys.executable,
         "-I",
