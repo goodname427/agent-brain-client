@@ -11,7 +11,11 @@ from agent_brain_client.adapters.storage.metadata import (
 from agent_brain_client.adapters.platforms.filesystem import (
     private_mode,
 )
-from agent_brain_client.adapters.packages.frozen import runtime_pins, validate_python_pins
+from agent_brain_client.adapters.packages.frozen import (
+    runtime_pins,
+    validate_python_pins,
+    verify_frozen_code,
+)
 
 ROOT = Path(__file__).resolve().parents[4]
 ENTRY = ROOT / "src/agent_brain_client/interfaces/cli/project.py"
@@ -66,7 +70,9 @@ def load(path, sha, *, locate):
     # A native project Hook can keep the same settings across an update. Keep
     # the original code proof for standalone entries and accept a changed
     # runtime only if it is the enrolled, health-checked serving package.
-    if (ROOT / "verified.json").is_file():
+    state = Path(p["device_home"]) / ".config/agent-brain-client"
+    frozen = ROOT.parent in (state / "global-memory/code", state / "codebuddy/code")
+    if frozen or (ROOT / "verified.json").is_file():
         from agent_brain_client.adapters.packages.client import ClientReleases
         from agent_brain_client.adapters.packages.releases import UpdateBlocked
 
@@ -74,8 +80,12 @@ def load(path, sha, *, locate):
             channel = ClientReleases(p["release_policy"], p["release_policy_sha256"])
             if channel.policy["runtime"]["device_home"] == p["device_home"]:
                 serving = channel.verified_active(serving=True)
-                if serving is not None and Path(serving["package"]) == ROOT:
-                    return p
+                if serving is not None:
+                    package = Path(serving["package"])
+                    if package == ROOT or frozen and verify_frozen_code(ROOT) == runtime_pins(
+                        package, manifest_sha256=serving["manifest_sha256"]
+                    ):
+                        return p
         except UpdateBlocked as error:
             raise ValueError("Serving project package verification failed") from error
     raise ValueError("Memory code changed; use the verified serving project package")
@@ -243,12 +253,13 @@ def retained_controls(home, references, *, isolate_hosts=False):
 def project_settings(home, project, *, harness):
     if harness not in ("codex", "codebuddy"):
         raise ValueError("Explicit project Harness required")
-    return (
-        canonical(home)
-        / ".config/agent-brain-client/project-memory"
-        / (("codebuddy-" if harness == "codebuddy" else "") + digest(str(canonical(project, existing=True)).encode())[:24])
-        / "settings.json"
-    )
+    base = canonical(home) / ".config/agent-brain-client/project-memory"
+    return _project_slot(base, canonical(project, existing=True), harness)
+
+
+def _project_slot(base, root, harness):
+    prefix = "codebuddy-" if harness == "codebuddy" else ""
+    return base / (prefix + digest(str(root).encode())[:24]) / "settings.json"
 
 
 def seed_host_stops(home, states, *, include_legacy=False):
@@ -272,19 +283,60 @@ def seed_host_stops(home, states, *, include_legacy=False):
 
 
 def source_active(home, cwd, harness):
+    return source_control(home, cwd, harness)[0]
+
+
+def source_control(home, cwd, harness):
+    """Apply same-host project stops to descendants and return the exact owner."""
     from agent_brain_client.domain.scopes import within
+    from agent_brain_client.adapters.storage.registration import content_location
+
     if harness not in ("codex", "codebuddy"):
         raise ValueError("Explicit source host required")
-    file = Path(home) / ".config/agent-brain-client/project-memory/retained-stops.json"
-    if not file.exists():
-        return True
-    value = private_json(file)
-    if set(value) != {"schema", "hosts"} or value["schema"] != 1 or set(value["hosts"]) != {"codex", "codebuddy"}:
-        raise ValueError("Exact retained source host scope required")
-    roots = value["hosts"][harness]
-    if not isinstance(roots, list) or len(roots) > 256:
-        raise ValueError("Bounded retained source host stops required")
-    return not any(within(str(cwd), root) for root in roots)
+    base = canonical(home) / ".config/agent-brain-client/project-memory"
+    file = base / "retained-stops.json"
+    if file.exists() or file.is_symlink():
+        value = private_json(file)
+        if set(value) != {"schema", "hosts"} or value["schema"] != 1 or set(value["hosts"]) != {"codex", "codebuddy"}:
+            raise ValueError("Exact retained source host scope required")
+        roots = value["hosts"][harness]
+        if not isinstance(roots, list) or len(roots) > 256:
+            raise ValueError("Bounded retained source host stops required")
+        if any(within(str(cwd), root) for root in roots):
+            return False, None
+
+    if not base.exists():
+        return True, None
+    current = canonical(cwd)
+    records = {}
+    for root in (current, *current.parents):
+        settings = _project_slot(base, root, harness)
+        if settings.exists() or settings.is_symlink():
+            records[settings] = root
+    if harness == "codex":
+        from agent_brain_client.adapters.storage.collection import project_references
+
+        for row in project_references(home):
+            if within(str(current), row["root"]):
+                settings = Path(row["settings"])
+                if row["delegated"]:
+                    records[settings] = Path(row["root"])
+                else:
+                    # The retired project stop belongs to the former owner.
+                    records.pop(settings, None)
+
+    exact = None
+    for settings, root in records.items():
+        project = load_binding(settings, None, locate=content_location)
+        if (project["harness"], project["device_home"], project["project_root"]) != (
+            harness, str(Path(home)), str(root)
+        ):
+            raise ValueError("Existing project source binding changed")
+        if not active(project):
+            return False, None
+        if root == current:
+            exact = project
+    return True, exact
 
 
 def clear_host_stop(home, project, harness):

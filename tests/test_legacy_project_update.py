@@ -106,6 +106,7 @@ class LegacyProjectUpdate(unittest.TestCase):
         payload[DELIVERY_ENTRY] += b'\n\ndef wake(home):\n    return False\n'
         old = dict(payload)
         old[PROJECT_SETTINGS] += OLD_INVENTORY_CHECK
+        self.same_members_release = self.release('b', '0.8.25', payload)
         new = dict(payload)
         new['src/agent_brain_client/domain/synthetic_update_member.py'] = b'"""Synthetic new release member."""\n'
         self.old_release = self.release('a', '0.8.24', old)
@@ -234,12 +235,15 @@ print(json.dumps(install(SimpleNamespace(device_home=sys.argv[2], profile_id=Non
             value = json.loads(target.read_text())
         return value['hooks'][event][0]['hooks'][0]['command']
 
-    def hook(self, harness, cwd, *, project, turn, event='UserPromptSubmit'):
+    def run_hook(self, harness, cwd, *, project, turn, event='UserPromptSubmit'):
         command = self.command(harness, project=project, event=event)
         payload = {'cwd': str(cwd), 'hook_event_name': event, 'session_id': 'synthetic-session',
                    'turn_id': turn, 'generation_id': turn, 'prompt': 'What is the fixture project plan?'}
-        run = subprocess.run(shlex.split(command), cwd=cwd, input=json.dumps(payload),
-                             text=True, capture_output=True, timeout=20)
+        return subprocess.run(shlex.split(command), cwd=cwd, input=json.dumps(payload),
+                              text=True, capture_output=True, timeout=20)
+
+    def hook(self, harness, cwd, **kwargs):
+        run = self.run_hook(harness, cwd, **kwargs)
         self.assertEqual(run.returncode, 0, run.stderr)
         return json.loads(run.stdout), run.stderr
 
@@ -265,18 +269,40 @@ print(json.dumps(install(SimpleNamespace(device_home=sys.argv[2], profile_id=Non
         if harness == 'codebuddy':
             self.assertIn('"status": "project-source-delegated"', global_diagnostics)
 
+    def assert_frozen_queue_binding(self, harness, outbox):
+        # Global Hooks can start a worker from their verified immutable image.
+        # Exercise that worker's project queue entry without replaying it.
+        pins = metadata.private_json(self.global_settings)['code_sha256']
+        pin = metadata.digest(json.dumps(pins, sort_keys=True).encode())
+        parent = self.global_settings.parent if harness == 'codex' else buddy.state_directory(self.home)
+        code = """
+import sys
+sys.path.insert(0, sys.argv[1] + '/src')
+from agent_brain_client.runtime.project_memory import delivery_port
+queue, _, _ = delivery_port(sys.argv[2], sys.argv[3])
+print(queue._load('outbox/' + sys.argv[4])['state'])
+"""
+        run = subprocess.run([sys.executable, '-I', '-B', '-c', code,
+                              str(parent / 'code' / pin), str(self.file), self.pin, outbox.name],
+                             text=True, capture_output=True, timeout=20)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), 'pending')
+
     def test_codex_ordinary_update_keeps_project_and_global_owners(self):
         self.exercise_update('codex')
 
     def test_codebuddy_ordinary_update_keeps_project_and_global_owners(self):
+        # Both releases have the same members here. The legacy reader would
+        # still reject the changed code digests, independent of membership.
+        self.new_release = self.same_members_release
         self.exercise_update('codebuddy')
 
-    def assert_no_project_access(self, harness, turn):
+    def assert_no_project_access(self, harness, turn, *, cwd=None):
         wire = self.log.read_bytes()
         cache = Path(self.value['cache'])
         rows = {p: p.read_bytes() for p in (cache / 'outbox').glob('*.json')}
         for project in (True, False):
-            output, diagnostics = self.hook(harness, self.root, project=project, turn=turn)
+            output, diagnostics = self.hook(harness, cwd or self.root, project=project, turn=turn)
             self.assertEqual(output, {}, diagnostics)
             self.assertNotIn('"status": "staged"', diagnostics)
         self.assertEqual(self.log.read_bytes(), wire)
@@ -286,6 +312,9 @@ print(json.dumps(install(SimpleNamespace(device_home=sys.argv[2], profile_id=Non
         marker = Path(self.value['off_file'])
         metadata.write(marker, {'synthetic': 'stopped'})
         self.assert_no_project_access(harness, 'synthetic-stopped-turn')
+        self.assert_no_project_access(harness, 'synthetic-stopped-child-turn', cwd=self.child)
+        _, diagnostic = self.hook(harness, self.neighbor, project=False, turn='synthetic-allowed-neighbor')
+        self.assertIn('"status": "staged"', diagnostic)
         self.assertEqual(metadata.private_json(marker), {'synthetic': 'stopped'})
         marker.unlink()
 
@@ -328,6 +357,7 @@ print(json.dumps(install(SimpleNamespace(device_home=sys.argv[2], profile_id=Non
         self.assert_project_turn(harness, project, 'synthetic-independent-turn')
         self.point_entry(self.new_package)
         self.assert_project_turn(harness, project, 'synthetic-new-turn')
+        self.assert_frozen_queue_binding(harness, outbox)
         self.assertEqual(len(list((cache / 'outbox').glob('*.json'))), 3)
         self.assertEqual(outbox.read_bytes(), original)
         # Native retries keep the same project operation and do not create a
@@ -384,13 +414,37 @@ print(json.dumps(install(SimpleNamespace(device_home=sys.argv[2], profile_id=Non
         self.assert_no_project_access(harness, 'synthetic-rejected-candidate')
         self.point_entry(self.old_package)
         self.assert_project_turn(harness, project, 'synthetic-rolled-back')
+        marker = Path(self.value['off_file'])
+        off = metadata.write(marker, {'synthetic': 'stopped-before-successful-update'})
         self.assertEqual(self.update()['status'], 'client-update-updated')
         self.point_entry(self.new_package)
+        self.assert_no_project_access(harness, 'synthetic-still-stopped')
+        self.assert_no_project_access(harness, 'synthetic-still-stopped-child', cwd=self.child)
+        self.assertEqual(metadata.digest(marker.read_bytes()), off)
+        marker.unlink()
         self.assert_project_turn(harness, project, 'synthetic-after-retry')
         self.assertEqual(self.file.read_bytes(), settings)
         self.assertEqual(self.command(harness, project=True, event='UserPromptSubmit'), command)
         self.assertEqual(outbox.read_bytes(), original)
 
         new_member = self.new_package / 'src/agent_brain_client/domain/synthetic_update_member.py'
+        member_bytes = new_member.read_bytes()
         new_member.write_bytes(b'# Synthetic changed installed bytes\n')
         self.assert_no_project_access(harness, 'synthetic-tampered-package')
+        new_member.write_bytes(member_bytes)
+
+        # A verified release with a genuinely different CLI entry still
+        # trips the existing Codex command's entry SHA before project loading.
+        _, manifest, read = self.new_release
+        changed = {name: read(name) for name in manifest['files']}
+        changed[PROJECT_ENTRY] += b'\n# Synthetic changed project entry\n'
+        self.new_release = self.release('c', '0.8.26', changed)
+        self.assertEqual(self.update()['status'], 'client-update-updated')
+        self.point_entry(Path(self.channel.verified_active(serving=True)['package']))
+        wire = self.log.read_bytes()
+        run = self.run_hook(harness, self.root, project=True, turn='synthetic-entry-sha-changed')
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn('AssertionError', run.stderr)
+        self.assertEqual(self.hook(harness, self.root, project=False, turn='synthetic-entry-sha-changed')[0], {})
+        self.assertEqual(self.log.read_bytes(), wire)
+        self.assertEqual(outbox.read_bytes(), original)

@@ -76,31 +76,17 @@ def hook(home, stream, *, core=None, defer=None, observe=None):
         "Stop",
     ):
         raise ValueError("Unsupported CodeBuddy hook event")
-    from agent_brain_client.adapters.storage.project_settings import source_active
-    if not source_active(home, payload.get("cwd"), "codebuddy"):
+    from agent_brain_client.adapters.storage.project_settings import source_control
+    allowed, project = source_control(home, payload.get("cwd"), "codebuddy")
+    if not allowed:
         return {}, {"status": "retained-project-source-stopped", "data_transferred": False}
     local = core.eligible(value, payload.get("cwd"))
     if local is None:
         return {}, {"status": "outside-approved-source", "data_transferred": False}
     # A bound project has its own pinned Hook and queue. Its presence is scoped
     # to this host, so another host's project controls never suppress capture.
-    from agent_brain_client.adapters.storage.project_settings import active, load_binding, project_settings
-    project_file = project_settings(home, payload["cwd"], harness="codebuddy")
-    if project_file.exists() or project_file.is_symlink():
-        from agent_brain_client.adapters.harnesses.codebuddy.content_ports import CodeBuddyContentPorts
-        def locate(home, runtime, harness):
-            if harness != "codebuddy":
-                raise ValueError("CodeBuddy project binding required")
-            return CodeBuddyContentPorts.location(home, runtime)
-        # This Hook has already verified its own frozen runtime. Only the
-        # project's binding is needed to decide ownership at this exact cwd.
-        project = load_binding(project_file, None, locate=locate)
-        if project["device_home"] != str(home) or project["project_root"] != local["cwd"]:
-            raise ValueError("Existing CodeBuddy project origin changed")
-        if not active(project):
-            return {}, {"status": "project-source-stopped", "data_transferred": False}
-        if project["capture_policy"] is not None:
-            return {}, {"status": "project-source-delegated", "data_transferred": False}
+    if project is not None and project["capture_policy"] is not None:
+        return {}, {"status": "project-source-delegated", "data_transferred": False}
     session = session_id(payload.get("session_id"))
     kind = payload["hook_event_name"]
     import agent_brain_client.adapters.harnesses.codebuddy.transcript as transcript
