@@ -195,7 +195,9 @@ try:
     from agent_brain_client.adapters.harnesses.codebuddy.configuration import install, status
     install_sources(SimpleNamespace(device_home=str(f.home), profile_id=None, operator=None, operator_sha256=None))
     core = load_core(f.home)
-    install(f.home, pathlib.Path(sys.argv[1]).parent, core, surface='both')
+    from unittest.mock import patch
+    with patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook"):
+        install(f.home, pathlib.Path(sys.argv[1]).parent, core, surface='both')
     from agent_brain_client.adapters.installation.installation import inspect
     from unittest.mock import patch
     with patch("agent_brain_client.adapters.packages.client.ClientReleases.verified_active", return_value={"version":"synthetic-fixture"}):
@@ -213,7 +215,8 @@ finally:
 
 
 class ProjectParity(unittest.TestCase):
-    def test_project_settings_paths_and_native_hooks_are_host_isolated(self):
+    @patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook")
+    def test_project_settings_paths_and_native_hooks_are_host_isolated(self, prepare):
         from agent_brain_client.adapters.storage.project_settings import project_settings
         from agent_brain_client.adapters.harnesses.codebuddy.project_configuration import install
         from agent_brain_client.adapters.harnesses.codebuddy.configuration import Document
@@ -227,7 +230,8 @@ class ProjectParity(unittest.TestCase):
             self.assertNotEqual(codex, buddy)
             private_directory(buddy.parent)
             metadata.write(buddy, {"synthetic": True})
-            settings = {"harness": "codebuddy", "project_root": str(project), "source_mode": "recall-only"}
+            settings = {"harness": "codebuddy", "device_home": str(home),
+                        "project_root": str(project), "source_mode": "recall-only"}
             config = project / ".codebuddy/settings.local.json"
             config.parent.mkdir()
             original = '{// synthetic unrelated settings\n"model":"keep", "hooks":{"Stop":[{"hooks":[{"type":"command","command":"keep"}]}]}}'
@@ -361,7 +365,8 @@ with tempfile.TemporaryDirectory() as tmp:
                 self.assertEqual(session.queue_status()["confirmed"], 1)
                 self.assertTrue((session.cache / "snapshots").exists())
 
-    def test_codebuddy_hook_uninstall_and_update_preserve_explicit_pause(self):
+    @patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook")
+    def test_codebuddy_hook_uninstall_and_update_preserve_explicit_pause(self, prepare):
         from types import SimpleNamespace
         from agent_brain_client.adapters.harnesses.codebuddy import configuration
         from agent_brain_client.runtime.host_maintenance import global_entry
@@ -514,7 +519,8 @@ finally:
         self.assertEqual(f.memory_path.read_text(), "Keep the existing remembered fact.")
 
     @unittest.skipUnless(sys.platform == "darwin", "Native Mac installation contract")
-    def test_public_uninstall_checks_secondary_queue_then_removes_both_owned_projections(self):
+    @patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook")
+    def test_public_uninstall_checks_secondary_queue_then_removes_both_owned_projections(self, prepare):
         from test_client_uninstall import ClientUninstall
         from agent_brain_client.adapters.harnesses.codebuddy import configuration
         from agent_brain_client.runtime import client_lifecycle
@@ -557,6 +563,11 @@ finally:
 
 @unittest.skipUnless(sys.platform == "darwin", "Native Mac installation contract")
 class IndependentHostControl(unittest.TestCase):
+    def setUp(self):
+        prepare = patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook")
+        prepare.start()
+        self.addCleanup(prepare.stop)
+
     def shared_install(self, harness):
         from test_mac_first_install import FirstInstall
         f = FirstInstall("test_first_install_prepared_environment_and_exact_native_transaction")

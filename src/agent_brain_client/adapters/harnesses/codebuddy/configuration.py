@@ -209,10 +209,17 @@ def render_json(text, wanted, previous, *, hooks=False, remove=False):
             )
             if old and len(matched) != 1:
                 raise ValueError("Owned CodeBuddy Hook changed")
+            if not remove and matched and same(old, wanted[event]):
+                continue
+            if remove and not matched:
+                continue
             groups = copy.deepcopy(groups)
             if matched:
-                del groups[matched[0]]
-            if not remove:
+                if remove:
+                    del groups[matched[0]]
+                else:
+                    groups[matched[0]] = wanted[event]
+            elif not remove:
                 groups.append(wanted[event])
             result = doc.patch(("hooks", event), groups)
     Document(result)
@@ -281,11 +288,11 @@ def refresh(home, source, *, check_only=False):
     pins = runtime_pins(source)
     root = directory / "code" / digest(json.dumps(pins, sort_keys=True).encode())
     if check_only:
-        mcp, hooks = definitions(root / CODEBUDDY_ENTRY, home)
+        mcp, hooks = definitions(root / CODEBUDDY_ENTRY, home, fixed_hooks=True)
         if retains_mcp(home, source, receipt["mcp"], mcp):
             mcp = receipt["mcp"]
         available = (
-            receipt["mcp"] != mcp or receipt["hooks"] != hooks
+            receipt["mcp"] != mcp or receipt.get("hooks_enabled", True) and receipt["hooks"] != hooks
             or instruction_paths(home, receipt["surface"], receipt)
             != instruction_paths(home, receipt["surface"])
         )
@@ -320,7 +327,7 @@ def retains_mcp(home, source, registered, desired):
         return False
 
 
-def definitions(entry, home):
+def definitions(entry, home, *, fixed_hooks=False):
     from agent_brain_client.adapters.platforms.filesystem import command_line
 
     argv = [str(Path(sys.executable).resolve()), "-X", "utf8", "-I", "-B", str(entry)]
@@ -329,14 +336,17 @@ def definitions(entry, home):
         "command": argv[0],
         "args": [*argv[1:], "serve", "--device-home", str(home)],
     }
+    if fixed_hooks:
+        from agent_brain_client.adapters.installation import launcher_update as hook_launcher
+        hook_command = hook_launcher.native_hook_command(home, "codebuddy")
+    else:
+        hook_command = command_line([*argv, "hook", "--device-home", str(home)])
     hooks = {
         event: {
             "hooks": [
                 {
                     "type": "command",
-                    "command": command_line(
-                        [*argv, "hook", "--device-home", str(home)]
-                    ),
+                    "command": hook_command,
                     "timeout": 90,
                 }
             ]
@@ -481,10 +491,15 @@ def install(home, source, core, *, surface="both", remove=False, enable_hooks=No
             else mcp_paths(home, surface)
         )
         entry = None if remove else freeze(source, home, core)
-        mcp, hooks = definitions(entry, home) if not remove else (None, None)
+        mcp, hooks = definitions(entry, home, fixed_hooks=True) if not remove else (None, None)
         previous_mcp = receipt["mcp"] if receipt else None
         previous_hooks = receipt["hooks"] if receipt and receipt.get("hooks_enabled", True) else None
         hooks_enabled = (receipt.get("hooks_enabled", True) if receipt else True) if enable_hooks is None else enable_hooks
+        if hooks_enabled and not remove:
+            from agent_brain_client.adapters.installation import launcher_update as hook_launcher
+            hook_launcher.prepare_native_hook(home)
+        if not hooks_enabled and receipt:
+            hooks = receipt["hooks"]
         if maintenance and set(map(str, mcp_paths(home, surface))) != set(map(str, paths)):
             raise ValueError("Higher priority CodeBuddy MCP configuration changed")
         keep_mcp = maintenance and (

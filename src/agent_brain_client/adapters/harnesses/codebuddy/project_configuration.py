@@ -1,19 +1,27 @@
 """CodeBuddy project Hook targets and native turn normalization."""
 
-import sys
 from pathlib import Path
 from agent_brain_client.adapters.harnesses.codebuddy.configuration import read_host, render_json
 from agent_brain_client.adapters.harnesses.codebuddy.events import session_id
 from agent_brain_client.adapters.storage import metadata
 from agent_brain_client.adapters.storage.host_files import host_plan, host_apply, host_restore
-from agent_brain_client.adapters.platforms.filesystem import locked, command_line
+from agent_brain_client.adapters.platforms.filesystem import locked
 
-ROOT = Path(__file__).resolve().parents[5]
+def definitions(settings, path):
+    from agent_brain_client.adapters.installation import launcher_update as hook_launcher
+
+    command = hook_launcher.native_hook_command(settings["device_home"], "codebuddy", path)
+    return {
+        event: {"hooks": [{"type": "command", "command": command, "timeout": 90}]}
+        for event in ("SessionStart", "UserPromptSubmit", "Stop")
+    }
 
 
 def install(settings, path, pin):
+    from agent_brain_client.adapters.installation import launcher_update as hook_launcher
     if settings["harness"] != "codebuddy":
         raise ValueError("CodeBuddy project binding required")
+    hook_launcher.prepare_native_hook(settings["device_home"])
     target = metadata.canonical(Path(settings["project_root"]) / ".codebuddy/settings.local.json")
     directory = Path(path).parent
     journal = directory / "codebuddy-hooks-install.json"
@@ -25,14 +33,19 @@ def install(settings, path, pin):
             host_restore(previous["host"], lambda: metadata.write(journal, previous))
             previous = dict(previous, phase="rolled-back")
             metadata.write(journal, previous)
-        argv = [str(Path(sys.executable).resolve()), "-I", "-B", str(ROOT / "src/agent_brain_client/interfaces/cli/project.py"),
-                "hook", "--harness", "codebuddy", "--settings", str(path), "--settings-sha256", pin]
-        groups = {event: {"hooks": [{"type": "command", "command": command_line(argv), "timeout": 90}]}
-                  for event in ("SessionStart", "UserPromptSubmit", "Stop")}
-        old = previous.get("definitions") if previous and previous["phase"] == "complete" else None
+        groups = definitions(settings, path)
+        old = None
+        if previous:
+            old = previous.get("definitions" if previous["phase"] == "complete" else "previous_definitions")
         desired = render_json(read_host(target), groups, old, hooks=True)
         record = {"schema": 1, "phase": "applying", "settings_sha256": pin,
-                  "target": str(target), "definitions": groups, "host": host_plan({target: desired})}
+                  "target": str(target), "definitions": groups, "previous_definitions": old,
+                  "host": host_plan({target: desired})}
+        changed = any(row["before_sha"] != row["target_sha"] for row in record["host"].values())
+        if (not changed and previous and previous["phase"] == "complete"
+                and previous.get("settings_sha256") == pin):
+            return {"status": "project-memory-installed", "harness": "codebuddy", "native_changed": False,
+                    "source_mode": settings["source_mode"], "model_loaded": "unknown"}
         metadata.write(journal, record)
         try:
             host_apply(record["host"], lambda: metadata.write(journal, record))
@@ -41,7 +54,7 @@ def install(settings, path, pin):
             host_restore(record["host"], lambda: metadata.write(journal, record))
             metadata.write(journal, dict(record, phase="rolled-back"))
             raise
-    return {"status": "project-memory-installed", "harness": "codebuddy", "native_changed": True,
+    return {"status": "project-memory-installed", "harness": "codebuddy", "native_changed": changed,
             "source_mode": settings["source_mode"], "model_loaded": "unknown"}
 
 

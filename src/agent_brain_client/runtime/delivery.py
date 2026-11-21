@@ -39,10 +39,10 @@ def schedule_delivery(home, host_adapter, origin):
     })
 
 
-def schedule_project(home, settings_path, settings_sha256, *, wake_worker=True):
+def schedule_project(home, settings_path, settings_sha256, *, wake_worker=True, verified_release=False):
     from agent_brain_client.runtime.project_memory import load
 
-    value = load(settings_path, settings_sha256)
+    value = load(settings_path, settings_sha256, verified_release=verified_release)
     if Path(value['device_home']) != Path(home):
         raise ValueError('Project delivery device changed')
     root = directory(home)
@@ -176,6 +176,13 @@ def run(home, *, max_seconds=600, pause=time.sleep):
     core = None
     binding_error = None
 
+    def project_release():
+        root = Path(__file__).resolve().parents[3]
+        if not (root / "verified.json").is_file():
+            return False
+        verified = shared_core()  # Also checks this process is the enrolled serving package.
+        return verified is not None
+
     def shared_core():
         nonlocal core, binding_error
         if binding_error is not None:
@@ -230,16 +237,17 @@ def run(home, *, max_seconds=600, pause=time.sleep):
                                 if (set(task) != {'schema', 'harness', 'turn_id', 'settings', 'settings_sha256'}
                                         or task['schema'] != 1 or not re.fullmatch('[a-f0-9]{64}', task['turn_id'])):
                                     raise ValueError('Observed project completion task required')
-                                pending = finish_codebuddy_project(home, task) or pending
+                                pending = finish_codebuddy_project(home, task, verified_release=project_release()) or pending
                             elif task.get('harness') == 'codex-project':
                                 from agent_brain_client.runtime.project_memory import capture, delivery_port, load
 
                                 if set(task) != {'schema', 'harness', 'settings', 'settings_sha256'} or task['schema'] != 1:
                                     raise ValueError('Pinned project delivery required')
-                                project = load(task['settings'], task['settings_sha256'])
+                                released = project_release()
+                                project = load(task['settings'], task['settings_sha256'], verified_release=released)
                                 if Path(project['device_home']) != Path(home):
                                     raise ValueError('Project device changed')
-                                queue, allowed, allowed_event = delivery_port(task['settings'], task['settings_sha256'])
+                                queue, allowed, allowed_event = delivery_port(task['settings'], task['settings_sha256'], verified_release=released)
                                 if project['harness'] == 'codex':
                                     from agent_brain_client.adapters.harnesses.codex.hooks import resume_completions
 

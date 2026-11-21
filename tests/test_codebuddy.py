@@ -140,6 +140,9 @@ class Installation(unittest.TestCase):
         self.original = b'{// keep comment\n"permissions":{"deny":["Bash"]},"hooks":{"Stop":[]}}\n'
         self.settings.write_bytes(self.original)
         self.core = SimpleNamespace()
+        prepare = patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook")
+        prepare.start()
+        self.addCleanup(prepare.stop)
 
     def install(self, **kwargs):
         return cbhost.install(self.home, ROOT, self.core, **kwargs)
@@ -180,9 +183,10 @@ class Installation(unittest.TestCase):
         self.install()
 
     def test_shared_runtime_drift_requires_binding_refresh_before_loading_core(self):
-        from agent_brain_client.adapters.packages.layout import PYTHON_FILES
+        from agent_brain_client.adapters.packages.layout import source_python_members
         from agent_brain_client.adapters.platforms.filesystem import private_directory
         from agent_brain_client.adapters.harnesses.codex.collection_installation import freeze_code
+        PYTHON_FILES = source_python_members(ROOT)
         directory = private_directory(source_policy.settings_path(self.home).parent)
         pins = {name: metadata.digest((ROOT / name).read_bytes()) for name in PYTHON_FILES}
         freeze_code(directory, pins)
@@ -198,6 +202,7 @@ class Installation(unittest.TestCase):
             private_directory(target.parent)
             target.write_bytes(raw if file == name else (ROOT / file).read_bytes())
             target.chmod(0o600)
+        metadata.write(root / 'code.json', {"schema": 1, "files": changed})
         metadata.write(directory / 'settings.json', {'device_home':str(self.home), 'code_sha256':changed})
         with self.assertRaisesRegex(ValueError, 'Refresh the Harness binding'):
             host_binding.load_core(self.home)
@@ -289,10 +294,15 @@ class Installation(unittest.TestCase):
             self.install(surface='cli')
             old = (self.native / '.mcp.json').read_bytes()
             source = self.home / 'synthetic-source'
-            for name in PYTHON_FILES:
+            from agent_brain_client.adapters.packages.layout import source_python_members
+            for name in source_python_members(ROOT):
                 target = source / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes((ROOT / name).read_bytes())
+            stub = source / "src/agent_brain_client/adapters/installation/launcher_update.py"
+            stub.write_bytes(stub.read_bytes() + b"\ndef prepare_native_hook(home): pass\n")
+            (source / "dev/build").mkdir(parents=True)
+            (source / "dev/build/package.py").touch()
             changed = source / 'src/agent_brain_client/runtime/collection.py'
             changed.write_bytes(changed.read_bytes() + b'\n# synthetic upgrade\n')
             active["package"] = str(source)
@@ -655,7 +665,8 @@ class Protocol(unittest.TestCase):
         policy = adapters_storage_bounded_json.read_json(metadata['release_policy'])
         self.assertEqual(policy['runtime']['codex_home'], str(fixture.native))
         self.assertFalse((fixture.home / '.codex').exists())
-        bound = cbhost.install(fixture.home, ROOT, SimpleNamespace())
+        with patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook"):
+            bound = cbhost.install(fixture.home, ROOT, SimpleNamespace())
         self.assertTrue(bound['installed'])
         self.assertTrue((fixture.home / '.codebuddy/mcp.json').exists())
         self.assertFalse((fixture.home / '.codex').exists())

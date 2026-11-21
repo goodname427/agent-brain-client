@@ -326,3 +326,155 @@ def probe_launcher(plan, active):
         or value.get("device_credentials_accessed") is not False
     ):
         raise ValueError("Launcher checkpoint differs")
+
+
+# This portion runs in isolated Python before importing any release code.
+_BOOTSTRAP = '''
+import hashlib
+import pathlib
+import subprocess
+import sys
+
+try:
+    root = pathlib.Path(ANCHOR)
+    src = root / "src"
+    if root.resolve(strict=True) != root:
+        raise ValueError("Linked launcher anchor")
+    paths = list(src.rglob("*"))
+    if (any(path.is_symlink() for path in paths)
+            or {path.relative_to(root).as_posix() for path in paths if not path.is_dir()} != PINS.keys()):
+        raise ValueError("Launcher anchor membership changed")
+    for name, expected in PINS.items():
+        file = root / name
+        if (file.resolve(strict=True) != file
+                or sys.platform != "win32" and file.stat().st_nlink != 1
+                or hashlib.sha256(file.read_bytes()).hexdigest() != expected):
+            raise ValueError("Launcher anchor changed")
+    sys.path.insert(0, str(src))
+    from agent_brain_client.adapters.packages.client import ClientReleases
+    from agent_brain_client.adapters.storage.registration import registration
+
+    saved, _ = registration(HOME)
+    if (saved["release_policy"], saved["release_policy_sha256"]) != POLICY:
+        raise ValueError("Hook enrollment changed")
+    channel = ClientReleases(*POLICY)
+    if channel.policy["runtime"]["device_home"] != HOME:
+        raise ValueError("Hook release identity changed")
+    active = channel.verified_active(serving=True)
+    if active is None:
+        raise ValueError("Verified serving Hook release required")
+    package = pathlib.Path(active["package"])
+    entry = package / "src/agent_brain_client/runtime/host_binding.py"
+    if not entry.is_file() or b"def run_native_hook(" not in entry.read_bytes():
+        raise ValueError("Verified Hook entry required")
+    code = (
+        "import sys; sys.path.insert(0,sys.argv.pop(1)); "
+        "from agent_brain_client.runtime.host_binding import run_native_hook; "
+        "sys.exit(run_native_hook(*sys.argv[1:]))"
+    )
+    status = subprocess.run(
+        [sys.executable, "-X", "utf8", "-I", "-B", "-c", code, str(package / "src"),
+         HOME, *sys.argv[1:]], check=False,
+    ).returncode
+except Exception as error:
+    print("{}", flush=True)
+    print("agent-brain Hook launch unavailable: " + type(error).__name__, file=sys.stderr)
+    status = 0
+sys.exit(status)
+'''
+
+
+def native_hook_directory(home):
+    return Path(home) / ".config/agent-brain-client/native-hooks"
+
+
+def native_hook_command(home, harness, settings=None):
+    """Only stable paths and route arguments belong in native configuration."""
+    from agent_brain_client.adapters.platforms.filesystem import command_line
+
+    root = native_hook_directory(home)
+    interpreter, bootstrap = str(root / "python.txt"), str(root / "launcher.py")
+    args = [harness, *([str(settings)] if settings is not None else [])]
+    if os.name == "nt":
+        from agent_brain_client.adapters.platforms.windows.filesystem import powershell_command, powershell_quote
+        return powershell_command(
+            "& ([IO.File]::ReadAllText(" + powershell_quote(interpreter) + ").TrimEnd([char]10)) "
+            + " ".join(map(powershell_quote, ["-X", "utf8", "-I", "-B", bootstrap, *args]))
+        )
+    return command_line([
+        "/bin/sh", "-c",
+        'IFS= read -r python < "$1" || exit; shift; exec "$python" -X utf8 -I -B "$@"',
+        "agent-brain-hook", interpreter, bootstrap, *args,
+    ])
+
+
+def prepare_native_hook(home):
+    """Reuse the original approved policy and immutable verifier for this enrollment."""
+    import sys
+    from agent_brain_client.adapters.platforms.filesystem import locked, private_directory, private_mode
+    from agent_brain_client.adapters.storage import metadata
+    from agent_brain_client.adapters.storage.host_files import atomic
+    from agent_brain_client.adapters.storage.registration import registration
+    from agent_brain_client.adapters.storage.private_files import raw as package_bytes
+
+    home = metadata.canonical(home, existing=True)
+    saved, _ = registration(home)
+    policy = (saved["release_policy"], saved["release_policy_sha256"])
+    root = native_hook_directory(home)
+    private_directory(root)
+    private_mode(root, directory=True, owner=True)
+    receipt = root / "binding.json"
+    with locked(root / "install.lock"):
+        if receipt.exists():
+            previous = metadata.private_json(receipt)
+            if (set(previous) != {"policy", "files"} or previous["policy"] != list(policy)
+                    or set(previous["files"]) != {"python.txt", "launcher.py"}):
+                raise ValueError("Fixed Hook enrollment changed")
+            for name, expected in previous["files"].items():
+                path = metadata.canonical(root / name, existing=True)
+                private_mode(path, owner=True)
+                if metadata.digest(path.read_bytes()) != expected:
+                    raise ValueError("Fixed Hook launcher changed")
+            return
+        channel = ClientReleases(*policy, inspection=True)
+        if channel.policy["runtime"]["device_home"] != str(home):
+            raise ValueError("Hook release identity changed")
+        active = channel.verified_active(serving=True)
+        if active is None:
+            raise ValueError("Verified serving Hook release required")
+        package = Path(active["package"])
+        manifest = json.loads(package_bytes(package / "verified.json"))["manifest"]
+        if metadata.digest(json.dumps(manifest, sort_keys=True).encode()) != active["manifest_sha256"]:
+            raise ValueError("Fixed Hook anchor manifest changed")
+        pins = {name: pin for name, pin in manifest["files"].items() if name.startswith("src/")}
+        entry = package / "src/agent_brain_client/runtime/host_binding.py"
+        if b"def run_native_hook(" not in entry.read_bytes():
+            raise ValueError("Active release lacks the fixed Hook entry")
+        runtime = channel.policy["runtime"]
+        if "dependency_policy" in runtime:
+            deps = metadata.private_json(runtime["dependency_policy"], runtime["dependency_policy_sha256"])
+            python = deps["python"] if deps["schema"] == 2 else Path(deps["root"]) / "python/bin/python3"
+        else:
+            python = sys.executable
+        executable = str(Path(python).resolve())
+        if "\n" in executable or "\r" in executable:
+            raise ValueError("Canonical Hook interpreter required")
+        payload = {
+            "python.txt": (executable + "\n").encode(),
+            "launcher.py": (
+                f"HOME = {str(home)!r}\nPOLICY = {policy!r}\nANCHOR = {str(package)!r}\nPINS = {pins!r}\n"
+                + _BOOTSTRAP
+            ).encode(),
+        }
+        for name, raw in payload.items():
+            path = metadata.canonical(root / name)
+            if path.exists():
+                private_mode(path, owner=True)
+                if path.read_bytes() != raw:
+                    raise ValueError("Existing fixed Hook launcher preserved")
+            else:
+                atomic(path, raw, 0o600)
+        metadata.write(receipt, {
+            "policy": list(policy),
+            "files": {name: metadata.digest(raw) for name, raw in payload.items()},
+        }, exclusive=True)

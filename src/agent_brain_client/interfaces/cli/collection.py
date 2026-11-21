@@ -14,7 +14,7 @@ import time
 from agent_brain_client.runtime import collection as core
 
 
-def _global_hook(args, started, diagnostic):
+def _global_hook(args, started, diagnostic, *, verified_release=False):
     from agent_brain_client.application.control import (
         RECALL_TIMING_ENV, RequestControl, mark_recall_timing, recall_timing_scope,
     )
@@ -22,7 +22,7 @@ def _global_hook(args, started, diagnostic):
 
     observation = {}
     with recall_timing_scope(os.environ.get(RECALL_TIMING_ENV) == "1", started=started):
-        value = core.load(args.device_home, verify_code=True)
+        value = core.load(args.device_home, verify_code=not verified_release)
         initialized = time.monotonic()
         mark_recall_timing("hook_initialized")
         control = RequestControl(110)
@@ -57,7 +57,7 @@ def _global_hook(args, started, diagnostic):
     return 0
 
 
-def main(argv=None):
+def main(argv=None, *, verified_release=False):
     started = time.monotonic()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
@@ -120,7 +120,7 @@ def main(argv=None):
     diagnostic = {"stage": "global-settings"}
     try:
         if a.action == "global-hook":
-            return _global_hook(a, started, diagnostic)
+            return _global_hook(a, started, diagnostic, verified_release=verified_release)
         if a.action in ("global-install", "global-uninstall"):
             from agent_brain_client.runtime.host_maintenance import global_entry
             if a.harness is None:

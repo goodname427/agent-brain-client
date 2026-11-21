@@ -336,9 +336,19 @@ def command_line(argv):
         # Isolated Python ignores PYTHONIOENCODING. Its own UTF-8 switch
         # keeps Hook input/output Unicode-safe on legacy Windows consoles.
         argv[1:1] = ["-X", "utf8"]
+    return powershell_command("& " + " ".join(map(powershell_quote, argv)))
+
+
+def powershell_quote(value):
+    return "'" + value.replace("'", "''") + "'"
+
+
+def powershell_command(invocation):
+    import base64
+
     script = (
-        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; $env:PYTHONIOENCODING='utf-8'; & "
-        + " ".join("'" + item.replace("'", "''") + "'" for item in argv)
+        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; $env:PYTHONIOENCODING='utf-8'; "
+        + invocation
         + "; exit $LASTEXITCODE"
     )
     encoded = base64.b64encode(script.encode("utf-16le")).decode()
