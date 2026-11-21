@@ -69,6 +69,7 @@ class ClientUninstall(unittest.TestCase):
                 patch.object(Path, 'home', return_value=self.home), \
                 patch.dict(os.environ, CODEX_HOME=str(self.native)), \
                 patch.object(sys, 'stdout', output), \
+                patch.object(wizard, 'finish_install', side_effect=lambda home, value, **kwargs: value), \
                 patch.object(wizard, 'run', side_effect=run if execute else AssertionError('Invalid recovery must stop before installation')):
             code = __import__("agent_brain_client.interfaces.cli.install", fromlist=["main"]).main()
         return code, json.loads(output.getvalue())

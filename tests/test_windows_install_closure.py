@@ -462,7 +462,8 @@ class LauncherClosure(unittest.TestCase):
             patch.object(launcher_update, "probe_launcher", return_value=None),
         ):
             code, value = normal_retry(self, self.f.home, self.f.native)
-        self.assertEqual(code, 0, value)
+        self.assertEqual(code, 2, value)
+        self.assertEqual(value["outcome"], "partial")
         self.assertTrue(value["installed"])
         self.assertEqual(updates, ["update"])
         self.assertFalse(marker.exists())
@@ -929,7 +930,8 @@ class SourceClosure(unittest.TestCase):
             ),
         ):
             code, value = normal_retry(self, self.home, self.f.native)
-        self.assertEqual(code, 0, value)
+        self.assertEqual(code, 2, value)
+        self.assertEqual(value["outcome"], "partial")
         self.assertTrue(value["installed"])
         self.assertEqual((self.f.native / "config.toml").read_bytes(), before)
         self.assertEqual((self.f.native / "config.toml").stat().st_ino, inode)

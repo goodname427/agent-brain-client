@@ -534,10 +534,11 @@ def prepare_materials(
 
 def confirm_target(message, buttons=("Cancel", "Continue")):
     """Terminal metadata only; secrets always use the existing secure helper."""
-    print(message)
-    print(" / ".join(buttons))
+    print(message, file=sys.stderr)
+    print(" / ".join(buttons), file=sys.stderr)
+    print("> ", end="", file=sys.stderr, flush=True)
     try:
-        chosen = input("> ").strip()
+        chosen = input().strip()
     except (EOFError, KeyboardInterrupt):
         return "Cancel"
     return chosen if chosen in buttons else "Cancel"
@@ -909,7 +910,7 @@ def finish_install(home, value, *, harness=None):
     from agent_brain_client.runtime.updates import manage_update
     from agent_brain_client.runtime.installation_completion import complete
 
-    if os.name == "nt" and value.get("installed") is True:
+    if os.name == "nt" and value.get("installed") is True and value.get("update_check_performed") is not False:
         updated = manage_update(home, "update")
         value = dict(value, launcher_update=updated)
         if updated.get("status") not in (

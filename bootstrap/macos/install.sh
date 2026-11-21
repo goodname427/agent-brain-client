@@ -10,9 +10,11 @@ case "$(/usr/bin/uname -m)" in
     arm64|x86_64) ;;
     *) echo '{"status":"install-platform-review-required","installed":false}'; exit 2 ;;
 esac
-# Only installation/reinstallation refreshes its source checkout. Local
-# status, repair, uninstall and release-channel checks stay in this checkout.
-if /usr/bin/python3 -I -B "$HERE/bootstrap/source_checkout.py" --should-bootstrap "$@"; then
+# Validate the request before any checkout or dependency work.
+ROUTE=0
+/usr/bin/python3 -I -B "$HERE/bootstrap/source_checkout.py" --request-route "$@" || ROUTE=$?
+case "$ROUTE" in
+  0)
     # Standard local tools for Git HTTPS and compiling the existing Swift helper.
     # This opens the normal tool installer only; restart this script when it finishes.
     if ! /usr/bin/xcode-select -p >/dev/null 2>&1; then
@@ -28,7 +30,9 @@ if /usr/bin/python3 -I -B "$HERE/bootstrap/source_checkout.py" --should-bootstra
     if [ "$CHECKOUT" != "$HERE" ]; then
         exec /bin/sh "$CHECKOUT/bootstrap/macos/install.sh" "$@"
     fi
-    exec "$PYTHON" -I -B "$HERE/bootstrap/python_runtime.py" --harness codex "$@"
-fi
-# No Git/network checkout and no dependency preparation for local maintenance.
-exec /usr/bin/python3 -I -B "$HERE/bootstrap/python_runtime.py" --harness codex "$@"
+    exec "$PYTHON" -I -B "$HERE/bootstrap/python_runtime.py" "$@"
+    ;;
+  10) exec /usr/bin/python3 -I -B "$HERE/bootstrap/python_runtime.py" "$@" ;;
+  11) exit 0 ;;
+  *) exit "$ROUTE" ;;
+esac

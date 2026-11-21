@@ -7,21 +7,21 @@ CodeBuddy IDE 和 CodeBuddy Code（CLI）共用现有 Agent Brain Client 与 Ser
 
 ## 安装
 
-从独立、干净的官方 `main` checkout 执行并记录源码 SHA。Mac 沿用现有安装器的 arm64 首次引导；Windows 沿用既有 AMD64/ARM64 Python/Git 与系统凭据流程。
+从独立、干净的官方 `main` checkout 执行并记录源码 SHA。Mac 使用 arm64 或 x86_64 的原生引导；Windows 沿用既有 AMD64/ARM64 Python/Git 与系统凭据流程。
 
 ```sh
-sh bootstrap/macos/codebuddy.sh --server 'https://your-server.example'
+sh bootstrap/macos/install.sh --harness codebuddy --server 'https://your-server.example'
 ```
 
 ```powershell
-& ./bootstrap/windows/codebuddy.ps1 -Server 'https://your-server.example'
+& ./bootstrap/windows/install.ps1 -Harness codebuddy -Server 'https://your-server.example'
 ```
 
 省略地址时沿用原安装器的本机输入／恢复。密钥不放进命令、聊天或环境变量。新设备把共享后端的原生登记放在私有 `shared-native` 目录，不创建用户 `.codex` 配置；原有安装保留原绑定。Server 冻结设备协议仍使用原 `codex` adapter 名称，这是兼容传输身份，不冒充 CodeBuddy 专属 Server grant，也不改变设备权限或信任锚。
 
-已有 Client 时，入口先沿原受信渠道执行 check-update／update，刷新共用运行时；重复原 install 本身不能代替升级。安装再验证共享 Client 的 MCP initialize、工具目录与只读认证，然后事务安装 CodeBuddy 配置。`installed:true` 表示配置与协议核验通过；`source_enabled` 单独反映现有全局采集授权，`model_loaded:false` 表示未运行模型验收。来源状态异常应沿原安装器恢复；不能替换凭据或绕过 Server 拒绝。旧渠道尚未提供共用模块时保留原安装，等待受信渠道发行，不冒称自动采集已就绪。
+已有 Client 时，安装核验共享登记并配置所选宿主。需要更新时使用共享入口的 `check-update` 和 `update`。终态 JSON 中的 `installation_stages.native_mcp` 报告 CodeBuddy 绑定，每个未完成阶段保留具体状态。`source_enabled` 表示当前采集授权，`model_loaded: "unknown"` 表示当前模型加载未被观察。
 
-默认配置 IDE 与 CLI。需要单独绑定其中一种时，在共享 Client 安装完成后执行 `python3 -I -B src/agent_brain_client/interfaces/cli/codebuddy.py install --surface ide` 或 `--surface cli`。已安装后切换范围应先卸载原 CodeBuddy 绑定，保留共享后端。
+首次安装默认配置 IDE 和 CLI。只绑定一种时传 `--surface ide|cli` 或 Windows `-Surface ide|cli`。重复安装沿用已登记范围。切换范围前先执行下面的宿主解绑，再以所需范围重新安装。
 
 ## 实际配置与能力
 
@@ -50,17 +50,25 @@ CodeBuddy 按正常宿主流程审核 MCP/Hooks。CLI 文档要求在 `/hooks` �
 
 ## 状态、更新和卸载
 
-用安装器准备好的 Python 3.11+ 运行（Windows 也可使用现有 Python resolver）：
+`status` 读取本机登记。`probe` 使用既有认证执行只读协议核验。Mac：
 
 ```sh
-python3 -I -B src/agent_brain_client/interfaces/cli/codebuddy.py status
-python3 -I -B src/agent_brain_client/interfaces/cli/codebuddy.py probe
-python3 -I -B src/agent_brain_client/interfaces/cli/codebuddy.py uninstall
+sh bootstrap/macos/install.sh --action status --harness codebuddy
+sh bootstrap/macos/install.sh --action probe --harness codebuddy
+sh bootstrap/macos/install.sh --action unbind --harness codebuddy
 ```
 
-`uninstall` 只移除自有 CodeBuddy 绑定、Hook 与说明块，保留其他配置、共享后端、系统凭据和所有待传事件。配置漂移时不覆盖；中断事务按原 host-file 前后像恢复。已启动的 MCP 需按宿主正常流程结束；不终止用户进程。
+Windows：
 
-更新沿现有共享 Client 的 `check-update`／`update` 流程，从已验证的 active package 同步刷新共享运行时和已登记 surface 的 CodeBuddy 适配器快照，不依赖旧安装器 checkout 的源码。仅在配置冲突或刷新未完成时保留现场，按正常检查／重绑流程处理。也可运行 Mac `sh bootstrap/macos/codebuddy.sh --action update` 或 Windows `& ./bootstrap/windows/codebuddy.ps1 -Action update`。保持原渠道和来源设置；更新适配器不是重新配对。只在 worker 与活动版本实际不同时正常重载对应 MCP。
+```powershell
+& ./bootstrap/windows/install.ps1 -Action status -Harness codebuddy
+& ./bootstrap/windows/install.ps1 -Action probe -Harness codebuddy
+& ./bootstrap/windows/install.ps1 -Action unbind -Harness codebuddy
+```
+
+`unbind` 只移除已登记的 CodeBuddy 绑定、Hook 与说明块，保留共享 Client、其他宿主、凭据和待传事件。公共入口的 `uninstall` 是整机 Client 卸载。配置冲突或事务中断时核对自有前后像，并用相同入口续接。已运行的 MCP 由宿主正常关闭。
+
+更新使用共享 Client 的 `check-update` 和 `update`。共享更新从已验证的活动包刷新原有 IDE／CLI 范围。观察新鲜 MCP 响应的 `client_runtime.reload_required`，给兼容 worker 完成切换的机会，仍需要时再使用宿主自己的 MCP 重载。历史 `codebuddy.sh` 和 `codebuddy.ps1` 路径转发至同一公共入口。
 
 Git、局部 `P4CONFIG`／`.p4config`、`.uproject` 及 UE Engine 标记组合可用于识别工程，仍受原 scope 和 exclude 限制。普通非项目目录仍需原有 `non_project_roots` 授权，不会放行整个宽盘符。
 
