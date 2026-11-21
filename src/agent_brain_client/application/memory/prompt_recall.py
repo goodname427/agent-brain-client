@@ -69,18 +69,20 @@ def recall_prompt(value, local, payload, query, *, services, observe=None):
                     request_id=receipt["request_id"],
                     observe=receipt["retrieval"],
                 )
-            result = items
         except Exception as error:
             recall_timing_failed()
             receipt["error_type"] = type(error).__name__
-            services.save_observation(value, receipt)
+            try:
+                services.save_observation(value, receipt)
+            except (OSError, ValueError):
+                pass
             if observe is not None:
                 observe(receipt)
             raise
         context = render_context(items) if items else ""
         receipt.update(
             {
-                "status": "context-prepared" if result else "empty",
+                "status": "context-prepared" if items else "empty",
                 "layer_counts": {
                     layer: sum(item.get("layer") == layer for item in items)
                     for layer in ("L1", "L2", "L3")
@@ -93,9 +95,12 @@ def recall_prompt(value, local, payload, query, *, services, observe=None):
                 ),
             }
         )
-        services.save_observation(value, receipt)
+        try:
+            services.save_observation(value, receipt)
+        except (OSError, ValueError):
+            pass
         # Preparation is not output acknowledgement. Only the stdout boundary
         # may commit the deduplication stamp; a crash here must permit replay.
     if observe is not None:
         observe(receipt)
-    return result
+    return items

@@ -186,6 +186,21 @@ class LayeredRecall(unittest.TestCase):
         self.response['result']['namespace_results'] = [empty] * 19
         with self.assertRaises(ValueError): self.read()
 
+    def test_bad_source_does_not_erase_an_independently_verified_source(self):
+        valid, invalid = self.group(), self.group()
+        invalid['source_device_id'] = 'd' * 32
+        for layer in ('L1', 'L2'):
+            item = invalid['recall'][layer][0]
+            item['content'] = 'Unverified source fixture'
+            item['provenance']['sources'][0]['identity']['device_id'] = 'd' * 32
+        for groups in ([invalid, valid], [valid, invalid]):
+            with self.subTest(bad_first=groups[0] is invalid):
+                self.response['result']['namespace_results'] = groups
+                self.assertEqual([row['content'] for row in self.read()], [
+                    'Synthetic L1 answer marker', 'Synthetic L2 answer marker', 'Synthetic L3 answer marker',
+                ])
+        self.assertFalse(list(self.root.glob('recall-*.json')))
+
     def prompt(self):
         payload = {'cwd': self.local['cwd'], 'hook_event_name': 'UserPromptSubmit',
                    'session_id': 'synthetic-reader', 'turn_id': 'synthetic-turn', 'prompt': 'Synthetic question marker'}
@@ -210,6 +225,32 @@ class LayeredRecall(unittest.TestCase):
         receipt['output_written'] = True
         recall_receipts.save_recall_observation(self.value, receipt)
         self.assertEqual(self.run_hook(), {}); self.assertEqual(len(self.sent), 2)
+
+    def test_optional_cache_and_receipt_failures_preserve_hook_output_and_stamp(self):
+        observed = []
+        write = recall_receipts.metadata.write
+
+        def fail_optional(path, value, **kwargs):
+            if path.name.startswith('prompt-'):
+                return write(path, value, **kwargs)
+            raise OSError('Fictional optional write failure')
+
+        with patch.object(recall_receipts.metadata, 'write', side_effect=fail_optional):
+            result = self.run_hook(observe=observed.append)
+            self.assertIn('Synthetic L1 answer marker', result['hookSpecificOutput']['additionalContext'])
+            self.assertEqual(observed[0]['status'], 'context-prepared')
+            self.assertFalse(list(self.root.glob('prompt-*.json')))
+            result = io.StringIO()
+            with (patch.object(gm, 'load', return_value=self.value),
+                  patch.object(gm, 'eligible', return_value=self.local),
+                  patch.object(gm, 'submit_hook', return_value={'status': 'staged'}),
+                  patch.object(sys, 'stdin', self.prompt()),
+                  patch.object(sys, 'stdout', result),
+                  patch.object(sys, 'stderr', io.StringIO())):
+                self.assertEqual(collection_cli.main(['global-hook']), 0)
+            self.assertIn('additionalContext', result.getvalue())
+            self.assertEqual(self.run_hook(), {})
+            self.assertEqual(len(self.sent), 2)
 
     def test_empty_recall_and_unobserved_are_distinct(self):
         self.assertEqual(recall_receipts.recall_observation(self.value), {'status': 'unobserved', 'model_used': 'unknown'})

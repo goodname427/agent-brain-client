@@ -10,6 +10,9 @@ from agent_brain_client.application.control import saved_recall_timing
 
 def save_recall_observation(value, receipt):
     directory = settings_path(value["device_home"]).parent
+    if receipt.get("output_written") is True and receipt.get("status") != "failed":
+        metadata.write(directory / ("prompt-" + receipt["request_key"] + ".json"),
+                       {"at": receipt["at"]})
     receipts = directory / "recall-receipts"
     private_directory(receipts)
     receipt_sha256 = metadata.write(receipts / (receipt["request_key"] + ".json"), receipt)
@@ -22,9 +25,6 @@ def save_recall_observation(value, receipt):
                 metadata.write(directory / "last-recall-timing.json", sample)
             except (OSError, ValueError):
                 pass  # Diagnostic I/O must not replace the original failure.
-    if receipt.get("output_written") is True and receipt.get("status") != "failed":
-        metadata.write(directory / ("prompt-" + receipt["request_key"] + ".json"),
-                       {"at": receipt["at"]})
 
 
 def recall_observation(value, request_key=None):

@@ -39,6 +39,11 @@ Mac and Windows use the same implementation:
   Unknown fields, mismatched devices, project-only peer groups and malformed
   source context fail closed.
 
+The shared question Hook validates each complete source group before adding
+any of its rows. A rejected group leaves independently verified groups
+available. A response with only rejected groups and no usable rows fails the
+recall, and a partial response does not replace the offline cache.
+
 `tests/test_layered_recall.py` covers both path directions, valid L2/L3 output,
 legacy compatibility, negative scope/provenance cases and bounded empty groups.
 It runs in the full Mac suite and Windows contract jobs. The subprocess fixture
@@ -56,6 +61,11 @@ context, plus layer/count/byte totals and the number omitted for budget. They
 contain no query, memory text, source paths, credentials or exception values.
 Later queries cannot overwrite a different request's evidence. Old schema 1
 summaries remain readable but cannot establish request identity.
+
+An optional recall cache or diagnostic receipt write can fail after the
+verified context is ready. The Hook can still emit the context. After stdout
+flushes, the CLI saves the output deduplication stamp before updating the
+diagnostic receipt.
 
 Use `global-status --request-key <request_key>` to inspect the exact attempt.
 The matching key is included in the Hook's content-free stderr receipt and its
