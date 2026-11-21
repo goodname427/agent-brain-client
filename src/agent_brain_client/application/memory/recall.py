@@ -33,6 +33,8 @@ def _fit_context(items, references, query, observe, *, cached=False):
                 presentation=item["presentation"],
                 output_content_sha256=digest(item["content"]),
             )
+            if "index_metadata" in item:
+                ref["index_metadata_sha256"] = digest(item["index_metadata"])
         refs.append(ref)
     if observe is not None:
         observe.update(
@@ -91,12 +93,16 @@ def recall(
                     if "presentation" not in item:
                         continue
                     ref = references[index] if index < len(references) else {}
+                    index_digest = (
+                        digest(item["index_metadata"]) if "index_metadata" in item else None
+                    )
                     if (
                         not cached_evidence
                         or ref.get("layer") != item["layer"]
                         or ref.get("record_sha256") != item["record_sha256"]
                         or ref.get("presentation") != item["presentation"]
                         or ref.get("output_content_sha256") != digest(item["content"])
+                        or ref.get("index_metadata_sha256") != index_digest
                     ):
                         raise ValueError("Cached recall excerpt changed")
                 selected, _ = _fit_context(
@@ -210,6 +216,10 @@ def recall(
                         "content_sha256": digest(row["content"]),
                     }
                 )
+                if layer == "L2" and isinstance(row.get("path"), str):
+                    # Keep the authorized logical path transient. Only a
+                    # screened leaf name may appear in a projected index.
+                    references[-1]["scenario_path"] = row["path"]
     items, refs = _fit_context(items, references, query, observe)
     services.write_cache(
         cache,

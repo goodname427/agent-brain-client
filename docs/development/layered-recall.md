@@ -58,7 +58,12 @@ Short records can be written whole in evidence order. A long record with a
 locatable anchor can use a bounded verbatim `excerpt` containing the adjacent
 text before and after the hit, including across a blank line. Its
 `excerpt_omissions` flags mark which sides of the source were omitted. If the
-adjacent passage cannot fit, the fallback is an `index` without answer text.
+adjacent passage cannot fit, the fallback is an `index` with an empty answer
+body. Indexes use an authorized scenario's readable file name when available,
+and otherwise show a record label. The description can contain a labeled,
+bounded original-text preview for navigation. The preview is omitted for
+private text, insufficient context or insufficient budget, and the index
+can show an explanatory notice. Internal paths stay out of the presentation.
 A long native hit without a locatable passage can use its complete returned
 text after short evidence gets space. If that text cannot fit, it also uses
 an index. Each compact form retains source context and a record digest.
@@ -92,7 +97,9 @@ request ID is `global_recall_<request_key>`. Schema 2 receipts contain hashes of
 the session, turn, actual query, returned and selected record IDs/content, and emitted
 context, plus layer/count/byte totals and the number omitted for budget.
 For a selected excerpt or index, `content_sha256` identifies the verified candidate and
-`output_content_sha256` identifies the text actually presented. They
+`output_content_sha256` identifies the answer body actually presented.
+An enriched index also carries `index_metadata_sha256` for its title and
+description, which the offline fallback verifies. Receipts
 contain no query, memory text, source paths, credentials or exception values.
 Later queries cannot overwrite a different request's evidence. Old schema 1
 summaries remain readable but cannot establish request identity.

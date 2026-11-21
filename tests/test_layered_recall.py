@@ -402,8 +402,114 @@ class LayeredRecall(unittest.TestCase):
         rows, receipt = self.fitted_hook('清除旧快照')
         self.assertEqual(rows[0]['presentation'], 'index')
         self.assertEqual(rows[0]['content'], '')
+        self.assertEqual(rows[0]['index_metadata']['description_kind'], 'notice')
         self.assertEqual(rows[0]['lookup_tool'], 'memory_query')
         self.assertEqual(receipt['retrieval']['selected'][0]['content_sha256'], digest(original))
+
+    def test_small_index_has_authorized_name_verbatim_preview_and_offline_receipt(self):
+        from hashlib import sha256
+
+        group = self.response['result']['namespace_results'][0]
+        preview = '“霜桥”包含 "原文" 和反斜杠 \\。\n请结合完整场景。'
+        source_text = preview + '\n' + '背景说明。\n' * 100
+        evidence = [{'id': sha256(source_text.encode()).hexdigest(), 'content': source_text}]
+        original = '# Evidence Memory\n\n```json\n' + json.dumps(
+            evidence, ensure_ascii=False, indent=2
+        ) + '\n```'
+        path = 'synthetic-internal-directory/恢复演练.md'
+        target = dict(self.row('L2'), content=original, path=path)
+        target.pop('id')
+        group['recall'].update(L1=[], L2=[target], L3={'content': None, 'provenance': {}})
+        question = '有啥办法切回上版？'
+        self.assertLess(len(original.encode('utf-8')), 24576)
+
+        rows, receipt = self.fitted_hook(question)
+        row, ref = rows[0], receipt['retrieval']['selected'][0]
+        self.assertEqual(row['presentation'], 'index')
+        self.assertEqual(row['content'], '')
+        self.assertEqual(row['source_context'], target['source_context'])
+        self.assertEqual(row['index_metadata'], {
+            'title': '恢复演练', 'title_kind': 'scenario-name',
+            'description': preview, 'description_kind': 'source-preview',
+        })
+        self.assertEqual(ref['record_sha256'], digest(path))
+        self.assertEqual(ref['content_sha256'], digest(original))
+        self.assertEqual(ref['output_content_sha256'], digest(''))
+        self.assertEqual(ref['index_metadata_sha256'], digest(row['index_metadata']))
+        self.assertNotIn('synthetic-internal-directory', json.dumps(rows, ensure_ascii=False))
+        self.assertNotIn('霜桥', json.dumps(receipt, ensure_ascii=False))
+
+        cache = self.root / ('recall-' + digest(self.local) + '.json')
+        saved = json.loads(cache.read_bytes())
+        self.assertEqual(saved['items'], rows)
+        self.assertEqual(saved['selected'], [ref])
+        self.assertNotIn('背景说明', cache.read_text(encoding='utf-8'))
+        self.assertNotIn('synthetic-internal-directory', cache.read_text(encoding='utf-8'))
+
+        self.response = {'error': {'code': 'transport_unconfirmed'}}
+        offline, receipt = self.fitted_hook(question)
+        self.assertEqual(offline, [dict(row, offline_cache=True, remote_confirmation=False)])
+        self.assertEqual(receipt['retrieval']['selected'], [ref])
+        self.assertEqual([method for method, _ in self.sent], ['memory_query', 'memory_query'])
+        saved['items'][0]['index_metadata']['description'] += '变'
+        recall_receipts.metadata.write(cache, saved)
+        self.assertEqual(self.run_hook(question=question), {})
+        self.assertEqual(recall_receipts.recall_observation(self.value)['status'], 'failed')
+
+    def test_index_without_safe_metadata_has_a_label_and_privacy_preserving_notice(self):
+        group = self.response['result']['namespace_results'][0]
+        # The sharing marker is a decoded standalone line inside the evidence
+        # JSON. A prefix alone would miss it and expose the preceding text.
+        source_text = '虚构保密正文。\n[local-only]\n' + '背景说明。\n' * 100
+        original = '# Evidence Memory\n\n```json\n' + json.dumps(
+            [{'id': 'synthetic-id', 'content': source_text}], ensure_ascii=False
+        ) + '\n```'
+        target = dict(self.row('L2'), content=original, path='虚构保密场景名.md')
+        group['recall'].update(L1=[], L2=[target], L3={'content': None, 'provenance': {}})
+        question = '有啥办法切回上版？'
+        rows, _ = self.fitted_hook(question)
+        self.assertEqual(rows[0]['content'], '')
+        self.assertEqual(rows[0]['index_metadata'], {
+            'title': 'Scenario memory', 'title_kind': 'record-label',
+            'description': 'No safe short source preview is available.', 'description_kind': 'notice',
+        })
+        self.assertNotIn('保密正文', json.dumps(rows, ensure_ascii=False))
+        self.assertNotIn(target['path'], json.dumps(rows, ensure_ascii=False))
+        self.assertNotIn('虚构保密场景名', json.dumps(rows, ensure_ascii=False))
+
+        target['content'] = '界' * 500
+        target['path'] = 'evidence-' + 'a' * 24 + '.md'
+        rows, _ = self.fitted_hook(question)
+        self.assertEqual(rows[0]['index_metadata']['title_kind'], 'record-label')
+        self.assertEqual(rows[0]['index_metadata']['title'], 'Scenario memory')
+        target.pop('path')
+        rows, _ = self.fitted_hook(question)
+        self.assertEqual(rows[0]['index_metadata']['description_kind'], 'notice')
+        target['content'] = '[local-only]\n' + '虚构保密正文。' * 100
+        target['path'] = '虚构保密场景名.md'
+        self.assertEqual(self.run_hook(question=question), {})
+        target['content'] = original
+        target['provenance']['sources'][0]['identity']['device_id'] = self.device
+        self.assertEqual(self.run_hook(question=question), {})
+        self.assertEqual(recall_receipts.recall_observation(self.value)['status'], 'failed')
+
+    def test_index_preview_gives_way_to_notice_at_utf8_budget(self):
+        from agent_brain_client.application.memory.context import render_context, select_context_items
+
+        item = {'layer': 'L2', 'content': '界' * 35 + '。\n' + '霜' * 25 + '。\n' + '雪' * 450}
+        ref = {'record_sha256': digest('synthetic-index')}
+        index = select_context_items([item], [ref], 'unmatched')[0]
+        self.assertEqual(index['index_metadata']['description_kind'], 'source-preview')
+        index['index_metadata'].update(
+            description_kind='notice', description='Source preview omitted to fit the context budget.'
+        )
+        filler = {'layer': 'L1', 'relevance': 'native-query-match', 'content': ''}
+        filler['content'] = 'x' * (24576 - len(render_context([filler, index]).encode('utf-8')))
+        selected = select_context_items(
+            [filler, item], [{'record_sha256': digest('synthetic-filler')}, ref], 'unmatched'
+        )
+        self.assertEqual(selected, {0: filler, 1: index})
+        self.assertEqual(len(render_context(list(selected.values())).encode('utf-8')), 24576)
 
     def test_oversized_hit_preserves_verbatim_excerpt_reference_and_offline_cache(self):
         group = self.response['result']['namespace_results'][0]

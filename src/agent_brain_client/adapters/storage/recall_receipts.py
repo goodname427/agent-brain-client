@@ -15,6 +15,8 @@ def _valid_reference(ref, counts, *, emitted=False):
         return False
     if emitted and ref.get("presentation") in ("excerpt", "index"):
         fields |= {"presentation", "output_content_sha256"}
+        if ref["presentation"] == "index" and "index_metadata_sha256" in ref:
+            fields.add("index_metadata_sha256")
     return (
         set(ref) == fields
         and isinstance(ref["layer"], str)
