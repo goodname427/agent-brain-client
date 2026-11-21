@@ -1010,6 +1010,7 @@ def main():
         help="Verified active version supplied by the pinned startup.",
     )
     parser.add_argument("--managed-stdio", choices=("initial", *VERSIONS), help=argparse.SUPPRESS)
+    parser.add_argument("--own-runtime-lease", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.managed_stdio and (
         not args.https_profile or args.installation_check or args.event_hook
@@ -1200,16 +1201,38 @@ def main():
 
 def cli():
     try:
-        # Windows cannot inherit a POSIX descriptor lease. The real worker also
-        # holds its own shared LockFileEx lease, including if its launcher dies.
+        # Isolated supervisors launch the exact worker directly. The worker
+        # owns its cache lease for precisely its lifetime, including at abort.
+        # The preexisting Windows fallback also uses a worker-owned lease.
+        own_lease = "--own-runtime-lease" in sys.argv
+        if own_lease and ("--cache" not in sys.argv or "--managed-stdio" not in sys.argv):
+            raise ValueError("Managed worker cache lease required")
         if (
-            os.name == "nt"
+            (os.name == "nt" or own_lease)
             and "--cache" in sys.argv
             and "--installation-check" not in sys.argv
         ):
             cache = Path(sys.argv[sys.argv.index("--cache") + 1])
             cache_directory(cache)
-            with cache_locked(cache / ".content-runtime.lock", timeout=0, shared=True):
+            lock = cache / ".content-runtime.lock"
+            if own_lease:
+                from agent_brain_client.adapters.platforms.filesystem import cache_mode, file_mode
+
+                cache_mode(cache, directory=True, owner=True)
+                try:
+                    fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                except FileExistsError:
+                    pass
+                else:
+                    try:
+                        if os.name != "nt":
+                            file_mode(fd, 0o600)
+                    finally:
+                        os.close(fd)
+                if lock.is_symlink():
+                    raise ValueError("Content lease changed")
+                cache_mode(lock, owner=True)
+            with cache_locked(lock, timeout=0, shared=True):
                 from agent_brain_client.adapters.installation.installation import (
                     inspect,
                 )
