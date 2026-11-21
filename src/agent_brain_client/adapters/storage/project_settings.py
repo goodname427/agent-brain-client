@@ -54,7 +54,7 @@ def project_harness(value):
             return value["harness"]
     raise ValueError("Exact project Harness record required")
 
-def load(path, sha, *, locate, verify_code=True):
+def load(path, sha, *, locate, verify_code=True, use_registration=False):
     p = private_json(path, sha)
     fields = FIELDS
     harness = project_harness(p)
@@ -83,10 +83,18 @@ def load(path, sha, *, locate, verify_code=True):
         or not isinstance(p["query"], str)
         or len(p["query"]) > 1024
         or not isinstance(p["code_sha256"], dict)
-        or verify_code and p["code_sha256"].keys() != runtime_pins(ROOT).keys()
     ):
         raise ValueError("Bounded project memory settings required")
+    if verify_code and use_registration:
+        target, receipt = hook_registration(harness, path, p["project_root"])
+        if receipt.exists():
+            if _hook_receipt_pin(target, receipt) != sha:
+                raise ValueError("Registered project settings changed")
+            # The receipt pins project data independently of the running Client.
+            verify_code = False
     if verify_code:
+        if p["code_sha256"].keys() != runtime_pins(ROOT).keys():
+            raise ValueError("Bounded project memory settings required")
         for n, h in p["code_sha256"].items():
             if digest(canonical(ROOT / n, existing=True).read_bytes()) != h:
                 raise ValueError("Memory code changed; refresh the owned project setup")
@@ -295,11 +303,14 @@ def hook_registration(harness, settings_path, project_root):
 
 
 def installed_hook_pin(home, harness, settings_path):
-    """Move the exact settings pin to its existing private installation receipt."""
+    """Resolve the exact settings pin from the private installation receipt."""
     saved = private_json(settings_path)
     if saved.get("device_home") != home or project_harness(saved) != harness:
         raise ValueError("Project Hook identity changed")
-    target, receipt = hook_registration(harness, settings_path, saved["project_root"])
+    return _hook_receipt_pin(*hook_registration(harness, settings_path, saved["project_root"]))
+
+
+def _hook_receipt_pin(target, receipt):
     binding = private_json(receipt)
     if binding.get("phase") != "complete" or binding.get("target") != str(target):
         raise ValueError("Project Hook registration unavailable")
