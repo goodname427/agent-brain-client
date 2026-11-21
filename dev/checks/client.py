@@ -282,6 +282,9 @@ def run_checks(scope, output, record=False, *, ci=False):
         for name in ("GH_TOKEN", "GITHUB_TOKEN", "PYTHONHOME", "PYTHONSTARTUP"):
             env.pop(name, None)
         commands = COMMANDS[scope]
+        checkout = ROOT
+        exact_combined = (ci and scope == "windows" and sys.platform == "win32"
+                          and env.get("GITHUB_REF") == "refs/heads/verify/client-190-192-193-native")
         if ci and scope == "windows":
             # Same selectors on both Python versions; independent process homes
             # permit two native workers without sharing synthetic device state.
@@ -309,6 +312,31 @@ def run_checks(scope, output, record=False, *, ci=False):
                     if command[:4] != ["python", "-B", "-m", "unittest"]
                 ),
             ]
+        if exact_combined:
+            source = "4a73c90d99c99e68735da0455d5c6daf54b0d189"
+            tree = "7403a29bf6f6431cae76f14a2f637dea8538faa9"
+            subprocess.run(
+                ["git", "fetch", "--no-tags", "--depth=1", "origin",
+                 "refs/heads/verify/client-190-192-193", "refs/tags/client-0.8.25-windows",
+                 "refs/tags/client-0.8.26-windows", "refs/tags/installer-0.8.26-setup"],
+                cwd=ROOT, env=env, stdin=subprocess.DEVNULL, check=True, timeout=90,
+            )
+            for old in ("20efb22488279ee42c67f6e4f55b0befa5a0bb6a",
+                        "22b7522e93bac0812907192433016ea45c541d9a",
+                        "aefa7ba1387ebdea852d469ced83b82fc27f1a98"):
+                git("cat-file", "-e", old + "^{commit}")
+            checkout = temp / "exact-source"
+            subprocess.run(["git", "worktree", "add", "--detach", str(checkout), source],
+                           cwd=ROOT, env=env, check=True, timeout=45)
+            identity = subprocess.check_output(["git", "rev-parse", "HEAD", "HEAD^{tree}"],
+                                               cwd=checkout, env=env, text=True, timeout=15).splitlines()
+            dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=checkout, env=env, timeout=15)
+            if identity != [source, tree] or dirty:
+                raise ValueError("Exact clean combined product checkout required")
+            print(f"Windows supplemental checkout {source} tree {tree}", flush=True)
+            env["PYTHONPATH"] = os.pathsep.join(str(checkout / part) for part in (".", "src", "tests"))
+            commands = [["python", "-B", "dev/checks/tests.py", "--workers", "2", "--modules",
+                         "test_stable_native_hooks", "test_windows_released_update", "test_layered_recall"]]
         if ci and scope == "macos":
             commands = [
                 ["python", "-B", "dev/checks/tests.py", "--workers", "2"],
@@ -336,7 +364,7 @@ def run_checks(scope, output, record=False, *, ci=False):
                 started = time.monotonic()
                 result = subprocess.run(
                     actual,
-                    cwd=ROOT,
+                    cwd=checkout,
                     env=env,
                     stdout=log,
                     stderr=subprocess.STDOUT,

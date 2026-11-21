@@ -318,6 +318,11 @@ def main():
     with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as source:
         event = json.load(source)
     plan = tier_event(os.environ["GITHUB_EVENT_NAME"], event)
+    if (os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch" and event.get("repository")
+            and os.environ.get("GITHUB_REF") == "refs/heads/verify/client-190-192-193-native"):
+        plan = dict(code=True, mac=False, windows=True, full=False,
+                    tests=["test_stable_native_hooks", "test_windows_released_update", "test_layered_recall"],
+                    reason="Supplemental native cases on the exact combined product checkout")
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         output.write("tests=" + json.dumps(plan.get("tests", [])) + "\n")
         for key in ("code", "mac", "windows", "full"):
