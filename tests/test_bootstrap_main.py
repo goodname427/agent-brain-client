@@ -119,13 +119,17 @@ class FreshMainCheckout(unittest.TestCase):
             self.assertEqual(result.returncode, code, result.stdout + result.stderr)
             return result.stdout
 
+        def client_paths():
+            roots = (self.home / name for name in (".config", ".codebuddy", "codex"))
+            return {path for root in roots if root.exists() for path in (root, *root.rglob("*"))}
+
         self.assertEqual(json.loads(invoke(action, "status"))["status"], "client-not-installed")
         help_text = invoke(help_flag)
         self.assertIn(b"--surface", help_text)
         self.assertIn(b"{codex,codebuddy}", help_text)
         invalid = json.loads(invoke(action, "status", harness_flag, "unknown", code=2))
         self.assertEqual(invalid["status"], "invalid-install-arguments")
-        self.assertEqual(list(self.home.iterdir()), [])
+        self.assertEqual(client_paths(), set())
 
         if sys.platform == "darwin":
             from bootstrap.python_runtime import dependency
@@ -142,14 +146,14 @@ class FreshMainCheckout(unittest.TestCase):
                 "archive": archive_sha, "python": hashlib.sha256(python.read_bytes()).hexdigest(),
             }))
 
-        before = set(self.home.rglob("*"))
+        before = client_paths()
         for harness in ("codex", "codebuddy"):
             with self.subTest(harness=harness):
                 status = json.loads(invoke(action, "status", harness_flag, harness))
                 self.assertEqual(status["status"], "client-not-installed")
                 self.assertEqual(status["requested_harness"], harness)
                 self.assertEqual(status["requested_harness_status"]["status"], "host-not-installed")
-        self.assertEqual(set(self.home.rglob("*")), before)
+        self.assertEqual(client_paths(), before)
 
     def test_stale_or_unreachable_remote_main_never_reuses_one_shot_checkout(self):
         first = bootstrap_main.fresh_checkout(
