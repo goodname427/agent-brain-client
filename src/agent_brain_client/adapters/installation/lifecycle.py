@@ -251,7 +251,7 @@ def prepare_removal(home, *, host):
 
 def validate_journal(home, journal, *, host):
     if (
-        set(journal) - {"host", "hook_block"}
+        set(journal) - {"host", "hook_block", "pending_harnesses"}
         != {
             "schema",
             "phase",
@@ -267,6 +267,14 @@ def validate_journal(home, journal, *, host):
         or journal["phase"] not in ("prepared", "applying", "complete", "reinstalled")
     ):
         raise install.InstallBlocked("Removal receipt changed")
+    harnesses = journal.get("pending_harnesses", [])
+    if (
+        not isinstance(harnesses, list)
+        or any(not isinstance(name, str) for name in harnesses)
+        or len(set(harnesses)) != len(harnesses)
+        or harnesses and journal["phase"] in ("complete", "reinstalled")
+    ):
+        raise install.InstallBlocked("Removal Harness scope changed")
     metadata = journal["registration"]
     policy = install.policy_file(
         metadata["release_policy"],
@@ -453,8 +461,11 @@ def validate_uninstalled_state(
     return changed
 
 
-def finish_removal(home, journal, *, host):
+def finish_removal(home, journal, *, host, remove_hosts=None):
     adapter = validate_journal(home, journal, host=host)
+    hosts_pending = journal.get("pending_harnesses")
+    if hosts_pending and remove_hosts is None:
+        raise install.InstallBlocked("Native Harness removal required")
     from agent_brain_client.adapters.storage.host_files import (
         host_plan,
         host_apply,
@@ -486,6 +497,10 @@ def finish_removal(home, journal, *, host):
         )
     journal["phase"] = "applying"
     private_files.save(journal_path(home), journal)
+    if hosts_pending:
+        remove_hosts(hosts_pending)
+        del journal["pending_harnesses"]
+        private_files.save(journal_path(home), journal)
     if host_paths:
         host_apply(
             journal["host"],
@@ -527,7 +542,7 @@ def finish_removal(home, journal, *, host):
     }
 
 
-def uninstall(home, confirm, *, host):
+def uninstall(home, confirm, *, host, prepare_hosts=None, remove_hosts=None):
     require_platform("native-install")
     home = private_files.safe(home)
     state = state_path(home)
@@ -578,12 +593,17 @@ def uninstall(home, confirm, *, host):
                 journal = prepare_removal(home, host=host)
             if journal.get("status"):
                 return journal
+            if not continuing and prepare_hosts is not None:
+                hosts = prepare_hosts()
+                if "status" in hosts:
+                    return hosts
+                journal.update(hosts)
             if (
                 not continuing
                 and confirm(
-                    "Remove only Agent Brain MCP registration and "
-                    + str(journal["removed_mapping_files"])
-                    + " owned mappings. Keep recoverable data, helper and Keychain identity. Other host data and Server data remain intact."
+                    "Remove this device's Agent Brain registrations and owned mappings. "
+                    "Keep recoverable data, helper and Keychain identity. "
+                    "User configuration and Server data remain intact."
                 )
                 != "Continue"
             ):
@@ -592,7 +612,7 @@ def uninstall(home, confirm, *, host):
                     "installed": True,
                     "native_changed": False,
                 }
-            return finish_removal(home, journal, host=host)
+            return finish_removal(home, journal, host=host, remove_hosts=remove_hosts)
 
 
 def status(home, *, host):
@@ -616,6 +636,16 @@ def status(home, *, host):
             return dict(review, reason="uninstall-receipt-unverified")
         if not isinstance(journal, dict):
             return dict(review, reason="uninstall-receipt-unverified")
+        if journal.get("phase") == "applying":
+            try:
+                validate_journal(home, journal, host=host)
+            except Exception:
+                return dict(review, reason="uninstall-receipt-unverified")
+            return dict(
+                review,
+                status="uninstall-resume-required",
+                next_action="Run repair to resume the device uninstall.",
+            )
         if journal.get("phase") == "complete":
             try:
                 validate_journal(home, journal, host=host)
@@ -691,11 +721,11 @@ def status(home, *, host):
     return result
 
 
-def repair(home, *, host):
+def repair(home, *, host, remove_hosts=None):
     require_platform("native-install")
     path = journal_path(home)
     if path.exists() and read_removal(home)["phase"] == "applying":
-        return uninstall(home, lambda message: "Continue", host=host)
+        return uninstall(home, lambda message: "Continue", host=host, remove_hosts=remove_hosts)
     return status(home, host=host)
 
 

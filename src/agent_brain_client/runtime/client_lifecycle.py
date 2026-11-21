@@ -44,32 +44,91 @@ def primary_status(home):
 
 
 def repair(home):
-    return service.repair(home, host=registered_host(home))
+    host = registered_host(home)
+    return service.repair(home, host=host, remove_hosts=lambda names: _remove_hosts(home, host, names))
 
 
 def uninstall(home, confirm):
     host = registered_host(home)
-    projections = secondary_projections(home, host)
+    return service.uninstall(
+        home, confirm, host=host,
+        prepare_hosts=lambda: _prepare_hosts(home, host),
+        remove_hosts=lambda names: _remove_hosts(home, host, names),
+    )
+
+
+def _prepare_hosts(home, primary):
     from agent_brain_client.adapters.installation import projection_removal
-    # Validate every queue and owned file before the user's single confirmation.
-    for session in projections:
+    from agent_brain_client.adapters.storage.registration import codex_registration
+
+    # An unbound host can still have a queue and an owned projection.
+    names = []
+    if codex_registration(home) is not None:
+        names.append("codex")
+    buddy = state_path(home) / "codebuddy/registration.json"
+    if buddy.exists() or buddy.is_symlink():
+        metadata.private_json(buddy)
+        names.append("codebuddy")
+    for session in secondary_projections(home, primary, names=names):
         counts = queue_counts(session)
         if any(counts[state] for state in ("pending", "conflict", "blocked")):
             return {"status": "uninstall-unconfirmed-writes", "installed": True, "native_changed": False,
                     "harness": session.host.name, "queue": counts,
                     "next_action": "Keep the installation. Sync the original queue or resolve its conflicts through this Harness, then rerun uninstall."}
-        projection_removal.prepare(session)
-    def finish_hosts(message):
-        answer = confirm(message)
-        if answer == "Continue":
-            for session in projections:
-                projection_removal.remove(session)
-            remove_secondary_entries(home)
-        return answer
-    result = service.uninstall(home, finish_hosts, host=host)
-    if result.get("status") == "client-uninstalled":
-        remove_secondary_entries(home)
-    return result
+        # An older device uninstall could leave only the projection receipt.
+        # Its own recovery restores the preimages before preparing them again.
+        if not projection_removal.removal_in_progress(session):
+            projection_removal.prepare(session)
+    return {"pending_harnesses": names} if names else {}
+
+
+def _remove_hosts(home, primary, names):
+    from agent_brain_client.adapters.installation import projection_removal
+
+    for name in names:
+        content_host(name)
+    for session in secondary_projections(home, primary, names=names):
+        projection_removal.remove(session)
+    for name in names:
+        _detach_native_binding(home, name)
+
+
+def unbind(home, *, harness):
+    """Detach one native entry while retaining its projection and the Client."""
+    content_host(harness)
+    result = _detach_native_binding(home, harness)
+    if result["status"] == "retained-direct-codex-binding":
+        return {"status": "host-unbind-shared-layout", "harness": harness,
+                "native_changed": False,
+                "next_action": "Use the documented structural reinstall to move Client control into its private directory before unbinding Codex."}
+    return dict(result, status="host-unbound", harness=harness)
+
+
+def _detach_native_binding(home, harness):
+    if harness == "codex":
+        from agent_brain_client.adapters.harnesses.codex import binding
+
+        receipt = binding.receipt(home)
+        shared = state_path(home) / "codex-mcp.json"
+        if not (shared.exists() or shared.is_symlink()) and (receipt is None or receipt["removed"]):
+            return {"status": "codex-uninstalled", "native_changed": False}
+        meta = metadata.private_json(shared)
+        policy = metadata.private_json(meta["release_policy"], meta["release_policy_sha256"])
+        if binding.private_control(home, policy["runtime"]):
+            if receipt is None:
+                return {"status": "codex-uninstalled", "native_changed": False}
+            from agent_brain_client.adapters.harnesses.codex import collection_installation as hooks
+            hooks.recover_pending(home, Path(receipt["native_home"]))
+        return binding.install(home, remove=True)
+
+    from agent_brain_client.adapters.harnesses.codebuddy import configuration
+
+    file = configuration.state_directory(home) / "registration.json"
+    if not file.exists():
+        return {"status": "codebuddy-not-installed", "native_changed": False}
+    receipt = metadata.private_json(file)
+    return configuration.install(Path(home), Path(__file__).resolve().parents[3], None,
+                                 surface=receipt["surface"], remove=True)
 
 
 def prepare_removal(home):
@@ -85,10 +144,12 @@ def validate_uninstalled_state(home, journal, **options):
 
 
 def finish_removal(home, journal):
-    return service.finish_removal(home, journal, host=registered_host(home, journal))
+    host = registered_host(home, journal)
+    return service.finish_removal(home, journal, host=host,
+                                  remove_hosts=lambda names: _remove_hosts(home, host, names))
 
 
-def secondary_projections(home, primary):
+def secondary_projections(home, primary, *, names=None):
     """Construct metadata views only for separately registered content roots."""
     from agent_brain_client.runtime.host_maintenance import registered_hosts
     from agent_brain_client.adapters.storage.registration import registration
@@ -96,7 +157,7 @@ def secondary_projections(home, primary):
     from agent_brain_client.adapters.platforms.filesystem import native_platform
     if primary is None:
         return []
-    names = [name for name in registered_hosts(home) if name != primary.name]
+    names = [name for name in (registered_hosts(home) if names is None else names) if name != primary.name]
     if not names:
         return []
     file = Path(home) / ".config/agent-brain-client/codex-mcp.json"
@@ -114,21 +175,6 @@ def secondary_projections(home, primary):
             continue
         result.append(ContentSession.metadata_view(home, native, cache, content, platform=native_platform(), host=port))
     return result
-
-
-def remove_secondary_entries(home):
-    from agent_brain_client.runtime.host_maintenance import registered_hosts
-    if "codex" in registered_hosts(home):
-        from agent_brain_client.adapters.harnesses.codex import binding
-        file = Path(home) / ".config/agent-brain-client/codex-mcp.json"
-        if file.exists():
-            binding.install(home, remove=True)
-    if "codebuddy" in registered_hosts(home):
-        from agent_brain_client.adapters.harnesses.codebuddy import configuration
-        file = configuration.state_directory(home) / "registration.json"
-        receipt = metadata.private_json(file)
-        configuration.install(Path(home), Path(__file__).resolve().parents[3], None,
-                              surface=receipt["surface"], remove=True)
 
 
 def status(home):
