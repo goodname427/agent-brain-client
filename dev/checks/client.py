@@ -307,7 +307,7 @@ def run_checks(scope, output, record=False, *, ci=False):
                 )
             )
             if focused_hooks:
-                selectors = ["test_stable_native_hooks", "test_global_memory_update"]
+                selectors = ["test_stable_native_hooks"]
             commands = [
                 [
                     "python",

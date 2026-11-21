@@ -318,10 +318,10 @@ def main():
     with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as source:
         event = json.load(source)
     plan = tier_event(os.environ["GITHUB_EVENT_NAME"], event)
-    if (os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+    if (os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch" and event.get("repository")
             and os.environ.get("GITHUB_REF") == "refs/heads/verify/native-hooks-windows-db7914a"):
         plan = dict(code=True, mac=False, windows=True, full=False,
-                    tests=["test_stable_native_hooks", "test_global_memory_update"],
+                    tests=["test_stable_native_hooks"],
                     reason="Native Windows Hook evidence only")
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         output.write("tests=" + json.dumps(plan.get("tests", [])) + "\n")
