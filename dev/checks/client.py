@@ -328,10 +328,10 @@ def run_checks(scope, output, record=False, *, ci=False):
             checkout = temp / "exact-source"
             subprocess.run(["git", "worktree", "add", "--detach", str(checkout), source],
                            cwd=ROOT, env=env, check=True, timeout=45)
-            identity = subprocess.check_output(["git", "rev-parse", "HEAD", "HEAD^{tree}"],
-                                               cwd=checkout, env=env, text=True, timeout=15).splitlines()
+            checkout_identity = subprocess.check_output(["git", "rev-parse", "HEAD", "HEAD^{tree}"],
+                                                        cwd=checkout, env=env, text=True, timeout=15).splitlines()
             dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=checkout, env=env, timeout=15)
-            if identity != [source, tree] or dirty:
+            if checkout_identity != [source, tree] or dirty:
                 raise ValueError("Exact clean combined product checkout required")
             print(f"Windows supplemental checkout {source} tree {tree}", flush=True)
             env["PYTHONPATH"] = os.pathsep.join(str(checkout / part) for part in (".", "src", "tests"))
