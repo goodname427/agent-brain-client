@@ -648,6 +648,7 @@ def transact_once(native, directory, owned, *, remove=False, migrate=False):
 
 
 def install(args):
+    from agent_brain_client.adapters.installation import launcher_update as hook_launcher
     from agent_brain_client.adapters.storage.collection_setup import prepare
     from agent_brain_client.adapters.storage.collection import settings_path, approved
     from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
@@ -655,11 +656,10 @@ def install(args):
         if harness != "codex":
             raise ValueError("Codex project binding required")
         return CodexContentPorts.location(home, runtime)
+    hook_launcher.prepare_native_hook(args.device_home)
     value = prepare(args, locate=locate)
     _, registered = registration_store.registration(args.device_home)
     file = settings_path(args.device_home)
-    from agent_brain_client.adapters.installation import launcher_update as hook_launcher
-    hook_launcher.prepare_native_hook(args.device_home)
     result = transact(
         native_binding(args.device_home, registered), file.parent,
         command_block(hook_launcher.native_hook_command(args.device_home, "codex")), migrate=True,

@@ -243,13 +243,17 @@ class StableHooks(unittest.TestCase):
         # independently enrolled package digest in the MCP registration.
         approved = Path(package["package"])
         entry = approved / "src/agent_brain_client/adapters/installation/launcher_update.py"
-        entry.write_bytes(replacement)
         r = approved / "verified.json"
-        receipt = json.loads(r.read_bytes())
+        original_entry, original_receipt = entry.read_bytes(), r.read_bytes()
+        entry.write_bytes(replacement)
+        receipt = json.loads(original_receipt)
         receipt["manifest"]["files"][entry.relative_to(approved).as_posix()] = digest(replacement)
         r.write_text(json.dumps(receipt))
         self.assertEqual(self.run_hook(command)[0], {})
         self.assertFalse(marker.exists())
+        entry.write_bytes(original_entry)
+        r.write_bytes(original_receipt)
+        self.assertEqual(self.run_hook(command), expected)
 
         # The independent policy pin also covers interpreter choice and digest.
         deps = metadata.private_json(self.deps)

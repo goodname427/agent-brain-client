@@ -842,7 +842,10 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
             "policy_sha256": digest(json.dumps(channel.policy, sort_keys=True).encode()),
             "checked_at": time.time(),
         })
-        host.install(self.home, source, None, surface="cli")
+        # Start with the command that an existing 0.8.26 installation registered.
+        definitions = host.definitions
+        with patch.object(host, "definitions", side_effect=lambda entry, home, **_: definitions(entry, home)):
+            host.install(self.home, source, None, surface="cli")
         receipt_file = host.state_directory(self.home) / "registration.json"
         receipt = metadata.private_json(receipt_file)
         config = Path(receipt["mcp_paths"][0])

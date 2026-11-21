@@ -145,7 +145,16 @@ class WindowsAcceptanceRepairs(unittest.TestCase):
         private_directory(file.parent)
         metadata.write(file, value)
         args = SimpleNamespace(device_home=str(home), profile_id='b'*32, operator=None, operator_sha256=None)
-        with patch('agent_brain_client.adapters.storage.registration.registration', return_value=(None, {'runtime':{'codex_home':str(home)}})), patch.object(install, 'transact', return_value={}):
+        original = file.read_bytes()
+        with patch('agent_brain_client.adapters.installation.launcher_update.prepare_native_hook', side_effect=ValueError('Invalid Hook enrollment')):
+            with self.assertRaisesRegex(ValueError, 'Invalid Hook enrollment'):
+                install.install(args)
+        self.assertEqual(file.read_bytes(), original)
+        with (
+            patch('agent_brain_client.adapters.storage.registration.registration', return_value=(None, {'runtime':{'codex_home':str(home)}})),
+            patch('agent_brain_client.adapters.installation.launcher_update.prepare_native_hook'),
+            patch.object(install, 'transact', return_value={}),
+        ):
             result = install.install(args)
             self.assertFalse(result['expanded_sources_enabled'])
             stored = json.loads(file.read_bytes()); self.assertEqual(stored['scope']['profile_id'], 'b'*32)
