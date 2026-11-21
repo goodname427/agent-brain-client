@@ -40,7 +40,7 @@ def _passage_stops(text):
 
 def _anchor_position(text, hits, terms, query):
     stops = _passage_stops(text)
-    by_passage = {}
+    by_passage: dict[int, dict[str, int]] = {}
     for term, position in hits:
         if term in terms:
             segment = bisect_right(stops, position) - 1
@@ -51,7 +51,7 @@ def _anchor_position(text, hits, terms, query):
 
     def coverage(i):
         nearby = set(by_passage[i])
-        nearby.update(by_passage.get(i - 1, ()), by_passage.get(i + 1, ()))
+        nearby.update(by_passage.get(i - 1, {}), by_passage.get(i + 1, {}))
         first = min((query_positions[term] for term in nearby if query_positions[term] >= 0),
                     default=len(query))
         return len(nearby), -first, len(by_passage[i])
