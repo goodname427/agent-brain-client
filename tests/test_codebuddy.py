@@ -157,7 +157,7 @@ class Installation(unittest.TestCase):
         private_mode(cbhost.state_directory(self.home)/'registration.json',owner=True)
         if os.name == 'nt':
             self.assertEqual(host_security(self.settings),host_before)
-        self.assertFalse(result['model_loaded'])
+        self.assertEqual(result['model_loaded'], 'unknown')
         settings = cbhost.Document(self.settings.read_text()).value
         self.assertEqual(settings['permissions'], {'deny': ['Bash']})
         self.assertEqual(len(settings['hooks']['Stop']), 1)
@@ -312,6 +312,8 @@ class Installation(unittest.TestCase):
                 self.assertEqual((self.native / '.mcp.json').read_bytes(), old)
                 updated = adapter.refresh_hooks()
                 self.assertTrue(updated['native_changed'])
+                self.assertTrue(updated['mcp_registration_changed'])
+                self.assertFalse(updated['hook_configuration_changed'])
                 self.assertNotEqual((self.native / '.mcp.json').read_bytes(), old)
                 self.assertFalse((self.native / 'mcp.json').exists())
                 self.assertFalse((self.native / 'rules/agent-brain-client.md').exists())
@@ -322,6 +324,68 @@ class Installation(unittest.TestCase):
             self.install(surface='cli', remove=True)
             self.assertFalse(adapter.refresh_hooks()['native_changed'])
             self.assertNotIn(cbhost.NAME, (self.native / '.mcp.json').read_text())
+
+    def test_public_entry_keeps_the_registered_surface_and_updates_once(self):
+        from contextlib import redirect_stdout
+        from agent_brain_client.interfaces.cli import install as installer
+        from agent_brain_client.runtime import installation, updates
+
+        def invoke(*args):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = installer.main(["--codebuddy-entry", *args])
+            return code, json.loads(output.getvalue())
+
+        with (
+            patch.object(Path, "home", return_value=self.home),
+            patch.object(installation, "resolve_connection", return_value=({"endpoint": "https://synthetic.invalid"}, "a" * 64)),
+            patch.object(installation, "run", return_value={
+                "status": "content-native-client-installed", "installed": True,
+                "update_check_performed": False,
+            }),
+            patch.object(installation, "finish_install", side_effect=AssertionError("Existing shared setup must be preserved")),
+            patch.object(updates, "reexec_update_runtime", return_value=None),
+            patch.object(host_binding, "inspect_backend", return_value=(None, {"status": "verified", "installed": True})),
+            patch.object(source_policy, "load", return_value={}),
+            patch.object(source_policy, "approved", return_value=True),
+            patch.object(entry, "probe", side_effect=AssertionError("Existing binding needs no second probe")),
+            patch.object(entry, "binding_source", side_effect=AssertionError("Existing binding needs no new snapshot")),
+        ):
+            settings = source_policy.settings_path(self.home)
+            settings.parent.mkdir(parents=True)
+            settings.touch()
+            receipt = cbhost.state_directory(self.home) / "registration.json"
+            for surface in ("ide", "cli", "both"):
+                with self.subTest(surface=surface):
+                    self.install(surface=surface)
+                    original = receipt.read_bytes()
+                    code, installed = invoke("--action", "install")
+                    self.assertEqual(code, 0, installed)
+                    self.assertEqual(installed["installation_stages"]["native_mcp"]["surface"], surface)
+                    self.assertFalse(installed["native_changed"])
+                    self.assertEqual(receipt.read_bytes(), original)
+
+                    def apply_update(home, action):
+                        refreshed = cbhost.refresh(home, ROOT)
+                        return {"status": "client-update-updated", "channel_checked": True, "global_hook": refreshed}
+
+                    with (
+                        patch.object(cbhost, "registered_stdio", return_value={
+                            "type": "stdio", "command": "/synthetic/fixed-launcher", "args": [],
+                        }),
+                        patch.object(updates, "manage_update", side_effect=apply_update) as update,
+                        patch.object(entry, "configure_binding", side_effect=AssertionError("Update must not rebind")),
+                    ):
+                        code, updated = invoke("--action", "update")
+                    self.assertEqual(code, 0, updated)
+                    update.assert_called_once_with(self.home, "update")
+                    self.assertEqual(updated["global_hook"]["surface"], surface)
+                    self.assertEqual(metadata.private_json(receipt)["surface"], surface)
+                    code, removed = invoke("--action", "uninstall")
+                    self.assertEqual(code, 0, removed)
+                    self.assertIn(removed["status"], ("codebuddy-uninstalled", "host-unbound"))
+                    self.assertTrue(metadata.private_json(receipt)["removed"])
+                    self.assertTrue(settings.exists())
 
     def test_fresh_installation_removes_only_registered_instruction_blocks(self):
         self.install(surface='both')
@@ -572,7 +636,7 @@ class Hooks(unittest.TestCase):
 
 class Protocol(unittest.TestCase):
     @unittest.skipUnless(sys.platform == 'darwin', 'Mac wrapper fixture')
-    def test_existing_backend_is_upgraded_before_codebuddy_binding(self):
+    def test_compatibility_wrapper_delegates_each_action_once(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
             tools = root / 'bootstrap/macos'
@@ -582,19 +646,15 @@ class Protocol(unittest.TestCase):
             log = root / 'operations'
             script = tools / 'codebuddy.sh'
             script.write_bytes((ROOT / 'bootstrap/macos/codebuddy.sh').read_bytes())
-            (root / 'bootstrap/codebuddy.py').write_text('import os,sys\nfrom pathlib import Path\nif sys.argv[1]=="backend-home": print(str(Path.home()/"shared-native"))\nelse: Path(os.environ["SYNTHETIC_LOG"]).open("a").write("bind\\n")\n')
-            (tools / 'install.sh').write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$SYNTHETIC_LOG"\n')
+            (tools / 'install.sh').write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$SYNTHETIC_LOG"\nexit 2\n')
             env = dict(os.environ, HOME=str(home), SYNTHETIC_LOG=str(log))
-            fresh = subprocess.run(['sh', str(script), '--server', 'https://synthetic.invalid'], env=env, capture_output=True)
-            self.assertEqual(fresh.returncode, 0, fresh.stderr)
-            self.assertEqual(log.read_text().splitlines(), ['--harness codebuddy --server https://synthetic.invalid', 'bind'])
-            log.write_text('')
-            registration = home / '.config/agent-brain-client/codex-mcp.json'
-            registration.parent.mkdir(parents=True)
-            registration.write_text('{}')
-            existing = subprocess.run(['sh', str(script)], env=env, capture_output=True)
-            self.assertEqual(existing.returncode, 0, existing.stderr)
-            self.assertEqual(log.read_text().splitlines(), ['--harness codebuddy', '--action check-update', '--action update', 'bind'])
+            for args in (('--action', 'update'), ('--action=reinstall-check',),
+                         ('--surface', 'cli', '--server', 'https://synthetic.invalid')):
+                with self.subTest(args=args):
+                    log.write_text('')
+                    result = subprocess.run(['sh', str(script), *args], env=env, capture_output=True)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertEqual(log.read_text().splitlines(), [' '.join(('--codebuddy-entry', *args))])
 
     def test_capture_queue_uses_shared_core_and_separate_host_binding(self):
         from agent_brain_client.application.queue.outbox import DurableOutbox

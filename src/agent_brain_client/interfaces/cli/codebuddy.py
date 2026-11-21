@@ -36,12 +36,12 @@ def verify_adapter():
     verify_frozen_code(ROOT)
 
 
-def probe(home, core, runner=subprocess.run):
+def probe(home, core, runner=subprocess.run, *, harness="codebuddy"):
     from agent_brain_client.runtime.host_binding import backend
 
     command, _ = backend(home, core)
     result = runner(
-        [command["command"], *command["args"], "--harness", "codebuddy", "--installation-check"],
+        [command["command"], *command["args"], "--harness", harness, "--installation-check"],
         env=dict(os.environ, **command.get("env", {})),
         capture_output=True,
         timeout=120,
@@ -55,9 +55,79 @@ def probe(home, core, runner=subprocess.run):
     ):
         raise ValueError("Shared Client protocol check unconfirmed")
     return {
-        "status": "codebuddy-backend-protocol-checked",
+        "status": "codebuddy-backend-protocol-checked" if harness == "codebuddy" else "client-protocol-checked",
         "protocol_checked": True,
-        "model_loaded": False,
+        "model_loaded": "unknown",
+    }
+
+
+def binding_status(home):
+    from agent_brain_client.adapters.harnesses.codebuddy import configuration
+    from agent_brain_client.adapters.storage import collection
+
+    value = configuration.status(home, None, backend_check=host_binding.inspect_backend)
+    if value.get("installed"):
+        value["source_enabled"] = value["collection_hooks_installed"] and collection.approved(
+            collection.load(home, verify_code=False)
+        )
+    return value
+
+
+def binding_source(home, source):
+    """Use the installer's prepared source or the existing verified active package."""
+    from agent_brain_client.adapters.packages.client import ClientReleases
+    from agent_brain_client.adapters.packages.frozen import runtime_pins
+    from agent_brain_client.adapters.storage import collection, registration
+
+    pins = collection.load(home, verify_code=False)["code_sha256"]
+    if runtime_pins(source) == pins:
+        host_binding.load_core(home)
+        return source
+    meta, _ = registration.registration(home)
+    active = ClientReleases(
+        meta["release_policy"], meta["release_policy_sha256"], inspection=True
+    ).verified_active(serving=True)
+    if active is not None:
+        package = Path(active["package"])
+        if runtime_pins(package, manifest_sha256=active["manifest_sha256"]) == pins:
+            return package
+    raise ValueError("Update the existing verified Client before binding CodeBuddy")
+
+
+def configure_binding(home, *, surface=None, source=ROOT):
+    from agent_brain_client.adapters.harnesses.codebuddy import configuration
+    from agent_brain_client.adapters.storage import collection
+
+    current = binding_status(home)
+    if current.get("installed"):
+        if surface is not None and current["surface"] != surface:
+            raise ValueError("Unbind the original CodeBuddy surface before changing its scope")
+        return dict(current, native_changed=False)
+    source = binding_source(home, source)
+    checked = probe(home, None)
+    approved = collection.approved(collection.load(home, verify_code=False))
+    value = configuration.install(home, source, None, surface=surface)
+    value["protocol_checked"] = checked["protocol_checked"]
+    value["source_enabled"] = value["automatic_recall"] and approved
+    return value
+
+
+def unbind_binding(home, *, surface=None):
+    from agent_brain_client.adapters.harnesses.codebuddy import configuration
+
+    directory = configuration.state_directory(home)
+    if not (directory.exists() or directory.is_symlink()):
+        return {"status": "codebuddy-not-installed", "installed": False, "native_changed": False}
+    return configuration.install(home, ROOT, None, surface=surface, remove=True)
+
+
+def binding_review(action, error):
+    return {
+        "status": "codebuddy-review-or-resume-required",
+        "operation": action,
+        "error_type": type(error).__name__,
+        "preserve_existing_state": True,
+        "next_action": "Check the shared Client and CodeBuddy binding. Resume the same operation after resolving any conflicting owner or surface. Preserving the shared Client requires the CodeBuddy unbind action.",
     }
 
 
@@ -70,26 +140,25 @@ def main(argv=None, *, verified_release=False):
     parser.add_argument(
         "action", choices=("install", "status", "uninstall", "probe", "serve", "hook")
     )
-    parser.add_argument("--surface", choices=("ide", "cli", "both"), default="both")
+    parser.add_argument("--surface", choices=("ide", "cli", "both"))
     parser.add_argument("--device-home", type=Path, default=Path.home())
     args = parser.parse_args(argv)
     try:
         if not verified_release:
             verify_adapter()
-        import agent_brain_client.adapters.harnesses.codebuddy.events as runtime
-
         home = bounded_json.canonical(args.device_home)
-        if verified_release and args.action == "hook":
-            from agent_brain_client.runtime.collection import native_services
-            core = native_services(verify_code=False)
-        else:
-            core = host_binding.load_core(home)
         from agent_brain_client.adapters.platforms.filesystem import require_platform
 
         require_platform("codebuddy-host")
         if args.action == "serve":
-            return host_binding.execute_mcp(home, core)
+            return host_binding.execute_mcp(home, host_binding.load_core(home))
         if args.action == "hook":
+            import agent_brain_client.adapters.harnesses.codebuddy.events as runtime
+            if verified_release:
+                from agent_brain_client.runtime.collection import native_services
+                core = native_services(verify_code=False)
+            else:
+                core = host_binding.load_core(home)
             initialized = time.monotonic()
             from agent_brain_client.application.control import (
                 RECALL_TIMING_ENV, mark_recall_timing, recall_timing_scope,
@@ -139,42 +208,29 @@ def main(argv=None, *, verified_release=False):
                 file=sys.stderr,
             )
             return 0
-        import agent_brain_client.adapters.harnesses.codebuddy.configuration as host
-
         if args.action == "probe":
-            value = probe(home, core)
+            value = probe(home, None)
         elif args.action == "status":
-            value = host.status(home, core, backend_check=host_binding.inspect_backend)
-            value["source_enabled"] = value.get("collection_hooks_installed", value.get("automatic_recall", True)) and core.approved(core.load(home))
+            value = binding_status(home)
+        elif args.action == "uninstall":
+            if args.surface is None:
+                from agent_brain_client.interfaces.cli.install import unbind_host
+
+                value = unbind_host(home, harness="codebuddy")
+                if value["status"] == "host-unbound":
+                    value["status"] = "codebuddy-uninstalled" if value["native_changed"] else "codebuddy-not-installed"
+            else:
+                # The historical explicit surface is checked under the native lock.
+                value = unbind_binding(home, surface=args.surface)
         else:
-            if args.action == "install":
-                checked = probe(home, core)
-            value = host.install(
-                home,
-                ROOT,
-                core,
-                surface=args.surface,
-                remove=args.action == "uninstall",
-            )
-            if args.action == "install":
-                value.update(checked)
-                value["status"] = "codebuddy-configured"
-                value["source_enabled"] = value.get("collection_hooks_installed", value.get("automatic_recall", True)) and core.approved(core.load(home))
+            value = configure_binding(home, surface=args.surface)
         print(json.dumps(value, ensure_ascii=False))
-        return 0
+        return 2 if value["status"] == "codebuddy-review-or-resume-required" else 0
     except Exception as error:
         if args.action == "hook":
             print("{}")
         print(
-            json.dumps(
-                {
-                    "status": "codebuddy-review-or-resume-required",
-                    "operation": args.action,
-                    "error_type": type(error).__name__,
-                    "preserve_existing_state": True,
-                    "next_action": "Check the existing shared Client installation and CodeBuddy owned configuration; preserve credentials, queues and recovery receipts.",
-                }
-            ),
+            json.dumps(binding_review(args.action, error)),
             file=sys.stderr if args.action in ("hook", "serve") else sys.stdout,
         )
         return 0 if args.action == "hook" else 2

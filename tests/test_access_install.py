@@ -201,9 +201,10 @@ class AddressInstall(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         entry = (root / "bootstrap/windows/install.ps1").read_text()
         self.assertIn("@('--access-key-file', $AccessKeyFile)", entry)
-        self.assertIn("-Server $Server -AccessKeyFile $AccessKeyFile", entry)
+        self.assertIn("install.ps1') @PSBoundParameters", entry)
         buddy = (root / "bootstrap/windows/codebuddy.ps1").read_text()
-        self.assertIn("-Harness codebuddy -Server $Server -AccessKeyFile $AccessKeyFile", buddy)
+        self.assertIn("[string]$AccessKeyFile", buddy)
+        self.assertIn("-CodeBuddyEntry @PSBoundParameters", buddy)
 
     def test_only_address_and_hidden_key_no_public_secret_and_no_false_success(self):
         self.assertTrue(self.run_install()["installed"])
@@ -589,8 +590,12 @@ class ApplyingAccessEntry(unittest.TestCase):
             patch.object(wizard, "run", side_effect=run),
             patch.object(sys, "stdout", io.StringIO()) as output,
         ):
-            self.assertEqual(interfaces_cli_install.main(), 0, output.getvalue())
-        self.assertTrue(json.loads(output.getvalue())["installed"])
+            result_code = interfaces_cli_install.main()
+        result = json.loads(output.getvalue())
+        self.assertTrue(result["installed"])
+        self.assertEqual(result["outcome"], "partial")
+        self.assertEqual(result["installation_stages"]["setup"]["stage"], "mapping")
+        self.assertEqual(result_code, 2)
         self.assertEqual(
             wizard.private_json(state / "content-install-receipt.json")["phase"],
             "complete",

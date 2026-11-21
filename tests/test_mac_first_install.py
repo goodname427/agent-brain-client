@@ -426,7 +426,8 @@ class FirstInstall(unittest.TestCase):
                 patch.object(wizard, 'run', side_effect=run), patch.object(sys, 'stdout', output):
             code = interfaces_cli_install.main()
         result = json.loads(output.getvalue())
-        self.assertEqual(code, 0, result)
+        self.assertEqual(code, 2, result)
+        self.assertEqual(result["outcome"], "partial")
         self.assertTrue(result['installed'])
         self.assertEqual(result['model_loaded'], 'unknown')
         self.assertEqual(result['onboard_check']['status'], 'coverage-check-required')
@@ -821,11 +822,41 @@ class PreparingReset(unittest.TestCase):
 
 
 class LifecycleExitCodes(unittest.TestCase):
+    def test_unbind_dispatches_only_to_the_selected_host_port(self):
+        from agent_brain_client.runtime import client_lifecycle
+
+        home = Path("/synthetic/home").resolve()
+        for harness, status, expected in (
+            ("codebuddy", "host-unbound", 0),
+            ("codex", "host-unbound", 0),
+            ("codex", "host-unbind-shared-layout", 2),
+        ):
+            with (
+                self.subTest(harness=harness, status=status),
+                patch.object(Path, "home", return_value=home),
+                patch.object(sys, "platform", "darwin"),
+                patch("platform.machine", return_value="arm64"),
+                patch.object(client_lifecycle, "unbind", create=True, return_value={"status": status}) as unbind,
+                patch.object(client_lifecycle, "uninstall", side_effect=AssertionError("Host-only request")),
+                patch.object(sys, "stdout", io.StringIO()) as output,
+            ):
+                self.assertEqual(interfaces_cli_install.main(["--action", "unbind", "--harness", harness]), expected)
+                self.assertEqual(json.loads(output.getvalue())["status"], status)
+                unbind.assert_called_once_with(home, harness=harness)
+
     def command(self,action,response):
         output=io.StringIO()
         with patch.object(sys,'argv',['agent_brain_client.runtime.installation.py', "--harness", "codex",'--action',action]),patch.object(sys,'platform','darwin'),patch('platform.machine',return_value='arm64'),patch.object(wizard.Path,'home',return_value=Path('/synthetic/home')),patch('agent_brain_client.runtime.client_lifecycle.'+action,return_value=response),patch.object(sys,'stdout',output):
             code=interfaces_cli_install.main()
-        self.assertEqual(json.loads(output.getvalue()),response)
+        value = json.loads(output.getvalue())
+        self.assertEqual(value.pop("operation"), action)
+        self.assertEqual(value.pop("outcome"), "completed" if code == 0 else "review-required")
+        if action == "status":
+            self.assertEqual(value.pop("requested_harness"), "codex")
+            value.pop("requested_harness_status")
+            response.pop("requested_harness")
+            response.pop("requested_harness_status")
+        self.assertEqual(value, response)
         return code
 
     def test_uninstall_cancel_and_pending_are_not_success_even_if_installed(self):

@@ -102,7 +102,7 @@ sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --action update
 
 check-update 成功返回 client-update-available/current 与 channel_checked:true；update 成功返回 client-update-updated/current。网络不可达、健康失败或信任/范围审核受阻均退出非零并保留恢复材料；不要把旧活动包版本称为已确认最新版，不通过改摘要或信任锚跳过审核。status 不访问渠道。
 
-三个版本分别核查：active_package_version 是本地活动包，latest_channel_version 是本次成功渠道检查的候选，client_runtime.running_worker_version 是 MCP 调用所用 worker。CLI 无法观测 worker，其字段及 reload_required 为 null；reload_check 分别报告活动包、MCP 登记和 Hook 配置的变更。新鲜 MCP 结果中的 reload_required:false 表示版本及 commit 都匹配活动包，true 表示当前 worker 与活动包不同，null 表示无法核实活动包或 commit。需要时通过宿主正常重载本服务，不杀进程；无需重启整个 Codex。offered_tools 是 worker 提供的清单，需与 Agent 实际可调用工具对照；宿主过滤或缓存工具清单、Hook trust、模型上下文加载不能靠 worker 版本判断。确认后再进行本轮 Onboard。即使更新回报 current，也不能据此断言旧 worker 已重载。main、tags、旧回执和映射数量都不能替代此核验。
+三个版本分别核查：active_package_version 是本地活动包，latest_channel_version 是本次成功渠道检查的候选，client_runtime.running_worker_version 是 MCP 调用所用 worker。CLI 无法观测 worker，其字段及 reload_required 为 null；reload_check 分别报告活动包、MCP 登记和 Hook 配置的变更。新鲜 MCP 结果中的 `reload_required:false` 表示当前运行内容无需重载。兼容 worker 可在原连接等待在途工作完成后切换。复查后仍返回 true 或所需工具对宿主不可见时，正常重载 Agent Brain MCP。null 表示当前证据不足。offered_tools 是 worker 提供的清单，需与 Agent 实际可调用工具对照；宿主过滤或缓存工具清单、Hook trust、模型上下文加载不能靠 worker 版本判断。确认后再进行本轮 Onboard。即使更新回报 current，也不能据此断言旧 worker 已重载。main、tags、旧回执和映射数量都不能替代此核验。
 
 完整当前授权目录使用 `content_catalog({"kinds":["memory"]})`（范围内也可加入 rule/skill），省略 query/since/until/limit。目录没有分页 limit；Memory-only query 别名和 memory_query 的 limit=1..3 只是检索，不证明全量。limit=100 在参数阶段拒绝，不发 HTTP。目录后按实际条目读取，记录每次结果、stage/HTTP 状态、取消/超时及重试，不把旧轮次 5 成功/18 超时或旧 3 次重试复制成本轮结果。尚未读完就报告实际剩余，不宣称已完成。
 

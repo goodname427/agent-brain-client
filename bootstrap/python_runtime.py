@@ -155,6 +155,10 @@ def runtime(home, *, fetch=None, prepare=True, target=None):
 
 
 def main():
+    from bootstrap.source_checkout import request
+
+    args = request(sys.argv[1:])
+    prepare_runtime = args.action in ("install", "reinstall")
     try:
         sys.path.insert(0, str(ROOT / "src"))
         from agent_brain_client.adapters.platforms.filesystem import native_platform
@@ -162,9 +166,6 @@ def main():
         target = native_platform()
         dependency(target)
         sys.path.insert(0, str(ROOT / "src"))
-        from bootstrap.source_checkout import should_bootstrap
-
-        prepare_runtime = should_bootstrap(sys.argv[1:])
         python = runtime(Path.home(), prepare=prepare_runtime, target=target)
         env = {"PATH": "/usr/bin:/bin", "HOME": str(Path.home()), "LANG": "en_US.UTF-8"}
         if "CODEX_HOME" in os.environ:
@@ -181,10 +182,18 @@ def main():
             env=env,
         ).returncode
     except Exception:
-        print(
-            '{"status":"install-dependencies-review-or-resume-required","installed":false,"credential_accessed":false}'
-        )
-        return 2
+        from agent_brain_client.interfaces.cli.install import absent_status, report
+
+        if args.action == "status" and absent_status(Path.home()):
+            return report("status", {
+                "status": "client-not-installed", "installation_state": "absent",
+                "installation_present": False, "installed": False, "native_changed": False,
+                "hosts": {}, "host_installations": {},
+            })
+        return report(args.action, {
+            "status": "install-dependencies-review-or-resume-required",
+            "installed": False, "credential_accessed": False, "native_changed": False,
+        })
 
 
 if __name__ == "__main__":

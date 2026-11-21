@@ -156,6 +156,16 @@ class HostMaintenance:
                   "native_changed": changed, "update_available": available, "hosts": hosts,
                   "source_package_version": active["version"], "source_package_commit": active["commit"]}
         codex = hosts.get("codex", {})
+        codebuddy = hosts.get("codebuddy", {})
+        native_changes = codebuddy.get("native_changes", {})
+        # Older verified packages only report an aggregate native change.
+        unknown = None if codebuddy.get("native_changed") else False
+        result["mcp_registration_changed"] = native_changes.get("mcp", unknown)
+        result["hook_configuration_changed"] = (
+            bool(codex.get("native_changed"))
+            or bool(codebuddy.get("projects", {}).get("native_changed"))
+            or native_changes.get("hooks", unknown)
+        )
         review = "native-review-required-for-new-command"
         if review in (codex.get("trust"), codex.get("projects", {}).get("trust")):
             result["next_action"] = (

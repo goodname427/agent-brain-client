@@ -1,6 +1,7 @@
 """Checkout bootstrap never edits or executes a stale local installer."""
 from pathlib import Path
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -98,6 +99,24 @@ class FreshMainCheckout(unittest.TestCase):
         ):
             with self.subTest(args=args):
                 self.assertEqual(bootstrap_main.should_bootstrap(args), expected)
+
+    @unittest.skipUnless(sys.platform == "darwin", "Native Mac bootstrap")
+    def test_native_status_and_help_leave_a_cold_home_unchanged(self):
+        root = Path(__file__).resolve().parents[1]
+        env = dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.home / "codex"))
+        for name in ("install.sh", "codebuddy.sh"):
+            with self.subTest(wrapper=name):
+                command = ["/bin/sh", str(root / "bootstrap/macos" / name)]
+                status = subprocess.run([*command, "--action", "status"], env=env, capture_output=True)
+                self.assertEqual(status.returncode, 0, status.stderr)
+                self.assertEqual(json.loads(status.stdout)["status"], "client-not-installed")
+                help_result = subprocess.run([*command, "--help"], env=env, capture_output=True)
+                self.assertEqual(help_result.returncode, 0, help_result.stderr)
+                self.assertIn(b"--surface", help_result.stdout)
+                invalid = subprocess.run([*command, "--bogus"], env=env, capture_output=True)
+                self.assertEqual(invalid.returncode, 2, invalid.stderr)
+                self.assertEqual(json.loads(invalid.stdout)["status"], "invalid-install-arguments")
+                self.assertEqual(list(self.home.iterdir()), [])
 
     def test_stale_or_unreachable_remote_main_never_reuses_one_shot_checkout(self):
         first = bootstrap_main.fresh_checkout(
