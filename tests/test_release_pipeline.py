@@ -1,5 +1,6 @@
 """Synthetic release faults; never authenticate, push or contact a real service."""
 import copy
+from email.message import Message
 import io
 import json
 import os
@@ -9,6 +10,7 @@ import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 import dev.release.client as rc
 
@@ -135,7 +137,7 @@ class ReleasePipeline(unittest.TestCase):
     def test_wait_reuses_only_pending_official_manual_main_exact_tree(self):
         plan, _ = fixture()
         api = rc.GitHub()
-        row = {'id': 12, 'run_attempt': 1, 'head_sha': 'b' * 40, 'status': 'in_progress',
+        row = {'id': 12, 'run_attempt': 1, 'head_sha': plan['source'], 'status': 'in_progress',
                'conclusion': None, 'event': 'workflow_dispatch', 'head_branch': 'main',
                'head_repository': {'full_name': rc.REPOSITORY}, 'html_url': 'https://example.invalid/12'}
         def request(path):
@@ -144,9 +146,12 @@ class ReleasePipeline(unittest.TestCase):
             return {'workflow_runs': [row]} if '/actions/' in path else {'tree': {'sha': plan['source_tree']}}
         def complete(_):
             row.update(status='completed', conclusion='success')
-        with patch.object(api, 'request', side_effect=request), patch.object(rc.time, 'sleep', side_effect=complete) as sleep:
+        with patch.object(api, 'request', side_effect=request) as remote, patch.object(rc.time, 'sleep', side_effect=complete) as sleep:
             self.assertEqual(api.wait_ci(plan, 100)['run_id'], 12)
             sleep.assert_called_once()
+            workflow_queries = [call.args[0] for call in remote.call_args_list if '/workflows/' in call.args[0]]
+            self.assertEqual(len(workflow_queries), 2)
+            self.assertTrue(all(query.endswith('&branch=main&head_sha=' + plan['source']) for query in workflow_queries))
             for changes in ({'conclusion': 'failure', 'status': 'completed'},
                             {'head_branch': 'other'}, {'event': 'push'},
                             {'head_repository': {'full_name': 'synthetic/fork'}}):
@@ -166,6 +171,69 @@ class ReleasePipeline(unittest.TestCase):
                 with self.assertRaises(ValueError) as error:
                     api.wait_ci(plan, 100)
                 self.assertNotIsInstance(error.exception, rc.ChecksPending)
+
+    def test_ci_uses_only_exact_head_requests_for_completed_full_main_run(self):
+        plan, _ = fixture()
+        api = rc.GitHub()
+        work = '/actions/workflows/client-checks.yml/runs?per_page=100&page=1'
+        exact = work + '&branch=main&head_sha=' + plan['source']
+        commit = '/git/commits/' + plan['source']
+        jobs_path = '/actions/runs/12/attempts/3/jobs?per_page=100&page=1'
+        row = {'id': 12, 'run_attempt': 3, 'head_sha': plan['source'], 'status': 'completed',
+               'conclusion': 'success', 'event': 'workflow_dispatch', 'head_branch': 'main',
+               'head_repository': {'full_name': rc.REPOSITORY}, 'html_url': 'https://example.invalid/12'}
+        jobs = [{'name': name, 'conclusion': 'success'} for name in rc.FULL_CI_JOBS]
+        responses = {exact: {'workflow_runs': [row]}, commit: {'tree': {'sha': plan['source_tree']}},
+                     jobs_path: {'jobs': jobs}}
+        with patch.object(api, 'request', side_effect=responses.__getitem__) as remote:
+            receipt = api.ci(plan)
+            self.assertEqual(receipt['run_id'], 12)
+            self.assertEqual(receipt['run_attempt'], 3)
+            self.assertEqual([call.args[0] for call in remote.call_args_list], [exact, commit, jobs_path])
+
+    def test_ci_fallback_polls_the_compatible_main_head_without_repeating_the_scan(self):
+        plan, _ = fixture()
+        api = rc.GitHub()
+        work = '/actions/workflows/client-checks.yml/runs?per_page=100&page=1'
+        row = {'id': 12, 'run_attempt': 1, 'head_sha': 'b' * 40, 'status': 'queued',
+               'conclusion': None, 'event': 'workflow_dispatch', 'head_branch': 'main',
+               'head_repository': {'full_name': rc.REPOSITORY}, 'html_url': 'https://example.invalid/12'}
+        responses = {
+            work + '&branch=main&head_sha=' + plan['source']: {'workflow_runs': []},
+            work: {'workflow_runs': [row]},
+            work + '&branch=main&head_sha=' + row['head_sha']: {'workflow_runs': [row]},
+            '/git/commits/' + row['head_sha']: {'tree': {'sha': plan['source_tree']}},
+            '/actions/runs/12/attempts/1/jobs?per_page=100&page=1': {
+                'jobs': [{'name': name, 'conclusion': 'success'} for name in rc.FULL_CI_JOBS]},
+        }
+        def complete(_):
+            row.update(status='completed', conclusion='success')
+        with patch.object(api, 'request', side_effect=responses.__getitem__) as remote, patch.object(rc.time, 'sleep', side_effect=complete):
+            self.assertEqual(api.wait_ci(plan, 100)['head'], row['head_sha'])
+            paths = [call.args[0] for call in remote.call_args_list]
+            self.assertEqual(paths.count(work), 1)
+            self.assertIn(work + '&branch=main&head_sha=' + row['head_sha'], paths)
+
+    def test_http_failure_reports_only_category_status_and_numeric_rate_headers(self):
+        plan, _ = fixture()
+        path = '/actions/workflows/client-checks.yml/runs?per_page=100&page=1&branch=main&head_sha=' + plan['source']
+        headers = Message()
+        headers['X-RateLimit-Remaining'] = '0'
+        headers['X-RateLimit-Reset'] = '1795269540'
+        headers['Retry-After'] = 'private header content'
+        headers['Authorization'] = 'private authorization'
+        body = io.BytesIO(b'private response body')
+        error = HTTPError(rc.API + path, 403, 'private reason', headers, body)
+        with patch.object(rc, 'build_opener') as opener:
+            opener.return_value.open.side_effect = error
+            with self.assertRaises(ValueError) as caught:
+                rc.GitHub().ci(plan)
+            self.assertEqual(str(caught.exception),
+                             'GitHub GET failed for workflow run list: HTTP 403; '
+                             'x-ratelimit-remaining=0; x-ratelimit-reset=1795269540; '
+                             'read remote state before retry')
+            opener.return_value.open.assert_called_once()
+            self.assertEqual(body.tell(), 0)
 
     def test_archives_are_identical_and_preserve_exact_payload(self):
         payload = {'z/file.py': b'print("fixture")\n', 'a.txt': b'LF\n'}
@@ -323,6 +391,8 @@ class ReleasePipeline(unittest.TestCase):
                 return {'status': 'ahead'}
             if '/jobs?' in path:
                 return {'jobs': [{'name': name, 'conclusion': 'success'} for name in rc.FULL_CI_JOBS]}
+            if '&head_sha=' in path:
+                return {'workflow_runs': []}
             return {'workflow_runs': rows} if '/actions/' in path else {'tree': {'sha': plan['source_tree']}}
         with patch.object(api, 'request', side_effect=request):
             self.assertEqual(api.ci(plan)['run_id'], 12)
@@ -413,7 +483,7 @@ class ReleasePipeline(unittest.TestCase):
     def test_scoped_success_cannot_certify_a_release_or_hide_an_older_full_run(self):
         plan, _ = fixture()
         api = rc.GitHub()
-        row = {'head_sha': 'b' * 40, 'conclusion': 'success',
+        row = {'head_sha': plan['source'], 'conclusion': 'success',
                'head_repository': {'full_name': rc.REPOSITORY},
                'event': 'workflow_dispatch', 'head_branch': 'main',
                'id': 12, 'run_attempt': 2, 'html_url': 'https://example.invalid/run/12'}
@@ -506,10 +576,10 @@ class PlatformRemote(Remote):
         super().__init__({'baseline': '0' * 40}, assets)
         self.plan = plan
         self.refs = dict(plan['baselines'])
-        self.ci_trees = []
+        self.ci_sources = []
 
     def ci(self, plan):
-        self.ci_trees.append(plan['source_tree'])
+        self.ci_sources.append((plan['source'], plan['source_tree']))
         return {'conclusion': 'success', 'source_tree': plan['source_tree']}
 
     def assert_public(self):
@@ -629,7 +699,10 @@ class PlatformRelease(unittest.TestCase):
             output = Path(tmp)
             self.setup_output(output, assets)
             self.publish_case(remote, output)
-            self.assertEqual(remote.ci_trees, [plan['source_tree'], plan['executor_tree']])
+            self.assertEqual(remote.ci_sources, [
+                (plan['source'], plan['source_tree']),
+                (plan['executor_source'], plan['executor_tree']),
+            ])
             self.assertTrue(all(remote.refs[ref] == row['runtime'] for ref, row in plan['channels'].items()))
             self.assertEqual(remote.latest, plan['tags']['installer'])
             writes = [args for event, args in remote.events if event == 'push' and any('--force-with-lease=' in value for value in args)]
