@@ -289,8 +289,6 @@ def refresh(home, source, *, check_only=False):
     root = directory / "code" / digest(json.dumps(pins, sort_keys=True).encode())
     if check_only:
         mcp, hooks = definitions(root / CODEBUDDY_ENTRY, home, fixed_hooks=True)
-        if retains_mcp(home, source, receipt["mcp"], mcp):
-            mcp = receipt["mcp"]
         available = (
             receipt["mcp"] != mcp or receipt.get("hooks_enabled", True) and receipt["hooks"] != hooks
             or instruction_paths(home, receipt["surface"], receipt)
@@ -299,32 +297,6 @@ def refresh(home, source, *, check_only=False):
         return {"status": "codebuddy-update-available" if available else "codebuddy-current",
                 "native_changed": False, "update_available": available}
     return install(home, source, None, surface=receipt["surface"], maintenance=True)
-
-
-def retains_mcp(home, source, registered, desired):
-    from agent_brain_client.adapters.packages.client import compatible_managed_workers
-    from agent_brain_client.adapters.packages.frozen import runtime_pins, verify_frozen_code
-    from agent_brain_client.adapters.packages.releases import UpdateBlocked
-
-    try:
-        entry = canonical(Path(registered["args"][4]))
-        frozen = entry.parents[4]
-        if (
-            frozen.parent != state_directory(home) / "code"
-            or entry != frozen / CODEBUDDY_ENTRY
-            or not (frozen / "code.json").is_file()
-            or not same(registered, definitions(entry, home)[0])
-            or not same(registered, dict(desired, args=[
-                *desired["args"][:4], str(entry), *desired["args"][5:],
-            ]))
-        ):
-            return False
-        old_pins = runtime_pins(frozen)
-        if not compatible_managed_workers(frozen, old_pins, source, runtime_pins(source)):
-            return False
-        return verify_frozen_code(frozen) == old_pins
-    except (OSError, ValueError, KeyError, IndexError, TypeError, UpdateBlocked):
-        return False
 
 
 def definitions(entry, home, *, fixed_hooks=False):
@@ -339,6 +311,7 @@ def definitions(entry, home, *, fixed_hooks=False):
     if fixed_hooks:
         from agent_brain_client.adapters.installation import launcher_update as hook_launcher
         hook_command = hook_launcher.native_hook_command(home, "codebuddy")
+        mcp = registered_stdio(home) or mcp
     else:
         hook_command = command_line([*argv, "hook", "--device-home", str(home)])
     hooks = {
@@ -354,6 +327,33 @@ def definitions(entry, home, *, fixed_hooks=False):
         for event in ("SessionStart", "UserPromptSubmit", "Stop")
     }
     return mcp, hooks
+
+
+def registered_stdio(home):
+    """Use the shared, single-file launcher after its normal migration."""
+    from agent_brain_client.adapters.installation.installation import registered_context
+    from agent_brain_client.adapters.packages.client import (
+        HTTPS_CONTENT_CAPABILITIES, launcher_package_files, single_entry_pin,
+    )
+
+    path = canonical(Path(home) / ".config/agent-brain-client/codex-mcp.json")
+    if not path.exists():
+        return None
+    saved = metadata_io.private_json(path)
+    if saved.get("content_candidate") is not True:
+        return None
+    package = Path(saved["package"])
+    if single_entry_pin(package, launcher_package_files(package)) is None:
+        return None
+    policy, command, _, _ = registered_context(home, saved)
+    if policy["capabilities"] != HTTPS_CONTENT_CAPABILITIES:
+        return None
+    args = list(command["args"])
+    args[args.index("--harness") + 1] = "codebuddy"
+    result = {"type": "stdio", "command": command["command"], "args": args}
+    if "env" in command:
+        result["env"] = command["env"]
+    return result
 
 
 def freeze(source, home, core):
@@ -502,9 +502,7 @@ def install(home, source, core, *, surface="both", remove=False, enable_hooks=No
             hooks = receipt["hooks"]
         if maintenance and set(map(str, mcp_paths(home, surface))) != set(map(str, paths)):
             raise ValueError("Higher priority CodeBuddy MCP configuration changed")
-        keep_mcp = maintenance and (
-            same(mcp, previous_mcp) or retains_mcp(home, source, previous_mcp, mcp)
-        )
+        keep_mcp = maintenance and same(mcp, previous_mcp)
         if keep_mcp:
             mcp = previous_mcp
             for path in paths:

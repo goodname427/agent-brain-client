@@ -65,7 +65,8 @@ class ClientUpdate:
                 )
                 + "Call an already available Agent Brain MCP tool and inspect its fresh client_runtime. "
                 "Compare running_worker_version AND running_worker_commit with active_package_version AND active_package_commit. "
-                "If both match, no MCP worker reload is needed. If they differ, normally reload only Agent Brain MCP after in-flight work completes. "
+                "If both match, no MCP worker reload is needed. For a compatible update, call again after in-flight work completes so the same connection can start the new worker. "
+                "Use the normal Agent Brain MCP reconnect after a verified registration change or a newly required tool that the host cannot see. "
                 "If the worker or commit is unobservable, report unknown; do not request a restart merely because update ran. "
                 "offered_tools describes the worker; compare with the tools actually available in this Codex session. "
                 "If a required offered tool is missing, refresh the host tool connection using normal host controls. "
