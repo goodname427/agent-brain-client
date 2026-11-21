@@ -184,7 +184,8 @@ def host_status(value):
     home = Path(value["device_home"])
     hosts = {}
     codex_receipt = settings_path(home).parent / "hook-install.json"
-    if codex_receipt.exists() or (home / ".config/agent-brain-client/codex/registration.json").exists():
+    from agent_brain_client.adapters.storage.registration import codex_registration_directory
+    if codex_receipt.exists() or (codex_registration_directory(home) / "registration.json").exists():
         from agent_brain_client.adapters.harnesses.codex.collection_installation import installation_status
         try:
             from agent_brain_client.adapters.harnesses.codex import binding

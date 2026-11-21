@@ -46,6 +46,30 @@ required. Collection success and software update success are reported separately
 `local_setup_complete` describes the finite local stages only. The CLI does not
 claim end-to-end model delivery.
 
+## Resuming a retained Codex registration
+
+The shared installation can finish before the Codex profile has an MCP
+binding. Report the shared registration, native MCP stage and worker observation
+separately. Rerun the normal official Windows install or update entry to finish
+an incomplete binding under the same Windows account. Update resumes the
+retained native bindings without changing the primary host or running the
+install-time mapping and source setup again. If binding recovery fails, the
+command returns an error and still reports the verified package update status.
+Check the running worker with a fresh MCP response after the binding is available.
+
+The structural reinstall introduced in Client 0.8.11 could restore the Codex cache before creating the private registration
+directory. Under a Windows token that defaults to the Administrators group as
+owner, the cache could create the parent with that owner. The first reported
+device observation was 0.8.25. [Client PR #148](https://github.com/goodname427/agent-brain-client/pull/148)
+
+Windows now creates the private parent with the
+account SID before restoring the cache. For an authenticated completed
+reinstall with only that legacy cache in the Administrators-owned parent,
+registration resumes in a separate account-owned directory. The old cache,
+archive and their security descriptors stay in place. An unexpected owner,
+effective access for another principal, or unexpected files in that parent
+block this automatic recovery.
+
 ## Normal uninstall and reinstall
 
 Pause only Agent Brain MCP in Codex and use its normal reload; wait for its worker

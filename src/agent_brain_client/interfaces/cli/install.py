@@ -22,7 +22,10 @@ OFFICIAL_REF = "refs/heads/releases/personal-https-stable"
 def lifecycle_exit(action, value):
     """Exit success denotes the requested action, never merely an old installation."""
     status = value.get("status")
-    if action == "install" and value.get("installation_stages", {}).get("setup", {}).get("stage") == "native-mcp":
+    setup_stage = value.get("installation_stages", {}).get("setup", {}).get("stage")
+    if action in ("install", "update") and setup_stage in (
+        "registration", "native-mcp", "retained-native-bindings",
+    ):
         return 2
     if (
         value.get("memory_accessibility", {}).get("status")
@@ -189,6 +192,9 @@ def main():
                         "device_credentials_accessed": False,
                         "next_action": "Restore the verified original runtime/registration; do not prepare new dependencies, replace bindings or re-pair.",
                     }
+            if args.action == "update":
+                from agent_brain_client.runtime.installation_completion import finish_windows_update
+                value = finish_windows_update(home, value)
             print(json.dumps(value))
             return lifecycle_exit(args.action, value)
         if fresh_requested:

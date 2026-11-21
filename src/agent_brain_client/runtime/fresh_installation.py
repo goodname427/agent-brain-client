@@ -1,5 +1,6 @@
 """Compose fresh-install ports; installed data stays in its explicit archive."""
 
+import os
 from pathlib import Path
 from agent_brain_client.adapters.storage.reinstallation import RetainedInstallation
 from agent_brain_client.adapters.installation.fresh_installation import (
@@ -62,9 +63,10 @@ def retained_installation(home, native, *, target_host=None):
         meta = retained_registration(home)["metadata"]
         policy = private_json(meta["release_policy"], meta["release_policy_sha256"])
         private_root = Path(home) / ".config/agent-brain-client/shared-native"
-        codex_receipt = Path(home) / ".config/agent-brain-client/codex/registration.json"
+        from agent_brain_client.adapters.storage.registration import codex_registration
+        codex_receipt = codex_registration(home)
         if (("codex" in registered_hosts(home) or port.name == "codex")
-                and (Path(policy["runtime"]["codex_home"]) != private_root or codex_receipt.exists())):
+                and (Path(policy["runtime"]["codex_home"]) != private_root or codex_receipt is not None)):
             from agent_brain_client.adapters.harnesses.codex import binding
             from agent_brain_client.adapters.harnesses.codex.collection_installation import split_owned
             actual = binding.native_home(home, policy["runtime"])
@@ -90,7 +92,16 @@ def retained_installation(home, native, *, target_host=None):
                                      and "codex" not in snapshot.get("registered_surfaces", {}))
         if legacy_control_projection:
             primary_cache = base / "retained-projections/codex"
-        restore_mapping(home, original_native, primary_cache, content, snapshot, host=original)
+        def restore_projection(native, cache, mapping, host):
+            # Retained Windows cache writes can create their parents with the
+            # token's default owner. Reserve the private binding parent first.
+            if (host.name == "codex" and os.name == "nt"
+                    and cache.parent == base / "codex" and not cache.parent.exists()):
+                from agent_brain_client.adapters.platforms.filesystem import private_directory
+                private_directory(cache.parent)
+            restore_mapping(home, native, cache, content, mapping, host=host)
+
+        restore_projection(original_native, primary_cache, snapshot, original)
         if legacy_control_projection and selected.name == "codex" and target_host is not None:
             # A pre-split CodeBuddy backend could own global Codex-format data
             # without a native Codex entry. Verify its exact original image, then
@@ -107,7 +118,7 @@ def retained_installation(home, native, *, target_host=None):
             adopted["owned"]["files"].pop(".codex/AGENTS.md", None)
             adopted["owned"]["binding"] = selected.binding(home, destination)
             adopted["owned"]["policy_sha"] = digest(contract.encode({"policy": content, "binding": adopted["owned"]["binding"]}))
-            restore_mapping(home, destination, Path(cache), content, adopted, host=selected)
+            restore_projection(destination, Path(cache), adopted, selected)
         from agent_brain_client.runtime.harness_content import content_host
         for name, row in snapshot.get("additional_projections", {}).items():
             port = content_host(name)
@@ -116,7 +127,7 @@ def retained_installation(home, native, *, target_host=None):
             expected = port.binding(home, Path(row["native"]))
             if row["mapping"]["owned"]["binding"] != expected:
                 raise ValueError("Retained secondary projection identity changed")
-            restore_mapping(home, Path(row["native"]), target_cache, content, row["mapping"], host=port)
+            restore_projection(Path(row["native"]), target_cache, row["mapping"], port)
     return RetainedInstallation(
         Path(home),
         Path(native),
@@ -229,7 +240,7 @@ def projection_host(home, native):
     raise ValueError("Unknown retained projection identity")
 
 
-def restore_native_bindings(home):
+def restore_native_bindings(home, *, keep_configured=False):
     """Rebind only the exact previously registered surface and Hook pause state."""
     from agent_brain_client.adapters.storage.reinstallation import read_journal
     record = read_journal(home)
@@ -238,22 +249,30 @@ def restore_native_bindings(home):
     surfaces = record["mapping"].get("registered_surfaces", {})
     if set(surfaces) - {"codex", "codebuddy"}:
         raise ValueError("Unknown retained native surface")
+    codex_result = None
     if "codex" in surfaces:
         row = surfaces["codex"]
         if set(row) != {"native_home", "enabled", "hooks_enabled"} or type(row["enabled"]) is not bool or type(row["hooks_enabled"]) is not bool:
             raise ValueError("Exact retained Codex surface required")
         from agent_brain_client.adapters.harnesses.codex import binding
-        binding.install(home, native=Path(row["native_home"]), enabled=row["enabled"])
+        codex_result = binding.install(home, native=Path(row["native_home"]), enabled=row["enabled"])
     if "codebuddy" in surfaces:
         row = surfaces["codebuddy"]
         if set(row) != {"surface", "hooks_enabled"} or row["surface"] not in ("both", "cli", "ide") or type(row["hooks_enabled"]) is not bool:
             raise ValueError("Exact retained CodeBuddy surface required")
-        from agent_brain_client.adapters.harnesses.codebuddy import configuration
-        configuration.install(Path(home), Path(__file__).resolve().parents[3], None,
-                              surface=row["surface"], enable_hooks=row["hooks_enabled"])
+        from agent_brain_client.runtime.host_maintenance import registered_hosts
+
+        # Ordinary update has already maintained active hosts. An unrelated
+        # CodeBuddy registration does not need to be written again.
+        if not keep_configured or "codebuddy" not in registered_hosts(home):
+            from agent_brain_client.adapters.harnesses.codebuddy import configuration
+
+            configuration.install(Path(home), Path(__file__).resolve().parents[3], None,
+                                  surface=row["surface"], enable_hooks=row["hooks_enabled"])
     if "codex" in surfaces and surfaces["codex"]["hooks_enabled"]:
         from types import SimpleNamespace
         from agent_brain_client.adapters.harnesses.codex.collection_installation import install
         install(SimpleNamespace(device_home=str(home), profile_id=None, operator=None, operator_sha256=None))
     record["native_bindings_restored"] = True
     retained_installation(home, Path(record["native"])).save(record)
+    return codex_result

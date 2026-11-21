@@ -4,15 +4,35 @@ The persisted filename is a device schema field, not a Harness implementation.
 """
 
 from agent_brain_client.adapters.storage.metadata import private_json, canonical
+import os
 from pathlib import Path
+
+
+class CodexBindingStateBlocked(ValueError):
+    """The private Codex registration state could not be verified."""
+
+
+def codex_registration_directory(home):
+    base = canonical(Path(home) / ".config/agent-brain-client")
+    legacy = base / "codex"
+    if os.name == "nt":
+        from agent_brain_client.adapters.platforms.windows.native import canonical as local_path
+        recovery = local_path(base / "codex-binding")
+        if recovery.exists():
+            return recovery
+        return local_path(legacy)
+    return canonical(legacy)
 
 
 def codex_registration(home):
     """Read the public native binding record without loading a host adapter."""
-    directory = canonical(Path(home) / ".config/agent-brain-client/codex")
-    file = directory / "registration.json"
+    directory = codex_registration_directory(home)
+    file = canonical(directory / "registration.json")
     if not file.exists():
         return None
+    if os.name == "nt":
+        from agent_brain_client.adapters.platforms.filesystem import private_mode
+        private_mode(directory, directory=True, owner=True)
     value = private_json(file)
     if (set(value) != {"schema", "native_home", "mcp", "removed"}
             or value["schema"] != 1 or type(value["removed"]) is not bool

@@ -2,6 +2,7 @@
 
 import ctypes as C
 from ctypes import wintypes as W
+from contextlib import contextmanager, nullcontext
 import os
 import sys
 
@@ -58,35 +59,61 @@ class _WindowsSecurityAttributes(C.Structure):
     _fields_ = [("length", W.DWORD), ("descriptor", C.c_void_p), ("inherit", W.BOOL)]
 
 
-def open_lock(path, *, cache=False):
-    """Create with the final owner/DACL, or open an existing item unchanged."""
-    import msvcrt
+class WindowsOwnerMismatch(ValueError):
+    def __init__(self, owner_sid):
+        self.owner_sid = owner_sid
+        super().__init__("Owned private Windows item required")
+
+
+@contextmanager
+def private_security(*, directory=False):
+    """Supply the desktop account SID as owner at Windows object creation."""
     from agent_brain_client.adapters.platforms.windows.native import libraries, user_sid
 
     api, kernel = libraries()
+    current = user_sid()
+    flags = "OICI" if directory else ""
+    sddl = "O:" + current + "D:P" + "".join(
+        "(A;" + flags + ";FA;;;" + sid + ")" for sid in (current, "SY", "BA")
+    )
     descriptor = C.c_void_p()
-    if not cache:
-        current = user_sid()
-        sddl = (
-            "O:"
-            + current
-            + "D:P"
-            + "".join("(A;;FA;;;" + sid + ")" for sid in (current, "SY", "BA"))
-        )
-        api.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
-            W.LPCWSTR,
-            W.DWORD,
-            C.POINTER(C.c_void_p),
-            C.c_void_p,
-        ]
-        if not api.ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl, 1, C.byref(descriptor), None
-        ):
-            raise ValueError("Private Windows lock security unavailable")
+    api.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        W.LPCWSTR, W.DWORD, C.POINTER(C.c_void_p), C.c_void_p,
+    ]
+    if not api.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl, 1, C.byref(descriptor), None
+    ):
+        raise ValueError("Private Windows security unavailable")
     try:
         security = _WindowsSecurityAttributes(
             C.sizeof(_WindowsSecurityAttributes), descriptor, False
         )
+        yield C.byref(security)
+    finally:
+        kernel.LocalFree(descriptor)
+
+
+def create_private_directory(path):
+    from agent_brain_client.adapters.platforms.windows.native import canonical, libraries
+
+    path = canonical(path)
+    _, kernel = libraries()
+    kernel.CreateDirectoryW.argtypes = [W.LPCWSTR, C.c_void_p]
+    kernel.CreateDirectoryW.restype = W.BOOL
+    with private_security(directory=True) as security:
+        if not kernel.CreateDirectoryW(str(path), security):
+            error = C.get_last_error()
+            if error != 183:  # ERROR_ALREADY_EXISTS; the caller checks the existing object.
+                raise C.WinError(error)
+
+
+def open_lock(path, *, cache=False):
+    """Create with the final owner/DACL, or open an existing item unchanged."""
+    import msvcrt
+    from agent_brain_client.adapters.platforms.windows.native import libraries
+
+    _, kernel = libraries()
+    with nullcontext() if cache else private_security() as security:
         kernel.CreateFileW.argtypes = [
             W.LPCWSTR,
             W.DWORD,
@@ -104,7 +131,7 @@ def open_lock(path, *, cache=False):
             str(path),
             0xC0000000,
             3,
-            None if cache else C.byref(security),
+            security,
             4,
             0x00200080,
             None,
@@ -116,9 +143,6 @@ def open_lock(path, *, cache=False):
         except BaseException:
             kernel.CloseHandle(handle)
             raise
-    finally:
-        if descriptor:
-            kernel.LocalFree(descriptor)
 
 
 def private_handle(
@@ -181,7 +205,7 @@ def private_handle(
         ):
             raise blocked("Windows DACL could not be checked")
         current = user_sid()
-        if not acl or not owner_sid or owner and sid_text(owner_sid) != current:
+        if not acl or not owner_sid:
             raise blocked("Owned private Windows item required")
         # ACL header: revision(1), reserved(1), size(2), AceCount(2).
         count = C.c_ushort.from_address(acl.value + 4).value
@@ -203,6 +227,12 @@ def private_handle(
                 "S-1-5-32-544",
             ):
                 raise blocked("Windows item accessible to another principal")
+        if owner:
+            actual_owner = sid_text(owner_sid)
+            if actual_owner != current:
+                if blocked is ValueError:
+                    raise WindowsOwnerMismatch(actual_owner)
+                raise blocked("Owned private Windows item required")
     finally:
         if descriptor:
             kernel.LocalFree(descriptor)
