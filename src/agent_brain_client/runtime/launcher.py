@@ -268,6 +268,14 @@ def isolated_stdio_operation(policy_path, policy_sha256, harness, mode, ticket, 
         raise UpdateBlocked("Verified native MCP registration required")
     from agent_brain_client.interfaces.mcp.launcher import runtime_fingerprint
 
+    def verified_retained(value):
+        active = releases.engine.active(value)
+        if active is None:
+            raise UpdateBlocked("Verified retained MCP package required")
+        package, manifest = runtime_manifest(active)
+        releases.engine.adapter.preflight(package, manifest)
+        return active
+
     stamp = runtime_fingerprint(registered)
     request = json.loads(ticket, object_pairs_hook=private_files.pairs) if ticket is not None else None
     if mode == "check":
@@ -281,36 +289,35 @@ def isolated_stdio_operation(policy_path, policy_sha256, harness, mode, ticket, 
         if request is not None or protocol is not None:
             raise UpdateBlocked("Read-only worker plan required")
         active = releases.verified_active(serving=True)
-    elif mode == "resolve":
+    elif mode in ("resolve", "verify-retained"):
         if (
             not isinstance(request, dict)
             or set(request) != {"registration", "active"}
             or request["registration"] != stamp
+            or not isinstance(request["active"], dict)
             or protocol is not None
         ):
             raise UpdateBlocked("Exact planned MCP worker required")
-        # The parent ticket never authorizes arbitrary cache bytes: only the
-        # verified serving pointer or its exact retained journal predecessor.
-        active = releases.verified_active(serving=True)
-        if request["active"] != active:
-            journal = releases.engine.journal
-            before = private_files.raw(journal)
-            row = json.loads(before, object_pairs_hook=private_files.pairs)
-            if (
-                set(row) != {"phase", "target", "before", "backup", "completed"}
-                or row["phase"] != "complete"
-                or row["target"] != active
-                or row["before"] is None
-                or row["before"] != request["active"]
-            ):
-                raise UpdateBlocked("MCP worker ticket no longer matches an admitted snapshot")
-            active = releases.engine.active(request["active"])
-            if active is None:
-                raise UpdateBlocked("Verified predecessor required")
-            package, manifest = runtime_manifest(active)
-            releases.engine.adapter.preflight(package, manifest)
-            if private_files.raw(journal) != before or releases.verified_active(serving=True) != row["target"]:
-                raise UpdateBlocked("MCP release changed during predecessor verification")
+        if mode == "verify-retained":
+            active = verified_retained(request["active"])
+        else:
+            # A new command can only come from the verified serving pointer
+            # or its exact retained journal predecessor.
+            active = releases.verified_active(serving=True)
+            if request["active"] != active:
+                journal = releases.engine.journal
+                before = private_files.raw(journal)
+                row = json.loads(before, object_pairs_hook=private_files.pairs)
+                if (
+                    set(row) != {"phase", "target", "before", "backup", "completed"}
+                    or row["phase"] != "complete"
+                    or row["target"] != active
+                    or row["before"] != request["active"]
+                ):
+                    raise UpdateBlocked("MCP worker ticket no longer matches an admitted snapshot")
+                active = verified_retained(request["active"])
+                if private_files.raw(journal) != before or releases.verified_active(serving=True) != row["target"]:
+                    raise UpdateBlocked("MCP release changed during predecessor verification")
     else:
         raise UpdateBlocked("Unknown private stdio operation")
     if active is None or content_runtime_blocker(active, releases.policy):
@@ -321,6 +328,10 @@ def isolated_stdio_operation(policy_path, policy_sha256, harness, mode, ticket, 
     worker = content_worker(active, runtime, harness)
     if worker is None:
         raise UpdateBlocked("Managed MCP worker unavailable")
+    if mode == "verify-retained":
+        # Content verification alone cannot mint a command for a snapshot the
+        # session did not already admit.
+        return {"fingerprint": worker.fingerprint, "cache_abi": worker.cache_abi}
     if mode == "plan":
         return {
             "ticket": {"registration": stamp, "active": active},

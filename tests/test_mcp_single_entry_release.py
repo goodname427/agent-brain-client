@@ -451,6 +451,42 @@ class PublishedMacMigration(unittest.TestCase):
         self.assertIsNone(worker_pid(third))
         fallback_pid = worker_pid(second)
         self.assertIsNotNone(fallback_pid)
+        durable_paths = [identity, registry, native / "config.toml", lease.parent / "owned.json",
+                         lease.parent / "imports.json", *sorted((lease.parent / "outbox").glob("*.json"))]
+        durable_before = {path: private_files.raw(path) for path in durable_paths}
+
+        # Let the known worker unload before the next release overwrites its
+        # journal predecessor. The original connection must still resume B.
+        wait_until(lambda: worker_pid(second) is None, timeout=40)
+        with cache_locked(lease, timeout=0):
+            pass
+        later = dict(rejected)
+        later[content] += b"\n# Second incompatible release.\n"
+        report, fourth = update("0.8.31", "d" * 40, later)
+        self.assertFalse(report["bootstrap_registration_changed"], report)
+        journal = json.loads(channel.engine.journal.read_bytes())
+        self.assertEqual((journal["before"], journal["target"]), (third, fourth))
+        previous_ticket = dict(plan["ticket"], active=second)
+        self.assertNotEqual(authority("resolve", previous_ticket).returncode, 0)
+        self.assertNotEqual(authority("verify-retained", forged).returncode, 0)
+        verified = authority("verify-retained", previous_ticket)
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+        self.assertEqual(set(json.loads(verified.stdout)), {"fingerprint", "cache_abi"})
+
+        rejection = b'"error_code": "worker-readiness-rejected"'
+        def serving_after_journal_moves():
+            self.assertEqual(exchange("ping"), {"fixture_release": "B"})
+            return diagnostic.read_bytes().count(rejection) == 2
+
+        wait_until(serving_after_journal_moves, timeout=20)
+        self.assertEqual(exchange("tools/list"), catalog)
+        self.assertIsNone(worker_pid(fourth))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(fallback_pid, 0)
+        fallback_pid = worker_pid(second)
+        self.assertIsNotNone(fallback_pid)
+        self.assertEqual({path: private_files.raw(path) for path in durable_paths}, durable_before)
+        self.assertEqual(channel.verified_active(), fourth)
         self.assertEqual(registry.read_bytes(), registry_bytes)
         self.assertEqual((native / "config.toml").read_bytes(), native_bytes)
 

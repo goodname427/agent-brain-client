@@ -66,7 +66,10 @@ def main(argv=None):
     parser.add_argument("--event-hook", action="store_true")
     parser.add_argument("--event-hook-policy", type=Path)
     parser.add_argument("--event-hook-policy-sha256")
-    parser.add_argument("--private-stdio", choices=("plan", "check", "discover", "resolve", "worker"), help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--private-stdio", choices=("plan", "check", "discover", "resolve", "verify-retained", "worker"),
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--private-ticket", help=argparse.SUPPRESS)
     parser.add_argument("--managed-stdio", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -178,13 +181,25 @@ def isolated_stdio(args):
         ticket = json.dumps(plan["ticket"], separators=(",", ":"), sort_keys=True)
         return WorkerSpec((ticket,), plan["fingerprint"], plan["cache_abi"])
 
+    retained = None
+
+    def remember_worker(spec, command):
+        nonlocal retained
+        retained = (spec, command)
+
     def prepare_worker(spec):
         try:
-            resolved = probe("resolve", spec.command[0])
-            command = resolved["command"]
+            if retained is not None and spec == retained[0]:
+                # The session already received and admitted this exact command.
+                # Recheck its bytes even when the update journal has advanced.
+                resolved = probe("verify-retained", spec.command[0])
+                command = retained[1]
+            else:
+                resolved = probe("resolve", spec.command[0])
+                command = resolved["command"]
             if (
                 resolved["fingerprint"] != spec.fingerprint or resolved["cache_abi"] != spec.cache_abi
-                or not isinstance(command, list) or not command
+                or not isinstance(command, (tuple, list)) or not command
                 or not all(isinstance(arg, str) for arg in command)
             ):
                 raise ValueError("Worker plan no longer matches the selected snapshot")
@@ -247,7 +262,7 @@ def isolated_stdio(args):
     threading.Thread(target=discover, daemon=True, name="agentbrain-startup-check").start()
     return supervise_stdio(initial, observe, sys.stdin.buffer, sys.stdout, {},
                            idle_timeout=30, can_switch=registration_current,
-                           prepare_worker=prepare_worker)
+                           prepare_worker=prepare_worker, remember_worker=remember_worker)
 
 
 # The fixed launcher owns the host stream. The worker's startup record and drain
@@ -312,9 +327,10 @@ def _pump(source, events, owner, *, limit=-1, slots=None, stop=None):
 class _Worker:
     def __init__(self, spec, protocol, options, events, timeout, command=None):
         self.spec = spec
+        self.command = spec.command if command is None else tuple(command)
         self.deadline = time.monotonic() + timeout
         self.process = subprocess.Popen(
-            [*(spec.command if command is None else command), "--managed-stdio", protocol or "initial"],
+            [*self.command, "--managed-stdio", protocol or "initial"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             **options,
@@ -393,7 +409,7 @@ def _compatible_catalog(first, second, protocol):
 def supervise_stdio(
     initial, observe, source, output, options, *,
     poll_interval=2, probe_timeout=20, request_timeout=90, drain_timeout=90, max_pending=255,
-    can_switch=None, idle_timeout=None, prepare_worker=None,
+    can_switch=None, idle_timeout=None, prepare_worker=None, remember_worker=None,
 ):
     """Keep one host session while locally verified workers change.
 
@@ -771,6 +787,9 @@ def supervise_stdio(
                     if owner is active or active is None:
                         active, candidate = owner, None
                         catalog = owner.contract if catalog is None else catalog
+                        if remember_worker is not None:
+                            last_good = owner.spec
+                            remember_worker(owner.spec, owner.command)
                         flush_waiting()
                         if input_closed and not waiting:
                             active.close_input()
