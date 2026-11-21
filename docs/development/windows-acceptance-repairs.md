@@ -36,6 +36,10 @@ Codex 可将自己的 `hooks.state` 信任表写进托管标记范围。更新�
 
 来源发现使用原生路径访问文件，向本地来源路由和现有 Server 提供普通盘符元数据。全局与独立项目 Codex Hook 复用同一转换，后续入队仍使用原先绑定的目录值。当前 turn 的 rollout 也复用该转换。项目标识、授权和排除规则沿用原值。UNC、设备命名空间、相对路径、父目录跳转、备用数据流和有歧义的扩展路径继续拒绝。扩展语法会跳过常规 Win32 路径处理，因此只移除有等价普通盘符写法的精确前缀。 [Microsoft 路径规范](https://learn.microsoft.com/dotnet/standard/io/file-path-formats) · [Win32 命名规范](https://learn.microsoft.com/windows/win32/fileio/naming-a-file)
 
+## 0.8.25 登记的工具契约
+
+检查原地升级时，只有已完整核验的精确 0.8.25 Windows 导出能复用原 MCP 登记中的工具清单。登记摘要覆盖工具清单，现有策略及授权验证先完成，当前目录按同一工具契约版本生成的名称还须逐项一致。协议版本或工具清单有差异时，继续执行原包的工具描述探测。普通业务模块的字节变化不参与这条历史兼容判断。
+
 ## 普通 MCP 的 L1/L2/L3 读取
 
 日常只读工具统一为 `memory_query`，参数为当前 `origin`、独立 reader `session_id`、`query` 和可选 `limit:1..3`。主动查询和自动召回均发送此方法，保留现有逐设备/逐来源批准、个人池与项目隔离。历史 `memory_recall` 和目录检索别名已移除，当前调用只使用 `memory_query`。
