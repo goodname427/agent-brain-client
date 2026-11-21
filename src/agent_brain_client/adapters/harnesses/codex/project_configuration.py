@@ -2,8 +2,8 @@
 
 import json
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 from agent_brain_client.adapters.storage.metadata import (
     canonical,
     digest,
@@ -18,38 +18,19 @@ from agent_brain_client.adapters.platforms.filesystem import (
     command_line,
 )
 
-ROOT = Path(__file__).resolve().parents[5]
-ENTRY = ROOT / "src/agent_brain_client/interfaces/cli/project.py"
 MARKER = "Agent Brain project memory"
 
+
+ROOT = Path(__file__).resolve().parents[5]
+ENTRY = ROOT / "src/agent_brain_client/interfaces/cli/project.py"
 
 from agent_brain_client.adapters.storage.project_settings import active as active, retained_controls as retained_controls, project_settings as project_settings
 
 
 def definitions(p, path, sha):
-    expected = digest(ENTRY.read_bytes())
-    guard = (
-        "import hashlib,runpy,sys;from pathlib import Path;"
-        "p=Path(" + repr(str(ENTRY)) + ");"
-        "assert not p.is_symlink() and hashlib.sha256(p.read_bytes()).hexdigest()=="
-        + repr(expected)
-        + ";"
-        'sys.argv=[str(p),*sys.argv[1:]];runpy.run_path(str(p),run_name="__main__")'
-    )
-    command = command_line(
-        [
-            sys.executable,
-            "-I",
-            "-B",
-            "-c",
-            guard,
-            "hook", "--harness", "codex",
-            "--settings",
-            str(path),
-            "--settings-sha256",
-            sha,
-        ]
-    )
+    from agent_brain_client.adapters.installation import launcher_update as hook_launcher
+
+    command = hook_launcher.native_hook_command(p["device_home"], "codex", path)
     events = ["SessionStart", "UserPromptSubmit"] + (
         ["Stop"]
         if p["source_mode"] in ("codex-hooks", "codex-project")
@@ -119,15 +100,25 @@ def install_locked(p, path, sha):
         ]
         if owned and (len(owned) != 1 or owned[0] != old.get(event)):
             raise ValueError("Outside memory hook edit preserved")
-    for event, group in old.items():
-        groups = value["hooks"].get(event, [])
-        if group in groups:
-            groups.remove(group)
-    for event, group in wanted.items():
-        value["hooks"].setdefault(event, []).append(group)
+    edited = False
+    for event in old.keys() | wanted.keys():
+        groups = value["hooks"].setdefault(event, [])
+        previous, desired = old.get(event), wanted.get(event)
+        if previous in groups:
+            index = groups.index(previous)
+            if desired is None:
+                groups.pop(index)
+                edited = True
+            elif previous != desired:
+                groups[index] = desired
+                edited = True
+        elif desired is not None:
+            groups.append(desired)
+            edited = True
     after = (
-        json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
-    ).encode()
+        (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
+        if edited else before
+    )
     plan = {
         "schema": 1,
         "target": str(target),
@@ -146,7 +137,8 @@ def install_locked(p, path, sha):
     # preimage and installed image without treating our own hooks as foreign.
     if (target.read_bytes() if target.exists() else None) != before:
         raise ValueError("Hook config changed before commit")
-    write(target, value, mode=mode)
+    if edited:
+        write(target, value, mode=mode)
     write(receipt_path, dict(plan, phase="complete"))
     return {
         "status": "project-memory-hook-configured",
@@ -154,6 +146,8 @@ def install_locked(p, path, sha):
         "events": list(wanted),
         "capture_registered": p["source_mode"] in ("codex-hooks", "codex-project"),
         "model_calls_sent": 0,
+        "native_changed": edited,
+        "trust": "native-review-required-for-new-command" if edited else "command-unchanged",
         "native_delivery": "requires-supported-host-and-native-trust",
         "manual_entry": command_line(
             [
@@ -170,6 +164,8 @@ def install_locked(p, path, sha):
 
 
 def install(p, path, sha):
+    from agent_brain_client.adapters.installation import launcher_update as hook_launcher
+    hook_launcher.prepare_native_hook(p["device_home"])
     lock = canonical(Path(path).parent / "hook-install.lock")
     with locked(lock, timeout=0):
         return install_locked(p, path, sha)

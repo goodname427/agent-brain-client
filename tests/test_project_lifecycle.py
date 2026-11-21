@@ -45,7 +45,7 @@ class ProjectLifecycle(unittest.TestCase):
         self.assertEqual(self.hook('SessionStart', stage=stage, recall=recall, schedule=schedule), {})
         stage.assert_not_called()
         recall.assert_not_called()
-        schedule.assert_called_once_with('/synthetic/home', '/synthetic/settings', 'e' * 64)
+        schedule.assert_called_once_with('/synthetic/home', '/synthetic/settings', 'e' * 64, verified_release=False)
         order = []
         stage.side_effect = lambda *args: order.append('stage') or {'status': 'staged'}
         schedule.side_effect = lambda *args, **kwargs: order.append(
@@ -62,8 +62,8 @@ class ProjectLifecycle(unittest.TestCase):
         stage.assert_called_once()
         recall.assert_not_called()
         self.assertEqual(schedule.call_args_list, [
-            call('/synthetic/home', '/synthetic/settings', 'e' * 64, wake_worker=False),
-            call('/synthetic/home', '/synthetic/settings', 'e' * 64),
+            call('/synthetic/home', '/synthetic/settings', 'e' * 64, wake_worker=False, verified_release=False),
+            call('/synthetic/home', '/synthetic/settings', 'e' * 64, verified_release=False),
         ])
 
     def test_project_recall_preserves_policy_identity_limit_and_all_layers(self):
@@ -113,7 +113,7 @@ class ProjectLifecycle(unittest.TestCase):
         client, queue = Mock(), Mock()
         current = dict(self.p)
         policy = {'schema': 1, 'scopes': [{'cwd': self.p['project_root'], 'session_id': 'session', 'project_id': 'bound-project'}]}
-        with (patch.object(project, 'load', side_effect=lambda *args: current),
+        with (patch.object(project, 'load', side_effect=lambda *args, **kwargs: current),
               patch.object(project, 'active', side_effect=lambda p: p['enabled']),
               patch.object(project, 'adapter_for', return_value=(client, queue)),
               patch.object(project, 'private_json', return_value=policy),

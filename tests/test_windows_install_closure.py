@@ -568,6 +568,9 @@ class SourceClosure(unittest.TestCase):
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
         self.home = self.f.home
+        prepare = patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook")
+        prepare.start()
+        self.addCleanup(prepare.stop)
         hooks.install(
             SimpleNamespace(
                 device_home=str(self.home),

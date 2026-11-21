@@ -29,6 +29,9 @@ class PublicUpdate(unittest.TestCase):
         )
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
+        prepare = patch("agent_brain_client.adapters.installation.launcher_update.prepare_native_hook")
+        prepare.start()
+        self.addCleanup(prepare.stop)
         self.home = self.f.home
         self.active = {"version": "0.2.10", "commit": "a" * 40}
         self.latest = {"manifest": {"version": "0.2.11"}, "commit": "b" * 40}
@@ -186,6 +189,8 @@ class PublicUpdate(unittest.TestCase):
     def test_current_channel_still_refreshes_existing_hook_through_public_update(self):
         hooks.install(SimpleNamespace(device_home=str(self.home), profile_id=None, operator=None, operator_sha256=None))
         original = source_policy.load(self.home)
+        hooks.transact(self.f.native, source_policy.settings_path(self.home).parent,
+                       hooks.block(original))
         self.latest = {'manifest': {'version': self.active['version']}, 'commit': self.active['commit']}
         self.discovery_status = 'current'
         self.update_status = 'current'
