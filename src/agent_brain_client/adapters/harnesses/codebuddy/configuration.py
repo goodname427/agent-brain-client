@@ -11,7 +11,6 @@ import sys
 from agent_brain_client.adapters.storage.bounded_json import (
     canonical,
     digest,
-    read_json,
 )
 
 NAME = "agent_brain_server"
