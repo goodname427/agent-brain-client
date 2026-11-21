@@ -35,7 +35,7 @@ sh -n bootstrap/macos/install.sh
 git diff --check
 ```
 
-Windows CI 同时隔离 USERPROFILE；原生 API／凭据／DACL 测试必须在 Windows 执行。普通提交按 [CI 变更范围表](ci-scopes.md) 选择检查：纯 Markdown 不触发 Mac／Windows 全盘测试，公共／未知改动和手动运行全量。本地和 [Client checks](../../.github/workflows/client-checks.yml) 共用 [检查入口](../../dev/checks/client.py) 的检查清单；平台跳过须分别报告，不作为通过的实测项。
+Windows CI 同时隔离 USERPROFILE，原生 API、凭据和 DACL 测试须在 Windows 执行。普通提交运行[快速检查](ci-scopes.md)，发布前手动触发 [Client checks](../../.github/workflows/client-checks.yml) 运行全量。本地完整验证使用[同一检查入口](../../dev/checks/client.py)，验收记录应标明跳过的平台。
 
 ## 本地候选构建
 
