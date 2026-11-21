@@ -26,7 +26,7 @@ Set-Location $checkout
 
 安装成功后正常重载 Codex 的 `agent_brain_server` MCP，并按既有 Onboard 流程核对获授权的 Memory/Rule/Skill。模型加载不可观测时仍报告 unknown。完整信任与恢复说明见 [地址与密钥安装](address-key-install.md)。
 
-首次设备初始化默认开启本设备项目和普通目录的今后会话采集与个人记忆召回，使用已登记的 HTTPS 设备身份。Client 核对服务个人池后登记来源，无需重复批准摘要、手填 profile ID 或使用 SSH。普通更新保留本地及服务端的采集停止状态、已选项目范围、排除目录、项目隔离、非项目设置、数据和原队列。历史会话不参与初始化。
+首次设备初始化默认开启本设备项目和普通目录的今后会话采集与个人记忆召回，使用已登记的 HTTPS 设备身份。Client 核对服务个人池后登记来源，无需重复批准摘要、手填 profile ID 或使用 SSH。普通更新保留本地及服务端的采集停止状态、明确选择的范围、排除目录、项目隔离、数据和原队列。历史会话不参与初始化。
 
 Client 使用现有设备 HTTPS 凭据将无凭据来源元数据登记到同一个人记忆池，读回核对设备和范围后才激活。无需把设备包交给 Server operator，不生成新长期凭据，不扫描历史。Server 必须包含 `authenticated-device-v1` 来源登记接口；未确认结果保留原采集配置与来源包。重跑安装或更新时，Client 按原设备和范围重试尚未登记的来源，或确认已运行的同一来源。已登记但仍停止时，按回执使用原包显式激活。
 
@@ -45,7 +45,7 @@ Client 使用现有设备 HTTPS 凭据将无凭据来源元数据登记到同一
 
 如果服务端来源已启用而本地批准未确认，更新回执分别报告这两个状态，并保留原设置。单独传 `--exclude-root` 或 `--non-project-root` 只替换对应目录列表，保留项目范围和其余目录列表。
 
-全目录采集范围由 `all_projects: true` 和 `all_non_projects: true` 表示，新盘上的项目和普通目录同样适用。既有仅批准全项目采集的设备可在普通目录自动召回已授权的个人记忆；如需扩大今后采集范围，使用上面的 `--all-directories` 登记。排除目录与项目隔离规则继续生效。
+全目录采集范围由 `all_projects: true` 和 `all_non_projects: true` 表示，新盘上的项目和普通目录同样适用。已启用个人召回且未限制普通目录的旧全项目策略会在普通更新时自动纳入今后普通目录采集。Server 0.3.7 会保留旧采集范围，Server 支持后再运行普通更新即可续完。同一设备身份、排除目录、隔离规则和原队列继续保留。
 
 `global-resume` 只恢复原本已批准的来源，不补齐空范围或 Server 登记。空范围、缺少批准或未完成激活时返回 `global-memory-activation-required` 和非零退出码；此路径不调用 Server 或访问凭据。已批准的暂停来源可显式恢复，只有 Server 明确返回 `schema:1`、`stopped:false` 才撤掉本地停止标记。错误、停止状态或缺失确认返回 `global-memory-resume-unconfirmed`，保留标记和错误代码。旧的逐项目采集独立恢复时标为 `global-memory-legacy-resumed`，不声称用户级扩大范围已启用。
 

@@ -151,6 +151,16 @@ def has_origins(scope):
     )
 
 
+def ordinary_default(scope):
+    """Recognize the old active default without any ordinary-directory choice."""
+    return (
+        scope.get("all_projects") is True
+        and "all_non_projects" not in scope
+        and not scope["non_project_roots"]
+        and scope["recall_personal"]
+    )
+
+
 def select(scope, value, *, recall=False):
     validate(scope)
     origin(value)
@@ -165,12 +175,7 @@ def select(scope, value, *, recall=False):
             return None
         # Existing default all-project policies already authorize personal recall.
         # Their stored capture approval still requires an explicit ordinary scope.
-        personal_recall = (
-            recall
-            and scope.get("all_projects")
-            and "all_non_projects" not in scope
-            and not scope["non_project_roots"]
-        )
+        personal_recall = recall and ordinary_default(scope)
         if (
             personal_recall
             or scope.get("all_non_projects")

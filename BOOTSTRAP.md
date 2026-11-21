@@ -18,7 +18,7 @@ Codex 和 [CodeBuddy IDE／CLI](https://github.com/goodname427/agent-brain-clien
 
 4. `status` 明确为 `client-not-installed` 时，运行平台安装入口。首次只提供用户明确选择的 **HTTPS Server 地址**，并让用户在本机隐藏输入中填写 Server 生成的长期接入密钥。Mac：`sh bootstrap/macos/install.sh --server 'https://your-server.example'`；Windows：`& ./bootstrap/windows/install.ps1 -Server 'https://your-server.example'`。省略地址时脚本会在本机询问地址。地址仅定位服务；密钥内容不得进入聊天、参数或环境变量。用户授权后可用 `--access-key-file`（Windows `-AccessKeyFile`）传入本机 Key 文件路径，复用同一认证流程，不必手动输入。Server 认证后自动返回适配平台的授权配置和发行信任锚，再完成发行校验、安全保存设备身份及本地安装事务。正常流程不要求 connection 文件、摘要、ready 回执或邀请码。服务尚未启用新协议时保留状态并报告，不拼接离线包绕过。中断重跑同一入口恢复；`client-uninstalled` 复用原身份重装，不申请新密钥。
 5. 状态为 `review-required`、归属不明或有未完成事务时，保留原文件和回执，按对应文档的 status／repair 流程处理；不能将异常当作未安装而清理、重装或重置身份。
-6. 安装／更新后先调用现有 MCP 工具，检查新鲜响应中的 `client_runtime.reload_required`、worker 与活动包标识。兼容 worker 会等在途请求结束后在原连接切换。复查后仍需重载，或宿主仍看不到所需新工具时，只用正常流程重载 `agent_brain_server`。无法观察时报告 unknown。核实后继续既有 Onboard 流程。分别报告已验证活动包、成功检查的渠道版本和可观察的 worker 版本；未观察模型加载时报告 unknown。首次安装默认开启本设备项目和普通目录的今后会话采集与个人记忆召回。更新复用已有服务与设备身份，保留已批准的采集范围。全程不补传历史；Hook trust 由宿主按正常流程处理。关闭、限制或不启用用户要求的功能前先确认。
+6. 安装／更新后先调用现有 MCP 工具，检查新鲜响应中的 `client_runtime.reload_required`、worker 与活动包标识。兼容 worker 会等在途请求结束后在原连接切换。复查后仍需重载，或宿主仍看不到所需新工具时，只用正常流程重载 `agent_brain_server`。无法观察时报告 unknown。核实后继续既有 Onboard 流程。分别报告已验证活动包、成功检查的渠道版本和可观察的 worker 版本；未观察模型加载时报告 unknown。首次安装默认开启本设备项目和普通目录的今后会话采集与个人记忆召回。更新复用已有服务与设备身份。已启用的旧全项目策略如果没有普通目录限制且允许个人召回，会在 Server 支持后自动纳入今后的普通目录采集。其他明确范围和暂停继续保留。全程不补传历史；Hook trust 由宿主按正常流程处理。关闭、限制或不启用用户要求的功能前先确认。
 
 验证源码时使用隔离 HOME 与 CODEX_HOME，测试只访问合成 localhost。构建不会证明模型已经加载 MCP、Keychain 提示通过或已部署。保留原生工具工作流；不读取原生会话或数据库。
 
