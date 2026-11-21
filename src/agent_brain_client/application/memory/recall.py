@@ -15,7 +15,7 @@ import re
 
 
 def _fit_context(items, references, query, observe, *, cached=False):
-    selected, uncorroborated = select_context_items(
+    selected = select_context_items(
         items, references, query, cached=cached, automatic=observe is not None
     )
     returned = [
@@ -39,8 +39,7 @@ def _fit_context(items, references, query, observe, *, cached=False):
             candidate_count=len(items),
             returned=returned,
             selected=refs,
-            omitted_for_budget=len(items) - uncorroborated - len(selected),
-            unselected_without_evidence=uncorroborated,
+            omitted_for_budget=len(items) - len(selected),
         )
     return list(selected.values()), refs
 

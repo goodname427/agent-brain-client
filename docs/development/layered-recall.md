@@ -49,20 +49,22 @@ it is never part of a release and never activates host credentials.
 
 The Hook selects and presents evidence from its existing authorized
 `memory_query` result on every turn, regardless of the candidates' total size.
-It keeps native L1 relative order and does not use a missing literal match
-to disqualify a native hit. Distinguishing query terms and current-source
-applicability can promote a derived result. This uses the existing approved
-source context and does not assign cross-layer relevance scores.
+It keeps native L1 relative order. Distinguishing query terms and current-source
+applicability can promote a derived result. L2/L3 stay eligible without a
+literal match and retain their unranked relevance label. The Core does not
+provide query ranks for those rows or a matched passage for native L1 hits.
 
-Short relevant records are written whole. Long records with direct query
-evidence use an original sentence when it fits, or a bounded verbatim
-`excerpt`. A long native hit can also use an excerpt when no distinguishing
-text is available. Other supported long records can use an `index` containing
-a short locator quote. These forms carry the verified source context and
-a record digest. The existing `memory_query` with its normal origin and
-authorization can search the quote again. The digest is a correlation
-reference. There is no exact read-by-digest or read-by-path route in the
-client's current grant.
+Short records can be written whole in evidence order. A long record with a
+locatable anchor can use a bounded verbatim `excerpt` containing the adjacent
+text before and after the hit, including across a blank line. Its
+`excerpt_omissions` flags mark which sides of the source were omitted. If the
+adjacent passage cannot fit, the fallback is an `index` without answer text.
+A long native hit without a locatable passage can use its complete returned
+text after short evidence gets space. If that text cannot fit, it also uses
+an index. Each compact form retains source context and a record digest.
+The existing `memory_query` remains available under its normal origin and
+authorization. The digest is a correlation reference, and neither the digest
+nor a scenario path is an exact read selector in the current Client grant.
 
 The final serialization is limited to 24 KiB of UTF-8 including JSON row
 metadata, the policy prefix and separators. Complete short records and
@@ -84,9 +86,8 @@ per attempt as well as the latest summary in `last-recall.json`. The request key
 binds the approved scope, origin, session, turn and full question. The wire
 request ID is `global_recall_<request_key>`. Schema 2 receipts contain hashes of
 the session, turn, actual query, returned and selected record IDs/content, and emitted
-context, plus layer/count/byte totals, the number omitted for budget and, for
-the evidence selector, `unselected_without_evidence`. For a selected excerpt or
-index, `content_sha256` identifies the verified candidate and
+context, plus layer/count/byte totals and the number omitted for budget.
+For a selected excerpt or index, `content_sha256` identifies the verified candidate and
 `output_content_sha256` identifies the text actually presented. They
 contain no query, memory text, source paths, credentials or exception values.
 Later queries cannot overwrite a different request's evidence. Old schema 1
