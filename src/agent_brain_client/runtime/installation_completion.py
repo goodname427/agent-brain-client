@@ -169,11 +169,17 @@ def finish_windows_update(home, result):
         or "codex" not in fresh["mapping"].get("registered_surfaces", {})
     ):
         return result
-    return complete(home, dict(result, installed=True, retained_archive=fresh["archive"],
-                               old_identity_reused=False, old_queue_replayed=False), harness="codex")
+    return complete(
+        home,
+        dict(result, installed=True, retained_archive=fresh["archive"],
+             old_identity_reused=False, old_queue_replayed=False),
+        bindings_only=True,
+    )
 
 
-def complete(home, result, *, harness=None, choose=input, refresh=mapping_refresh):
+def complete(
+    home, result, *, harness=None, choose=input, refresh=mapping_refresh, bindings_only=False,
+):
     """Continue an authorized install; each stage reports independent evidence."""
     import agent_brain_client.adapters.installation.installation as ci
     from agent_brain_client.adapters.storage.registration import CodexBindingStateBlocked
@@ -212,13 +218,20 @@ def complete(home, result, *, harness=None, choose=input, refresh=mapping_refres
         if selected == "codex":
             stages["native_mcp"] = {"status": "pending"}
         try:
-            native_mcp = restore_native_bindings(home)
+            native_mcp = restore_native_bindings(home, keep_configured=bindings_only)
         except CodexBindingStateBlocked:
             stage = "native-mcp"
             raise
         if native_mcp is not None:
             stages["native_mcp"] = native_mcp
-        elif selected == "codex":
+        if bindings_only:
+            if native_mcp is not None and native_mcp["native_changed"]:
+                value["native_changed"] = True
+                value["reload_check"] = dict(
+                    value.get("reload_check", {}), mcp_registration_changed=True,
+                )
+            return value
+        if native_mcp is None and selected == "codex":
             stage = "native-mcp"
             from agent_brain_client.adapters.harnesses.codex import binding
 
@@ -268,7 +281,9 @@ def complete(home, result, *, harness=None, choose=input, refresh=mapping_refres
             stages["native_mcp"] = {"status": "blocked"}
             if isinstance(error, CodexBindingStateBlocked):
                 stages["native_mcp"]["reason"] = "private-codex-binding-state-unverified"
+        entry = "update" if bindings_only else "install"
         value["next_action"] = (
-            "Rerun the normal Windows install entry to resume the incomplete stage. Preserve configuration and recovery receipts; MCP registration alone does not confirm mapping or global memory activation."
+            f"Rerun the normal Windows {entry} entry to resume the incomplete stage. "
+            "Preserve configuration and recovery receipts."
         )
     return value

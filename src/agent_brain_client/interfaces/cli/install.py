@@ -23,7 +23,9 @@ def lifecycle_exit(action, value):
     """Exit success denotes the requested action, never merely an old installation."""
     status = value.get("status")
     setup_stage = value.get("installation_stages", {}).get("setup", {}).get("stage")
-    if action in ("install", "update") and setup_stage in ("native-mcp", "retained-native-bindings"):
+    if action in ("install", "update") and setup_stage in (
+        "registration", "native-mcp", "retained-native-bindings",
+    ):
         return 2
     if (
         value.get("memory_accessibility", {}).get("status")

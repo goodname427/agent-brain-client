@@ -240,7 +240,7 @@ def projection_host(home, native):
     raise ValueError("Unknown retained projection identity")
 
 
-def restore_native_bindings(home):
+def restore_native_bindings(home, *, keep_configured=False):
     """Rebind only the exact previously registered surface and Hook pause state."""
     from agent_brain_client.adapters.storage.reinstallation import read_journal
     record = read_journal(home)
@@ -260,9 +260,15 @@ def restore_native_bindings(home):
         row = surfaces["codebuddy"]
         if set(row) != {"surface", "hooks_enabled"} or row["surface"] not in ("both", "cli", "ide") or type(row["hooks_enabled"]) is not bool:
             raise ValueError("Exact retained CodeBuddy surface required")
-        from agent_brain_client.adapters.harnesses.codebuddy import configuration
-        configuration.install(Path(home), Path(__file__).resolve().parents[3], None,
-                              surface=row["surface"], enable_hooks=row["hooks_enabled"])
+        from agent_brain_client.runtime.host_maintenance import registered_hosts
+
+        # Ordinary update has already maintained active hosts. An unrelated
+        # CodeBuddy registration does not need to be written again.
+        if not keep_configured or "codebuddy" not in registered_hosts(home):
+            from agent_brain_client.adapters.harnesses.codebuddy import configuration
+
+            configuration.install(Path(home), Path(__file__).resolve().parents[3], None,
+                                  surface=row["surface"], enable_hooks=row["hooks_enabled"])
     if "codex" in surfaces and surfaces["codex"]["hooks_enabled"]:
         from types import SimpleNamespace
         from agent_brain_client.adapters.harnesses.codex.collection_installation import install

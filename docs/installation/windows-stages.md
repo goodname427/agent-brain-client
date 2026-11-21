@@ -51,8 +51,11 @@ claim end-to-end model delivery.
 The shared installation can finish before the Codex profile has an MCP
 binding. Report the shared registration, native MCP stage and worker observation
 separately. Rerun the normal official Windows install or update entry to finish
-an incomplete binding under the same Windows account. Check the running worker
-with a fresh MCP response after the binding is available.
+an incomplete binding under the same Windows account. Update resumes the
+retained native bindings without changing the primary host or running the
+install-time mapping and source setup again. If binding recovery fails, the
+command returns an error and still reports the verified package update status.
+Check the running worker with a fresh MCP response after the binding is available.
 
 The structural reinstall introduced in Client 0.8.11 could restore the Codex cache before creating the private registration
 directory. Under a Windows token that defaults to the Administrators group as

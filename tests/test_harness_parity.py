@@ -745,6 +745,16 @@ class NativeBindingTransaction(unittest.TestCase):
                 self.assertNotIn(b"agent_brain_server", file.read_bytes())
                 self.assertIn(b'command = "preserve"', file.read_bytes())
 
+    def test_update_exit_requires_verified_registration_when_binding_recovery_runs(self):
+        from agent_brain_client.interfaces.cli.install import lifecycle_exit
+        update = {"status": "client-update-current", "channel_checked": True}
+        self.assertEqual(lifecycle_exit("update", update), 0)
+        recovery = dict(update, installation_stages={
+            "mcp_registration": "unverified",
+            "setup": {"stage": "registration", "status": "pending-review-or-resume"},
+        })
+        self.assertEqual(lifecycle_exit("update", recovery), 2)
+
     def test_native_collision_is_rejected_before_shared_enrollment(self):
         import os
         from agent_brain_client.interfaces.cli.install import selected_native, lifecycle_exit
