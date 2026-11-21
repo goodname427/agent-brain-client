@@ -517,6 +517,57 @@ class LayeredRecall(unittest.TestCase):
         with patch.object(gm, 'approved', return_value=False):
             self.assertEqual(self.run_hook(question=question), {})
 
+    def test_offline_cache_never_reuses_a_different_presentation_mode(self):
+        group = self.response['result']['namespace_results'][0]
+        question = 'Kestrel beacon'
+        original = '背景说明。\n' * 100 + 'The Kestrel beacon is violet.'
+        target = dict(self.row('L1'), content=original)
+        group['recall'].update(L1=[target], L2=[], L3={'content': None, 'provenance': {}})
+        online = copy.deepcopy(self.response)
+        offline = {'error': {'code': 'transport_unconfirmed'}}
+
+        projected, _ = self.fitted_hook(question)
+        self.assertEqual(projected[0]['presentation'], 'excerpt')
+        self.response = offline
+        with self.assertRaisesRegex(ValueError, 'Global recall unavailable'):
+            gm.recall(self.value, self.local, 'synthetic-reader', question)
+        rows, _ = self.fitted_hook(question)
+        self.assertEqual(rows, [dict(projected[0], offline_cache=True, remote_confirmation=False)])
+
+        self.response = online
+        whole = gm.recall(self.value, self.local, 'synthetic-reader', question)
+        self.assertEqual(whole[0]['content'], original)
+        self.assertEqual(whole[0]['source_context'], target['source_context'])
+        self.response = offline
+        self.assertEqual(self.run_hook(question=question), {})
+        receipt = recall_receipts.recall_observation(self.value)
+        self.assertEqual(receipt['status'], 'failed')
+        self.assertFalse(receipt['offline_cache'])
+        self.assertFalse(receipt['output_written'])
+        offline_whole = gm.recall(self.value, self.local, 'synthetic-reader', question)
+        self.assertEqual(offline_whole, [dict(whole[0], offline_cache=True, remote_confirmation=False)])
+        with self.assertRaisesRegex(ValueError, 'Global recall unavailable'):
+            gm.recall(self.value, self.local, 'synthetic-reader', 'different question')
+        self.assertEqual(len(list(self.root.glob('recall-*.json'))), 1)
+
+    def test_untagged_cache_cannot_replay_projected_content(self):
+        group = self.response['result']['namespace_results'][0]
+        question = 'Kestrel beacon'
+        group['recall'].update(
+            L1=[dict(self.row('L1'), content='背景说明。\n' * 100 + 'The Kestrel beacon is violet.')],
+            L2=[], L3={'content': None, 'provenance': {}},
+        )
+        rows, _ = self.fitted_hook(question)
+        self.assertEqual(rows[0]['presentation'], 'excerpt')
+        cache = self.root / ('recall-' + digest(self.local) + '.json')
+        saved = json.loads(cache.read_bytes())
+        saved.pop('evidence_selected')
+        recall_receipts.metadata.write(cache, saved)
+        self.response = {'error': {'code': 'transport_unconfirmed'}}
+        with self.assertRaisesRegex(ValueError, 'Cached recall excerpt changed'):
+            gm.recall(self.value, self.local, 'synthetic-reader', question)
+        self.assertEqual(self.run_hook(question=question), {})
+
     def test_request_receipt_survives_later_query_and_failed_query_has_receipt(self):
         self.run_hook()
         first = recall_receipts.recall_observation(self.value)

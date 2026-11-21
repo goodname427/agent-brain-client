@@ -71,7 +71,11 @@ metadata, the policy prefix and separators. Complete short records and
 excerpts get space before indexes. The Server's 240,000-byte envelope and
 native candidate limits stay independent. The Hook makes one wire request
 and formats only the candidates returned by it. The approved offline fallback
-keeps the selected presentation and refits any added offline metadata.
+keeps the selected presentation and refits any added offline metadata. There
+is one cache slot per origin. Offline fallback requires its query, scope and
+presentation mode to match the request. A newer lookup in the other mode
+replaces the slot. Older untagged caches are accepted only if they contain
+whole rows, which the current request formats in its own mode.
 
 The paired Tencent Core already supplies native L1 order and score, and the
 Server adapter uses its scenario list, scenario read and core profile handlers.

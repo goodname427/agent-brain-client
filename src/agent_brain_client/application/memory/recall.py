@@ -61,14 +61,15 @@ def recall(
     )
     params["recall"] = options
     cache_query = digest([query, params["limit"], options])
+    automatic = observe is not None
+    cache = services.settings_path(value["device_home"]).parent / (
+        "recall-" + digest(local) + ".json"
+    )
     with recall_timing_stage("wire"):
         response = client.wire(
             "memory_query", params, **({"rid": request_id} if request_id else {})
         )
     if "error" in response:
-        cache = services.settings_path(value["device_home"]).parent / (
-            "recall-" + digest(local) + ".json"
-        )
         if response["error"].get(
             "code"
         ) == "transport_unconfirmed" and services.cache_exists(cache):
@@ -76,6 +77,7 @@ def recall(
             if (
                 saved.get("scope_sha256") == digest(value["scope"])
                 and saved.get("query_sha256") == cache_query
+                and ("evidence_selected" not in saved or saved["evidence_selected"] is automatic)
                 and services.approved(value)
                 and select(value["scope"], local) is not None
             ):
@@ -83,20 +85,22 @@ def recall(
                     dict(item, offline_cache=True, remote_confirmation=False)
                     for item in saved["items"]
                 ]
+                cached_evidence = saved.get("evidence_selected") is True
                 references = saved.get("selected", [])
                 for index, item in enumerate(items):
                     if "presentation" not in item:
                         continue
                     ref = references[index] if index < len(references) else {}
                     if (
-                        ref.get("layer") != item["layer"]
+                        not cached_evidence
+                        or ref.get("layer") != item["layer"]
                         or ref.get("record_sha256") != item["record_sha256"]
                         or ref.get("presentation") != item["presentation"]
                         or ref.get("output_content_sha256") != digest(item["content"])
                     ):
                         raise ValueError("Cached recall excerpt changed")
                 selected, _ = _fit_context(
-                    items, references, query, observe, cached=saved.get("evidence_selected") is True
+                    items, references, query, observe, cached=cached_evidence
                 )
                 return selected
         raise ValueError("Global recall unavailable")
@@ -207,9 +211,6 @@ def recall(
                     }
                 )
     items, refs = _fit_context(items, references, query, observe)
-    cache = services.settings_path(value["device_home"]).parent / (
-        "recall-" + digest(local) + ".json"
-    )
     services.write_cache(
         cache,
         {
@@ -217,7 +218,7 @@ def recall(
             "query_sha256": cache_query,
             "items": items,
             "selected": refs,
-            "evidence_selected": observe is not None,
+            "evidence_selected": automatic,
         },
     )
     return items
