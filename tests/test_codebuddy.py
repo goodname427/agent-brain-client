@@ -1,5 +1,4 @@
 from agent_brain_client.adapters.storage import metadata as metadata_io, registration as registration_store
-from agent_brain_client.runtime import host_binding
 import agent_brain_client.runtime.host_binding as host_binding
 import agent_brain_client.adapters.storage.bounded_json as adapters_storage_bounded_json
 import agent_brain_client.adapters.harnesses.hook_output as adapters_harnesses_hook_output
@@ -32,34 +31,6 @@ from test_event_hook import accepted
 
 
 class Configuration(unittest.TestCase):
-    def test_system_python_bootstrap_loads_installer_and_hands_off(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp).resolve()
-            (root / 'bootstrap').mkdir()
-            script = root / 'bootstrap/codebuddy.py'
-            script.write_bytes((ROOT / 'bootstrap/codebuddy.py').read_bytes())
-            (root / 'bootstrap/python_runtime.py').write_text(
-                'import sys\nfrom pathlib import Path\n'
-                'def runtime(home, prepare):\n'
-                '    assert prepare is False\n'
-                '    return Path(sys.executable)\n')
-            code = '''import json, os, runpy, sys
-entry = sys.argv[1]
-sys.argv = [entry, 'status']
-sys.version_info = (3, 9)
-def handoff(path, argv):
-    print(json.dumps({'path': path, 'argv': argv}))
-    raise SystemExit(0)
-os.execv = handoff
-runpy.run_path(entry, run_name='__main__')
-'''
-            result = subprocess.run([sys.executable, '-I', '-B', '-c', code, str(script)],
-                                    capture_output=True, timeout=15)
-            self.assertEqual(result.returncode, 0, result.stderr.decode())
-            argv = json.loads(result.stdout)['argv']
-            self.assertTrue(os.path.samefile(argv[0], sys.executable))
-            self.assertEqual(argv[1:], ['-X', 'utf8', '-I', '-B', str(root / 'src/agent_brain_client/interfaces/cli/codebuddy.py'), 'status'])
-
     def test_jsonc_narrow_edit_keeps_comments_urls_and_other_servers(self):
         text = '{\n// user settings\n"permissions":{"allow":["Read"],},\n"mcpServers":{ /* keep */ "other":{"url":"https://example.invalid/a//b"},},\n}\n'
         changed = cbhost.render_json(text, {'command': 'python', 'args': ['a b']}, None)
@@ -170,9 +141,10 @@ class Installation(unittest.TestCase):
         entry_path = Path(command['args'][command['args'].index('-B') + 1])
         self.assertNotIn(str(ROOT), str(entry_path))
         self.assertEqual(entry_path.read_bytes(), (ROOT / 'src/agent_brain_client/interfaces/cli/codebuddy.py').read_bytes())
-        isolated = subprocess.run([sys.executable, '-I', '-B', str(entry_path), 'status', '--device-home', str(self.home)], cwd=self.home, capture_output=True, timeout=15)
+        isolated = subprocess.run([command['command'], *command['args']], cwd=self.home, capture_output=True, timeout=15)
         self.assertEqual(isolated.returncode, 2)
-        self.assertEqual(json.loads(isolated.stdout)['status'], 'codebuddy-review-or-resume-required')
+        self.assertEqual(json.loads(isolated.stderr)['status'], 'codebuddy-review-or-resume-required')
+        self.assertEqual(isolated.stdout, b'')
         self.assertNotIn(b'ModuleNotFoundError', isolated.stderr)
         self.assertTrue(self.install(remove=True)['backend_preserved'])
         settings = cbhost.Document(self.settings.read_text()).value
@@ -333,7 +305,7 @@ class Installation(unittest.TestCase):
         def invoke(*args):
             output = io.StringIO()
             with redirect_stdout(output):
-                code = installer.main(["--codebuddy-entry", *args])
+                code = installer.main(["--harness", "codebuddy", *args])
             return code, json.loads(output.getvalue())
 
         with (
@@ -377,11 +349,16 @@ class Installation(unittest.TestCase):
                         patch.object(entry, "configure_binding", side_effect=AssertionError("Update must not rebind")),
                     ):
                         code, updated = invoke("--action", "update")
-                    self.assertEqual(code, 0, updated)
-                    update.assert_called_once_with(self.home, "update")
-                    self.assertEqual(updated["global_hook"]["surface"], surface)
-                    self.assertEqual(metadata.private_json(receipt)["surface"], surface)
-                    code, removed = invoke("--action", "uninstall")
+                        self.assertEqual(code, 0, updated)
+                        update.assert_called_once_with(self.home, "update")
+                        self.assertEqual(updated["global_hook"]["surface"], surface)
+                        self.assertEqual(metadata.private_json(receipt)["surface"], surface)
+                        updated_receipt = receipt.read_bytes()
+                        code, repeated = invoke("--action", "update")
+                        self.assertEqual(code, 0, repeated)
+                        self.assertFalse(repeated["global_hook"]["native_changed"])
+                        self.assertEqual(receipt.read_bytes(), updated_receipt)
+                    code, removed = invoke("--action", "unbind")
                     self.assertEqual(code, 0, removed)
                     self.assertEqual(removed["status"], "host-unbound")
                     self.assertTrue(metadata.private_json(receipt)["removed"])
@@ -635,27 +612,6 @@ class Hooks(unittest.TestCase):
 
 
 class Protocol(unittest.TestCase):
-    @unittest.skipUnless(sys.platform == 'darwin', 'Mac wrapper fixture')
-    def test_compatibility_wrapper_delegates_each_action_once(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp).resolve()
-            tools = root / 'bootstrap/macos'
-            tools.mkdir(parents=True)
-            home = root / 'home'
-            home.mkdir()
-            log = root / 'operations'
-            script = tools / 'codebuddy.sh'
-            script.write_bytes((ROOT / 'bootstrap/macos/codebuddy.sh').read_bytes())
-            (tools / 'install.sh').write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$SYNTHETIC_LOG"\nexit 2\n')
-            env = dict(os.environ, HOME=str(home), SYNTHETIC_LOG=str(log))
-            for args in (('--action', 'update'), ('--action=reinstall-check',),
-                         ('--surface', 'cli', '--server', 'https://synthetic.invalid')):
-                with self.subTest(args=args):
-                    log.write_text('')
-                    result = subprocess.run(['sh', str(script), *args], env=env, capture_output=True)
-                    self.assertEqual(result.returncode, 2, result.stderr)
-                    self.assertEqual(log.read_text().splitlines(), [' '.join(('--codebuddy-entry', *args))])
-
     def test_capture_queue_uses_shared_core_and_separate_host_binding(self):
         from agent_brain_client.application.queue.outbox import DurableOutbox
         source = fixture.Outbox('test_same_id_cannot_change_request_or_cas_base')
@@ -698,7 +654,7 @@ class Protocol(unittest.TestCase):
     def test_fresh_install_uses_shared_backend_without_codex_home(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp).resolve()
-            self.assertEqual(entry.backend_home(home), home / '.config/agent-brain-client/shared-native')
+            self.assertEqual(registration_store.registry_home(home), home / '.config/agent-brain-client/shared-native')
             state = home / '.config/agent-brain-client'
             from agent_brain_client.adapters.platforms.filesystem import private_directory
             private_directory(state)
@@ -706,7 +662,7 @@ class Protocol(unittest.TestCase):
             native = home / 'original-native'
             metadata.write(policy, {'runtime': {'codex_home': str(native)}})
             metadata.write(state / 'codex-mcp.json', {'release_policy': str(policy), 'release_policy_sha256': adapters_storage_bounded_json.digest(policy.read_bytes())})
-            self.assertEqual(entry.backend_home(home), native)
+            self.assertEqual(registration_store.registry_home(home), native)
             self.assertFalse((home / '.codex').exists())
 
     @unittest.skipUnless(sys.platform == 'darwin', 'Mac first-install fixture')

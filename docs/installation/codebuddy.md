@@ -68,7 +68,7 @@ Windows：
 
 `unbind` 只移除已登记的 CodeBuddy 绑定、Hook 与说明块，保留共享 Client、其他宿主、凭据和待传事件。公共入口的 `uninstall` 是整机 Client 卸载。配置冲突或事务中断时核对自有前后像，并用相同入口续接。已运行的 MCP 由宿主正常关闭。
 
-更新使用共享 Client 的 `check-update` 和 `update`。共享更新从已验证的活动包刷新原有 IDE／CLI 范围。观察新鲜 MCP 响应的 `client_runtime.reload_required`，给兼容 worker 完成切换的机会，仍需要时再使用宿主自己的 MCP 重载。历史 `codebuddy.sh` 和 `codebuddy.ps1` 路径转发至同一公共入口。
+更新使用同一平台入口的 `check-update` 和 `update`。共享更新从已验证的活动包刷新原有 IDE／CLI 范围。观察新鲜 MCP 响应的 `client_runtime.reload_required`，给兼容 worker 完成切换的机会，仍需要时再使用宿主自己的 MCP 重载。
 
 Git、局部 `P4CONFIG`／`.p4config`、`.uproject` 及 UE Engine 标记组合可用于识别工程，仍受原 scope 和 exclude 限制。首次设置会批准项目和普通目录的今后采集，普通目录使用已授权的个人记忆池。已有非项目目录清单继续限制采集与自动召回。已启用个人召回且未限制普通目录的旧全项目策略可在普通目录自动召回个人记忆。Server 支持后，普通更新会自动登记今后的普通目录采集，沿用原设备与暂停、排除及隔离设置。
 

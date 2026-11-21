@@ -3,6 +3,7 @@ from pathlib import Path
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -100,23 +101,55 @@ class FreshMainCheckout(unittest.TestCase):
             with self.subTest(args=args):
                 self.assertEqual(bootstrap_main.should_bootstrap(args), expected)
 
-    @unittest.skipUnless(sys.platform == "darwin", "Native Mac bootstrap")
-    def test_native_status_and_help_leave_a_cold_home_unchanged(self):
+    @unittest.skipUnless(sys.platform in ("darwin", "win32"), "Native installer bootstrap")
+    def test_native_status_and_help_use_the_unified_entry_for_both_harnesses(self):
         root = Path(__file__).resolve().parents[1]
-        env = dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.home / "codex"))
-        for name in ("install.sh", "codebuddy.sh"):
-            with self.subTest(wrapper=name):
-                command = ["/bin/sh", str(root / "bootstrap/macos" / name)]
-                status = subprocess.run([*command, "--action", "status"], env=env, capture_output=True)
-                self.assertEqual(status.returncode, 0, status.stderr)
-                self.assertEqual(json.loads(status.stdout)["status"], "client-not-installed")
-                help_result = subprocess.run([*command, "--help"], env=env, capture_output=True)
-                self.assertEqual(help_result.returncode, 0, help_result.stderr)
-                self.assertIn(b"--surface", help_result.stdout)
-                invalid = subprocess.run([*command, "--bogus"], env=env, capture_output=True)
-                self.assertEqual(invalid.returncode, 2, invalid.stderr)
-                self.assertEqual(json.loads(invalid.stdout)["status"], "invalid-install-arguments")
-                self.assertEqual(list(self.home.iterdir()), [])
+        env = dict(os.environ, HOME=str(self.home), USERPROFILE=str(self.home),
+                   CODEX_HOME=str(self.home / "codex"))
+        if sys.platform == "darwin":
+            command = ["/bin/sh", str(root / "bootstrap/macos/install.sh")]
+            action, harness_flag, help_flag = "--action", "--harness", "--help"
+        else:
+            command = ["pwsh", "-NoProfile", "-NonInteractive", "-File",
+                       str(root / "bootstrap/windows/install.ps1")]
+            action, harness_flag, help_flag = "-Action", "-Harness", "-Help"
+
+        def invoke(*args, code=0):
+            result = subprocess.run([*command, *args], env=env, capture_output=True, timeout=60)
+            self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+            return result.stdout
+
+        self.assertEqual(json.loads(invoke(action, "status"))["status"], "client-not-installed")
+        help_text = invoke(help_flag)
+        self.assertIn(b"--surface", help_text)
+        self.assertIn(b"{codex,codebuddy}", help_text)
+        invalid = json.loads(invoke(action, "status", harness_flag, "unknown", code=2))
+        self.assertEqual(invalid["status"], "invalid-install-arguments")
+        self.assertEqual(list(self.home.iterdir()), [])
+
+        if sys.platform == "darwin":
+            from bootstrap.python_runtime import dependency
+
+            # Exercise the real maintenance handoff without downloading Python in CI.
+            _, archive_sha = dependency()
+            prefix = self.home / ".config/agent-brain-client/install-runtime" / archive_sha
+            prefix.parent.mkdir(parents=True, mode=0o700)
+            python = prefix / "python/bin/python3"
+            python.parent.mkdir(parents=True)
+            python.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n")
+            python.chmod(0o700)
+            (prefix / "archive.sha256").write_text(json.dumps({
+                "archive": archive_sha, "python": hashlib.sha256(python.read_bytes()).hexdigest(),
+            }))
+
+        before = set(self.home.rglob("*"))
+        for harness in ("codex", "codebuddy"):
+            with self.subTest(harness=harness):
+                status = json.loads(invoke(action, "status", harness_flag, harness))
+                self.assertEqual(status["status"], "client-not-installed")
+                self.assertEqual(status["requested_harness"], harness)
+                self.assertEqual(status["requested_harness_status"]["status"], "host-not-installed")
+        self.assertEqual(set(self.home.rglob("*")), before)
 
     def test_stale_or_unreachable_remote_main_never_reuses_one_shot_checkout(self):
         first = bootstrap_main.fresh_checkout(

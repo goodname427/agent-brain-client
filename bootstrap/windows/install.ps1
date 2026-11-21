@@ -8,7 +8,6 @@ param(
     [string]$AccessKeyFile,
     [string]$Connection,
     [string]$ExpectedConnectionSha256,
-    [switch]$CodeBuddyEntry,
     [switch]$Help
 )
 $ErrorActionPreference = 'Stop'
@@ -51,7 +50,6 @@ try {
     $python = Resolve-AgentBrainPython
     $stage = 'arguments'
     $arguments = @('--action', $Action)
-    if ($CodeBuddyEntry) { $arguments += '--codebuddy-entry' }
     if ($Help) { $arguments += '--help' }
     if ($Harness) { $arguments += @('--harness', $Harness.ToLowerInvariant()) }
     if ($Surface) { $arguments += @('--surface', $Surface.ToLowerInvariant()) }
