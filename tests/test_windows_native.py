@@ -145,7 +145,7 @@ class WindowsNative(unittest.TestCase):
         })
         return previous, policy, fresh
 
-    def run_codex_completion(self, previous, policy, action):
+    def run_codex_completion(self, previous, policy, action, *, primary="codex", registration_error=None):
         import io
         from unittest.mock import patch
         from agent_brain_client.adapters.installation import installation
@@ -154,7 +154,7 @@ class WindowsNative(unittest.TestCase):
         command = {
             "command": str(Path(sys.executable).resolve()),
             "args": ["-I", "-B", str(ROOT / "tests/fixtures/codex_binding_probe.py"),
-                     str(ROOT / "src"), str(previous.home), "--harness", "codex"],
+                     str(ROOT / "src"), str(previous.home), "--harness", primary],
             "enabled": True,
         }
         complete = installation_completion.complete
@@ -164,7 +164,8 @@ class WindowsNative(unittest.TestCase):
             patch.object(Path, "home", return_value=previous.home),
             patch.object(sys, "argv", ["install.py", "--action", action, "--harness", "codex"]),
             patch.object(sys, "stdout", io.StringIO()) as output,
-            patch.object(installation, "registered_context", return_value=(policy, command, None, None)),
+            patch.object(installation, "registered_context",
+                         return_value=(policy, command, None, None), side_effect=registration_error),
             patch.object(updates, "reexec_update_runtime", return_value=None),
             patch.object(updates, "manage_update", return_value={
                 "status": "client-update-current", "channel_checked": True,
@@ -175,13 +176,17 @@ class WindowsNative(unittest.TestCase):
             patch("agent_brain_client.runtime.fresh_installation.verify_memory",
                   return_value={"status": "known-memory-readable", "verified_records": 1}),
             patch("agent_brain_client.runtime.host_maintenance.install_sources",
-                  return_value={"status": "global-hook-current"}),
-            patch("agent_brain_client.runtime.fresh_installation.restore_source_routing"),
-            patch.object(installation_completion, "source_setup", return_value={"collection_enabled": True}),
+                  return_value={"status": "global-hook-current"}) as hook,
+            patch("agent_brain_client.runtime.fresh_installation.restore_source_routing") as routing,
+            patch.object(installation_completion, "source_setup", return_value={"collection_enabled": True}) as sources,
             patch.object(installation_completion, "complete", side_effect=lambda home, value, **kwargs:
                          complete(home, value, **kwargs, refresh=lambda *args: {"status": "content-current"})),
         ):
             code = interfaces_cli_install.main()
+            if action == "update":
+                hook.assert_not_called()
+                routing.assert_not_called()
+                sources.assert_not_called()
         return code, json.loads(output.getvalue())
 
     def test_codex_completed_reinstall_recovers_admin_default_owner_and_serves_stdio(self):
@@ -202,8 +207,10 @@ class WindowsNative(unittest.TestCase):
         self.assertEqual(code, 0, result)
         self.assertEqual(result["installation_stages"]["native_mcp"]["status"], "codex-configured")
         self.assertTrue(result["installation_stages"]["native_mcp"]["native_changed"])
+        self.assertTrue(result["native_changed"])
+        self.assertTrue(result["reload_check"]["mcp_registration_changed"])
         self.assertEqual(result["installation_stages"]["worker"], "unobserved")
-        self.assertTrue(result["local_setup_complete"], result)
+        self.assertFalse(result["local_setup_complete"])
         self.assertFalse(result["installation_complete"])
         self.assertFalse(result["old_queue_replayed"])
         current = read_journal(previous.home)
@@ -229,6 +236,7 @@ class WindowsNative(unittest.TestCase):
         config = previous.config.read_bytes()
         code, retry = self.run_codex_completion(previous, policy, "install")
         self.assertEqual(code, 0, retry)
+        self.assertTrue(retry["local_setup_complete"], retry)
         self.assertFalse(retry["installation_stages"]["native_mcp"]["native_changed"])
         self.assertEqual(previous.config.read_bytes(), config)
         self.assertEqual(archive_queue.read_bytes(), archived)
@@ -269,6 +277,77 @@ class WindowsNative(unittest.TestCase):
         self.assertFalse((previous.root / "codex-binding").exists())
         from agent_brain_client.adapters.storage.reinstallation import read_journal
         self.assertEqual(read_journal(previous.home), fresh)
+
+    def test_codex_recovery_on_codebuddy_primary_preserves_host_and_source_pauses(self):
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration
+        from agent_brain_client.adapters.harnesses.codex import binding, collection_installation
+        from agent_brain_client.adapters.storage.reinstallation import read_journal
+
+        for allowed in (True, False):
+            with self.subTest(codex_directory_verified=allowed):
+                previous, policy, fresh = self.codex_reinstall_completion()
+                surfaces = fresh["mapping"]["registered_surfaces"]
+                surfaces["codex"]["enabled"] = False
+                self.assertFalse(surfaces["codex"]["hooks_enabled"])
+                surfaces["codebuddy"] = {"surface": "cli", "hooks_enabled": False}
+                previous.port.save(fresh)
+                configuration.install(previous.home, ROOT, None, surface="cli", enable_hooks=False)
+                buddy_receipt = configuration.state_directory(previous.home) / "registration.json"
+                source_path = source_policy.settings_path(previous.home)
+                private_directory(source_path.parent)
+                metadata.write(source_path, {"fixture": "retain-source-pause"})
+                stop = source_path.parent / "global.off"
+                stop.write_bytes(b"retained pause")
+                protected = private_directory(previous.root / "codex")
+                if not allowed:
+                    self.host_acl(protected)
+                preserved = {
+                    path: path.read_bytes() for path in
+                    (*configuration.mcp_paths(previous.home, "cli"),
+                     previous.home / ".codebuddy/settings.json", buddy_receipt, source_path, stop)
+                }
+                config_before = previous.config.read_bytes()
+
+                code, result = self.run_codex_completion(previous, policy, "update", primary="codebuddy")
+
+                self.assertEqual(code, 0 if allowed else 2, result)
+                self.assertEqual(result["status"], "client-update-current")
+                self.assertEqual(result["installation_stages"]["mcp_registration"], "verified")
+                self.assertEqual(read_journal(previous.home).get("native_bindings_restored"), True if allowed else None)
+                for path, raw in preserved.items():
+                    self.assertEqual(path.read_bytes(), raw)
+                config = previous.config.read_bytes()
+                self.assertNotIn(collection_installation.BEGIN.encode(), config)
+                if allowed:
+                    self.assertFalse(binding.entry(config)["enabled"])
+                    self.assertEqual(result["installation_stages"]["native_mcp"]["status"], "codex-configured")
+                else:
+                    self.assertEqual(config, config_before)
+                    self.assertEqual(result["installation_stages"]["native_mcp"]["status"], "blocked")
+
+    def test_codex_recovery_registration_failure_keeps_package_status_and_can_retry(self):
+        from agent_brain_client.adapters.harnesses.codex import binding
+        from agent_brain_client.adapters.storage.reinstallation import read_journal
+
+        previous, policy, fresh = self.codex_reinstall_completion()
+        config = previous.config.read_bytes()
+        code, result = self.run_codex_completion(
+            previous, policy, "update", registration_error=ValueError("Synthetic revalidation failure"),
+        )
+        self.assertEqual(code, 2, result)
+        self.assertEqual(result["status"], "client-update-current")
+        self.assertTrue(result["channel_checked"])
+        stages = result["installation_stages"]
+        self.assertEqual(stages["mcp_registration"], "unverified")
+        self.assertEqual(stages["setup"]["stage"], "registration")
+        self.assertEqual(previous.config.read_bytes(), config)
+        self.assertEqual(read_journal(previous.home), fresh)
+
+        code, retry = self.run_codex_completion(previous, policy, "update")
+        self.assertEqual(code, 0, retry)
+        self.assertEqual(retry["installation_stages"]["native_mcp"]["status"], "codex-configured")
+        self.assertIsNotNone(binding.receipt(previous.home))
+        self.assertEqual(read_journal(previous.home)["id"], fresh["id"])
 
     def test_host_directory_sandbox_acl_and_administrator_owner_are_not_private(self):
         from agent_brain_client.adapters.storage.host_files import host_atomic
