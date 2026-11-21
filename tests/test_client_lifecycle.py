@@ -20,6 +20,7 @@ from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'));sys.path.insert(0,str(ROOT/'src'));sys.path.insert(0,str(ROOT/'src'))
 import dev.build.package as builder
+from agent_brain_client.adapters.packages.layout import source_python_members
 import agent_brain_client.adapters.packages.client as release
 import agent_brain_client.runtime.launcher as client_startup
 import agent_brain_client.adapters.harnesses.codex.configuration as native
@@ -63,14 +64,14 @@ class Releases(unittest.TestCase):
         for p in output.rglob('*'):
             if p.is_file() and p.name!='export-manifest.json':
                 dst=self.publisher/p.relative_to(output);dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,dst)
-        self.git(self.publisher,'add','--',*release.CLIENT_FILES,'releases/manifest.json');self.git(self.publisher,'commit','-m','synthetic release '+version);self.git(self.publisher,'push','origin','releases/stable')
+        self.git(self.publisher,'add','--',*release.CLIENT_FILES,'src','releases/manifest.json');self.git(self.publisher,'commit','-m','synthetic release '+version);self.git(self.publisher,'push','origin','releases/stable')
         return manifest
 
     def test_orphan_allowlist_discovery_install_upgrade_and_current(self):
         manifest=self.publish();report=self.channel.discover('codex','darwin-arm64','0.1.0')
         self.assertEqual(report['status'],'compatible-update');self.assertEqual(report['releases'][0]['manifest'],manifest)
         self.assertIsNone(self.channel.engine.active(),'catalog never activates executable code')
-        self.assertEqual(set(manifest['files']),set(release.CLIENT_FILES));self.assertFalse((self.publisher/'memory').exists())
+        self.assertEqual(set(manifest['files']),set(release.CLIENT_FILES) | set(source_python_members(ROOT)));self.assertFalse((self.publisher/'memory').exists())
         first=self.channel.update();self.assertEqual(first['status'],'updated');self.assertEqual(first['active']['version'],'0.1.1')
         self.assertEqual(self.channel.update()['status'],'current')
         self.publish('0.1.2');second=self.channel.update();self.assertEqual(second['status'],'updated');self.assertEqual(second['active']['version'],'0.1.2')
@@ -99,7 +100,7 @@ class Releases(unittest.TestCase):
     def test_ancestry_replacement_is_rejected_without_changing_active(self):
         self.publish();old=self.channel.update()['active']
         self.git(self.publisher,'checkout','--orphan','unrelated-code')
-        self.git(self.publisher,'add','--',*release.CLIENT_FILES,'releases/manifest.json')
+        self.git(self.publisher,'add','--',*release.CLIENT_FILES,'src','releases/manifest.json')
         self.git(self.publisher,'commit','-m','synthetic unrelated history')
         self.git(self.publisher,'push','origin','unrelated-code')
         unrelated=self.git(self.publisher,'rev-parse','HEAD')

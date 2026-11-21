@@ -82,6 +82,15 @@ def https_files(target):
     )
 
 
+def package_file_members(names, required):
+    """Constrain a trusted inventory to the reviewed Python and asset scope."""
+    members = set(names)
+    python = set(runtime_python_members(name for name in members if name.endswith(".py")))
+    if not set(required) <= members or members - python != set(required) - python:
+        raise ValueError("Required or fixed Client package members changed")
+    return tuple(sorted(members))
+
+
 HTTPS_CONTENT_CAPABILITIES = [
     "codex-stdio-mcp",
     "personal-content-explicit",
@@ -258,11 +267,16 @@ def validate_release_policy(policy):
         if content
         else CLIENT_FILES
     )
-    allowed_file_policies = [list(files)]
     if policy["channel"] != "stable":
         raise UpdateBlocked("Stable release channel required")
-    if policy["file_prefixes"] not in allowed_file_policies:
-        raise UpdateBlocked("Client release file scope changed")
+    inventory = policy["file_prefixes"]
+    try:
+        if not isinstance(inventory, list) or any(not isinstance(name, str) for name in inventory):
+            raise ValueError("Expected exact file paths")
+        if len(inventory) != len(package_file_members(inventory, files)):
+            raise ValueError("Repeated path")
+    except ValueError as error:
+        raise UpdateBlocked("Client release file scope changed") from error
     origin = policy["origin"]
     parsed = urlsplit(origin)
     if parsed.scheme:
@@ -387,18 +401,30 @@ class ClientPackage:
 
     def package_files(self, manifest):
         files = manifest.get("files")
-        required = set(self.files)
-        if not isinstance(files, dict) or not required <= files.keys():
+        if not isinstance(files, dict) or not set(self.files) <= files.keys():
             raise UpdateBlocked("Required Client package members missing")
-        added = files.keys() - required
-        if added:
-            if not self.https:
-                raise UpdateBlocked("File outside approved runtime scope")
-            try:
-                runtime_python_members((*PYTHON_FILES, *added))
-            except ValueError as error:
-                raise UpdateBlocked("File outside approved runtime scope") from error
-        return (*self.files, *sorted(added))
+        if any(not isinstance(name, str) for name in files):
+            raise UpdateBlocked("File outside approved runtime scope")
+        try:
+            return package_file_members(files, self.files)
+        except ValueError as error:
+            raise UpdateBlocked("File outside approved runtime scope") from error
+
+    def verify_membership(self, package, manifest):
+        expected = set(self.package_files(manifest))
+        root = package.resolve()
+        present = set()
+        for path in package.rglob("*"):
+            relative = path.relative_to(package)
+            if path.is_symlink() or path.resolve() != root / relative:
+                raise UpdateBlocked("Linked Client package member")
+            if path.is_file() and path.stat().st_nlink == 1:
+                present.add(relative.as_posix())
+            elif not path.is_dir():
+                raise UpdateBlocked("Unsupported Client package member")
+        envelope = "verified.json" if "verified.json" in present else "export-manifest.json"
+        if present - {envelope} != expected:
+            raise UpdateBlocked("Client package membership changed")
 
     def preflight(self, package, manifest):
         files = self.package_files(manifest)
@@ -428,23 +454,8 @@ class ClientPackage:
             raise UpdateBlocked(
                 "Native component source changed; signed component/plan review required"
             )
-        if len(files) != len(self.files):
-            # A module outside the verified manifest could be imported by Python.
-            root = package.resolve()
-            present = set()
-            for path in package.rglob("*"):
-                relative = path.relative_to(package)
-                if path.is_symlink() or path.resolve() != root / relative:
-                    raise UpdateBlocked("Linked Client package member")
-                if path.is_file() and path.stat().st_nlink == 1:
-                    present.add(relative.as_posix())
-                elif not path.is_dir():
-                    raise UpdateBlocked("Unsupported Client package member")
-            envelope = (
-                "verified.json" if "verified.json" in present else "export-manifest.json"
-            )
-            if present - {envelope} != set(files):
-                raise UpdateBlocked("Client package membership changed")
+        if self.https:
+            self.verify_membership(package, manifest)
         for name in files:
             path = package / name
             if path.is_symlink() or not path.is_file():

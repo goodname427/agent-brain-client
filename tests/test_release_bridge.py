@@ -64,12 +64,19 @@ def manifest(files, version="0.8.26"):
     }
 
 
+def current_package_files(platform):
+    from agent_brain_client.adapters.packages.layout import source_python_members
+
+    return dict.fromkeys(
+        (*client.https_files(platform), *source_python_members(ROOT)), "a" * 64
+    )
+
+
 class ReleaseBridgeInventory(unittest.TestCase):
     def test_existing_required_and_new_python_members(self):
-        for platform, expected in zip(PLATFORMS, (185, 186)):
+        for platform in PLATFORMS:
             with self.subTest(platform=platform):
-                files = dict.fromkeys(client.https_files(platform), "a" * 64)
-                self.assertEqual(len(files), expected)
+                files = current_package_files(platform)
                 approved = policy(platform, files)
                 with patch.object(client, "require_platform"):
                     adapter = client.ClientPackage(approved)
@@ -80,7 +87,7 @@ class ReleaseBridgeInventory(unittest.TestCase):
                 self.assertEqual(set(adapter.package_files(manifest(extended))), set(extended))
 
                 outside = (
-                    "src/agent_brain_client/adapters/platforms/new_helper.py",
+                    "src/agent_brain_client/outside/new_helper.py",
                     "src/agent_brain_client/domain/authorization.json",
                     "src/agent_brain_client/domain/../outside.py",
                     "src/agent_brain_client/domain/Bridge_Fixture.py",
@@ -102,6 +109,15 @@ class ReleaseBridgeInventory(unittest.TestCase):
                 with self.assertRaisesRegex(UpdateBlocked, "Permission scope"):
                     engine.validate(changed, None)
 
+    def test_release_accepts_moving_an_ordinary_module_within_the_reviewed_layout(self):
+        from dev.release import client as publisher
+
+        previous = current_package_files("win32-amd64")
+        moved = dict(previous)
+        pin = moved.pop("src/agent_brain_client/domain/hook_coverage.py")
+        moved["src/agent_brain_client/adapters/platforms/fixture_module.py"] = pin
+        publisher.compatible(manifest(previous), manifest(moved), manifest_layout=True)
+
     def test_duplicate_json_member_is_rejected(self):
         with self.assertRaisesRegex(UpdateBlocked, "Duplicate release manifest"):
             json.loads('{"files":{"module.py":"a","module.py":"b"}}',
@@ -111,7 +127,7 @@ class ReleaseBridgeInventory(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             platform = PLATFORMS[0]
-            files = dict.fromkeys(client.https_files(platform), "a" * 64)
+            files = current_package_files(platform)
             with patch.object(client, "require_platform"):
                 adapter = client.ClientPackage(policy(platform, files))
             for name in (*files, NEW):

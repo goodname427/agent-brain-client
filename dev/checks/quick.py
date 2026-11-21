@@ -20,6 +20,8 @@ TARGETS = [
     ("src/agent_brain_client/adapters/harnesses/", ["test_host_entrypoints"]),
     ("dev/checks/", ["test_client_checks"]),
     ("dev/release/", ["test_release_pipeline"]),
+    ("dev/build/", ["test_client_export"]),
+    ("src/agent_brain_client/adapters/packages/", ["test_client_export"]),
     ("src/agent_brain_client/application/", ["test_application_workflows"]),
     (
         "src/agent_brain_client/adapters/platforms/windows/",
@@ -43,18 +45,7 @@ def main():
     # Fail closed when the event diff cannot be resolved. No empty-list discovery.
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
     name = os.environ["GITHUB_EVENT_NAME"]
-    if name == "pull_request":
-        base, head = (
-            event["pull_request"]["base"]["sha"],
-            event["pull_request"]["head"]["sha"],
-        )
-        base = scope.git("merge-base", base, head).decode().strip()
-    elif name == "push":
-        base, head = event["before"], event["after"]
-    elif name == "merge_group":
-        base, head = event["merge_group"]["base_sha"], event["merge_group"]["head_sha"]
-    else:
-        raise ValueError("Quick checks require a PR, push or merge queue event")
+    base, head = scope.event_range(name, event)
     paths = [
         raw.decode("utf-8")
         for raw in scope.git(
