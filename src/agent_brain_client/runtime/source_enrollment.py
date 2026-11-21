@@ -360,7 +360,6 @@ def _maintain(home, *, initialize, retained):
     if local_stop(home):
         return paused(retained=retained_scope, local_fence=True)
     value = load(home, verify_code=False)
-    scope = value["scope"]
     bound = (
         value["approved_scope_sha256"] is not None
         or value["server_scope_sha256"] is not None
