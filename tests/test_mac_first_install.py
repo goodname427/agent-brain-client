@@ -360,7 +360,8 @@ class FirstInstall(unittest.TestCase):
                 self.assertIn(error, result.stderr)
 
         probe(package, '--probe-delivery')
-        probe(package, '--probe-frozen', 'Frozen Client code changed')
+        # The frozen entry requires its own complete inventory.
+        probe(package, '--probe-frozen', 'Python runtime members outside reviewed layout')
         frozen = freeze_code(settings.parent, value['code_sha256'], source=package)
         probe(frozen, '--probe-frozen')
         probe(frozen, '--probe-delivery')

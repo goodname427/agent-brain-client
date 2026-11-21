@@ -28,13 +28,21 @@ class SSHInstall(unittest.TestCase):
         self.path=self.base/'ssh-release-policy.json';self.path.write_bytes(install.contract.encode(self.policy));self.path.chmod(0o600);self.digest=install.sha(self.path.read_bytes());self.publish('0.3.0')
         self.channel=releases.ClientReleases(self.path,self.digest);result=self.channel.update();self.assertEqual(result['status'],'updated',result);self.active=self.channel.verified_active();self.package=Path(self.active['package'])
 
-    def publish(self,version,mutate=None):
-        out=self.base/('ssh-content-'+version);manifest=build(fixtures.ROOT,out,version,'personal-content-ssh')
-        if mutate:mutate(manifest,out)
-        (out/'releases/manifest.json').write_text(json.dumps(manifest))
-        for name in [*releases.SSH_CONTENT_CLIENT_FILES,'releases/manifest.json']:
-            destination=self.f.fixture.publisher/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(out/name,destination)
-        f=self.f.fixture;f.git(f.publisher,'add','--',*releases.SSH_CONTENT_CLIENT_FILES,'releases/manifest.json');f.git(f.publisher,'commit','-m','synthetic ssh content '+version);f.git(f.publisher,'push','origin','releases/stable')
+    def publish(self, version, mutate=None):
+        fixture = self.f.fixture
+        out = self.base / ('ssh-content-' + version)
+        manifest = build(fixtures.ROOT, out, version, 'personal-content-ssh')
+        members = (*manifest['files'], 'releases/manifest.json')
+        if mutate:
+            mutate(manifest, out)
+        (out / 'releases/manifest.json').write_text(json.dumps(manifest))
+        for name in members:
+            destination = fixture.publisher / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(out / name, destination)
+        fixture.git(fixture.publisher, 'add', '--', *members)
+        fixture.git(fixture.publisher, 'commit', '-m', 'synthetic ssh content ' + version)
+        fixture.git(fixture.publisher, 'push', 'origin', 'releases/stable')
 
     def plan(self):return install.prepare(self.f.home,self.package,self.path,self.digest, harness="codex")
 
