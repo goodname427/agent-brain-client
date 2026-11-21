@@ -12,7 +12,7 @@ from pathlib import Path
 import subprocess
 from urllib.parse import urlsplit
 
-from agent_brain_client.domain.scopes import validate, digest
+from agent_brain_client.domain.scopes import validate, digest, has_origins
 
 
 def operator(value, packet):
@@ -276,10 +276,6 @@ def register(value, packet, *, automatic=False):
     return activate(value, packet["scope"])
 
 
-def has_origins(scope):
-    return bool(scope.get("all_projects") or scope["include_roots"] or scope["non_project_roots"])
-
-
 def packet_for(value, scope, client):
     from agent_brain_client.adapters.storage.collection import settings_path
 
@@ -336,7 +332,7 @@ def initial_scope(value, retained):
         and scope["recall_personal"] is True
         and all(root in exclusions for root in scope["exclude_roots"])
     ):
-        return dict(scope, all_projects=True)
+        return dict(scope, all_projects=True, all_non_projects=True)
     return None
 
 
@@ -410,6 +406,7 @@ def configure(args):
     pending = settings_path(args.device_home).with_name("pending-scope.json")
     packet_input = getattr(args, "activate_packet", None)
     all_projects = getattr(args, "all_projects", False)
+    all_directories = getattr(args, "all_directories", False)
     scope = copy.deepcopy(value["scope"])
     if packet_input:
         previous = metadata_io.private_json(packet_input)
@@ -418,8 +415,10 @@ def configure(args):
         def canonical(root):
             return str(Path(root).expanduser().resolve())
 
-        if all_projects or args.include_root or args.isolate_root:
-            scope["all_projects"] = all_projects
+        if all_directories or all_projects or args.include_root or args.isolate_root:
+            scope["all_projects"] = all_directories or all_projects
+        if all_directories:
+            scope["all_non_projects"] = True
         if args.include_root or args.isolate_root:
             scope["include_roots"] = [
                 {"root": canonical(x), "sharing": "personal"} for x in args.include_root
@@ -427,12 +426,13 @@ def configure(args):
         if args.exclude_root:
             scope["exclude_roots"] = [canonical(x) for x in args.exclude_root]
         if args.non_project_root:
+            scope["all_non_projects"] = False
             scope["non_project_roots"] = [canonical(x) for x in args.non_project_root]
     validate(scope)
     if not has_origins(scope):
         return source_result(
             "global-memory-activation-required",
-            next_action="Choose project roots or pass --all-projects to configure future collection.",
+            next_action="Choose source roots or pass --all-directories to configure future collection.",
         )
     client, state, failure = preflight(value)
     if failure:

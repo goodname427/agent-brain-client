@@ -510,7 +510,7 @@ class Hooks(unittest.TestCase):
         self.fixture.cloud.request = send
         self.core = SimpleNamespace(approved=source_policy.approved, load=lambda home: self.value,
                                     adapter=lambda value, local: (self.client, self.queue),
-                                    eligible=lambda value, cwd: self.local, recall_prompt=Mock(return_value=[{'content': 'Synthetic recalled memory'}]), schedule_delivery=Mock(), hook_context=adapters_harnesses_hook_output.hook_context)
+                                    eligible=lambda value, cwd, **kwargs: self.local, recall_prompt=Mock(return_value=[{'content': 'Synthetic recalled memory'}]), schedule_delivery=Mock(), hook_context=adapters_harnesses_hook_output.hook_context)
         queue = patch.object(cb, 'open_queue', return_value=(self.client, self.queue))
         queue.start()
         self.addCleanup(queue.stop)

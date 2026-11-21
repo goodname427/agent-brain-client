@@ -73,7 +73,7 @@ def within(value, root):
 
 
 def validate(scope):
-    if not isinstance(scope, dict) or set(scope) - {"all_projects"} != {
+    if not isinstance(scope, dict) or set(scope) - {"all_projects", "all_non_projects"} != {
         "schema",
         "profile_id",
         "include_roots",
@@ -90,6 +90,8 @@ def validate(scope):
         raise ValueError("Explicit global source identity required")
     if type(scope.get("all_projects", False)) is not bool:
         raise ValueError("Boolean all-projects selection required")
+    if type(scope.get("all_non_projects", False)) is not bool:
+        raise ValueError("Boolean all-non-projects selection required")
     roots = scope["include_roots"]
     if not isinstance(roots, list) or len(roots) > 128:
         raise ValueError("Bounded source rules required")
@@ -131,32 +133,62 @@ def origin(value):
     return value
 
 
-def select(scope, value):
-    validate(scope)
-    origin(value)
+def _excluded(scope, value):
     paths = [
         value[k]
         for k in ("cwd", "project_root", "repository_root")
         if value[k] is not None
     ]
-    if any(within(p, denied) for p in paths for denied in scope["exclude_roots"]):
+    return any(within(p, denied) for p in paths for denied in scope["exclude_roots"])
+
+
+def has_origins(scope):
+    return bool(
+        scope.get("all_projects")
+        or scope.get("all_non_projects")
+        or scope["include_roots"]
+        or scope["non_project_roots"]
+    )
+
+
+def select(scope, value, *, recall=False):
+    validate(scope)
+    origin(value)
+    if _excluded(scope, value):
         return None
     if value["kind"] == "non-project":
-        return (
-            {"sharing": "personal", "root": None}
-            if any(within(value["cwd"], p) for p in scope["non_project_roots"])
-            else None
+        # Missing project markers must not turn an isolated directory personal.
+        if (recall and not scope["recall_personal"]) or any(
+            rule["sharing"] == "project" and within(value["cwd"], rule["root"])
+            for rule in scope["include_roots"]
+        ):
+            return None
+        # Existing default all-project policies already authorize personal recall.
+        # Their stored capture approval still requires an explicit ordinary scope.
+        personal_recall = (
+            recall
+            and scope.get("all_projects")
+            and "all_non_projects" not in scope
+            and not scope["non_project_roots"]
         )
+        if (
+            personal_recall
+            or scope.get("all_non_projects")
+            or any(within(value["cwd"], p) for p in scope["non_project_roots"])
+        ):
+            return {"sharing": "personal", "root": None}
+        return None
     matches = [
         r for r in scope["include_roots"] if within(value["project_root"], r["root"])
     ]
-    return (
-        max(matches, key=lambda r: len(path(r["root"])))
-        if matches
-        else (
-            {"sharing": "personal", "root": None} if scope.get("all_projects") else None
-        )
-    )
+    if matches:
+        selected = max(matches, key=lambda r: len(path(r["root"])))
+        if recall and not scope["recall_personal"] and selected["sharing"] == "personal":
+            return None
+        return selected
+    if scope.get("all_projects") and (not recall or scope["recall_personal"]):
+        return {"sharing": "personal", "root": None}
+    return None
 
 
 def source_id(scope, value, sharing):

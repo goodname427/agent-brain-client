@@ -243,8 +243,11 @@ class AutomaticCapture(unittest.TestCase):
         for root in ('C:/synthetic/new-project', 'Z:/future-volume/project', '/synthetic/elsewhere'):
             local = {'kind':'project','cwd':root,'project_root':root,'repository_root':root}
             self.assertEqual(select(stored['scope'], local)['sharing'], 'personal')
-        self.assertIsNone(select(stored['scope'], {'kind':'non-project','cwd':str(self.home),
-            'project_root':None,'repository_root':None}))
+        ordinary = {'kind':'non-project','cwd':str(self.home),
+                    'project_root':None,'repository_root':None}
+        self.assertTrue(stored['scope']['all_non_projects'])
+        self.assertEqual(select(stored['scope'], ordinary)['sharing'], 'personal')
+        self.assertEqual(select(stored['scope'], ordinary, recall=True)['sharing'], 'personal')
 
     def test_noninteractive_update_runs_source_setup_and_status_does_not(self):
         from agent_brain_client.application.installation.update import ClientUpdate
