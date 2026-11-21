@@ -201,7 +201,7 @@ def _finish_assistant(home, core, value, local, payload):
 def resume_observed_assistant(home, core, turn_id):
     """One shared-worker attempt of one observed Stop; never inspect history."""
     import re
-    from agent_brain_client.domain.scopes import digest as scope_digest
+    from agent_brain_client.domain.scopes import digest as scope_digest, ordinary_default
     import agent_brain_client.adapters.harnesses.codebuddy.transcript as transcript
 
     if not re.fullmatch(r"[a-f0-9]{64}", turn_id):
@@ -218,9 +218,23 @@ def resume_observed_assistant(home, core, turn_id):
     if not source_active(home, binding["cwd"], "codebuddy"):
         return True
     local = core.eligible(value, binding["cwd"])
-    if (not core.approved(value) or local is None
-            or row.get("completion_scope_sha256", scope_digest(value["scope"])) != scope_digest(value["scope"])):
+    if not core.approved(value) or local is None:
         return True  # Retain paused work, without reading or sending its content.
+    scope = value["scope"]
+    current = scope_digest(scope)
+    pinned = row.get("completion_scope_sha256", current)
+    if pinned != current:
+        prior = {key: val for key, val in scope.items() if key != "all_non_projects"}
+        # Continue observations already authorized by the exact predecessor of
+        # a default expansion. A new directory or a different policy cannot
+        # release an earlier transcript.
+        if (
+            scope.get("all_non_projects") is not True
+            or not ordinary_default(prior)
+            or pinned != scope_digest(prior)
+            or select(prior, local) is None
+        ):
+            return True
     native = dict(binding, hook_event_name="Stop", stop_hook_active=False,
                   transcript_path=binding["path"])
     try:
