@@ -95,6 +95,18 @@ class ReleasedWindowsUpdate(unittest.TestCase):
         native.mkdir()
         state = self.home / ".config/agent-brain-client"
         shared = private_directory(state / "shared-native")
+        # A first install freezes its launcher in a separate bootstrap
+        # directory. The published 0.8.25 Windows runtime and that installer's
+        # bootstrap export have the same pinned files.
+        bootstrap = private_directory(state / "first-install/bootstrap")
+        envelope = "export-manifest.json"
+        files = json.loads((old_export / envelope).read_bytes())["files"]
+        self.assertEqual(installation.sha(installation.contract.encode(files)),
+                         installation._WINDOWS_0825_PACKAGE_SHA)
+        for name in (envelope, *files):
+            member = bootstrap / name
+            member.parent.mkdir(parents=True, exist_ok=True)
+            member.write_bytes((old_export / name).read_bytes())
         connection = {
             "schema": 1, "endpoint": "https://synthetic.invalid",
             "grant": {
@@ -133,16 +145,20 @@ class ReleasedWindowsUpdate(unittest.TestCase):
         self.assertEqual((previous["version"], previous["commit"]), ("0.8.25", old_commit))
         registration = state / "codex-mcp.json"
         original = private_files.private_json(registration)
-        self.assertEqual(original["package"], previous["package"])
+        self.assertEqual(original["package"], str(bootstrap))
+        self.assertNotEqual(original["package"], previous["package"])
         self.assertEqual(original["package_sha256"], installation._WINDOWS_0825_PACKAGE_SHA)
         self.assertEqual(plan["mcp"]["command"], str(Path(materials["dependencies"]["python"]).resolve()))
-        self.assertEqual(plan["mcp"]["args"][2], str(Path(previous["package"]) /
-                         "src/agent_brain_client/interfaces/mcp/launcher.py"))
+        self.assertEqual(plan["mcp"]["args"][2], str(
+            bootstrap / "src/agent_brain_client/interfaces/mcp/launcher.py"
+        ))
         self.assertNotEqual(Path(plan["codex_home"]), native)
         archive_marker = state / "synthetic-retained-archive"
         archive_marker.write_bytes(b"synthetic retained content")
         preserved = {p: p.read_bytes() for p in (pointer, registration, archive_marker)}
-        artifact = Path(previous["package"]) / "src/agent_brain_client/interfaces/mcp/content.py"
+        content_entry = "src/agent_brain_client/interfaces/mcp/content.py"
+        artifact = bootstrap / content_entry
+        old_entries = {artifact, Path(previous["package"]) / content_entry}
 
         v0826 = """
 import subprocess, sys
@@ -192,7 +208,7 @@ else:
         old_probe_calls = []
 
         def guarded_run(command, **kwargs):
-            if command[-1:] == ["--describe-tools"] and Path(command[-2]) == artifact:
+            if command[-1:] == ["--describe-tools"] and Path(command[-2]) in old_entries:
                 old_probe_calls.append(True)
                 raise subprocess.TimeoutExpired("synthetic-describe-timeout", 15)
             return real_run(command, **kwargs)
