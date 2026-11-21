@@ -343,7 +343,7 @@ def powershell_quote(value):
     return "'" + value.replace("'", "''") + "'"
 
 
-def powershell_command(invocation, *, executable="powershell.exe"):
+def powershell_command(invocation, *, executable="powershell.exe", compact=False):
     import base64
     import subprocess
 
@@ -352,6 +352,17 @@ def powershell_command(invocation, *, executable="powershell.exe"):
         + invocation
         + "; exit $LASTEXITCODE"
     )
+    if compact:
+        # Keep the approved literal source below cmd.exe's 8191-character
+        # ceiling. DeflateStream reads raw DEFLATE, without a zlib header.
+        import zlib
+        compressor = zlib.compressobj(9, wbits=-15)
+        payload = base64.b64encode(compressor.compress(script.encode()) + compressor.flush()).decode()
+        script = (
+            "&([ScriptBlock]::Create([IO.StreamReader]::new([IO.Compression.DeflateStream]::new("
+            "[IO.MemoryStream]::new([Convert]::FromBase64String('" + payload
+            + "')),[IO.Compression.CompressionMode]::Decompress)).ReadToEnd()))"
+        )
     encoded = base64.b64encode(script.encode("utf-16le")).decode()
     return (
         subprocess.list2cmdline([executable]) + " -NoLogo -NoProfile -NonInteractive -EncodedCommand " + encoded

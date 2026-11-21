@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -60,7 +61,7 @@ class StableHooks(unittest.TestCase):
         self.root = Path(temp.name).resolve()
         self.home = private_directory(self.root / "fictional home")
         self.native = private_directory(self.home / ".codex")
-        self.state = private_directory(hook_launcher.native_hook_directory(self.home).parent)
+        self.state = private_directory(self.home / ".config/agent-brain-client")
         self.repository = private_directory(self.root / "repo")
         (self.repository / ".git").mkdir()
         platform = native_platform()
@@ -85,6 +86,15 @@ class StableHooks(unittest.TestCase):
                 "credential_source_sha256": self.files["src/agent_brain_client/adapters/platforms/" + credential],
             },
         }
+        git = Path(shutil.which("git")).resolve()
+        git_core = Path(subprocess.check_output([str(git), "--exec-path"], text=True).strip()).resolve()
+        python = Path(sys.executable).resolve()
+        self.deps = self.state / "dependencies.json"
+        deps_pin = metadata.write(self.deps, {
+            "schema": 2, "python": str(python), "git": str(git), "git_exec_path": str(git_core),
+            "python_sha256": digest(python.read_bytes()), "git_sha256": digest(git.read_bytes()),
+        })
+        policy["runtime"].update(dependency_policy=str(self.deps), dependency_policy_sha256=deps_pin)
         policy_file = self.state / "policy.json"
         self.policy_pin = metadata.write(policy_file, policy)
         self.registration = self.state / "codex-mcp.json"
@@ -110,12 +120,29 @@ class StableHooks(unittest.TestCase):
         pointer = dict(version=version, commit=commit, package=str(package),
                        manifest_sha256=digest(json.dumps(manifest, sort_keys=True).encode()))
         engine.set_active(pointer)
+        if "package" not in metadata.private_json(self.registration):
+            self.register_package(pointer)
         self.assertEqual(self.channel.verified_active(serving=True), pointer)
         return pointer
 
-    def run_hook(self, command):
-        argv = command if os.name == "nt" else shlex.split(command)
-        result = subprocess.run(argv, input="合成", encoding="utf-8", capture_output=True, check=True, timeout=45)
+    def register_package(self, pointer):
+        from agent_brain_client.domain.contract import encode
+
+        package = Path(pointer["package"])
+        files = json.loads((package / "verified.json").read_bytes())["manifest"]["files"]
+        metadata.write(self.registration, dict(metadata.private_json(self.registration),
+                                              package=str(package), package_sha256=digest(encode(files))))
+
+    def run_hook(self, command, *, harness="codex"):
+        if os.name == "nt" and harness == "codex":
+            # Codex 0.167.0-alpha.3.2 passes an outer-quoted raw argument to cmd.exe /C.
+            shell = subprocess.list2cmdline([os.environ["COMSPEC"]])
+            argv = f'{shell} /C "{command}"'
+            self.assertLessEqual(len(argv.encode("utf-16le")) // 2, 8191)
+        else:
+            argv = command if os.name == "nt" else shlex.split(command)
+        result = subprocess.run(argv, input="合成", encoding="utf-8", cwd=self.home,
+                                capture_output=True, check=True, timeout=45)
         return json.loads(result.stdout), result.stderr
 
     def test_post_migration_update_keeps_real_trust_keys_and_executes_active_release(self):
@@ -150,6 +177,10 @@ class StableHooks(unittest.TestCase):
             changed = codex.refresh_hooks(self.home)
         self.assertTrue(changed["native_changed"])
         self.assertEqual(changed["trust"], "native-review-required-for-new-command")
+        handler = tomllib.loads(self.config.read_text())["hooks"]["SessionStart"][0]["hooks"][0]
+        registered = handler.get("commandWindows", handler["command"]) if os.name == "nt" else handler["command"]
+        self.assertEqual(command, registered)
+        command = registered
         migrated = fingerprint()
         self.assertEqual(migrated[foreign], legacy[foreign])
         self.assertEqual(migrated.keys(), legacy.keys())
@@ -170,7 +201,7 @@ class StableHooks(unittest.TestCase):
         self.assertEqual(output, {"version": "0.8.28", "harness": "codex", "input": "合成"})
         self.assertEqual(errors, "")
         buddy = hook_launcher.native_hook_command(self.home, "codebuddy")
-        self.assertEqual(self.run_hook(buddy)[0]["version"], "0.8.28")
+        self.assertEqual(self.run_hook(buddy, harness="codebuddy")[0]["version"], "0.8.28")
 
         self.channel.engine.set_active(dict(second, package=str(self.root)))
         value, diagnostic = self.run_hook(command)
@@ -183,7 +214,7 @@ class StableHooks(unittest.TestCase):
     def test_host_bootstrap_rejects_mutable_code_before_execution(self):
         package = self.release("0.8.27", "2" * 40)
         hook_launcher.prepare_native_hook(self.home)
-        root = hook_launcher.native_hook_directory(self.home)
+        root = private_directory(self.state / "native-hooks")
         command = hook_launcher.native_hook_command(self.home, "codex")
         self.assertNotIn(package["commit"], command)
         expected = self.run_hook(command)
@@ -197,19 +228,31 @@ class StableHooks(unittest.TestCase):
             rogue = self.home / "rogue"
             rogue.write_text(f"#!/bin/sh\nprintf ran > {shlex.quote(str(marker))}\n")
             rogue.chmod(0o700)
+        replacement = f"from pathlib import Path\nPath({str(marker)!r}).touch()\n".encode()
         (root / "python.txt").write_text(str(rogue) + "\n")
+        (root / "launcher.py").write_bytes(replacement)
+        metadata.write(root / "binding.json", {
+            "schema": 2, "launcher_sha256": digest(replacement),
+            "python": str(rogue), "python_sha256": digest(rogue.read_bytes()),
+        })
         self.assertEqual(self.run_hook(command), expected)
         self.assertFalse(marker.exists())
 
-        script = root / "launcher.py"
-        original = script.read_bytes()
-        script.write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\n")
+        # Even a matching replacement package manifest cannot alter the
+        # independently enrolled package digest in the MCP registration.
+        approved = Path(package["package"])
+        entry = approved / "src/agent_brain_client/adapters/installation/launcher_update.py"
+        entry.write_bytes(replacement)
+        r = approved / "verified.json"
+        receipt = json.loads(r.read_bytes())
+        receipt["manifest"]["files"][entry.relative_to(approved).as_posix()] = digest(replacement)
+        r.write_text(json.dumps(receipt))
         self.assertEqual(self.run_hook(command)[0], {})
         self.assertFalse(marker.exists())
-        script.write_bytes(original)
-        receipt = root / "binding.json"
-        binding = metadata.private_json(receipt)
-        metadata.write(receipt, dict(binding, python=str(rogue)))
+
+        # The independent policy pin also covers interpreter choice and digest.
+        deps = metadata.private_json(self.deps)
+        metadata.write(self.deps, dict(deps, python=str(rogue), python_sha256=digest(rogue.read_bytes())))
         self.assertEqual(self.run_hook(command)[0], {})
         self.assertFalse(marker.exists())
 
@@ -260,13 +303,17 @@ class StableHooks(unittest.TestCase):
         nxt = ("2" * 40, manifest, lambda name: (self.bundle / name).read_bytes())
         with patch.object(engine.source, "latest", return_value=nxt):
             target = engine.check()["active"]
+        # The normal update rebinds the fixed MCP launcher before native Hook migration.
+        self.register_package(target)
         with patch.object(codex, "ROOT", Path(target["package"])):
             self.assertTrue(codex.refresh_hooks(self.home)["native_changed"])
         self.assertEqual(refresh_project_hooks(self.home, "codex")["migrated"], 1)
         project_config = project / ".codex/hooks.json"
         project_before = project_config.read_bytes()
-        project_command = hook_launcher.native_hook_command(self.home, "codex", settings)
-        command = hook_launcher.native_hook_command(self.home, "codex")
+        project_handler = json.loads(project_before)["hooks"]["SessionStart"][0]["hooks"][0]
+        project_command = project_handler["command"]
+        global_handler = tomllib.loads(self.config.read_text())["hooks"]["SessionStart"][0]["hooks"][0]
+        command = global_handler.get("commandWindows", global_handler["command"]) if os.name == "nt" else global_handler["command"]
         approved = host_fingerprints(tomllib.loads(self.config.read_text()), self.config)
         with self.config.open("a", encoding="utf-8") as file:
             for key, value in approved.items():
@@ -285,7 +332,7 @@ class StableHooks(unittest.TestCase):
         _, diagnostics = self.run_hook(command)
         self.assertIn("serving verified 0.8.26 rollback", diagnostics)
         self.assertIn("global-hook-timing", diagnostics)
-        _, buddy = self.run_hook(hook_launcher.native_hook_command(self.home, "codebuddy"))
+        _, buddy = self.run_hook(hook_launcher.native_hook_command(self.home, "codebuddy"), harness="codebuddy")
         self.assertIn("serving verified 0.8.26 rollback", buddy)
         self.assertIn('"operation": "codebuddy-hook"', buddy)
         self.assertEqual(project_config.read_bytes(), project_before)
@@ -339,14 +386,14 @@ class StableHooks(unittest.TestCase):
             self.assertEqual(result["migrated"], 1, result)
             self.assertEqual(path.read_bytes(), before)
             self.assertEqual(marker.read_text(), "paused")
-            output, diagnostic = self.run_hook(hook_launcher.native_hook_command(self.home, harness, path))
+            output, diagnostic = self.run_hook(hook_launcher.native_hook_command(self.home, harness, path), harness=harness)
             self.assertEqual(output, {})
             self.assertEqual(diagnostic, "")
             self.assertFalse(project_memory.refresh_project_hooks(self.home, harness)["native_changed"])
 
             # The stable command must never recalculate trust from modified settings.
             metadata.write(path, dict(settings, query="unapproved"))
-            output, diagnostic = self.run_hook(hook_launcher.native_hook_command(self.home, harness, path))
+            output, diagnostic = self.run_hook(hook_launcher.native_hook_command(self.home, harness, path), harness=harness)
             self.assertEqual(output, {})
             self.assertIn("review-required", diagnostic)
 
