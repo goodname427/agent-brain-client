@@ -332,17 +332,22 @@ def definitions(entry, home, *, fixed_hooks=False):
 def registered_stdio(home):
     """Use the shared, single-file launcher after its normal migration."""
     from agent_brain_client.adapters.installation.installation import registered_context
-    from agent_brain_client.adapters.packages.client import launcher_package_files, single_entry_pin
-    from agent_brain_client.adapters.storage.registration import registration as shared_registration
+    from agent_brain_client.adapters.packages.client import (
+        HTTPS_CONTENT_CAPABILITIES, launcher_package_files, single_entry_pin,
+    )
 
     path = canonical(Path(home) / ".config/agent-brain-client/codex-mcp.json")
     if not path.exists():
         return None
-    saved, _ = shared_registration(home)
+    saved = metadata_io.private_json(path)
+    if saved.get("content_candidate") is not True:
+        return None
     package = Path(saved["package"])
     if single_entry_pin(package, launcher_package_files(package)) is None:
         return None
-    _, command, _, _ = registered_context(home, saved)
+    policy, command, _, _ = registered_context(home, saved)
+    if policy["capabilities"] != HTTPS_CONTENT_CAPABILITIES:
+        return None
     args = list(command["args"])
     args[args.index("--harness") + 1] = "codebuddy"
     result = {"type": "stdio", "command": command["command"], "args": args}
