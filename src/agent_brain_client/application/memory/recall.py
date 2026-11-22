@@ -130,6 +130,8 @@ def recall(
         or len(data["namespace_results"]) > 18
     ):
         raise ValueError("Bounded global recall required")
+    if observe is not None and response.get("recall_partial") is True:
+        observe.update(partial=True, server_budget_trimmed=True)
     ids = {}
     if scope["recall_personal"]:
         ids[namespace(client.actor, scope["profile_id"])] = "personal"
@@ -148,13 +150,13 @@ def recall(
             continue
         items.extend(group_items)
         references.extend(group_refs)
-    if invalid_group is not None and not items:
-        raise ValueError("No usable verified recall source") from invalid_group
-    items, refs = _fit_context(items, references, query, observe)
     if invalid_group is not None:
         if observe is not None:
-            observe["partial"] = True
-    else:  # Keep the last complete offline snapshot.
+            observe.update(partial=True, source_verification_failed=True)
+        if not items:
+            raise ValueError("No usable verified recall source") from invalid_group
+    items, refs = _fit_context(items, references, query, observe)
+    if invalid_group is None:  # Source verification failures preserve the previous snapshot.
         try:
             services.write_cache(
                 cache,

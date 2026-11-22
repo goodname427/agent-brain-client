@@ -211,7 +211,7 @@ class LayeredRecall(unittest.TestCase):
     def test_bad_source_does_not_erase_an_independently_verified_source(self):
         valid, invalid = self.group(), self.group()
         self.response['result']['namespace_results'] = [valid]
-        self.run_hook(question='Complete synthetic question')
+        verified_output = self.run_hook()
         cache, = self.root.glob('recall-*.json')
         complete_snapshot = cache.read_bytes()
         invalid['source_device_id'] = 'd' * 32
@@ -226,6 +226,7 @@ class LayeredRecall(unittest.TestCase):
                 with self.subTest(sources=sources, bad_first=groups[0] is invalid):
                     self.response['result']['namespace_results'] = groups
                     result = self.run_hook()
+                    self.assertEqual(result, verified_output)
                     context = result['hookSpecificOutput']['additionalContext']
                     for layer in ('L1', 'L2', 'L3'):
                         self.assertIn('Synthetic ' + layer + ' answer marker', context)
@@ -234,12 +235,100 @@ class LayeredRecall(unittest.TestCase):
                     self.assertEqual(receipt['item_count'], 3)
                     evidence = receipt['retrieval']
                     self.assertIs(evidence['partial'], True)
+                    self.assertIs(evidence['source_verification_failed'], True)
+                    self.assertNotIn('server_budget_trimmed', evidence)
                     for key in ('returned', 'selected'):
                         self.assertEqual([ref['record_sha256'] for ref in evidence[key]],
                                          [digest('synthetic-' + layer) for layer in ('L1', 'L2', 'L3')])
                         self.assertNotIn(digest('Unverified source fixture'),
                                          [ref['content_sha256'] for ref in evidence[key]])
         self.assertEqual(cache.read_bytes(), complete_snapshot)
+
+        self.response['recall_partial'] = True
+        self.assertEqual(self.run_hook(), verified_output)
+        receipt = recall_receipts.recall_observation(self.value)
+        self.assertIs(receipt['retrieval']['server_budget_trimmed'], True)
+        self.assertIs(receipt['retrieval']['source_verification_failed'], True)
+        self.assertEqual(cache.read_bytes(), complete_snapshot)
+
+        # Old partial receipts had only the aggregate flag.
+        receipt['retrieval'].pop('server_budget_trimmed')
+        receipt['retrieval'].pop('source_verification_failed')
+        recall_receipts.save_recall_observation(self.value, receipt)
+        self.assertEqual(recall_receipts.recall_observation(self.value), receipt)
+
+        self.response['result']['namespace_results'] = [invalid]
+        self.assertEqual(self.run_hook(), {})
+        receipt = recall_receipts.recall_observation(self.value)
+        self.assertEqual(receipt['status'], 'failed')
+        self.assertIs(receipt['retrieval']['server_budget_trimmed'], True)
+        self.assertIs(receipt['retrieval']['source_verification_failed'], True)
+        self.assertEqual(cache.read_bytes(), complete_snapshot)
+
+    def test_hook_reads_budget_marker_only_from_a_successful_matching_envelope(self):
+        from agent_brain_client.adapters.server.collection import CollectionClient
+
+        wire_client = object.__new__(CollectionClient)
+        opener = Mock()
+        wire_client.base = SimpleNamespace(
+            _credential=lambda: 'fictional-token',
+            profile={'endpoint': 'https://fixture.invalid'},
+            transport=SimpleNamespace(opener=opener),
+        )
+
+        def reply(request, **kwargs):
+            request_id = json.loads(request.data)['request_id']
+            return io.BytesIO(json.dumps(dict(request_id=request_id, **self.response)).encode())
+
+        opener.open.side_effect = reply
+        with patch.object(gm.CollectionClient.return_value, 'wire', wire_client.wire):
+            expected = self.run_hook()
+            self.assertNotIn('partial', recall_receipts.recall_observation(self.value)['retrieval'])
+            cache = self.root / ('recall-' + digest(self.local) + '.json')
+            cached = cache.read_bytes()
+            for marker in (False, None, 1, 'true', [{}], True):
+                with self.subTest(marker=marker):
+                    self.response['recall_partial'] = marker
+                    self.assertEqual(self.run_hook(), expected)
+                    retrieval = recall_receipts.recall_observation(self.value)['retrieval']
+                    self.assertEqual('partial' in retrieval, marker is True)
+                    self.assertEqual('server_budget_trimmed' in retrieval, marker is True)
+                    self.assertNotIn('source_verification_failed', retrieval)
+                    self.assertEqual(cache.read_bytes(), cached)
+
+            self.response['result']['recall_partial'] = True
+            self.assertEqual(self.run_hook(), {})
+            receipt = recall_receipts.recall_observation(self.value)
+            self.assertEqual(receipt['status'], 'failed')
+            self.assertNotIn('partial', receipt['retrieval'])
+            del self.response['result']['recall_partial']
+
+            opener.open.side_effect = lambda *args, **kwargs: io.BytesIO(
+                json.dumps(dict(self.response, request_id='unmatched-fixture')).encode()
+            )
+            self.assertEqual(self.run_hook(), {})
+            receipt = recall_receipts.recall_observation(self.value)
+            self.assertEqual(receipt['status'], 'failed')
+            self.assertNotIn('partial', receipt['retrieval'])
+
+            del self.response['result']
+            self.response['error'] = {'code': 'transport_unconfirmed', 'retryable': True}
+            opener.open.side_effect = reply
+            offline = self.run_hook()
+            self.assertIn('Synthetic L1 answer marker', offline['hookSpecificOutput']['additionalContext'])
+            receipt = recall_receipts.recall_observation(self.value)
+            self.assertIs(receipt['offline_cache'], True)
+            self.assertNotIn('partial', receipt['retrieval'])
+
+    def test_hook_budget_only_empty_result_is_observable(self):
+        self.response['result']['namespace_results'] = []
+        self.response['recall_partial'] = True
+        self.assertEqual(self.run_hook(), {})
+        receipt = recall_receipts.recall_observation(self.value)
+        self.assertEqual(receipt['status'], 'empty')
+        self.assertIs(receipt['retrieval']['partial'], True)
+        self.assertIs(receipt['retrieval']['server_budget_trimmed'], True)
+        self.assertNotIn('source_verification_failed', receipt['retrieval'])
 
     def test_old_cache_is_only_read_on_retryable_transport_failure(self):
         from agent_brain_client.adapters.server.collection import CollectionClient
@@ -306,6 +395,7 @@ class LayeredRecall(unittest.TestCase):
                     directory = directories[kind]
                     self.local = gm.discover(str(directory))
                     self.response["result"]["namespace_results"] = [self.group()]
+                    self.response["recall_partial"] = kind == "project"
                     pin = digest(scope)
                     value = dict(self.value, scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin)
                     client = CollectionClient.__new__(CollectionClient)
@@ -340,6 +430,9 @@ class LayeredRecall(unittest.TestCase):
                         self.assertEqual(params["origin"], self.local)
                         self.assertEqual(params["query"], question)
                         self.assertIn("Synthetic L1 answer marker", output["hookSpecificOutput"]["additionalContext"])
+                        receipt = recall_receipts.recall_observation(value)
+                        self.assertEqual("server_budget_trimmed" in receipt["retrieval"], kind == "project")
+                        self.assertNotIn("server_budget_trimmed", json.dumps(output))
                     else:
                         self.assertEqual(output, {})
 
