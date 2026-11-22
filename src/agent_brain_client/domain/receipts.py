@@ -1,5 +1,7 @@
 """domain / receipts: one owner for each contract and rule."""
 
+from agent_brain_client.domain.events import NATIVE_MEMORY_CONTRACT
+
 
 def core_receipt(response, request):
     """Acceptance and a durable receipt ledger are not Core/Git durability."""
@@ -55,6 +57,8 @@ def core_receipt(response, request):
     if "replayed" in value and type(value["replayed"]) is not bool:
         return False
     ids = value["message_ids"]
+    event = request["params"]["event"]
+    count = 1 if event.get("contract") == NATIVE_MEMORY_CONTRACT else len(event["messages"])
     return (
         value["event_id"] == request["params"]["id"]
         and value["state"] == "committed"
@@ -63,7 +67,7 @@ def core_receipt(response, request):
         and value["pipeline_state"] == "unverified"
         and value["model_extraction_verified"] is False
         and isinstance(ids, list)
-        and len(ids) == len(request["params"]["event"]["messages"])
+        and len(ids) == count
         and all(isinstance(mid, str) and 0 < len(mid) <= 256 for mid in ids)
         and len(set(ids)) == len(ids)
     )

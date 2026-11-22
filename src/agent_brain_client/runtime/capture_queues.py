@@ -27,5 +27,11 @@ def open_queue(value, local, harness, *, services):
     cache = root / "outboxes" / digest(local)
     with operation_stage("global-cache-open"):
         cache_directory(cache)
-        return client, FileEventQueue(home, cache, policy, client, binding=binding,
+        queue = FileEventQueue(home, cache, policy, client, binding=binding,
             protected=[home / name for name in (".codex", ".agents", ".codebuddy", ".config/agent-brain-client/content")])
+        origin_file = metadata.canonical(queue.cache / "origin.json")
+        if not origin_file.exists():
+            # Queue discovery relies on this record even if Onboarding was the
+            # first caller and no native Hook has run in this origin.
+            metadata.write(origin_file, local, cache=True)
+        return client, queue

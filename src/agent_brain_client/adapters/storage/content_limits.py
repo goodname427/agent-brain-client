@@ -17,8 +17,11 @@ MAPPING_BYTES = 2 * SNAPSHOT_BYTES + 262144
 TRANSACTION_BYTES = 8 * MAPPING_BYTES
 
 
+APPROVED_NATIVE_ORIGINAL = "approved-native-original"
+
+
 REVIEW_DECISIONS = {
-    "shareable": {"safe-cross-project-personal-summary"},
+    "shareable": {"safe-cross-project-personal-summary", APPROVED_NATIVE_ORIGINAL},
     "excluded": {"secret-localonly-or-confidential"},
     "deferred": {"project-scope-unavailable", "uncertain-content"},
     "skipped": {"no-durable-user-fact"},
