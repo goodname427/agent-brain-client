@@ -228,6 +228,12 @@ def guidance_range(text):
     return start, end + len(END)
 
 
+def guidance_forms(block):
+    """Match a known block with either Markdown line ending."""
+    lf = block.replace("\r\n", "\n")
+    return (block, lf, lf.replace("\n", "\r\n"))
+
+
 def recorded_guidance(record, path):
     """Recover just the managed block from the existing private host transaction."""
     from agent_brain_client.adapters.storage.host_files import HOST_IMAGE_BYTES, sha
@@ -246,26 +252,37 @@ def recorded_guidance(record, path):
 
 def guidance(text, *, previous=False, remove=False, rule=False, recorded=None):
     bounds = guidance_range(text)
+    current = guidance_forms(GUIDANCE)
     if bounds is not None:
         start, end = bounds
-        if not previous or text[start:end] not in (GUIDANCE, recorded):
+        block = text[start:end]
+        if not previous or (
+            block not in current and (recorded is None or block not in guidance_forms(recorded))
+        ):
             raise ValueError("Existing CodeBuddy instruction block preserved")
         if not remove:
-            return (text[:start] + GUIDANCE + text[end:]).encode()
+            if block in current:
+                return text.encode()
+            replacement = GUIDANCE.replace("\n", "\r\n") if "\r\n" in block else GUIDANCE
+            return (text[:start] + replacement + text[end:]).encode()
         text = text[:start] + text[end:]
     elif previous:
         raise ValueError("Owned CodeBuddy instructions missing")
+    newline = "\r\n" if "\r\n" in text else "\n"
     if rule and not previous and not remove:
-        text = IDE_HEADER + text
-    if rule and remove and text.startswith(IDE_HEADER):
-        text = text[len(IDE_HEADER):]
-        if not text.strip():
-            text = ""
-    return (
-        text
-        if remove
-        else text.rstrip() + ("\n\n" if text.strip() else "") + GUIDANCE + "\n"
-    ).encode()
+        text = IDE_HEADER.replace("\n", newline) + text
+    if remove:
+        if rule:
+            for header in guidance_forms(IDE_HEADER):
+                if text.startswith(header):
+                    text = text[len(header):]
+                    if not text.strip():
+                        text = ""
+                    break
+        return text.encode()
+    if text and not text.endswith(newline * 2):
+        text += newline if text.endswith(newline) else newline * 2
+    return (text + GUIDANCE.replace("\n", newline) + newline).encode()
 
 
 
@@ -309,10 +326,11 @@ def refresh(home, source, *, check_only=False):
     if check_only:
         mcp, hooks = definitions(root / CODEBUDDY_ENTRY, home, fixed_hooks=True)
         current_paths = instruction_paths(home, receipt["surface"], receipt)
+        current = guidance_forms(GUIDANCE)
         available = (
             receipt["mcp"] != mcp or receipt.get("hooks_enabled", True) and receipt["hooks"] != hooks
             or current_paths != instruction_paths(home, receipt["surface"])
-            or any(GUIDANCE not in read_host(path) for path in current_paths)
+            or any(not any(block in text for block in current) for text in map(read_host, current_paths))
         )
         return {"status": "codebuddy-update-available" if available else "codebuddy-current",
                 "native_changed": False, "update_available": available}

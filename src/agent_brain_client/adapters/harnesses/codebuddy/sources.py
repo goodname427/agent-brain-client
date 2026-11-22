@@ -67,18 +67,21 @@ class CodeBuddyMemorySources:
             raise CacheBlocked()
         # The owned connection guidance contains no user memory. Never import it.
         from agent_brain_client.adapters.harnesses.codebuddy.configuration import (
-            BEGIN, GUIDANCE, recorded_guidance, state_directory,
+            BEGIN, GUIDANCE, guidance_forms, recorded_guidance, state_directory,
         )
         from agent_brain_client.adapters.storage import metadata
 
-        current = GUIDANCE.encode()
-        if current in raw or BEGIN.encode() not in raw:
-            return raw.replace(current, b"")
+        user = raw
+        for block in guidance_forms(GUIDANCE):
+            user = user.replace(block.encode(), b"")
+        if user != raw or BEGIN.encode() not in raw:
+            return user
         journal = state_directory(self.device_home) / "transaction.json"
         if journal.exists():
             block = recorded_guidance(metadata.private_json(journal), self.home / "CODEBUDDY.md")
             if block is not None:
-                return raw.replace(block.encode(), b"")
+                for form in guidance_forms(block):
+                    raw = raw.replace(form.encode(), b"")
         return raw
 
     def inventory(self):
