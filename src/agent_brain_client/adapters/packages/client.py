@@ -111,7 +111,7 @@ UPDATE_GUIDANCE = (
     + CHECK_UPDATE_COMMAND
     + " then "
     + UPDATE_COMMAND
-    + ". Both reuse the verified installed release policy; main/tags are not the installed release channel. Status and repeating install only verify the local registration. The active package, running worker and latest channel release are separate states. Use fresh MCP client_runtime to compare running_worker_version AND running_worker_commit with active_package_version AND active_package_commit. Matching identities need no worker reload; differing identities need a normal reload of only Agent Brain MCP after in-flight work. Unobservable state is unknown, not a blanket restart instruction. offered_tools is the worker tool list, not proof the host exposes it; compare actual session tools. Hook trust and model context loading are separate. Record this run's version and actual results; prior read/timeout counts are history, not a new test."
+    + ". Both reuse the verified installed release policy; main/tags are not the installed release channel. Status and repeating install only verify the local registration. The active package, running worker and latest channel release are separate states. Use fresh MCP client_runtime to compare running_worker_version AND running_worker_commit with active_package_version AND active_package_commit. A compatible worker can take over after in-flight work finishes. Compare offered_tools with the tools actually visible in the same host session. Use a supported host refresh when available and verify again in that session. Report the update incomplete when the next use fails or the session cannot refresh. Unobservable state is unknown. Hook trust and model context loading are separate. Record the current run's version and results."
 )
 DEPENDENCY_RUNTIME = {"dependency_policy", "dependency_policy_sha256"}
 HTTPS_CONTENT_RUNTIME = {
@@ -670,7 +670,7 @@ class ClientReleases:
                 "next_action": "Restore access to the pinned release checkout; keep the current client and do not copy credentials.",
             }
 
-    def startup_check(self):
+    def startup_check(self, *, can_activate=None):
         """One best-effort check per startup burst; never blocks MCP negotiation."""
         try:
             with locked(self.engine.local / "startup-check.lock", timeout=0):
@@ -685,7 +685,7 @@ class ClientReleases:
                     ):
                         return
                 atomic_json(marker, {"policy_sha256": policy_sha, "checked_at": now})
-                result = self.update(lock_timeout=0)
+                result = self.update(lock_timeout=0, can_activate=can_activate)
                 if result.get("diagnostic"):
                     print(json.dumps(result["diagnostic"]), file=sys.stderr)
         except LockTimeout:
@@ -698,16 +698,15 @@ class ClientReleases:
                 file=sys.stderr,
             )
 
-    def update(self, *, lock_timeout=None):
+    def update(self, *, lock_timeout=None, can_activate=None):
         try:
             if getattr(self, "inspection", False):
                 raise UpdateBlocked("Read-only inspection cannot update")
             require_platform("release-update", self.policy["platform"])
-            result = (
-                self.engine.check()
-                if lock_timeout is None
-                else self.engine.check(lock_timeout=lock_timeout)
-            )
+            options = {} if lock_timeout is None else {"lock_timeout": lock_timeout}
+            if can_activate is not None:
+                options["can_activate"] = can_activate
+            result = self.engine.check(**options)
             result["active"] = self.verified_active()
             result["next_action"] = (
                 "Use the verified active client; native permissions and data are unchanged."

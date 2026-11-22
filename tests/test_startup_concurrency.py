@@ -386,12 +386,31 @@ else:
         release.update = Mock(return_value={"status": "current"})
         release.startup_check()
         release.startup_check()
-        release.update.assert_called_once_with(lock_timeout=0)
+        release.update.assert_called_once_with(lock_timeout=0, can_activate=None)
         release.policy["channel"] = "synthetic-other"
         release.startup_check()
         self.assertEqual(release.update.call_count, 2)
         marker = json.loads((self.engine.local / "startup-check.json").read_bytes())
         self.assertEqual(set(marker), {"policy_sha256", "checked_at"})
+
+    def test_deferred_startup_candidate_leaves_pointer_and_transaction_untouched(self):
+        target = dict(self.manifest, version="0.6.2")
+        self.engine.source = Mock()
+        self.engine.source.latest.return_value = ("b" * 40, target, self.payload.__getitem__)
+        release = object.__new__(ClientReleases)
+        release.engine = self.engine
+        release.policy = self.policy
+        release.inspection = False
+        can_activate = Mock(return_value=False)
+
+        release.startup_check(can_activate=can_activate)
+
+        candidate = self.engine.local / "packages" / ("0.6.2-" + "b" * 40)
+        can_activate.assert_called_once_with(self.old, candidate, target)
+        self.assertEqual(self.engine.active(), self.old)
+        self.assertFalse(self.engine.journal.exists())
+        self.assertTrue(candidate.is_dir())
+        self.engine.adapter.snapshot.assert_not_called()
 
 
 class EvidenceDiagnostics(unittest.TestCase):
