@@ -12,7 +12,7 @@
 2. 在 OS 凭据库保存原始密钥，向 `/v1/access/bootstrap` 的 Authorization 头发送密钥。请求只含实际 adapter/platform；认证成功才返回该平台的授权范围与官方发行 origin/ref/anchor。
 3. 以该用户选择且通过 TLS 验证的 Server 为引导信任来源。Server 给出的 anchor 是明确的发行授权；随后复用原 Git 祖先／manifest／文件范围／健康检查。下载内容附带的 hash 只用于完整性和本地漂移检查，不能自行成为信任根。
 4. 通过 `/v1/access/enroll` 以稳定 nonce 取得独立设备凭据，安全保存后复用原 confirm。密钥保留在按 origin 隔离的专用 OS 项，设备凭据仍在按 profile 隔离的原 OS 项。持久状态文件只有非秘密元数据，恢复标记不是接入密钥。
-5. 完成原本的原生配置事务、登记和只读协议检查后才返回 `installed:true`。网络认证成功本身不是安装完成。正常重载该 MCP 后观察 worker 版本；模型加载无法观测时报告 unknown，再按现有 Onboard 检查覆盖。
+5. 完成原本的原生配置事务、登记和只读协议检查后才返回 `installed:true`。网络认证成功本身不是安装完成。正常重载该 MCP 后观察 worker 版本；模型加载无法观测时报告 unknown。然后按 [Onboarding](../../BOOTSTRAP.md#onboarding)核对连接及获准的来源，可从空记忆库开始。
 
 这些授权仅涵盖指定个人内容 API。接入密钥不授予 OS、Server 管理或任意目录访问；不会扫描历史原生会话或代表 Onboard 已完成。安装和更新默认启用所有项目的今后 Hook 会话采集，自动登记到已有服务；保留用户设置的排除目录和项目隔离规则。
 

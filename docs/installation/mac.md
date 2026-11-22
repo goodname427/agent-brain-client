@@ -35,7 +35,7 @@ sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --server 'https://your-server.exa
 
 `installed:true` 表示 HTTPS 协议/认证及一个 MCP 表登记完成；打开/重载 Codex，正常新 MCP 进程加载。它不会强杀旧 worker，也不意味着已运行模型自动重读了指令。`model_loaded:"unknown"` 表示此接口无法观测模型是否采用了指令；不能解释为已加载或未加载。旧回执的历史字段同样不是当前模型加载探针。再次运行安装命令会检查已装身份/范围，不再输入邀请。profile、policy、helper、scope 或配置漂移时停止并保留现场，不自动扩权。
 
-安装与再次安装成功后，结果返回 `onboard_check.status:coverage-check-required`、`source_scan_performed:false` 和 `data_transferred:false`。这是安装状态与下一步 Skill 调用的交接；执行 Agent 按当前加载的 `agent-brain-onboard` Skill 决定 Onboard 流程。本安装文档只定义 Client 的安装和状态接口，不另行定义记忆迁移规则。
+安装或再次安装返回 `onboard_check.status:coverage-check-required` 时，宿主工具可用后按 [Onboarding](../../BOOTSTRAP.md#onboarding)核对连接及获准的来源。`source_scan_performed:false` 和 `data_transferred:false` 记录安装时尚未扫描或导入。可在空记忆库和未加载 Skill 的情况下继续。
 
 安装协议检查只读，不生成内容映射，因此安装瞬间映射数可为 0。MCP 正常初始化后才刷新获授权映射；之后数量增加属于状态时序，不代表安装失败或记忆 Onboard 已完成。映射文件存在仍不证明模型采用了全部指令。
 
@@ -49,7 +49,7 @@ sh "$CHECKOUT_ROOT/bootstrap/macos/install.sh" --action status
 
 `installation_present:true` 表示已有登记；`installed:true` 和 `installation_state:verified` 才表示该登记、原固定解释器、完整 MCP 表、policy/profile、bootstrap、回执及活动版本通过检查。运行 status 的 Python 可以不同于原安装解释器，它不会重写原 command。`installed:false` 配合 `present-review-required` 表示安装存在但某个完整性检查受阻，不代表未安装。安全 `reason` 和 `next_action` 指明检查点：例如 mcp-binding-changed 保留并恢复原表或审核替换计划，interpreter-unavailable 恢复原解释器，bootstrap-package-changed 恢复原校验包；不改摘要、不删缓存、不自动重装覆盖。没有登记和恢复材料才返回 client-not-installed；登记缺失但安装回执还在则提示恢复原安装。
 
-在 Codex 明确要求通过 `agent_brain_server` 列出获授权的内容，读取一个 Memory 的 revision，再用该 revision 和稳定 request_id 更新用户指定的测试内容；仅 `persistence.durable:true` 确认远端持久保存。用同一个 request_id 重试未知结果，不能当作新写入。初次验收使用用户批准的测试 ID/内容，保存并恢复原值；不要擅自改真实内容、激活 Rule/Skill 或扩大权限。读取和写入采用 `content_catalog` / `content_read` / `content_put`；新增 Rule/Skill 默认 disabled，详见 [内容范围](../reference/personal-owner-scope.md)。
+首次接入按 [Onboarding](../../BOOTSTRAP.md#onboarding)核对读写授权和实际回执。初次验收只使用用户批准的测试 ID／内容；日常保存、CAS 与冲突恢复见[记忆使用说明](../reference/memory-behavior.md)。
 
 同步在启动和工具调用边界发生；原生 Memory/Rule/Skill 映射完成后，已运行模型是否重新读取仍需观察。支持传输离线时读取已核验快照、持久排队和原 ID 重试；冲突保留，不能覆盖远端修改。
 
@@ -104,7 +104,7 @@ check-update 成功返回 client-update-available/current 与 channel_checked:tr
 
 三个版本分别核查：active_package_version 是本地活动包，latest_channel_version 是本次成功渠道检查的候选，client_runtime.running_worker_version 是 MCP 调用所用 worker。CLI 无法观测 worker，其字段及 reload_required 为 null；reload_check 分别报告活动包、MCP 登记和 Hook 配置的变更。新鲜 MCP 结果中的 `reload_required:false` 表示当前运行内容无需重载。兼容 worker 可在原连接等待在途工作完成后切换。复查后仍返回 true 或所需工具对宿主不可见时，正常重载 Agent Brain MCP。null 表示当前证据不足。offered_tools 是 worker 提供的清单，需与 Agent 实际可调用工具对照；宿主过滤或缓存工具清单、Hook trust、模型上下文加载不能靠 worker 版本判断。确认后再进行本轮 Onboard。即使更新回报 current，也不能据此断言旧 worker 已重载。main、tags、旧回执和映射数量都不能替代此核验。
 
-完整当前授权目录使用 `content_catalog({"kinds":["memory"]})`（范围内也可加入 rule/skill），省略 query/since/until/limit。目录没有分页 limit；Memory-only query 别名和 memory_query 的 limit=1..3 只是检索，不证明全量。limit=100 在参数阶段拒绝，不发 HTTP。目录后按实际条目读取，记录每次结果、stage/HTTP 状态、取消/超时及重试，不把旧轮次 5 成功/18 超时或旧 3 次重试复制成本轮结果。尚未读完就报告实际剩余，不宣称已完成。
+确认当前 MCP 可用后，按 [Onboarding](../../BOOTSTRAP.md#onboarding)分别核对目标目录、原生来源、写入及覆盖。日常检查和恢复见[日常维护](maintenance.md)。
 
 安全错误字段只给阶段和类别：parameters、transport、http、response-parse、response-validation、content-validation 或 client-policy-or-credential。HTTP 状态来自实际响应；transport 没有 HTTP 状态，不能单凭它认定偶发网络。解析/回执失败不归类为网络。读取参数错误不给 stable request_id/expected_revision 的写入提示；写入未知结果仍沿用原 ID 和 CAS 参数，不生成新 ID。报告不包含凭据、响应正文或记忆正文。
 

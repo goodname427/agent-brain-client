@@ -428,10 +428,11 @@ class FirstInstall(unittest.TestCase):
             code = interfaces_cli_install.main()
         result = json.loads(output.getvalue())
         self.assertEqual(code, 2, result)
-        self.assertEqual(result["outcome"], "partial")
+        self.assertEqual(result["outcome"], "partial", result)
         self.assertTrue(result['installed'])
         self.assertEqual(result['model_loaded'], 'unknown')
         self.assertEqual(result['onboard_check']['status'], 'coverage-check-required')
+        self.assertIn('BOOTSTRAP.md#onboarding', result['onboard_check']['next_action'])
         self.assertFalse(result['onboard_check']['source_scan_performed'])
         self.assertFalse(result['onboard_check']['data_transferred'])
 

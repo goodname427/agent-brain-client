@@ -1,8 +1,8 @@
 """application / installation / follow_up: one owner for each contract and rule."""
 
 ONBOARD_COVERAGE_GUIDANCE = (
-    "After installation or reinstallation, once host tools are available, use the currently loaded agent-brain-onboard Skill for source discovery, comparison, approved writes and coverage reporting. "
-    "This Client handoff records that no source scan or data transfer has occurred; installation, identity and receipt state do not replace the Skill result. "
+    "Once host MCP tools are available, follow the public Onboarding guide at https://github.com/goodname427/agent-brain-client/blob/main/BOOTSTRAP.md#onboarding for connection verification, authorized source review, CAS writes and coverage reporting. "
+    "The guide can be used with an empty Agent Brain account and without preloaded Skills. This handoff records that no source scan or data transfer has occurred. "
 )
 
 

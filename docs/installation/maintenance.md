@@ -1,0 +1,12 @@
+# Client 日常维护
+
+> 当前维护。适用 Client 0.8.31 源码及 macOS／Windows 的现有受信安装入口，核对日期 2026-11-22。
+
+先按用户要处理的对象选择现有入口。日常检查复用原设备身份和授权；更新、队列恢复、启停及重装各有自己的回执。
+
+1. **检查安装或更新。** 在独立的官方源码 checkout 运行本平台安装入口的 `status`。需要更新时先运行 `check-update`，核对实际渠道检查和候选，再运行 `update`。macOS 用 `sh bootstrap/macos/install.sh --action <操作>`，Windows 用 `& ./bootstrap/windows/install.ps1 -Action <操作>`；CodeBuddy 传对应宿主选项并沿用已登记界面。保留原策略、信任锚、凭据、来源范围、暂停及队列。参见 [Mac](mac.md)、[Windows](windows.md)和 [CodeBuddy](codebuddy.md)。
+2. **核对在用版本。** 分别报告安装入口看到的活动包、成功检查的渠道候选和新鲜 MCP 响应中的 `client_runtime`。如需重载，只走宿主对 `agent_brain_server` 的正常流程，先让在途请求完成；模型加载、Hook trust 与实际 Hook 投递分别核对。若用户要继续首次使用或来源导入，回到 [Onboarding](../../BOOTSTRAP.md#onboarding)。
+3. **恢复同步或修订内容。** 用 `content_queue_inspect` 核对待处理项，未知结果按原请求 ID 和参数恢复，CAS 冲突先读当前版本再审阅合并。获准编辑的 Memory／Rule／Skill 用 `content_read` 和 `content_put`，保留已有启停设置。明确要求启停时，用 `content_set_enabled` 或现有本机管理页；只需同步本机映射时使用管理页的“拉取到本机”。分别核对 Server 保存、GitHub 备份、本机同步及模型加载。参见[队列与冲突恢复](../reference/memory-behavior.md#保存队列与冲突恢复)和 [Rule／Skill 管理](../reference/rule-skill-management.md)。
+4. **检查自动采集与召回。** 使用已登记环境的[项目记忆](../reference/automatic-memory.md)或[全局记忆](../reference/global-memory.md)状态入口，分别核对本地启停、实际事件接收、待传队列、提取和召回。保留现有排除目录与项目隔离；用户明确要求时才执行相应的暂停或恢复。只重放已授权队列中的原请求，核对远端是否确认。
+
+收到 `review-required`、所有权冲突或中断状态时，保留原文件、回执和队列，按平台说明使用原命令续接或执行适用的 `repair`。仅在已知布局不兼容或发布说明明确要求时按[重装流程](reinstall.md)处理。交接记录实际观察到的状态和未完成项，正文、凭据和私密路径留在设备内。

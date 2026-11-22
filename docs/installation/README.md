@@ -4,7 +4,8 @@
 
 | 说明 | 范围 |
 | --- | --- |
-| [统一引导](../../BOOTSTRAP.md) | 仅给仓库链接时的 Agent 路由、安装状态与更新 |
+| [统一引导](../../BOOTSTRAP.md) | 仅给仓库链接时的 Agent 路由、安装与首次使用 |
+| [日常维护](maintenance.md) | 设备状态、受信更新、同步及自动采集诊断 |
 | [HTTPS 地址与长期密钥](address-key-install.md) | Mac／Windows 当前首次接入、隐藏输入和中断恢复 |
 | [Windows 固定步骤](windows.md) | 原生 Windows x64／ARM64，首次安装、更新与来源授权 |
 | [Windows 安装阶段](windows-stages.md) | launcher、映射、Hook、未来来源、正常卸载重装 |
