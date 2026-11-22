@@ -70,14 +70,18 @@ class Configuration(unittest.TestCase):
             self.assertEqual(cbhost.mcp_paths(home, 'both'), [native / 'mcp.json'])
             (native / '.mcp.json').write_text('{}')
             self.assertEqual(cbhost.mcp_paths(home, 'cli'), [native / '.mcp.json'])
-        source = 'Existing personal instruction\n'
-        mapped = cbhost.guidance(source)
-        self.assertIn(source, mapped.decode())
-        self.assertNotIn(cbhost.BEGIN, cbhost.guidance(mapped.decode(), previous=True, remove=True).decode())
-        with self.assertRaises(ValueError):
-            cbhost.guidance(mapped.decode())
         prior = cbhost.BEGIN + "\nSynthetic prior instructions\n" + cbhost.END
-        self.assertEqual(cbhost.guidance(source + prior, previous=True, remove=True, recorded=prior), source.encode())
+        for newline in ('\n', '\r\n'):
+            with self.subTest(newline=newline):
+                source = 'Existing personal instruction.  ' + newline * 2
+                mapped = cbhost.guidance(source)
+                self.assertEqual(mapped, (source + cbhost.GUIDANCE.replace('\n', newline) + newline).encode())
+                self.assertEqual(cbhost.guidance(mapped.decode(), previous=True, remove=True),
+                                 (source + newline).encode())
+                with self.assertRaises(ValueError):
+                    cbhost.guidance(mapped.decode())
+                self.assertEqual(cbhost.guidance(source + prior.replace('\n', newline), previous=True,
+                                                 remove=True, recorded=prior), source.encode())
 
 
 @unittest.skipUnless(sys.platform in ('darwin', 'win32'), 'Native Client filesystem required')
@@ -88,7 +92,7 @@ class Installation(unittest.TestCase):
         "test_existing_binding_or_edited_owned_hook_is_not_overwritten",
         "test_ide_rule_migrates_legacy_receipt_and_preserves_user_rules",
         "test_ide_rule_is_automatic_on_creation_and_keeps_user_disabled_header",
-        "test_outside_line_ending_change_to_managed_rule_is_preserved_for_review",
+        "test_ide_rule_accepts_crlf_and_preserves_body_edits_for_review",
         "test_rule_collision_and_disabled_binding_are_not_overwritten",
         "test_legacy_receipt_owner_repair_requires_the_original_private_journal",
         "test_failure_and_interrupted_transaction_restore_all_images",
@@ -239,10 +243,10 @@ class Installation(unittest.TestCase):
         original_rule = rule.read_bytes()
         disabled_rule = original_rule.replace(b'enabled: true', b'enabled: false').replace(
             b'alwaysApply: true', b'alwaysApply: false\ndescription: User controlled')
-        user_prefix, user_suffix = b"Personal guidance.\n\n", b"\nPersonal note.\n"
+        user_prefix, user_suffix = b"Personal guidance.  \r\n\r\n", b"\r\nPersonal note.  \r\n"
         before = {
             rule: disabled_rule,
-            cli: user_prefix + prior.encode() + user_suffix,
+            cli: user_prefix + prior.encode().replace(b"\n", b"\r\n") + user_suffix,
         }
         for path, data in before.items():
             path.write_bytes(data)
@@ -252,21 +256,32 @@ class Installation(unittest.TestCase):
         refreshed = cbhost.refresh(self.home, ROOT)
         self.assertEqual(refreshed['native_changes'], {'mcp': False, 'hooks': False, 'guidance': True})
         self.assertEqual(rule.read_bytes(), disabled_rule.replace(prior.encode(), cbhost.GUIDANCE.encode()))
-        self.assertEqual(cli.read_bytes(), user_prefix + cbhost.GUIDANCE.encode() + user_suffix)
+        self.assertEqual(cli.read_bytes(), user_prefix + cbhost.GUIDANCE.encode().replace(b"\n", b"\r\n") + user_suffix)
         self.assertFalse(cbhost.refresh(self.home, ROOT, check_only=True)['update_available'])
+        self.assertFalse(cbhost.refresh(self.home, ROOT)['native_changed'])
         self.install(remove=True)
+        self.assertEqual(cli.read_bytes(), user_prefix + user_suffix)
         self.assertIn('enabled: false', rule.read_text())
         self.assertIn('alwaysApply: false', rule.read_text())
         self.assertNotIn(cbhost.BEGIN, rule.read_text())
 
-    def test_outside_line_ending_change_to_managed_rule_is_preserved_for_review(self):
+    def test_ide_rule_accepts_crlf_and_preserves_body_edits_for_review(self):
         self.install(surface='ide')
         rule = self.native / 'rules/agent-brain-client.md'
-        changed = rule.read_bytes().replace(b'\n', b'\r\n')
+        crlf = rule.read_bytes().replace(b'\n', b'\r\n')
+        rule.write_bytes(crlf)
+        self.assertFalse(cbhost.refresh(self.home, ROOT, check_only=True)['update_available'])
+        self.assertFalse(cbhost.refresh(self.home, ROOT)['native_changed'])
+        self.assertEqual(rule.read_bytes(), crlf)
+        changed = crlf.replace(b"authorized shared memory", b"Synthetic edited content")
+        self.assertNotEqual(changed, crlf)
         rule.write_bytes(changed)
         with self.assertRaisesRegex(ValueError, 'instruction block preserved'):
             cbhost.refresh(self.home, ROOT)
         self.assertEqual(rule.read_bytes(), changed)
+        rule.write_bytes(crlf)
+        self.install(remove=True)
+        self.assertEqual(rule.read_bytes(), b"")
 
     def test_upgrade_refreshes_existing_surface_without_installing_absent_hosts(self):
         from agent_brain_client.adapters.installation import updates

@@ -94,10 +94,33 @@ class HarnessParity(unittest.TestCase):
                 journal,
                 {"schema": 1, "phase": "complete", "host": host_plan({instructions: prior.encode()})},
             )
+            user_id = "codebuddy-memory:" + sha256(b"CODEBUDDY.md").hexdigest()
             for block in (prior, configuration.GUIDANCE):
-                instructions.write_text(block + "\n")
-                rows = adapter.sources.inventory_memory_sources()["sources"]
-                self.assertEqual(len(rows), 1)
+                for newline in (b"\n", b"\r\n"):
+                    with self.subTest(current=block == configuration.GUIDANCE, newline=newline):
+                        managed = block.encode().replace(b"\n", newline)
+                        instructions.write_bytes(managed + newline)
+                        rows = adapter.sources.inventory_memory_sources()["sources"]
+                        self.assertEqual(len(rows), 1)
+                        self.assertNotEqual(rows[0]["source_id"], user_id)
+
+                        prefix = "合成偏好。  ".encode() + newline * 2
+                        suffix = newline + b"Synthetic personal note.  " + newline
+                        data = prefix + managed + suffix
+                        instructions.write_bytes(data)
+                        rows = adapter.sources.inventory_memory_sources()["sources"]
+                        user = next(row for row in rows if row["source_id"] == user_id)
+                        self.assertEqual(user["source_fingerprint"], sha256(prefix + suffix).hexdigest())
+                        read = adapter.sources.read_memory_source(user_id, user["source_fingerprint"])
+                        self.assertEqual(read["text"].encode(), prefix + suffix)
+                        self.assertEqual(instructions.read_bytes(), data)
+
+                        edited = managed.replace(configuration.END.encode(), b"User note. " + configuration.END.encode())
+                        instructions.write_bytes(edited)
+                        rows = adapter.sources.inventory_memory_sources()["sources"]
+                        user = next(row for row in rows if row["source_id"] == user_id)
+                        self.assertEqual(user["source_fingerprint"], sha256(edited).hexdigest())
+            instructions.write_bytes(configuration.GUIDANCE.encode() + b"\n")
             inventory = adapter.sources.inventory_memory_sources()
             row = inventory["sources"][0]
             self.assertTrue(row["source_id"].startswith("codebuddy-memory:"))
