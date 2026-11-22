@@ -14,11 +14,29 @@
 
 ## 工单和交付状态
 
-- 一个任务在对应仓库只开一个 Issue。边界确定后先开单，创建时填好原生 Type（工作类型）、一个 `状态:` 标签、实际改动涉及的 `模块:` 标签和适用的 Milestone。模块可多选，仅跨模块测试不加模块标签。Milestone 只使用计划交付的正式软件版号（如 `0.8.30`、`0.3.8`）。合入 `main` 即交付的开发手册等不随软件版本交付的任务，Milestone 留空。建单后逐项读回标题、范围、验收标准和上述字段，确认 Milestone 已填适用版号或按规则留空，再派工。
+### 建单与回读
+
+一个任务在对应仓库只开一个 Issue。范围确定后先开单，派工前逐项核对。
+
+- **标题、问题或工作范围、可执行的验收标准**。写清要解决什么、涉及哪些路径，以及怎么验证、看到什么结果才通过。
+- **原生 Type、状态和模块**。已确认的缺陷选 `Bug`，功能选 `Feature`，调查、运营和文档选 `Task`。新单使用 `状态: 待开发`，始终恰有一个 `状态:` 标签。按实际改动选至少一个现有 `模块:` 标签，可多选，仅跨模块测试不用加对应标签。
+- **原生验收方和验收方式**。填写谁来验收、采用哪种方式。需要用户实测时，在验收标准写明操作步骤和通过条件。
+- **Milestone**。随版本交付时选择计划交付的正式软件版号里程碑（如 `0.8.30`、`0.3.8`）。合入 `main` 即交付的开发手册等不随软件版本交付的任务留空。
+- **缺陷来源和补验版本**。仅 `Bug` 必填原生「缺陷来源」，证据不足选「未知」。仅在首发后验收受阻且已明确安排跨版补验时填写可选的原生「补验版本」，原 Issue 保留首发 Milestone。
+- **依赖和补充证据**。对实际依赖或独立后续修复，按真实关系用 GitHub 原生 `Relationships` 关联工单。日志、附件和补充背景按需提供，缺少这些可选内容不阻塞派工。
+
+使用 GitHub 网页建单时，选择 Bug、Feature 或 Task 表单，也可开空白工单。表单预设原生 Type 和 `状态: 待开发`，在公开 Client 仓库要求填写问题或工作范围、验收标准。表单必填检查的是有无填写，验收标准是否可执行还需读回确认。私有 Server 仓库的表单和必填表现以该仓库网页实查为准。提交后回读实际保存的字段，维护者在 Issue 侧栏补齐因表单能力或账号权限未写入的 Type、标签、原生字段和适用的 Milestone。固定元数据只写在原生字段中。参见 [GitHub 表单语法](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/syntax-for-issue-forms)和[表单验证规则](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/syntax-for-githubs-form-schema)。
+
+CLI、REST 和 Agent 建单不经过网页表单校验。使用有写权限的账号，通过 `POST /repos/{owner}/{repo}/issues` 在一次请求中写入 `title`、`body`、`type`、`labels`、适用的 `issue_field_values` 和 `milestone`。原生字段按字段 ID 和实际选项写入，适用的 `milestone` 使用里程碑编号。客户端缺少原生参数时，直接用 REST（如 `gh api`）。建单后读取 Issue 和原生字段值，核对标题、范围、验收标准、Type、唯一状态标签、至少一个适用模块、验收方和方式、适用的缺陷来源或补验版本，并确认 Milestone 已填正式版号或按规则留空。由有权限的维护者补齐并读回后再派工。参见 [REST 建单接口](https://docs.github.com/en/rest/issues/issues#create-an-issue)。
+
+更新单个原生字段时，优先通过 `POST /repos/{owner}/{repo}/issues/{number}/issue-field-values` 定向写入，再回读。已实测通用 `PATCH /repos/{owner}/{repo}/issues/{number}` 传部分 `issue_field_values` 会替换整组。若走通用 PATCH，先读现有原生字段值，合并原值和改动后再写，回读确认其他值未清空。参见 [Issue field values 接口](https://docs.github.com/en/rest/issues/issue-field-values)。
+
+### 流转与验收
+
 - 每个 Issue 始终保留一个 `状态:` 标签，按实际进度在 `待开发`、`开发中`、`待合入`、`待发布`、`待验收`、`已完成` 间切换，跳过不适用的阶段。需生产验收的 Server 工单在 GitHub 发包后标 `待上线`，实际部署并在生产读回确认后才标 `待验收`；纯发包或 CI 工单跳过上线。评估后暂不做的工单标 `挂起`，记录原因并保持开放，恢复时改回 `待开发`。
 - PR 正文用 `Tracks #<编号>` 关联工单，避免合入自动关单。软件发版前按 Milestone 核对范围内的改动都已进入 `main`。AB 发版请求默认涵盖发包和适用的 Server 生产上线。用户明确只发包或暂缓上线时，按指定范围执行。生产操作以用户明确授权为准。
 - 合入、发包、上线或验收一旦实际发生，先在原 Issue 同步状态和对应证据，再读回核对，之后才汇报或安排下一步。记录对应的 PR／`main` 提交、GitHub Release 与实际版本、生产读回或验收结果。Client Release、`stable` 渠道和 Server 生产上线分别留证，本地验证和实机验证也各自留证。
-- 需用户实测时，明确由用户验收，给出操作步骤和通过标准。验收通过后先换成 `已完成`，再关闭 Issue。发包、取消或归档都不算完成。状态以标签为准，证据记在原 Issue，沿用现有审批。
+- 发布后验收未通过则标 `验收未通过`，记录结果并保持工单开放。验收通过后先换成 `已完成`，再关闭 Issue。发包、取消或归档都不算完成。状态以标签为准，证据记在原 Issue，沿用现有审批。
 
 ## 验证和发版
 

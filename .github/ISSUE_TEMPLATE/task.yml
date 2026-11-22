@@ -1,0 +1,30 @@
+name: Task · 工作任务
+description: 记录调查、运营、文档等独立任务。
+type: Task
+labels:
+  - '状态: 待开发'
+body:
+  - type: markdown
+    attributes:
+      value: |
+        在 Issue 侧栏按实际改动选择至少一个现有模块标签，填写验收方和验收方式。无编辑权限时由维护者补齐。
+        适用字段见[建单规范](https://github.com/goodname427/agent-brain-client/blob/main/docs/development/engineering-practices.md#建单与回读)。
+  - type: textarea
+    id: scope
+    attributes:
+      label: 工作范围
+      description: 写明本次要解决的问题、影响范围及交付物。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 说明如何检查交付物，以及哪些可观察结果说明任务已完成。
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: 日志、附件或补充背景
+      description: 按需附上相关日志、截图或参考链接，可留空。

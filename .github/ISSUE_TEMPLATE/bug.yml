@@ -1,0 +1,30 @@
+name: Bug · 缺陷报告
+description: 报告已确认的异常行为。
+type: Bug
+labels:
+  - '状态: 待开发'
+body:
+  - type: markdown
+    attributes:
+      value: |
+        在 Issue 侧栏按实际改动选择至少一个现有模块标签，填写验收方、验收方式和缺陷来源。缺陷来源证据不足时选「未知」。无编辑权限时由维护者补齐。
+        适用字段见[建单规范](https://github.com/goodname427/agent-brain-client/blob/main/docs/development/engineering-practices.md#建单与回读)。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题与影响范围
+      description: 写明触发条件、实际结果、预期结果和受影响的路径。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 给出可复验的步骤或检查命令，以及每项通过时应看到的结果。
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: 日志、附件或补充背景
+      description: 按需附上相关日志、截图或参考链接，可留空。
