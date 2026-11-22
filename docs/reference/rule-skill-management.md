@@ -1,4 +1,4 @@
-# Rule / Skill 启停与本机同步
+# Rule / Skill 启停、归档与本机同步
 
 > 当前维护；适用包含 `content_set_enabled` 的 Client / Server 源码，核对日期 2026-11-05。合入源码不代表运行包已发布、Server 已部署或两台设备已生效。
 
@@ -35,7 +35,19 @@ Windows 使用同一个管理页和业务实现：
 
 写入在 Server 锁内核对 CAS，从现有完整记录复制并仅替换 enabled，再验证触发模式、启用 Skill 的 frontmatter 和其原有内容合同。复用原 journal、提交、备份回执与幂等重放；重复同一已确认请求不重复修改，已经是目标状态的操作不制造内容提交。普通 `content_put` 继续要求新建 `enabled:false`，已有记录保持 enabled；正文编辑不是启停授权。MCP 的独立启停工具只用于用户明确要求启停的具体项目。
 
-工具契约升级为 3。正常安装 / 更新通过原有受信事务登记新工具；只读检查保留经验证的旧 whitelist，不静默增加工具。契约 2 的未完成计划和最早三工具计划仅按精确前像迁移，旧 applying 安装事务仍使用原恢复材料。固定运行包文件集合、trust anchor 和设备 grant 格式保持原合同。
+正常安装 / 更新通过原有受信事务登记工具，已登记包的只读检查使用该包的工具契约。既有安装事务继续使用原恢复材料。
+
+## 正式 MCP 的可恢复归档
+
+Client 0.8.31 候选的工具契约 4 适用于 Mac 和 Windows 的共用 HTTPS Worker。需要配套 Server API。设备仍使用原 read/put 授权、种类和 ID 范围。只为用户明确指定的 Rule 或 Skill 发起操作。
+
+1. 用 `content_read` 传入确切的 `kind`、`id` 和 `include_archived: true`。活动条目返回 `archived: false` 和完整记录。已归档条目返回 `archived: true`、`record: null` 和可用于恢复的修订号。未创建的 ID 返回 `missing`。显式读回要求 Server 实时响应。
+2. 用 `content_archive` 或 `content_restore` 提交同一目标、读回的 `expected_revision` 和稳定的 `request_id`。结果未知时用原 ID 和参数重试。遇到冲突则重新显式读回，按用户明确选择发起新的 CAS 请求。原冲突在队列中可查，后续已确认的写入可以正常刷新映射。普通编辑和启停使用省略 `include_archived` 时的修订号。
+3. 核对 Server 回执及本机映射状态。归档后条目退出活动目录和受管映射。恢复保留原 ID、正文和资源，并保持停用。需要启用时单独执行 `content_set_enabled`。
+
+旧 Server 拒绝生命周期操作，普通读取、目录、编辑和启停仍可使用。归档和恢复是 MCP 工具，临时本机管理页继续提供启停和拉取。
+
+开发复验使用 [隔离跨仓检查](../../dev/integration/content_lifecycle.py)，传入对应 Server PR 候选及 0.3.8 的独立干净 checkout。它构建两平台的未发布候选清单，在执行机器上通过 stdio 和本机 HTTPS 检查 Worker，使用合成设备与内容。
 
 ## 本机与跨端语义
 

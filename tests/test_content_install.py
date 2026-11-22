@@ -191,6 +191,7 @@ class ContentInstall(unittest.TestCase):
         outer=self
         class Client:
             grant=outer.grant
+            supports_content_lifecycle=False
             def request(c,request):
                 outer.assertEqual(request['method'],'content_catalog');return {'request_id':request['request_id'],'result':{'content_api_version':1,'commit':'a'*40,'artifacts':[]},'persistence':{'state':'read-only'}}
         before=self.native_files();result=installation_check(Client(),self.content_value);self.assertTrue(result['authentication_checked']);self.assertEqual(set(result['tools']),{'memory_query','content_catalog','content_read','content_put','content_set_enabled','content_queue_inspect','content_request_id','content_sources_inventory','content_sources_read','content_sources_review','content_sources_stage'});self.assertFalse(result['native_changed']);self.assertEqual(self.native_files(),before)
@@ -212,8 +213,8 @@ class ContentInstall(unittest.TestCase):
 
     def test_declared_local_tool_flows_to_plan_running_service_and_protocol_check(self):
         original = interfaces_mcp_tools_catalog.local_tools
-        def declared(kinds, memory_sources, layered_recall=False):
-            tools = original(kinds, memory_sources, layered_recall)
+        def declared(kinds, memory_sources, layered_recall=False, lifecycle_writes=()):
+            tools = original(kinds, memory_sources, layered_recall, lifecycle_writes)
             if memory_sources:
                 tools.append({'name': 'content_sources_synthetic_review',
                     'description': 'Synthetic contract evolution; never invoked.',
@@ -221,6 +222,7 @@ class ContentInstall(unittest.TestCase):
             return tools
         class Client:
             grant = self.grant
+            supports_content_lifecycle = False
             def request(client, request):
                 return {'request_id': request['request_id'], 'result': {
                     'content_api_version': 1, 'commit': 'c' * 40, 'artifacts': []}}

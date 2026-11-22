@@ -36,14 +36,17 @@ All requests retain the stable `request_id`; writes retain
 | Method | Params |
 | --- | --- |
 | `content_catalog` | `kinds`: nonempty unique list; optional opaque `cursor` from the preceding `next_cursor` |
-| `content_read` | `kind`, `id` |
+| `content_read` | `kind`, `id`; optional `include_archived: true` for an exact Rule or Skill over HTTPS |
 | `content_put` | `kind`, `id`, `record`, `expected_revision` |
 | `content_remove` | `kind`, `id`, `expected_revision` |
 | `content_set_enabled` | existing `rule` / `skill` `kind`, `id`, boolean `enabled`, non-missing `expected_revision` |
+| `content_archive`, `content_restore` | existing `rule` / `skill` `kind`, `id`, non-missing `expected_revision` from the opt-in read |
 
 Default personal scope is `read/put`, exposing catalog/read/put and the explicit Rule/Skill activation method. `put` permits both creation and CAS update. Legacy `write` is a put alias for typed content and does not imply removal. `content_remove` requires a separately approved explicit `remove` scope at both device and Server policy boundaries; personal daily Memory removal remains blocked. Protocol support never grants an operation automatically. The signed component candidate supports its reviewed read/write profile and rejects removal; no new signing permission is inferred.
 
 `content_set_enabled` requires an explicit user enable/disable request and changes only enabled under the Server CAS lock. Ordinary read/put devices still create disabled Rules/Skills and preserve enabled on content_put edits. Activation uses the same finite/owner ID and put checks, durable outbox and persistence receipt; a confirmed save triggers transactional local mapping. Reads remain read-only; other devices pull at startup or explicitly. Server save, GitHub backup, local mapping and model loading are separate outcomes. See [Rule / Skill management](https://github.com/goodname427/agent-brain-client/blob/main/docs/reference/rule-skill-management.md).
+
+Recoverable archive and restore use explicit user requests and the existing HTTPS device put grant. Lifecycle reads and write results include an `archived` boolean. An archived entry returns `record: null` with a restore revision. Restore returns the original record and ID with `enabled: false`. The lifecycle revision may differ from the ordinary edit and activation revision. The opt-in read requires a successful live response. Default reads and catalogs stay active-only and keep their existing response shape.
 
 The current extensible contract recognizes `memory`, `rule`, `skill`; unknown
 kinds require a verified contract/adapter release. Each read or write result

@@ -47,6 +47,59 @@ class OfflineReads(unittest.TestCase):
         self.assertEqual(reply['result']['artifacts'],[{'kind':'rule','id':'synthetic-rule','revision':contract.envelope('rule','synthetic-rule',RULE)['revision']}])
         self.assertFalse((self.home/'.agents/skills/synthetic-skill').exists());self.assertEqual(self.cloud.puts,0)
 
+    def test_archive_read_requires_live_lifecycle_result_preserving_ordinary_fallback(self):
+        self.warm()
+        target = {'kind': 'rule', 'id': 'synthetic-rule'}
+        archive_read = self.request(params=dict(target, include_archived=True))
+        with self.assertRaises(ValueError):
+            self.adapter.invoke(archive_read)  # An ordinary success has no archived flag.
+        self.failure('invalid_request', retryable=False)  # Older Server.
+        self.assertEqual(self.adapter.invoke(archive_read)['error']['code'], 'invalid_request')
+        self.failure()
+        reply = self.adapter.invoke(archive_read)
+        self.assertEqual(reply['error']['code'], 'transport_unconfirmed')
+        self.assertNotIn('local_cache', reply)
+        self.assertTrue(self.adapter.invoke(self.request(params=target))['local_cache']['stale'])
+        self.failure('device_revoked', retryable=False)
+        self.assertEqual(self.adapter.invoke(archive_read)['error']['code'], 'device_revoked')
+        self.failure()
+        self.assertEqual(self.adapter.invoke(self.request(params=target))['error']['code'],
+                         'content_offline_cache_unverified')
+
+    def test_lifecycle_targets_and_receipts_respect_existing_bounds(self):
+        self.cloud.calls.clear()
+        target = {'kind': 'rule', 'id': 'synthetic-rule'}
+        write = self.request('content_archive', dict(target, expected_revision='a' * 64))
+        denied = dict(write, params=dict(write['params'], id='outside-grant'))
+        with self.assertRaises(CacheBlocked):
+            self.adapter.invoke(denied)
+        for changes in ({'kind': 'memory'}, {'expected_revision': 'missing'}, {'enabled': True}):
+            with self.assertRaises(ValueError):
+                self.adapter.invoke(dict(write, params=dict(write['params'], **changes)))
+        with self.assertRaises(ValueError):
+            self.adapter.invoke(self.request(params=dict(target, include_archived=False)))
+        self.assertEqual(self.cloud.calls, [])
+
+        result = dict(contract.envelope('rule', target['id'], None), archived=True, revision='b' * 64)
+        receipt = {'state': 'local-confirmed', 'durable': False, 'local_durable': True,
+                   'github_confirmed': False, 'commit': 'c' * 40}
+        reply = {'request_id': write['request_id'], 'persistence': receipt, 'result': result}
+        self.assertTrue(self.adapter._server_saved(reply, write))
+        for changes in ({'id': 'other-rule'}, {'record': RULE}, {'archived': 1}, {'revision': 'missing'}):
+            self.assertFalse(self.adapter._server_saved(dict(reply, result=dict(result, **changes)), write))
+        restore = dict(write, method='content_restore')
+        self.assertFalse(self.adapter._server_saved(reply, restore))
+        restored = dict(result, archived=False, record=dict(RULE, enabled=True))
+        self.assertFalse(self.adapter._server_saved(dict(reply, result=restored), restore))
+        restored['record']['enabled'] = False
+        self.assertTrue(self.adapter._server_saved(dict(reply, result=restored), restore))
+
+        self.cloud.grant = dict(self.cloud.grant, scopes=['read'])
+        tools = {tool['name']: tool for tool in ContentServer(self.restart()).catalog()}
+        self.assertNotIn('content_archive', tools)
+        self.assertNotIn('content_restore', tools)
+        self.assertIn('include_archived', tools['content_read']['inputSchema']['properties'])
+
     def test_no_snapshot_and_unknown_cached_id_are_errors_not_remote_absence(self):
         self.cloud.offline=True;reply=ContentServer(self.adapter).invoke('content_read',{'kind':'memory','id':'synthetic-topic'})
         self.assertTrue(reply['isError']);self.assertEqual(reply['structuredContent']['error']['code'],'content_offline_cache_miss')

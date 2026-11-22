@@ -10,6 +10,7 @@ import time
 from types import SimpleNamespace
 from agent_brain_client.application.installation.pairing import reviewed_ids, allowed_id
 import agent_brain_client.domain.contract as contract
+from agent_brain_client.domain.operations import LIFECYCLE_WRITES
 from agent_brain_client.application.control import (
     check_request,
     current_request,
@@ -94,6 +95,8 @@ def authorize(request, grant):
             raise ValueError("Fixed read-only discovery required")
         return
     contract.validate(method, params)
+    if method in LIFECYCLE_WRITES or method == "content_read" and "include_archived" in params:
+        raise ValueError("Content lifecycle requires HTTPS device transport")
     if not contract.permits_scope(grant["scopes"], method):
         raise ValueError("Scope denied")
     kinds = params["kinds"] if method == "content_catalog" else [params["kind"]]
@@ -271,6 +274,8 @@ class SSHChannel:
 
 
 class SSHContentClient:
+    supports_content_lifecycle = False
+
     def __init__(self, path, digest, runner=None):
         self.path, self.digest = path, digest
         self.value, self.argv = profile(path, digest)

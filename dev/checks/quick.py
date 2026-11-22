@@ -18,6 +18,10 @@ TARGETS = [
         ["test_host_entrypoints", "test_collection_control"],
     ),
     ("src/agent_brain_client/adapters/harnesses/", ["test_host_entrypoints"]),
+    (
+        "src/agent_brain_client/adapters/storage/content",
+        ["test_content_offline_reads"],
+    ),
     ("dev/checks/", ["test_client_checks"]),
     ("dev/release/", ["test_release_pipeline"]),
     ("dev/build/", ["test_client_export"]),

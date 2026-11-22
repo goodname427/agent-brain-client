@@ -1,7 +1,7 @@
 """domain / authorization: one owner for each contract and rule."""
 
 import re
-from agent_brain_client.domain.operations import FIELDS
+from agent_brain_client.domain.operations import FIELDS, RULE_SKILL_WRITES
 from agent_brain_client.domain.operations import HOOK_METHODS
 from agent_brain_client.domain.content import TYPES
 
@@ -14,7 +14,7 @@ def normalized_scopes(scopes):
 
 
 def permits_scope(scopes, method):
-    if method in ("content_set_enabled", "content_put", "memory_event_submit"):
+    if method in RULE_SKILL_WRITES or method in ("content_put", "memory_event_submit"):
         return "put" in normalized_scopes(scopes)
     if method == "content_remove":
         return "remove" in scopes
