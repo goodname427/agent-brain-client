@@ -4,8 +4,18 @@ from pathlib import Path
 from agent_brain_client.adapters.storage.native_sources import inventory_tree, read_tree
 
 
+def _memory_source(relative, _directory):
+    # Prune Git directories and worktree marker files before touching the entry.
+    return relative.rsplit("/", 1)[-1].casefold() != ".git"
+
+
 def inventory_codex_memories(codex_home, **limits):
-    return inventory_tree(Path(codex_home) / "memories", prefix="codex-memory:", **limits)
+    return inventory_tree(
+        Path(codex_home) / "memories",
+        prefix="codex-memory:",
+        select=_memory_source,
+        **limits,
+    )
 
 
 class CodexMemorySources:
@@ -15,7 +25,7 @@ class CodexMemorySources:
         self.root = session.native_memory_home / "memories"
 
     def inventory(self):
-        return inventory_tree(self.root, prefix=self.prefix)
+        return inventory_tree(self.root, prefix=self.prefix, select=_memory_source)
 
     def read(self, source_id):
-        return read_tree(self.root, source_id, prefix=self.prefix)
+        return read_tree(self.root, source_id, prefix=self.prefix, select=_memory_source)
