@@ -314,7 +314,7 @@ class ReleaseEngine:
         atomic_json(release / "verified.json", {"commit": commit, "manifest": manifest})
         return release
 
-    def check(self, *, lock_timeout=20):
+    def check(self, *, lock_timeout=20, can_activate=None):
         directory(self.local)
         with (
             locked(self.local / "update.lock", timeout=lock_timeout),
@@ -341,6 +341,8 @@ class ReleaseEngine:
             release = self.prepare(commit, manifest, read)
             # Adapter verifies protocol/path/contracts and dependencies before any mutation.
             self.adapter.preflight(release, manifest)
+            if can_activate is not None and not can_activate(current, release, manifest):
+                return {"status": "activation-deferred", "active": current}
             backup = self.adapter.snapshot()
             backup_raw = json.dumps(backup, sort_keys=True).encode()
             backup_path = self.local / "backups" / (commit + ".json")

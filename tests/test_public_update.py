@@ -169,6 +169,39 @@ class PublicUpdate(unittest.TestCase):
         self.assertIsNone(repeated["reload_required"])
         self.assertEqual(self.calls, [("update",), ("update",)])
 
+    def test_active_package_with_stale_tool_registration_reports_partial_update(self):
+        discovery = codex_updates.installation.tool_discovery
+
+        def stale_after_activation(home, meta, active):
+            result = discovery(home, meta, active)
+            if active["commit"] == self.latest["commit"]:
+                result.update(registration_update_required=True, blocked_by_registration=["synthetic_tool"])
+            return result
+
+        with patch.object(codex_updates.installation, "tool_discovery", side_effect=stale_after_activation):
+            result = self.action("update")
+
+        self.assertEqual(result["status"], "client-update-review-required", result)
+        self.assertEqual(result["reason"], "mcp-registration-refresh-required")
+        self.assertTrue(result["channel_checked"])
+        self.assertTrue(result["active_package_changed"])
+        self.assertEqual(result["active_package_version"], self.latest["manifest"]["version"])
+        self.assertEqual(interfaces_cli_install.lifecycle_exit("update", result), 2)
+
+    def test_recovers_saved_handover_and_checks_current_candidate_in_same_update(self):
+        registration = codex_updates.RegisteredClientInstallation
+        with (
+            patch.object(registration, "handover_pending", return_value=True),
+            patch.object(registration, "refresh_launcher", side_effect=[True, False]) as refresh,
+        ):
+            result = self.action("update")
+
+        self.assertEqual(result["status"], "client-update-updated", result)
+        self.assertTrue(result["mcp_registration_changed"])
+        self.assertEqual(refresh.call_count, 2)
+        self.assertEqual(refresh.call_args_list[0].kwargs, {})
+        self.assertEqual(refresh.call_args_list[1].kwargs["before"]["version"], "0.2.10")
+
     def test_channel_failure_or_health_rejection_does_not_claim_latest_or_success(self):
         for action, failure in [
             ("check-update", "release-unavailable"),

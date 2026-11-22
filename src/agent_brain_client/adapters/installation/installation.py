@@ -37,7 +37,6 @@ from agent_brain_client.adapters.packages.client import (
 from agent_brain_client.adapters.storage.metadata import unique as pairs
 from agent_brain_client.adapters.storage.pinned import pinned
 from agent_brain_client.domain.tool_contract import (
-    DESCRIBED_TOOL_CONTRACT_VERSIONS,
     TOOL_CONTRACT_VERSION,
 )
 from agent_brain_client.domain.content_policy import validate_policy
@@ -275,7 +274,7 @@ def package_tools(package, content, grant, *, lifecycle=True):
         not isinstance(value, dict)
         or set(value) != {"tools", "version"}
         or type(value["version"]) is not int
-        or value["version"] not in DESCRIBED_TOOL_CONTRACT_VERSIONS
+        or value["version"] < 3
     ):
         raise InstallBlocked("Supported package tool contract required")
     tools = value["tools"]
@@ -620,7 +619,7 @@ def validate_install_scope(plan):
             "tool_contract_version" in plan
             and (
                 type(plan["tool_contract_version"]) is not int
-                or plan["tool_contract_version"] not in (2, *DESCRIBED_TOOL_CONTRACT_VERSIONS)
+                or plan["tool_contract_version"] < 2
             )
         )
         or plan["schema"] != 1

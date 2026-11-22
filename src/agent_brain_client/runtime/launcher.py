@@ -5,6 +5,7 @@ the policy digest through the forced SSH command. No daemon or native rewriting.
 """
 
 import sys
+from functools import partial
 from pathlib import Path
 
 import hashlib
@@ -283,7 +284,9 @@ def isolated_stdio_operation(policy_path, policy_sha256, harness, mode, ticket, 
     if mode == "discover":
         if request is not None or protocol is not None:
             raise UpdateBlocked("Distinct background discovery required")
-        releases.startup_check()
+        from agent_brain_client.adapters.installation.launcher_update import can_activate_at_startup
+
+        releases.startup_check(can_activate=partial(can_activate_at_startup, Path(runtime["device_home"])))
         return {}
     if mode == "plan":
         if request is not None or protocol is not None:
