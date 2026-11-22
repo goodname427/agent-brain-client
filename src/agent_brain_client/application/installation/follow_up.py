@@ -1,7 +1,9 @@
 """application / installation / follow_up: one owner for each contract and rule."""
 
+from agent_brain_client.application.memory.guidance import ONBOARDING_URL
+
 ONBOARD_COVERAGE_GUIDANCE = (
-    "Once host MCP tools are available, follow the public Onboarding guide at https://github.com/goodname427/agent-brain-client/blob/main/BOOTSTRAP.md#onboarding for connection verification, authorized source review, CAS writes and coverage reporting. "
+    f"Once host MCP tools are available, follow the public Onboarding guide at {ONBOARDING_URL} for connection verification, authorized source review, CAS writes and coverage reporting. "
     "The guide can be used with an empty Agent Brain account and without preloaded Skills. This handoff records that no source scan or data transfer has occurred. "
 )
 

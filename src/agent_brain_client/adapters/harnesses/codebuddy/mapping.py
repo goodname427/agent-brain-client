@@ -4,6 +4,7 @@ import json
 import re
 from agent_brain_client.adapters.storage.native_mapping import NativeMapping
 from agent_brain_client.adapters.storage.content_limits import MAPPING_BYTES
+from agent_brain_client.application.memory.guidance import MAPPING_GUIDANCE
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.errors import CacheBlocked, CollectionCapacityExceeded
 
@@ -41,7 +42,7 @@ class CodeBuddyContentMapping(NativeMapping):
     def _mapping(self, snapshot, owned):
         desired = {}
         index = ["---", "alwaysApply: true", "enabled: true", "---", "# Agent Brain cloud Rule index",
-                 "Use a referenced Rule when its title and trigger match the current task. Read its file for the full instructions; preserve the trigger and current project scope."]
+                 MAPPING_GUIDANCE]
         for value in snapshot["records"]:
             kind, identity, record = value["kind"], value["id"], value["record"]
             if kind in ("memory", "rule"):
