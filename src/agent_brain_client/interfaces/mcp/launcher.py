@@ -395,14 +395,22 @@ def _read_contract(record):
     return record
 
 
-def _compatible_catalog(first, second, protocol):
-    return (
+def _compatible_catalog(first, second, protocol, *, additive=False):
+    compatible_session = (
         protocol in second["versions"]
         and first["capabilities"] == second["capabilities"]
-        and first["toolContract"] == second["toolContract"]
         and first["cacheIdentity"] == second["cacheIdentity"]
         and first["cacheAbi"] == second["cacheAbi"]
-        and tool_contract(first["tools"]) == tool_contract(second["tools"])
+    )
+    if not compatible_session:
+        return False
+    previous = tool_contract(first["tools"])
+    current = tool_contract(second["tools"])
+    if first["toolContract"] == second["toolContract"] and previous == current:
+        return True
+    return (
+        additive and previous.keys() < current.keys()
+        and all(current[name] == schema for name, schema in previous.items())
     )
 
 
@@ -410,6 +418,7 @@ def supervise_stdio(
     initial, observe, source, output, options, *,
     poll_interval=2, probe_timeout=20, request_timeout=90, drain_timeout=90, max_pending=255,
     can_switch=None, idle_timeout=None, prepare_worker=None, remember_worker=None,
+    allow_catalog_updates=False,
 ):
     """Keep one host session while locally verified workers change.
 
@@ -424,6 +433,8 @@ def supervise_stdio(
     active = candidate = None
     catalog = protocol = None
     initialized = restart_attempted = input_closed = oversized = False
+    dynamic_catalog = allow_catalog_updates and idle_timeout is not None
+    catalog_wake = False
     drain_id = None
     drain_deadline = None
     drain_acked = False
@@ -636,7 +647,11 @@ def supervise_stdio(
             if candidate is not None and candidate.contract is None and now >= candidate.deadline:
                 close_candidate("worker-readiness-timeout")
                 flush_waiting()
-            if parked and waiting:
+            if parked and (waiting or catalog_wake):
+                eager = catalog_wake and initialized and latest and latest != last_good
+                catalog_wake = False
+                if not waiting and not eager:
+                    continue
                 # The earlier worker has already exited. On wake, a newly
                 # verified compatible worker may use the existing host session.
                 target = latest if latest == last_good or registration_current() else last_good
@@ -646,6 +661,8 @@ def supervise_stdio(
                     or target.cache_abi != last_good.cache_abi
                 ):
                     target = last_good
+                if not waiting and target == last_good:
+                    continue
                 try:
                     active = start(target, protocol)
                 except (OSError, RuntimeError):
@@ -746,6 +763,7 @@ def supervise_stdio(
                         active.close_input()
             elif owner is release:
                 latest = line
+                catalog_wake = dynamic_catalog
                 if serial_target is not None and serial_target != latest:
                     drain_id = None
                     serial_target = None
@@ -767,7 +785,7 @@ def supervise_stdio(
                         if owner.contract["cacheAbi"] != owner.spec.cache_abi:
                             raise ValueError("MCP worker cache ABI changed")
                         if catalog is not None and not _compatible_catalog(
-                            catalog, owner.contract, protocol
+                            catalog, owner.contract, protocol, additive=dynamic_catalog,
                         ):
                             raise ValueError("MCP catalog changed")
                         if (
@@ -786,7 +804,13 @@ def supervise_stdio(
                         continue
                     if owner is active or active is None:
                         active, candidate = owner, None
-                        catalog = owner.contract if catalog is None else catalog
+                        if catalog is None:
+                            catalog = owner.contract
+                        elif dynamic_catalog and len(owner.contract["tools"]) > len(catalog["tools"]):
+                            catalog = owner.contract
+                            write_response(output, {
+                                "jsonrpc": "2.0", "method": "notifications/tools/list_changed",
+                            })
                         if remember_worker is not None:
                             last_good = owner.spec
                             remember_worker(owner.spec, owner.command)
@@ -833,6 +857,10 @@ def supervise_stdio(
                     negotiated = result.get("protocolVersion")
                     if negotiated in catalog["versions"]:
                         protocol = negotiated
+                        if dynamic_catalog:
+                            capabilities = dict(result["capabilities"])
+                            capabilities["tools"] = dict(capabilities["tools"], listChanged=True)
+                            response["result"] = dict(result, capabilities=capabilities)
                 if method == "tools/list" and isinstance(result, dict) and "tools" in result:
                     response["result"] = dict(result, tools=catalog["tools"])
                 write_response(output, response)

@@ -58,6 +58,8 @@ class FixtureServer:
             "description": "Worker " + label,
             "inputSchema": {"type": "object" if label != "schema" else "array"},
         }]
+        if label == "additive":
+            self.catalog.append({"name": "fixture_new", "inputSchema": {"type": "object"}})
 
     def handle(self, request):
         method = request["method"]
@@ -73,6 +75,8 @@ class FixtureServer:
             raise AssertionError("Tools require the existing handshake")
         if method == "tools/list":
             return {"tools": self.catalog}
+        if request["params"]["name"] not in {tool["name"] for tool in self.catalog}:
+            raise AssertionError("Tool was dispatched to the wrong worker")
         action = request["params"]["arguments"]["action"]
         if action in ("hold", "hold-new"):
             marker(self.root, "holding-" + self.label)
@@ -182,6 +186,7 @@ class BrokerTestCase(unittest.TestCase):
         self.addCleanup(self.stop_broker)
         self.output = Queue()
         self.buffered = {}
+        self.notifications = Queue()
 
         def read():
             for line in self.broker.stdout:
@@ -190,9 +195,9 @@ class BrokerTestCase(unittest.TestCase):
 
         self.reader = threading.Thread(target=read, daemon=True)
         self.reader.start()
-        self.await_marker("spawn-old")
         self.send("initialize", 1, INIT)
-        self.assertEqual(self.receive(1)["result"]["protocolVersion"], PROTOCOL)
+        self.handshake = self.receive(1)["result"]
+        self.assertEqual(self.handshake["protocolVersion"], PROTOCOL)
         self.send("notifications/initialized")
         self.send("tools/list", 2)
         self.original = self.receive(2)["result"]
@@ -226,6 +231,9 @@ class BrokerTestCase(unittest.TestCase):
             while True:
                 value = self.output.get(timeout=8)
                 self.assertIsNotNone(value, "Host stdio connection ended")
+                if "method" in value and "id" not in value:
+                    self.notifications.put(value)
+                    continue
                 if value["id"] == rid:
                     return value
                 self.assertNotIn(value["id"], self.buffered)
@@ -268,6 +276,14 @@ class HandoffTests(BrokerTestCase):
         self.assertFalse((self.root / "initialized-new").exists())
         self.send("tools/list", 6)
         self.assertEqual(self.receive(6)["result"], self.original)
+
+    def test_default_catalog_refuses_an_additive_candidate(self):
+        self.assertEqual(self.handshake["capabilities"], {"tools": {}})
+        self.activate("additive")
+        self.await_diagnostic("worker-readiness-rejected")
+        self.call(3)
+        self.assertEqual(self.receive(3)["result"]["worker"], "old")
+        self.assertTrue(self.notifications.empty())
 
     def test_request_id_can_be_reused_and_cancelled_on_new_generation(self):
         self.call("shared-id")
@@ -335,6 +351,49 @@ class HandoffTests(BrokerTestCase):
         self.call(4)
         self.assertEqual(self.receive(4)["result"]["worker"], "old")
         self.assertEqual((self.root / "invocations").read_bytes(), b"crash\n")
+
+
+class DynamicCatalogTests(BrokerTestCase):
+    supervisor_options = {"idle_timeout": 0.2, "allow_catalog_updates": True}
+
+    def assert_additive_tool(self):
+        self.send("tools/list", 4)
+        result = self.receive(4)["result"]["tools"]
+        self.assertEqual([tool["name"] for tool in result], ["fixture", "fixture_new"])
+        self.assertEqual(self.notifications.get_nowait(), {
+            "jsonrpc": "2.0", "method": "notifications/tools/list_changed",
+        })
+        self.send("tools/call", 5, {"name": "fixture_new", "arguments": {"action": "version"}})
+        self.assertEqual(self.receive(5)["result"]["worker"], "additive")
+        self.assertTrue(self.notifications.empty())
+        self.assertFalse((self.root / "initialized-additive").exists())
+
+    def test_new_catalog_is_published_after_inflight_read_completes(self):
+        self.assertEqual(self.handshake["capabilities"], {"tools": {"listChanged": True}})
+        self.call(3, "hold")
+        self.await_marker("holding-old")
+        self.activate("additive")
+        self.await_marker("barrier-old")
+        self.assertFalse((self.root / "spawn-additive").exists())
+        marker(self.root, "release")
+        self.assertEqual(self.receive(3)["result"]["worker"], "old")
+        self.await_marker("spawn-additive")
+        self.assert_additive_tool()
+
+    def test_idle_connection_wakes_when_new_catalog_is_ready(self):
+        self.await_marker("barrier-old")
+        self.activate("additive")
+        self.await_marker("spawn-additive")
+        self.assert_additive_tool()
+
+    def test_changed_schema_preserves_original_catalog(self):
+        self.activate("schema")
+        self.await_diagnostic("worker-readiness-rejected")
+        self.call(3)
+        self.assertEqual(self.receive(3)["result"]["worker"], "old")
+        self.send("tools/list", 4)
+        self.assertEqual(self.receive(4)["result"], self.original)
+        self.assertTrue(self.notifications.empty())
 
 
 class HandoffDeadlineTests(BrokerTestCase):
