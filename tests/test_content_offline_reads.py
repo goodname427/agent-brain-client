@@ -10,9 +10,33 @@ from unittest.mock import patch
 from test_content_outbox import Cloud,MEMORY,RULE,SKILL,POLICY
 from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 from agent_brain_client.adapters.storage.content_session import ContentSession
+from agent_brain_client.application.tools.catalog import enabled_tools
+from agent_brain_client.domain.content import validate_lifecycle_target
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.interfaces.mcp.content import ContentServer
 import agent_brain_client.domain.contract as contract
+
+
+class LifecycleContract(unittest.TestCase):
+    def test_explicit_read_and_write_shapes_and_scope(self):
+        target = {'kind': 'rule', 'id': 'synthetic-rule'}
+        contract.validate('content_read', dict(target, include_archived=True))
+        for kind in ('memory', 'other'):
+            with self.assertRaises(ValueError):
+                contract.validate('content_read', dict(target, kind=kind, include_archived=True))
+        with self.assertRaises(ValueError):
+            contract.validate('content_read', dict(target, include_archived=False))
+        for method in ('content_archive', 'content_restore'):
+            contract.validate(method, dict(target, expected_revision='a' * 64))
+            with self.assertRaises(ValueError):
+                contract.validate(method, dict(target, expected_revision='missing'))
+            cloud = Cloud()
+            self.assertIn(method, enabled_tools(POLICY, cloud.grant))
+            self.assertNotIn(method, enabled_tools(POLICY, dict(cloud.grant, scopes=['read'])))
+        archived = dict(contract.envelope('rule', target['id'], None), archived=True, revision='b' * 64)
+        validate_lifecycle_target(archived, target['kind'], target['id'])
+        with self.assertRaises(ValueError):
+            validate_lifecycle_target(dict(archived, record=RULE), target['kind'], target['id'])
 
 
 class OfflineReads(unittest.TestCase):
@@ -46,6 +70,59 @@ class OfflineReads(unittest.TestCase):
         reply=server.invoke('content_catalog',{'kinds':['rule']})['structuredContent']
         self.assertEqual(reply['result']['artifacts'],[{'kind':'rule','id':'synthetic-rule','revision':contract.envelope('rule','synthetic-rule',RULE)['revision']}])
         self.assertFalse((self.home/'.agents/skills/synthetic-skill').exists());self.assertEqual(self.cloud.puts,0)
+
+    def test_archive_read_requires_live_lifecycle_result_preserving_ordinary_fallback(self):
+        self.warm()
+        target = {'kind': 'rule', 'id': 'synthetic-rule'}
+        archive_read = self.request(params=dict(target, include_archived=True))
+        with self.assertRaises(ValueError):
+            self.adapter.invoke(archive_read)  # An ordinary success has no archived flag.
+        self.failure('invalid_request', retryable=False)  # Older Server.
+        self.assertEqual(self.adapter.invoke(archive_read)['error']['code'], 'invalid_request')
+        self.failure()
+        reply = self.adapter.invoke(archive_read)
+        self.assertEqual(reply['error']['code'], 'transport_unconfirmed')
+        self.assertNotIn('local_cache', reply)
+        self.assertTrue(self.adapter.invoke(self.request(params=target))['local_cache']['stale'])
+        self.failure('device_revoked', retryable=False)
+        self.assertEqual(self.adapter.invoke(archive_read)['error']['code'], 'device_revoked')
+        self.failure()
+        self.assertEqual(self.adapter.invoke(self.request(params=target))['error']['code'],
+                         'content_offline_cache_unverified')
+
+    def test_lifecycle_targets_and_receipts_respect_existing_bounds(self):
+        self.cloud.calls.clear()
+        target = {'kind': 'rule', 'id': 'synthetic-rule'}
+        write = self.request('content_archive', dict(target, expected_revision='a' * 64))
+        denied = dict(write, params=dict(write['params'], id='outside-grant'))
+        with self.assertRaises(CacheBlocked):
+            self.adapter.invoke(denied)
+        for changes in ({'kind': 'memory'}, {'expected_revision': 'missing'}, {'enabled': True}):
+            with self.assertRaises(ValueError):
+                self.adapter.invoke(dict(write, params=dict(write['params'], **changes)))
+        with self.assertRaises(ValueError):
+            self.adapter.invoke(self.request(params=dict(target, include_archived=False)))
+        self.assertEqual(self.cloud.calls, [])
+
+        result = dict(contract.envelope('rule', target['id'], None), archived=True, revision='b' * 64)
+        receipt = {'state': 'local-confirmed', 'durable': False, 'local_durable': True,
+                   'github_confirmed': False, 'commit': 'c' * 40}
+        reply = {'request_id': write['request_id'], 'persistence': receipt, 'result': result}
+        self.assertTrue(self.adapter._server_saved(reply, write))
+        for changes in ({'id': 'other-rule'}, {'record': RULE}, {'archived': 1}, {'revision': 'missing'}):
+            self.assertFalse(self.adapter._server_saved(dict(reply, result=dict(result, **changes)), write))
+        restore = dict(write, method='content_restore')
+        self.assertFalse(self.adapter._server_saved(reply, restore))
+        restored = dict(result, archived=False, record=dict(RULE, enabled=True))
+        self.assertFalse(self.adapter._server_saved(dict(reply, result=restored), restore))
+        restored['record']['enabled'] = False
+        self.assertTrue(self.adapter._server_saved(dict(reply, result=restored), restore))
+
+        self.cloud.grant = dict(self.cloud.grant, scopes=['read'])
+        tools = {tool['name']: tool for tool in ContentServer(self.restart()).catalog()}
+        self.assertNotIn('content_archive', tools)
+        self.assertNotIn('content_restore', tools)
+        self.assertIn('include_archived', tools['content_read']['inputSchema']['properties'])
 
     def test_no_snapshot_and_unknown_cached_id_are_errors_not_remote_absence(self):
         self.cloud.offline=True;reply=ContentServer(self.adapter).invoke('content_read',{'kind':'memory','id':'synthetic-topic'})

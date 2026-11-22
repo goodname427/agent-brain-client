@@ -12,6 +12,8 @@
 
 如果新业务进程拒绝已协商的合同，会话可重新启动最近一次通过握手的 worker。即使后续更新覆盖了发布日志中的前驱，启动器仍在会话内记住这一个已授权入口。重启前重新核验登记、完整包内容和合同，不创建额外包副本或持久记录。
 
+0.8.31 的 HTTPS 工具契约为 4，已验证的契约 3 包仍按各自的清单检查。升级后按正常流程重新连接 Agent Brain MCP，以加载新登记。归档和恢复在原 schema-1 队列中保留请求和回执，旧 Worker 无法读取新方法的队列项。缓存握手标记为 `content-ledgers-v2`。写过生命周期请求的设备须用支持该合同的 Worker 读取和重放队列，并保留原队列文件。
+
 从 0.8.27 更新到单文件入口时，正常更新事务迁移原登记，宿主使用原生操作重新连接一次。随后普通业务文件增改沿用已有登记，由更新器完整校验包成员和摘要。原生 Hook 命令仍通过已登记包和原权限验证活动快照。正式同连接验收使用首版后的下一次普通业务更新。
 
 Mac 的隔离回归通过 `test_mcp_single_entry_release` 使用精确 0.8.27 运行包和本地候选。检出须包含 `client-0.8.27-macos` 对象，按开发检查说明隔离 `HOME` 和 `CODEX_HOME` 后运行 `AB_REQUIRE_SINGLE_ENTRY=1 PYTHONPATH=src:.:tests python3.12 -B -m unittest -v test_mcp_single_entry_release test_mcp_worker_handoff`。

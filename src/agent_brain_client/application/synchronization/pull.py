@@ -19,7 +19,7 @@ class ContentSynchronization:
                 if replay:
                     self.session.replay_writes()
                 self.session.sources.reconcile_pending()
-                queue = self.session.queue_status()
+                queue = self.session.queue_status(for_mapping=True)
                 imports = self.session.sources.import_status()
                 if (
                     queue["pending"]
@@ -34,7 +34,7 @@ class ContentSynchronization:
                         "status": "content-local-changes-retained",
                         "native_changed": False,
                         "model_loaded": "unknown",
-                        "queue": queue,
+                        "queue": self.session.queue_status(),
                         "imports": imports,
                         "next_action": "Reconnect to replay exact saved requests; explicitly reconcile conflicts before mapping.",
                     }

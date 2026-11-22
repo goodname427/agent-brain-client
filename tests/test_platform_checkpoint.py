@@ -120,7 +120,8 @@ class VerifiedPackageTools(unittest.TestCase):
     def test_future_package_addition_needs_no_version_or_name_allowlist(self):
         package = self.root / 'future-package'
         release(ROOT, package, '0.9.0', 'personal-content-https', native_platform())
-        before = set(ci.package_tools(package, POLICY, self.grant))
+        _, initial_tools = ci.package_tools(package, POLICY, self.grant)
+        before = set(initial_tools)
         source = (package / self.catalog_path).read_text(encoding='utf-8')
         updated = source.replace(
             '    return tools\n',
@@ -128,7 +129,7 @@ class VerifiedPackageTools(unittest.TestCase):
             1,
         )
         self.write_candidate_source(package, self.catalog_path, updated)
-        tools = ci.package_tools(package, POLICY, self.grant)
+        _, tools = ci.package_tools(package, POLICY, self.grant)
         self.assertIn('synthetic_future_read', tools)
         self.assertIn('memory_query', tools)
         self.assertEqual(set(tools), before | {'synthetic_future_read'})
@@ -144,7 +145,8 @@ class VerifiedPackageTools(unittest.TestCase):
         )
         self.assertNotEqual(source, updated)
         self.write_candidate_source(package, name, updated)
-        self.assertNotIn('content_put', ci.package_tools(package, POLICY, self.grant))
+        _, tools = ci.package_tools(package, POLICY, self.grant)
+        self.assertNotIn('content_put', tools)
 
     def test_probe_failure_is_bounded_and_does_not_accept_updater_fallback(self):
         package = self.root / 'old-package'

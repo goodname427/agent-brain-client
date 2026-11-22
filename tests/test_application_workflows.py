@@ -37,7 +37,7 @@ class RefreshPorts:
     def replay_writes(self):
         self.calls.append("replay")
 
-    def queue_status(self):
+    def queue_status(self, *, for_mapping=False):
         return {"pending": self.pending, "conflict": 0, "blocked": 0}
 
     def import_status(self):

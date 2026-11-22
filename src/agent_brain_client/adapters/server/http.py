@@ -11,6 +11,7 @@ from agent_brain_client.application.control import (
     recall_timing_stage,
     request_timeout,
 )
+from agent_brain_client.domain.operations import CONTENT_WRITES, WRITES
 #!/usr/bin/env python3
 
 
@@ -398,23 +399,16 @@ class RemoteClient:
         req.add_header("X-Agent-Brain-State-Schema", "1")
         if self.data_mode == "personal":
             req.add_header("X-Agent-Brain-Data-Mode", "personal")
-        if self.write_receipt is not None and request.get("method") in (
-            "remember",
-            "forget",
-            "content_put",
-            "content_remove",
-            "content_set_enabled",
+        method = request.get("method")
+        if (
+            self.write_receipt is not None
+            and isinstance(method, str)
+            and method in CONTENT_WRITES | {"remember", "forget"}
         ):
             req.add_header("X-Agent-Brain-Write-Receipt", self.write_receipt)
-        write = request.get("method") in (
-            "remember",
-            "forget",
-            "content_put",
-            "content_remove",
-            "content_set_enabled",
-            "memory_event_submit",
-            "memory_extract",
-        )
+        write = isinstance(method, str) and method in WRITES | {
+            "remember", "forget", "memory_extract",
+        }
         core = (
             request.get("method")
             in ("memory_event_submit", "memory_extract", "memory_global_query")
