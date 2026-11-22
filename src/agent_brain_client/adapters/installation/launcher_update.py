@@ -10,6 +10,7 @@ from agent_brain_client.adapters.packages.client import (
     MCP_LAUNCHER_ENTRY,
     UpdateBlocked,
     launcher_package_files,
+    managed_worker_abi,
     single_entry_pin,
 )
 from agent_brain_client.adapters.storage.private_files import private_json, safe
@@ -112,6 +113,31 @@ def can_retain_launcher(policy, installed, registered, candidate, desired, befor
         return entry_pin is not None and entry_pin == launcher_package_files(candidate).get(MCP_LAUNCHER_ENTRY)
     except (OSError, ValueError, KeyError, TypeError, UpdateBlocked):
         return False
+
+
+def can_activate_at_startup(home, active, candidate, manifest):
+    """Keep native registration changes in the public maintenance transaction."""
+    import agent_brain_client.adapters.installation.installation as ci
+
+    if active is None:
+        return False
+    previous = Path(active["package"])
+    abi = managed_worker_abi(previous, launcher_package_files(previous))
+    if abi is None or abi != managed_worker_abi(candidate, manifest["files"]):
+        return False
+    meta = private_json(safe(Path(home) / ".config/agent-brain-client/codex-mcp.json"))
+    policy, registered, _, _ = ci.registered_context(home, meta)
+    harness = ci.command_harness(registered)
+    args = (meta["release_policy"], meta["release_policy_sha256"])
+    _, _, _, _, previous_contract = ci._package_context(
+        home, previous, *args, inspection=True, harness=harness,
+    )
+    _, desired, _, _, candidate_contract = ci._package_context(
+        home, candidate, *args, inspection=True, harness=harness,
+    )
+    return previous_contract == candidate_contract and can_retain_launcher(
+        policy, meta["package"], registered, candidate, desired, active,
+    )
 
 
 def refresh_launcher(
