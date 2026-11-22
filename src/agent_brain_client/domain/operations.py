@@ -13,10 +13,15 @@ FIELDS = {
     "content_put": {"kind", "id", "record", "expected_revision"},
     "content_remove": {"kind", "id", "expected_revision"},
     "content_set_enabled": {"kind", "id", "enabled", "expected_revision"},
+    "content_archive": {"kind", "id", "expected_revision"},
+    "content_restore": {"kind", "id", "expected_revision"},
 }
 
 
-WRITES = {"content_set_enabled", "content_put", "content_remove", "memory_event_submit"}
+LIFECYCLE_WRITES = {"content_archive", "content_restore"}
+RULE_SKILL_WRITES = {"content_set_enabled"} | LIFECYCLE_WRITES
+CONTENT_WRITES = {"content_put", "content_remove"} | RULE_SKILL_WRITES
+WRITES = CONTENT_WRITES | {"memory_event_submit"}
 
 
 HOOK_METHODS = {"memory_event_submit"} | {

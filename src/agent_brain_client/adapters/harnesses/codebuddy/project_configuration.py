@@ -1,11 +1,18 @@
 """CodeBuddy project Hook targets and native turn normalization."""
 
+from functools import partial
 from pathlib import Path
 from agent_brain_client.adapters.harnesses.codebuddy.configuration import read_host, render_json
 from agent_brain_client.adapters.harnesses.codebuddy.events import session_id
 from agent_brain_client.adapters.storage import metadata
 from agent_brain_client.adapters.storage.host_files import host_plan, host_apply, host_restore
 from agent_brain_client.adapters.platforms.filesystem import locked
+from agent_brain_client.adapters.storage.project_settings import (
+    hook_registration,
+    read_hook_receipt,
+    write_codebuddy_hook_receipt,
+)
+
 
 def definitions(settings, path):
     from agent_brain_client.adapters.installation import launcher_update as hook_launcher
@@ -22,17 +29,16 @@ def install(settings, path, pin):
     if settings["harness"] != "codebuddy":
         raise ValueError("CodeBuddy project binding required")
     hook_launcher.prepare_native_hook(settings["device_home"])
-    target = metadata.canonical(Path(settings["project_root"]) / ".codebuddy/settings.local.json")
-    directory = Path(path).parent
-    journal = directory / "codebuddy-hooks-install.json"
-    with locked(directory / "codebuddy-hooks.lock"):
-        previous = metadata.private_json(journal) if journal.exists() else None
+    target, journal = hook_registration("codebuddy", path, settings["project_root"])
+    save = partial(write_codebuddy_hook_receipt, journal)
+    with locked(journal.parent / "codebuddy-hooks.lock"):
+        previous = read_hook_receipt("codebuddy", journal) if journal.exists() else None
         if previous and previous.get("phase") == "applying":
             if set(previous.get("host", {})) != {str(target)}:
                 raise ValueError("Project recovery target changed")
-            host_restore(previous["host"], lambda: metadata.write(journal, previous))
+            host_restore(previous["host"], lambda: save(previous))
             previous = dict(previous, phase="rolled-back")
-            metadata.write(journal, previous)
+            save(previous)
         groups = definitions(settings, path)
         old = None
         if previous:
@@ -46,13 +52,13 @@ def install(settings, path, pin):
                 and previous.get("settings_sha256") == pin):
             return {"status": "project-memory-installed", "harness": "codebuddy", "native_changed": False,
                     "source_mode": settings["source_mode"], "model_loaded": "unknown"}
-        metadata.write(journal, record)
+        save(record)
         try:
-            host_apply(record["host"], lambda: metadata.write(journal, record))
-            metadata.write(journal, dict(record, phase="complete"))
+            host_apply(record["host"], lambda: save(record))
+            save(dict(record, phase="complete"))
         except Exception:
-            host_restore(record["host"], lambda: metadata.write(journal, record))
-            metadata.write(journal, dict(record, phase="rolled-back"))
+            host_restore(record["host"], lambda: save(record))
+            save(dict(record, phase="rolled-back"))
             raise
     return {"status": "project-memory-installed", "harness": "codebuddy", "native_changed": changed,
             "source_mode": settings["source_mode"], "model_loaded": "unknown"}

@@ -2,11 +2,13 @@
 
 from pathlib import Path
 import time
+from agent_brain_client.adapters.storage.host_files import HOST_IMAGE_BYTES
 from agent_brain_client.adapters.storage.registration import registration
 from agent_brain_client.adapters.storage.metadata import (
     canonical,
     digest,
     private_json,
+    write,
 )
 from agent_brain_client.adapters.platforms.filesystem import (
     private_mode,
@@ -16,6 +18,11 @@ from agent_brain_client.adapters.packages.frozen import runtime_pins
 ROOT = Path(__file__).resolve().parents[4]
 ENTRY = ROOT / "src/agent_brain_client/interfaces/cli/project.py"
 MARKER = "Agent Brain project memory"
+
+# One host file, with base64 before, target and optional Windows rollback
+# images. Allow another MiB for the paths, two sets of Hook definitions and
+# journal metadata, including JSON escaping on long native paths.
+_CODEBUDDY_RECEIPT_BYTES = 3 * (4 * ((HOST_IMAGE_BYTES + 2) // 3)) + 1024 * 1024
 
 
 FIELDS = {
@@ -88,7 +95,7 @@ def load(path, sha, *, locate, verify_code=True, use_registration=False):
     if verify_code and use_registration:
         target, receipt = hook_registration(harness, path, p["project_root"])
         if receipt.exists():
-            if _hook_receipt_pin(target, receipt) != sha:
+            if _hook_receipt_pin(harness, target, receipt) != sha:
                 raise ValueError("Registered project settings changed")
             # The receipt pins project data independently of the running Client.
             verify_code = False
@@ -302,16 +309,35 @@ def hook_registration(harness, settings_path, project_root):
     return target, canonical(Path(settings_path).parent / name)
 
 
+def read_hook_receipt(harness, receipt):
+    try:
+        binding = (
+            private_json(receipt, max_bytes=_CODEBUDDY_RECEIPT_BYTES)
+            if harness == "codebuddy"
+            else private_json(receipt)
+        )
+    except RecursionError as error:
+        raise ValueError("Invalid project Hook receipt") from error
+    if not isinstance(binding, dict):
+        raise ValueError("Invalid project Hook receipt")
+    return binding
+
+
+def write_codebuddy_hook_receipt(receipt, binding):
+    write(receipt, binding, max_bytes=_CODEBUDDY_RECEIPT_BYTES)
+
+
 def installed_hook_pin(home, harness, settings_path):
     """Resolve the exact settings pin from the private installation receipt."""
     saved = private_json(settings_path)
     if saved.get("device_home") != home or project_harness(saved) != harness:
         raise ValueError("Project Hook identity changed")
-    return _hook_receipt_pin(*hook_registration(harness, settings_path, saved["project_root"]))
+    target, receipt = hook_registration(harness, settings_path, saved["project_root"])
+    return _hook_receipt_pin(harness, target, receipt)
 
 
-def _hook_receipt_pin(target, receipt):
-    binding = private_json(receipt)
+def _hook_receipt_pin(harness, target, receipt):
+    binding = read_hook_receipt(harness, receipt)
     if binding.get("phase") != "complete" or binding.get("target") != str(target):
         raise ValueError("Project Hook registration unavailable")
     pin = binding.get("settings_sha256")

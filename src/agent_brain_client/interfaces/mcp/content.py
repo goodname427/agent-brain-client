@@ -20,6 +20,7 @@ from agent_brain_client.interfaces.mcp.framing import (
 
 
 from agent_brain_client.domain.tool_contract import TOOL_CONTRACT_VERSION
+from agent_brain_client.domain.operations import CONTENT_WRITES, LIFECYCLE_WRITES
 from agent_brain_client.application.tools.catalog import (
     RECALL_EVIDENCE_GUIDANCE,
     tool_definitions,
@@ -338,17 +339,17 @@ class ContentServer(Server):
                     raise ContentParameterError(
                         "turn_sha256 must be the digest from the active native turn."
                     )
-                if arguments["method"] not in (
-                    "content_put",
-                    "content_remove",
-                    "content_set_enabled",
-                ):
+                method = arguments["method"]
+                if not isinstance(method, str) or method not in CONTENT_WRITES:
                     raise ContentParameterError(
                         "Only content write request IDs are supported."
                     )
-                contract.validate(
-                    "content_read", {"kind": arguments["kind"], "id": arguments["id"]}
-                )
+                target = {"kind": arguments["kind"], "id": arguments["id"]}
+                if method in LIFECYCLE_WRITES:
+                    if method not in self.adapter.methods():
+                        raise ContentToolUnavailable("Lifecycle write is outside the installed tool grant.")
+                    target["include_archived"] = True
+                contract.validate("content_read", target)
                 rid = (
                     "agentbrain_"
                     + hashlib.sha256(
@@ -501,6 +502,7 @@ class ContentServer(Server):
             allowed = (
                 contract.FIELDS[name]
                 | ({"cursor"} if name == "content_catalog" else set())
+                | ({"include_archived"} if name == "content_read" and self._lifecycle_enabled() else set())
                 | {"request_id"}
                 | (
                     {"reconciles", "source_context"}
@@ -548,7 +550,9 @@ class ContentServer(Server):
                 + name
                 + " arguments; use the exact fields and types in this tool input schema."
             )
-            if name in contract.WRITES:
+            if name in LIFECYCLE_WRITES:
+                message += " Use a stable request_id and the revision from content_read with include_archived:true. Keep both unchanged on exact retry."
+            elif name in contract.WRITES:
                 message += " Writes require a stable request_id and the expected_revision obtained from content_read."
             raise ContentParameterError(message) from None
         with operation_diagnostics() as diagnostic:
@@ -622,6 +626,9 @@ class ContentServer(Server):
             ],
         }
 
+    def _lifecycle_enabled(self):
+        return getattr(getattr(self.adapter, "client", None), "supports_content_lifecycle", True)
+
     def catalog(self):
         return tool_definitions(
             self.adapter.methods(),
@@ -629,6 +636,7 @@ class ContentServer(Server):
             self._memory_source_tools_authorized(),
             self.client_version,
             self.update_guidance,
+            lifecycle=self._lifecycle_enabled(),
         )
 
     def handle(self, request):
@@ -845,16 +853,20 @@ class SafeArgumentParser(argparse.ArgumentParser):
 def installation_check(client, policy, client_version="0.2.0"):
     """Fixed read-only MCP/auth check. No content cache/native mapping is created."""
     validate_policy(policy, client.grant)
+    expected_tools = set(enabled_tools(
+        policy, client.grant, lifecycle=getattr(client, "supports_content_lifecycle", True)
+    ))
 
     class Adapter:
         def __init__(self):
             self.policy = policy
+            self.client = client
 
         def refresh(self):
             return {"status": "protocol-only", "native_changed": False}
 
         def methods(self):
-            return set(enabled_tools(policy, client.grant)) - LOCAL_TOOLS
+            return expected_tools - LOCAL_TOOLS
 
         def invoke(self, request):
             if request["method"] != "content_catalog":
@@ -889,7 +901,6 @@ def installation_check(client, policy, client_version="0.2.0"):
         }
     )
     tool_names = [tool["name"] for tool in tools["tools"]]
-    expected_tools = set(enabled_tools(policy, client.grant))
     if (
         first["serverInfo"]["name"] != "agent-brain-content"
         or len(tool_names) != len(set(tool_names))
@@ -929,7 +940,9 @@ def main():
         print(
             json.dumps(
                 {
-                    "tools": enabled_tools(value["policy"], value["grant"]),
+                    "tools": enabled_tools(
+                        value["policy"], value["grant"], lifecycle=value.get("lifecycle", True)
+                    ),
                     "version": TOOL_CONTRACT_VERSION,
                 }
             )

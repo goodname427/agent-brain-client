@@ -2,7 +2,9 @@
 
 from typing import Any
 from agent_brain_client.domain import contract
+from agent_brain_client.domain.content import RULE_SKILL
 from agent_brain_client.domain.content_policy import validate_policy
+from agent_brain_client.domain.operations import CONTENT_WRITES, LIFECYCLE_WRITES, RULE_SKILL_WRITES
 
 
 RECALL_EVIDENCE_GUIDANCE = (
@@ -17,7 +19,7 @@ RECALL_EVIDENCE_GUIDANCE = (
 )
 
 
-def local_tools(kinds, memory_sources, layered_recall=False):
+def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()):
     tools = []
     tools.append(
         {
@@ -116,6 +118,7 @@ def local_tools(kinds, memory_sources, layered_recall=False):
                             "content_put",
                             "content_remove",
                             "content_set_enabled",
+                            *sorted(lifecycle_writes),
                         ],
                     },
                     "kind": {"type": "string", "enum": kinds},
@@ -289,12 +292,12 @@ def tool_names(methods, memory_sources):
             [], memory_sources, memory_sources and "memory_query" in methods
         )
     }
-    if not set(methods) & {"content_put", "content_remove", "content_set_enabled"}:
+    if not set(methods) & CONTENT_WRITES:
         names.discard("content_queue_inspect")
     return sorted(names)
 
 
-def enabled_tools(policy, grant):
+def enabled_tools(policy, grant, *, lifecycle=True):
     """One tool contract for plans, installation checks and the running MCP.
 
     All names remain bounded by existing read/put/remove and artifact grants.
@@ -304,12 +307,14 @@ def enabled_tools(policy, grant):
     methods = contract.mcp_methods(grant["scopes"])
     if "memory" not in policy["kinds"]:
         methods -= {"memory_query"}
-    if not set(policy["kinds"]) & {"rule", "skill"}:
-        methods.discard("content_set_enabled")
+    if not set(policy["kinds"]) & RULE_SKILL:
+        methods -= RULE_SKILL_WRITES
+    if not lifecycle:
+        methods -= LIFECYCLE_WRITES
     return tool_names(methods, memory_sources_authorized(policy, grant))
 
 
-def tool_definitions(methods, kinds, memory_sources, client_version, update_guidance):
+def tool_definitions(methods, kinds, memory_sources, client_version, update_guidance, *, lifecycle=True):
     """Build every content MCP declaration from the same authorized catalog."""
     tools = []
     declared = tool_names(methods, memory_sources)
@@ -332,11 +337,22 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
             }
         if "kind" in fields:
             properties["kind"]["enum"] = kinds
+        archive_read = name == "content_read" and lifecycle and bool(RULE_SKILL.intersection(kinds))
+        if archive_read:
+            properties["include_archived"] = {
+                "type": "boolean",
+                "enum": [True],
+                "description": "For one exact Rule or Skill, set true to read lifecycle state and the CAS revision for archive or restore. Omit for the ordinary active view and edit/enable CAS revision.",
+            }
+        if name in RULE_SKILL_WRITES:
+            properties["kind"]["enum"] = [kind for kind in kinds if kind in RULE_SKILL]
         if name == "content_set_enabled":
-            properties["kind"]["enum"] = [
-                kind for kind in kinds if kind in ("rule", "skill")
-            ]
             properties["enabled"] = {"type": "boolean"}
+        if name in LIFECYCLE_WRITES:
+            properties["expected_revision"].update(
+                pattern="^[a-f0-9]{64}$",
+                description="Current revision from content_read with include_archived:true, or the original revision on exact retry.",
+            )
         if "record" in fields:
             properties["record"] = {
                 "oneOf": [
@@ -506,6 +522,12 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
         description = "Approved cloud content only. Server is the sole write boundary; retain CAS revision and request_id on write retries. Transport failures may return a verified stale snapshot with local_cache.stale=true; cache misses never prove remote absence. Local cache refresh does not reload existing model context. "
         if name == "content_set_enabled":
             description += "Only on an explicit user enable/disable request for this exact Rule/Skill. Changes enabled alone on an existing record; ordinary content_put edits must preserve enabled. Check local_refresh separately from persistence; a saved change may still require a local mapping retry. "
+        if archive_read:
+            description += "With include_archived:true the Server must be live and support lifecycle reads. An archived target returns archived:true, record:null and a restore revision. Default reads and catalog remain active-only. "
+        if name == "content_archive":
+            description += "Only on an explicit user archive request for this exact Rule/Skill. A confirmed archive removes it from the active catalog and local mappings. Retain the original request_id and exact arguments on retries. Check Server persistence and local_refresh separately. "
+        if name == "content_restore":
+            description += "Only on an explicit user restore request for this exact archived Rule/Skill. Restores its original ID and content with enabled:false. Retain the original request_id and exact arguments on retries. Check Server persistence and local_refresh separately. "
         if name == "content_put":
             description += "Preserve existing Rule/Skill enabled state; create disabled. Use content_set_enabled only for explicit user activation requests. "
         if name == "content_catalog":
@@ -527,7 +549,7 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
                 },
                 "annotations": {
                     "readOnlyHint": name not in contract.WRITES,
-                    "destructiveHint": name == "content_remove",
+                    "destructiveHint": name in ("content_remove", "content_archive"),
                     "idempotentHint": True,
                 },
             }
@@ -538,6 +560,7 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
             kinds,
             memory_sources,
             "memory_query" in declared,
+            LIFECYCLE_WRITES.intersection(declared),
         )
         if tool["name"] in declared
     )

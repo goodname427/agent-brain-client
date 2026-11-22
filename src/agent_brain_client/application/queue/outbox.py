@@ -16,6 +16,8 @@ from agent_brain_client.application.queue.ports import SourceReconciliation
 
 import agent_brain_client.domain.contract as contract
 from agent_brain_client.application.control import check_request
+from agent_brain_client.domain.content import validate_lifecycle_target
+from agent_brain_client.domain.operations import LIFECYCLE_WRITES
 
 
 def sha(raw):
@@ -100,9 +102,7 @@ class DurableOutbox:
             row.update(state="conflict", response=response)
             if self._event_allowed(request, event_gate):
                 try:
-                    row["remote"] = self._read_target(
-                        request["params"]["kind"], request["params"]["id"]
-                    )
+                    row["remote"] = self._read_conflict_target(request)
                 except Exception:
                     pass
             self._save("outbox/" + request["request_id"] + ".json", row)
@@ -225,7 +225,10 @@ class DurableOutbox:
             ):
                 raise CacheBlocked()
         # A prior idempotent outbox entry must not bypass a later review revocation.
-        if request["method"] == "content_set_enabled" and reconciles["source_keys"]:
+        if (
+            request["method"] == "content_set_enabled" and reconciles["source_keys"]
+            or request["method"] in LIFECYCLE_WRITES and any(reconciles.values())
+        ):
             raise CacheBlocked()
         self.sources.assert_shareable(reconciles["source_keys"])
         request = json.loads(contract.encode(request))
@@ -242,7 +245,7 @@ class DurableOutbox:
             self._queued()
             return old
         rows = self._queued()
-        if sum(row["state"] not in ("confirmed", "reconciled") for row in rows) >= 1024:
+        if sum(self._awaits_resolution(row) for row in rows) >= 1024:
             raise CacheBlocked()
         target = (request["params"]["kind"], request["params"]["id"])
         for rid in reconciles["request_ids"]:
@@ -262,6 +265,7 @@ class DurableOutbox:
             if (
                 request["method"] == "content_set_enabled"
                 and previous["request"]["method"] != "content_set_enabled"
+                or previous["request"]["method"] in LIFECYCLE_WRITES
             ):
                 raise CacheBlocked()
         self.sources.validate_reconciliation(
@@ -324,14 +328,19 @@ class DurableOutbox:
         ):
             pass
 
+    def _read_conflict_target(self, request):
+        params = request["params"]
+        target = (params["kind"], params["id"])
+        if request["method"] in LIFECYCLE_WRITES:
+            return self._read_target(*target, lifecycle=True)
+        return self._read_target(*target)
+
     def _drain_pass(
         self, event_request_id=None, event_gate=None, *, exact_request_id=None
     ):
         resolved = False
         for row in self._queued():
             request = row["request"]
-            params = request["params"]
-            target = (params["kind"], params["id"])
             if (
                 exact_request_id is not None
                 and request["request_id"] != exact_request_id
@@ -349,7 +358,7 @@ class DurableOutbox:
             if row["state"] in ("conflict", "blocked"):
                 if row["state"] == "conflict" and row["remote"] is None:
                     try:
-                        row["remote"] = self._read_target(*target)
+                        row["remote"] = self._read_conflict_target(request)
                         self._save("outbox/" + request["request_id"] + ".json", row)
                     except Exception:
                         pass
@@ -402,7 +411,7 @@ class DurableOutbox:
                 if error.get("code") == "revision_conflict":
                     row.update(state="conflict", response=response)
                     try:
-                        row["remote"] = self._read_target(*target)
+                        row["remote"] = self._read_conflict_target(request)
                     except Exception:
                         pass
                 elif error.get("retryable") is False and error.get("code") not in (
@@ -424,8 +433,19 @@ class DurableOutbox:
                 resolved = self._finish_reconciliation(row) or resolved
         return resolved
 
-    def queue_status(self):
+    @staticmethod
+    def _awaits_resolution(row):
+        # Terminal lifecycle refusals retain their evidence but carry no local
+        # content proposal to merge. Unknown writes still need exact replay.
+        return row["state"] == "pending" or (
+            row["state"] in ("conflict", "blocked")
+            and row["request"]["method"] not in LIFECYCLE_WRITES
+        )
+
+    def queue_status(self, *, for_mapping=False):
         rows = self._queued()
+        if for_mapping:
+            rows = [row for row in rows if self._awaits_resolution(row)]
         return {
             state: sum(row["state"] == state for row in rows)
             for state in ("pending", "confirmed", "conflict", "blocked", "reconciled")
@@ -551,6 +571,18 @@ class DurableOutbox:
         )
         if not (remote or local):
             return False
+        if request["method"] in LIFECYCLE_WRITES:
+            try:
+                validate_lifecycle_target(value, params["kind"], params["id"])
+            except (ValueError, TypeError):
+                return False
+            if request["method"] == "content_archive":
+                return value["archived"] is True
+            return (
+                value["archived"] is False
+                and value["record"] is not None
+                and value["record"]["enabled"] is False
+            )
         try:
             self._validate_target(value, params["kind"], params["id"])
         except Exception:
@@ -580,7 +612,13 @@ class DurableOutbox:
         # Derived diagnostics only: never edit a retained request, its CAS base,
         # reconciliation references or ID to make a queued write go through.
         blockers: list[dict[str, str]] = []
-        if blockers or row["state"] == "conflict":
+        if row["state"] == "conflict" and row["request"]["method"] in LIFECYCLE_WRITES:
+            next_action = (
+                "Inspect the retained request with content_queue_inspect and read this exact target with content_read and include_archived:true. "
+                "A fresh archive or restore requires an explicit user request, the current lifecycle revision and a new stable request_id. "
+                "Keep the original conflict and arguments for review."
+            )
+        elif blockers or row["state"] == "conflict":
             next_action = (
                 "Inspect blockers and retained local proposals with content_queue_inspect, then read the current target with content_read. "
                 "Resolve conflicts with an explicitly reviewed content_put using a new stable request_id, the current expected_revision and reconciles.request_ids selecting the exact conflicts. "
