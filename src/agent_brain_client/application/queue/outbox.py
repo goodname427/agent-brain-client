@@ -6,6 +6,7 @@ host config, transcript discovery, credentials or context injection lives here.
 
 from agent_brain_client.domain.content import same_record
 from agent_brain_client.domain.errors import CacheBlocked
+from agent_brain_client.domain.events import NATIVE_MEMORY_CONTRACT
 import hashlib
 import json
 import re
@@ -313,7 +314,7 @@ class DurableOutbox:
         if request["method"] != "memory_event_submit" and not rule:
             return True
         if event_gate is None:
-            return not rule
+            return not rule and request["params"]["event"].get("contract") != NATIVE_MEMORY_CONTRACT
         try:
             return event_gate() is True
         except Exception:

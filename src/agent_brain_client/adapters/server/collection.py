@@ -9,6 +9,7 @@ from urllib.request import Request
 from agent_brain_client.adapters.storage import metadata as metadata
 from agent_brain_client.adapters.storage import registration as registration_store
 from agent_brain_client.domain import privacy as privacy
+from agent_brain_client.domain.events import NATIVE_MEMORY_CONTRACT
 from agent_brain_client.domain.scopes import (
     digest,
     select,
@@ -146,14 +147,18 @@ class CollectionClient:
             raise ValueError("Origin no longer approved")
         return {"origin": self.local, "session_id": session}
 
-    def status(self, session, *, event_id=None):
+    def status(self, session, *, event_id=None, event_only=False):
         params = self.params(session)
+        if event_only and event_id is None:
+            raise ValueError("Exact event status requires an event ID")
         if event_id is not None:
             from agent_brain_client.domain.events import event_identifier
 
             event_identifier(session)
             event_identifier(event_id)
             params["event_id"] = event_id
+        if event_only:
+            params["event_only"] = True
         result = self.wire("memory_global_status", params)
         if "error" in result:
             raise ValueError("Global admission unavailable")
@@ -166,6 +171,8 @@ class CollectionClient:
             raise EventDiagnosticsUnavailable(
                 "Event diagnostics unavailable on this Server"
             )
+        if event_only:
+            return state
         if (
             state.get("global_profile_id") != self.value["scope"]["profile_id"]
             or state.get("scope_sha256") != self.scope_sha
@@ -189,15 +196,26 @@ class CollectionClient:
         contract_validate("memory_event_submit", params)
         event = params["event"]
         selected = select(self.value["scope"], self.local)
-        sid = source_id(self.value["scope"], self.local, selected["sharing"])
-        if event["project_id"] != namespace(self.actor, sid) or any(
-            (privacy.private_content(m["content"]) or restricted(m["content"]))
-            for m in event["messages"]
-        ):
+        if selected is None:
             raise ValueError("Global event outside source policy")
+        sid = source_id(self.value["scope"], self.local, selected["sharing"])
+        native = event["contract"] == NATIVE_MEMORY_CONTRACT
+        if event["project_id"] != namespace(self.actor, sid):
+            raise ValueError("Global event outside source policy")
+        if native:
+            if privacy.private_recall_text(event["content"]):
+                raise ValueError("Global event outside source policy")
+            wire_event = {
+                key: event[key] for key in ("contract", "event_id", "occurred_at", "content")
+            }
+        else:
+            if any(privacy.private_content(m["content"]) or restricted(m["content"])
+                   for m in event["messages"]):
+                raise ValueError("Global event outside source policy")
+            wire_event = event
         result = self.wire(
             "memory_global_event_submit",
-            dict(self.params(event["session_id"]), event=event),
+            dict(self.params(event["session_id"]), event=wire_event),
             request["request_id"],
         )
         if "error" not in result and not core_receipt(result, request):
