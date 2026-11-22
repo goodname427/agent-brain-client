@@ -603,8 +603,10 @@ class SourceClosure(unittest.TestCase):
                     if params['scope']['profile_id'] != state['profile_id']:
                         return {'error':{'code':'global_source_profile_mismatch'}}
                     state['scope'] = copy.deepcopy(params['scope'])
-                    state['stopped'] = True
+                    if current is None:
+                        state['stopped'] = True
                     return {'result':{'source_registered':True,'scope_sha256':digest(params['scope']),
+                        'stopped':state['stopped'], 'resumed':False,
                         'source_device_id':self.device_id,'global_profile_id':state['profile_id']}}
                 if method == 'memory_global_resume':
                     state['stopped'] = False
@@ -682,13 +684,14 @@ class SourceClosure(unittest.TestCase):
             self.assertEqual(result['packet'], pending['packet'])
             self.assertEqual(state['calls'], ['memory_global_status'])
             self.assertEqual(file.read_bytes(), before)
-            from agent_brain_client.runtime.source_enrollment import configure
+            from agent_brain_client.interfaces.cli import collection as collection_cli
 
-            activated = configure(SimpleNamespace(
-                device_home=str(self.home), activate_packet=pending['packet'],
-                all_projects=False, include_root=[], isolate_root=[], exclude_root=[],
-                non_project_root=[],
-            ))
+            self.assertIn('--activate-packet', result['next_action'])
+            with patch.object(sys, 'stdout', io.StringIO()) as output:
+                code = collection_cli.main(['global-configure', '--device-home', str(self.home),
+                                            '--activate-packet', pending['packet']])
+            self.assertEqual(code, 0, output.getvalue())
+            activated = json.loads(output.getvalue())
         self.assertTrue(activated['activated'])
         self.assertFalse(state['stopped'])
         self.assertEqual(state['calls'].count('memory_global_register'), 0)
