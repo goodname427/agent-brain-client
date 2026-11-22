@@ -40,25 +40,30 @@ def canonical(path, *, existing=False):
     return p
 
 
-def private_json(path, sha=None, *, cache=False):
+def private_json(path, sha=None, *, cache=False, max_bytes=256 * 1024):
     p = canonical(path, existing=True)
     if cache:
         cache_mode(p, owner=True)
     else:
         private_mode(p, owner=True)
-    if p.stat().st_size > 262144:
+    if p.stat().st_size > max_bytes:
         raise ValueError("Private owned metadata required")
-    raw = p.read_bytes()
+    with p.open("rb") as stream:
+        raw = stream.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ValueError("Private owned metadata required")
     if sha is not None and digest(raw) != sha:
         raise ValueError("Metadata digest changed")
     return json.loads(raw, object_pairs_hook=unique)
 
 
-def write(path, value, *, exclusive=False, mode=0o600, cache=False):
+def write(path, value, *, exclusive=False, mode=0o600, cache=False, max_bytes=None):
     p = canonical(path)
     raw = (
         json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
     ).encode()
+    if max_bytes is not None and len(raw) > max_bytes:
+        raise ValueError("Private metadata exceeds its size limit")
     if exclusive:
         with p.open("xb") as stream:
             if not cache or os.name != "nt":
