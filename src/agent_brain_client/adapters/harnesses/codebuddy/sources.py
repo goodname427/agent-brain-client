@@ -1,10 +1,39 @@
 """CodeBuddy persistent auto-memory and user memory; no transcript discovery."""
 
-from agent_brain_client.adapters.storage.native_sources import inventory_tree, read_tree
-from agent_brain_client.adapters.storage.content_limits import sha
+from collections import Counter
+
 from agent_brain_client.adapters.platforms.source_files import open_native_source
+from agent_brain_client.adapters.storage.content_limits import sha
+from agent_brain_client.adapters.storage.native_sources import inventory_tree, read_tree
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.errors import CacheBlocked
+
+
+def _legacy_memory(relative, directory):
+    name = relative.rsplit("/", 1)[-1].casefold()
+    if directory:
+        return name not in {"sessions", "history", "transcripts"}
+    return name.endswith((".md", ".mdc")) and name != "memory.md"
+
+
+def _global_memory(relative, directory):
+    return (
+        not directory
+        and "/" not in relative
+        and relative.casefold().endswith("_memery.md")
+    )
+
+
+def _project_memory(relative, directory):
+    parts = relative.casefold().split("/")
+    if directory:
+        return len(parts) == 1 or (len(parts) == 2 and parts[1] == "memory")
+    return (
+        len(parts) == 3
+        and parts[1] == "memory"
+        and parts[2].endswith(".md")
+        and parts[2] != "memory.md"
+    )
 
 
 class CodeBuddyMemorySources:
@@ -13,7 +42,20 @@ class CodeBuddyMemorySources:
     def __init__(self, session):
         self.home = session.native_memory_home
         device = session.home
-        self.ide = (device / "AppData/Local" if session.platform.startswith("win32-") else device / "Library/Application Support") / "CodeBuddyExtension/Data/Public/.memories"
+        windows = session.platform.startswith("win32-")
+        local_data = device / ("AppData/Local" if windows else "Library/Application Support")
+        self.ide = local_data / "CodeBuddyExtension/Data/Public/.memories"
+        self._trees = [
+            (self.home / "memories", "cli/", _legacy_memory),
+            (self.ide, "ide/", _legacy_memory),
+        ]
+        if windows:
+            self._trees.extend(
+                [
+                    (self.home / "memery", "memery/", _global_memory),
+                    (self.home / "projects", "projects/", _project_memory),
+                ]
+            )
 
     def _user(self):
         stream, info = open_native_source(self.home / "CODEBUDDY.md")
@@ -28,35 +70,61 @@ class CodeBuddyMemorySources:
         return raw.replace(GUIDANCE.encode(), b"")
 
     def inventory(self):
-        value = inventory_tree(self.home / "memories", prefix=self.prefix, identity_namespace="cli/")
-        ide = inventory_tree(self.ide, prefix=self.prefix, identity_namespace="ide/")
-        rows = list(value["sources"]) + list(ide["sources"])
-        if ide["status"] != "unavailable":
-            value = dict(value, status="incomplete" if "incomplete" in (value["status"], ide["status"]) else "complete")
+        rows = []
+        statuses = set()
+        for root, namespace, select in self._trees:
+            tree = inventory_tree(
+                root, prefix=self.prefix, identity_namespace=namespace,
+                select=select, optional=True,
+            )
+            if tree is not None:
+                rows.extend(tree["sources"])
+                statuses.add(tree["status"])
         try:
             raw = self._user()
             if raw.strip():
                 rows.append({"source_id": self.prefix + sha(b"CODEBUDDY.md"),
                     "source_fingerprint": sha(raw), "status": "not-checked",
                     "reason": "fingerprinted; semantic review required"})
-                if value["status"] == "unavailable":
-                    value = dict(value, status="complete")
+                statuses.add("complete")
         except FileNotFoundError:
             pass
         except (OSError, ValueError, CacheBlocked):
             rows.append({"source_id": self.prefix + sha(b"CODEBUDDY.md"),
                 "source_fingerprint": None, "status": "unavailable",
                 "reason": "user memory changed or unavailable"})
-            value = dict(value, status="incomplete")
+            statuses.add("incomplete")
         if len(rows) > 1024:
             raise CacheBlocked()
         rows.sort(key=lambda row: row["source_id"])
-        return dict(value, sources=rows, cursor=sha(contract.encode(rows)))
+        if "incomplete" in statuses or statuses == {"complete", "unavailable"}:
+            status = "incomplete"
+        elif "complete" in statuses:
+            status = "complete"
+        else:
+            status = "unavailable"
+        return {
+            "schema": 1,
+            "status": status,
+            "reason": {
+                "complete": "metadata inventory only; no import coverage claimed",
+                "incomplete": "one or more memory sources could not be inventoried",
+                "unavailable": "no available CodeBuddy memory roots",
+            }[status],
+            "sources": rows,
+            "counts": dict(Counter(row["status"] for row in rows)),
+            "cursor": sha(contract.encode(rows)),
+        }
 
     def read(self, source_id):
         if source_id == self.prefix + sha(b"CODEBUDDY.md"):
             return self._user()
-        try:
-            return read_tree(self.home / "memories", source_id, prefix=self.prefix, identity_namespace="cli/")
-        except (OSError, CacheBlocked):
-            return read_tree(self.ide, source_id, prefix=self.prefix, identity_namespace="ide/")
+        for root, namespace, select in self._trees:
+            try:
+                return read_tree(
+                    root, source_id, prefix=self.prefix, identity_namespace=namespace,
+                    select=select,
+                )
+            except (OSError, CacheBlocked):
+                continue
+        raise CacheBlocked()

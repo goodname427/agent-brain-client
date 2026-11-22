@@ -20,6 +20,8 @@ def inventory_tree(
     max_total_bytes=16777216,
     max_entries=1024,
     max_depth=16,
+    select=None,
+    optional=False,
 ):
     """Fingerprint only the selected persistent memory tree; never inspect sessions.
 
@@ -27,6 +29,9 @@ def inventory_tree(
     remain ``not-checked`` until a separate review classifies and normalizes
     them for import. A digest cursor lets a caller detect a changed inventory
     without treating this scan as coverage or an import plan.
+
+    A host can select file and directory paths before touching entries. Only a
+    missing optional root is omitted from a combined inventory.
     """
     root = Path(root).expanduser()
     identity_prefix = prefix
@@ -39,25 +44,11 @@ def inventory_tree(
     def source_id(relative):
         return identity_prefix + sha((identity_namespace + relative).encode("utf-8", "surrogateescape"))
 
-    if root.is_symlink() or not root.exists():
-        return {
-            "schema": 1,
-            "status": "unavailable",
-            "reason": "memory root missing or symlinked",
-            "sources": [],
-            "cursor": sha((prefix + "root-unavailable").encode()),
-        }
-    if not root.is_dir():
-        return {
-            "schema": 1,
-            "status": "unavailable",
-            "reason": "memory root is not a directory",
-            "sources": [],
-            "cursor": sha((prefix + "root-invalid").encode()),
-        }
     try:
         tree = open_tree(root)
-    except OSError:
+    except OSError as error:
+        if optional and isinstance(error, FileNotFoundError):
+            return None
         return {
             "schema": 1,
             "status": "unavailable",
@@ -118,6 +109,10 @@ def inventory_tree(
                             "cursor": sha(contract.encode(rows)),
                         }
                     relative = (prefix + "/" + entry.name).strip("/")
+                    allow_file = select is None or select(relative, False)
+                    allow_directory = select is None or select(relative, True)
+                    if not (allow_file or allow_directory):
+                        continue
                     try:
                         info = tree.info(directory_fd, entry)
                     except OSError:
@@ -141,6 +136,8 @@ def inventory_tree(
                         )
                         continue
                     if stat.S_ISDIR(info.st_mode):
+                        if not allow_directory:
+                            continue
                         try:
                             child_fd = tree.open_directory(directory_fd, entry, info)
                             pending.append((child_fd, relative, depth + 1))
@@ -153,6 +150,8 @@ def inventory_tree(
                                     "reason": "directory changed or unreadable",
                                 }
                             )
+                        continue
+                    if not allow_file:
                         continue
                     if not stat.S_ISREG(info.st_mode):
                         rows.append(
@@ -249,7 +248,7 @@ def inventory_tree(
     }
 
 
-def read_tree(root, source_id, *, prefix, identity_namespace=""):
+def read_tree(root, source_id, *, prefix, identity_namespace="", select=None):
     identity_prefix = prefix
     try:
         tree = open_tree(root)
@@ -282,6 +281,10 @@ def read_tree(root, source_id, *, prefix, identity_namespace=""):
                     if entries_seen > 1024:
                         raise CacheBlocked()
                     relative = (prefix + "/" + entry.name).strip("/")
+                    allow_file = select is None or select(relative, False)
+                    allow_directory = select is None or select(relative, True)
+                    if not (allow_file or allow_directory):
+                        continue
                     try:
                         info = tree.info(directory_fd, entry)
                     except OSError:
@@ -289,6 +292,8 @@ def read_tree(root, source_id, *, prefix, identity_namespace=""):
                     if is_link(info):
                         continue
                     if stat.S_ISDIR(info.st_mode):
+                        if not allow_directory:
+                            continue
                         try:
                             child_fd = tree.open_directory(
                                 directory_fd, entry, info
@@ -297,7 +302,7 @@ def read_tree(root, source_id, *, prefix, identity_namespace=""):
                         except OSError:
                             raise CacheBlocked() from None
                         continue
-                    if stat.S_ISREG(
+                    if allow_file and stat.S_ISREG(
                         info.st_mode
                     ) and source_id == identity_prefix + sha(
                         (identity_namespace + relative).encode("utf-8", "surrogateescape")
