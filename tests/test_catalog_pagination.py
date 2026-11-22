@@ -5,6 +5,7 @@ import unittest
 
 import test_content_outbox as fixture
 from agent_brain_client.interfaces.mcp.content import ContentServer
+from agent_brain_client.interfaces.mcp.framing import ContentParameterError
 
 
 class CatalogPages(unittest.TestCase):
@@ -108,12 +109,42 @@ class CatalogPages(unittest.TestCase):
                     self.assertTrue(result[0]['cached_snapshot'])
                     self.assertEqual(sum(c.args[0]['method']=='content_catalog' for c in read.call_args_list),pages)
 
-    def test_tool_schema_exposes_optional_cursor_and_keeps_one_memory_query(self):
-        server=ContentServer(self.f.adapter);server.state='ready'
-        tools=server.handle({'jsonrpc':'2.0','id':1,'method':'tools/list'})['tools']
-        catalog=next(row for row in tools if row['name']=='content_catalog')['inputSchema']
-        self.assertEqual(catalog['required'],['kinds']);self.assertIn('cursor',catalog['properties'])
-        self.assertNotIn('memory_recall',[row['name'] for row in tools])
+    def test_mcp_catalog_schema_and_server_pages(self):
+        server = ContentServer(self.f.adapter)
+        server.state = "ready"
+        tools = server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["tools"]
+        by_name = {tool["name"]: tool["inputSchema"] for tool in tools}
+        catalog = by_name["content_catalog"]
+        self.assertEqual(catalog["required"], ["kinds"])
+        self.assertEqual(set(catalog["properties"]), {"kinds", "cursor"})
+        self.assertFalse(catalog["additionalProperties"])
+        self.assertEqual(set(by_name["content_sources_inventory"]["properties"]), {"cursor"})
+        self.assertNotIn("memory_recall", by_name)
+
+        def call(arguments, request_id):
+            return server.handle({
+                "jsonrpc": "2.0", "id": request_id, "method": "tools/call",
+                "params": {"name": "content_catalog", "arguments": arguments},
+            })
+
+        kinds = ["memory"]
+        with self.assertRaises(ContentParameterError):
+            call({"kinds": kinds, "limit": 256}, 2)
+        self.assertEqual(self.f.cloud.calls, [])
+
+        expected_arguments = {"kinds": kinds}
+        for index, expected_size in enumerate((256, 256, 88), start=3):
+            response = call(expected_arguments, index)
+            self.assertFalse(response["isError"], response)
+            structured = response["structuredContent"]
+            self.assertNotIn("next_cursor", structured)
+            page = structured["result"]
+            self.assertEqual(len(page["artifacts"]), expected_size)
+            self.assertEqual(self.f.cloud.calls[-1]["params"], expected_arguments)
+            if expected_size == 256:
+                expected_arguments = {"kinds": kinds, "cursor": page["next_cursor"]}
+        self.assertNotIn("next_cursor", page)
+        self.assertEqual(len(self.f.cloud.calls), 3)
 
 
 if __name__=='__main__':unittest.main()

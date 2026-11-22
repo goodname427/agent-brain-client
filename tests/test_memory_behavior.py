@@ -17,6 +17,11 @@ from agent_brain_client.application.installation.follow_up import ONBOARD_COVERA
 from agent_brain_client.domain.sources import review_memory_sources
 import agent_brain_client.interfaces.mcp.content as content_mcp
 
+ONBOARD_PATH = "BOOTSTRAP.md#onboarding"
+MEMORY_PATH = "docs/reference/memory-behavior.md"
+MAINTENANCE_PATH = "docs/installation/maintenance.md"
+OLD_SKILLS = ("agent-brain-onboard", "agent-brain-memory", "agent-brain-maintain")
+
 
 class MemoryBehavior(unittest.TestCase):
     def test_consumer_instructions_delegate_behavior_and_describe_complete_target_schema(self):
@@ -32,8 +37,10 @@ class MemoryBehavior(unittest.TestCase):
                                      'params': {'protocolVersion': '2025-11-25', 'capabilities': {},
                                                 'clientInfo': {'name': 'synthetic-test', 'version': '1'}}})
         instructions = initialized['instructions']
-        self.assertIn('agent-brain-memory', instructions)
-        self.assertIn('agent-brain-onboard', instructions)
+        for path in (ONBOARD_PATH, MEMORY_PATH, MAINTENANCE_PATH):
+            self.assertIn(path, instructions)
+        for name in OLD_SKILLS:
+            self.assertNotIn(name, instructions)
         self.assertIn('AgentBrain destination records only', instructions)
         self.assertNotIn('Do not importance-filter existing memories', instructions)
         server.handle({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
@@ -70,7 +77,9 @@ class MemoryBehavior(unittest.TestCase):
             self.assertFalse(result['onboard_check']['source_scan_performed'])
             self.assertTrue(result['onboard_check']['harness_source_inventory_required'])
             self.assertFalse(result['onboard_check']['agentbrain_catalog_is_source_inventory'])
-            self.assertIn('agent-brain-onboard', result['onboard_check']['next_action'])
+            self.assertIn(ONBOARD_PATH, result['onboard_check']['next_action'])
+            for name in OLD_SKILLS:
+                self.assertNotIn(name, result['onboard_check']['next_action'])
             self.assertIn('source_scan_performed', result['onboard_check'])
             self.assertFalse(result['onboard_check']['data_transferred'])
         self.assertEqual(original, before)
@@ -297,7 +306,7 @@ class MemoryBehavior(unittest.TestCase):
             )
         )
 
-    def test_actual_startup_and_owned_mapping_include_behavior_policy(self):
+    def test_actual_startup_routes_to_public_docs_and_keeps_user_mappings(self):
         import test_content_outbox as fixtures
         from agent_brain_client.interfaces.mcp.content import ContentServer
 
@@ -306,6 +315,14 @@ class MemoryBehavior(unittest.TestCase):
         )
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
+        fixture.cloud.records["rule", "synthetic-rule"] = dict(
+            fixtures.RULE, enabled=True, trigger={"mode": "always", "patterns": []}
+        )
+        fixture.cloud.records["skill", "synthetic-skill"] = dict(fixtures.SKILL, enabled=True)
+        native_agents = fixture.home / ".codex/AGENTS.md"
+        native_agents.parent.mkdir(exist_ok=True)
+        custom_rule = "Synthetic local user instructions"
+        native_agents.write_text(custom_rule + "\n", encoding="utf-8")
         server = ContentServer(fixture.adapter)
         reply = server.handle(
             {
@@ -320,7 +337,19 @@ class MemoryBehavior(unittest.TestCase):
             }
         )
         self.assertIn(MEMORY_GUIDANCE, reply["instructions"])
-        self.assertIn(guidance.HOST_GUIDANCE, (fixture.home / ".codex/AGENTS.md").read_text())
+        mapped = native_agents.read_text(encoding="utf-8")
+        self.assertTrue(mapped.startswith(custom_rule))
+        self.assertIn(fixtures.RULE["body"], mapped)
+        self.assertIn(guidance.HOST_GUIDANCE, mapped)
+        self.assertIn(ONBOARD_PATH, mapped)
+        for name in OLD_SKILLS:
+            self.assertNotIn(name, mapped)
+        skills = fixture.home / ".agents/skills"
+        self.assertEqual([path.name for path in skills.iterdir()], ["synthetic-skill"])
+        self.assertEqual(
+            (skills / "synthetic-skill/SKILL.md").read_text(encoding="utf-8"),
+            fixtures.SKILL["files"]["SKILL.md"],
+        )
 
     def test_tool_only_reports_metadata_and_guidance_has_no_three_item_import_cap(self):
         sources, rows = self.material()
@@ -334,9 +363,6 @@ class MemoryBehavior(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(json.loads(result.stdout)["counts"]["candidate"], 5)
-        self.assertIn("agent-brain-memory", MEMORY_GUIDANCE)
-        self.assertIn("agent-brain-onboard", MEMORY_GUIDANCE)
-        self.assertIn("not a second behavior policy", MEMORY_GUIDANCE)
         self.assertNotIn("migrate all existing memories", MEMORY_GUIDANCE)
 
 
@@ -349,14 +375,10 @@ class MemoryBehavior(unittest.TestCase):
         self.assertIn("remote-confirmed with durable=true", MEMORY_GUIDANCE)
 
         protocol = (ROOT / "docs/reference/PROTOCOL.md").read_text()
-        section = protocol.split("Memory behavior and source-coverage decisions", 1)[1].split("\nmemory_query", 1)[0]
-        self.assertIn("agent-brain-memory", section)
-        self.assertIn("agent-brain-onboard", section)
-        self.assertIn("method schemas", section)
-        self.assertIn("AgentBrain destination contents, not Harness-native source inventory", section)
-        self.assertNotIn("daily candidates include", section)
-        self.assertNotIn("Onboard preserves all", section)
-        self.assertNotIn("three-topic retrieval budget never limits", section)
+        for path in (ONBOARD_PATH, MEMORY_PATH, MAINTENANCE_PATH):
+            self.assertIn(path, protocol)
+        for name in OLD_SKILLS:
+            self.assertNotIn(name, protocol)
 
 
 if __name__ == "__main__":

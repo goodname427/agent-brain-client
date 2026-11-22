@@ -262,50 +262,109 @@ class CodexMemoryInventory(unittest.TestCase):
         self.assertIn('exact staged record',put_reconcile)
         self.assertIn('explicit merge',put_reconcile)
 
-    def test_final_experience_candidate_stages_locally_then_saves_with_cas_receipt(self):
-        helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
-        helper.setUp();self.addCleanup(helper.doCleanups)
-        memory_root=helper.home/'.codex/memories';memory_root.mkdir(parents=True)
-        source_file=memory_root/'progress.md'
-        source_file.write_text('The visitor test exposed a sign confusion; this week I moved the sign and checked the new queue.')
-        server=ContentServer(helper.adapter)
+    def test_onboarding_without_skills_saves_and_reads_back_with_incomplete_coverage(self):
+        helper = base.Outbox("test_write_saved_and_fsynced_before_network_and_restart_reconnect")
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        memory_root = helper.home / ".codex/memories"
+        memory_root.mkdir(parents=True)
+        source_text = "This week I corrected a confusing exhibit sign and checked the shorter queue."
+        (memory_root / "progress.md").write_text(source_text, encoding="utf-8")
+        (memory_root / "unavailable.md").write_bytes(b"Synthetic inaccessible source")
+        backend = WindowsTree if os.name == "nt" else PosixTree
+        open_file = backend.open_file
 
-        target=server.invoke('content_read',{'kind':'memory','id':'synthetic-topic'})
-        self.assertFalse(target['isError'],target)
-        self.assertIsNone(target['structuredContent']['result']['record'])
-        self.assertEqual(helper.cloud.calls[-1]['method'],'content_read')
-        row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
-        source=server.invoke('content_sources_read',{'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint']})
-        self.assertIn('checked the new queue',source['structuredContent']['text'])
-        server.invoke('content_sources_review',{'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint'],
-                                                'decision':'shareable','reason_code':'safe-cross-project-personal-summary'})
-        final={'title':'Exhibit visitor progress','description':'Recent visitor test improvement',
-               'body':'During this week’s visitor test, I corrected a confusing sign and checked that the new placement shortened the queue.',
-               'type':'feedback'}
-        staged=server.invoke('content_sources_stage',{'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint'],
-                                                      'id':'synthetic-topic','record':final})
-        self.assertFalse(staged['isError'],staged)
-        self.assertFalse(staged['structuredContent']['data_transferred'])
-        self.assertFalse(any(call['method']=='content_put' for call in helper.cloud.calls))
-        self.assertEqual(helper.adapter.queue_status()['pending'],0)
+        def open_readable_file(tree, directory, entry, info):
+            if entry.name == "unavailable.md":
+                raise PermissionError("Synthetic inaccessible source")
+            return open_file(tree, directory, entry, info)
 
-        altered=dict(final,body=final['body']+' Later change.')
+        self.enterContext(patch.object(backend, "open_file", open_readable_file))
+        self.assertFalse((helper.home / ".agents/skills").exists())
+        self.assertEqual(helper.cloud.records, {})
+
+        server = ContentServer(helper.adapter)
+        initialized = server.handle({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": {"name": "synthetic", "version": "1"},
+            },
+        })
+        self.assertIn("BOOTSTRAP.md#onboarding", initialized["instructions"])
+        server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        tools = {tool["name"] for tool in listed["tools"]}
+
+        def call(name, arguments):
+            self.assertIn(name, tools)
+            result = server.handle({
+                "jsonrpc": "2.0", "id": name, "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            })
+            self.assertFalse(result["isError"], result)
+            return result["structuredContent"]
+
+        self.assertEqual(call("content_catalog", {"kinds": ["memory"]})["result"]["artifacts"], [])
+        requests_before_inventory = len(helper.cloud.calls)
+        inventory = call("content_sources_inventory", {})
+        self.assertEqual(inventory["status"], "incomplete")
+        self.assertEqual(inventory["counts"]["unavailable"], 1)
+        self.assertFalse(inventory["account_complete"])
+        self.assertFalse(inventory["data_transferred"])
+        self.assertNotIn(source_text, json.dumps(inventory))
+        row, = (item for item in inventory["sources"] if item["status"] == "not-checked")
+        self.assertEqual(row["source_id"], "codex-memory:" + content_cache.sha(b"progress.md"))
+        self.assertEqual(row["source_fingerprint"], content_cache.sha(source_text.encode()))
+        source = {field: row[field] for field in ("source_id", "source_fingerprint")}
+        self.assertEqual(call("content_sources_read", source)["text"], source_text)
+        review = call("content_sources_review", dict(
+            source, decision="shareable", reason_code="safe-cross-project-personal-summary",
+        ))
+        self.assertFalse(review["data_transferred"])
+        self.assertEqual(len(helper.cloud.calls), requests_before_inventory)
+
+        target = {"kind": "memory", "id": "synthetic-topic"}
+        baseline = call("content_read", target)["result"]
+        self.assertIsNone(baseline["record"])
+        self.assertEqual(baseline["revision"], "missing")
+        record = {
+            "title": "Exhibit visitor progress",
+            "description": "Recent visitor test improvement",
+            "body": "Corrected a confusing sign and verified the new placement shortened the queue.",
+            "type": "feedback",
+        }
+        staged = call("content_sources_stage", dict(source, id=target["id"], record=record))
+        self.assertFalse(staged["data_transferred"])
+        self.assertEqual(helper.cloud.puts, 0)
+        self.assertEqual(helper.adapter.queue_status()["pending"], 0)
         with self.assertRaises(CacheBlocked):
-            helper.adapter.sources.stage_memory_import(row['source_id'],row['source_fingerprint'],'memory','synthetic-topic',altered)
+            helper.adapter.sources.stage_memory_import(
+                row["source_id"], row["source_fingerprint"], target["kind"], target["id"],
+                dict(record, body="Changed after staging"),
+            )
 
-        puts=[call for call in helper.cloud.calls if call['method']=='content_put']
-        self.assertEqual(len(puts),0)
-        saved=server.invoke('content_put',{'kind':'memory','id':'synthetic-topic','record':final,
-              'expected_revision':target['structuredContent']['result']['revision'],
-              'request_id':'synthetic_final_experience_save_01',
-              'reconciles':{'request_ids':[],'source_keys':[staged['structuredContent']['source_key']]}})
-        self.assertFalse(saved['isError'],saved)
-        puts=[call for call in helper.cloud.calls if call['method']=='content_put']
-        self.assertEqual(len(puts),1)
-        self.assertEqual(puts[0]['params']['expected_revision'],'missing')
-        self.assertEqual(helper.cloud.records[('memory','synthetic-topic')],final)
-        self.assertEqual(helper.adapter.queue_status()['confirmed'],1)
-        self.assertEqual(helper.adapter.sources.import_status()['counts'],{'reconciled':1})
+        request_id = "synthetic_final_experience_save_01"
+        saved = call("content_put", dict(
+            target, record=record, expected_revision=baseline["revision"], request_id=request_id,
+            reconciles={"request_ids": [], "source_keys": [staged["source_key"]]},
+        ))
+        self.assertEqual(saved["request_id"], request_id)
+        self.assertEqual(saved["persistence"]["state"], "remote-confirmed")
+        self.assertTrue(saved["persistence"]["durable"])
+        puts = [request for request in helper.cloud.calls if request["method"] == "content_put"]
+        self.assertEqual(len(puts), 1)
+        self.assertEqual(puts[0]["params"]["expected_revision"], baseline["revision"])
+        self.assertEqual(call("content_read", target)["result"], saved["result"])
+        self.assertEqual(saved["result"]["record"], record)
+        self.assertEqual(helper.adapter.queue_status()["confirmed"], 1)
+        self.assertEqual(helper.adapter.sources.import_status()["counts"], {"reconciled": 1})
+
+        remaining = call("content_sources_inventory", {})
+        self.assertEqual(remaining["status"], "incomplete")
+        self.assertEqual(remaining["counts"]["unavailable"], 1)
+        self.assertFalse(remaining["account_complete"])
+        self.assertFalse((helper.home / ".agents/skills").exists())
 
     def test_native_stage_remains_local_until_explicit_content_put(self):
         helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')

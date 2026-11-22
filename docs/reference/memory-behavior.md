@@ -1,8 +1,17 @@
-# Client 记忆接口与状态
+# Client 记忆使用、接口与状态
 
-日常保存/检索决策由当前加载的 `agent-brain-memory` Skill 定义；来源导入与覆盖决策由 `agent-brain-onboard` Skill 定义。本文件和 Client 的 MCP instructions 只说明工具、范围、回执及安装交接，不复制或覆盖这些 Skill 的行为规则。若相应 Skill 未加载，报告该能力缺口，不从 Client 文档推导另一套记忆政策。
+> 当前维护。适用 Client 0.8.31 源码，核对日期 2026-11-22。实际可用工具以宿主 MCP 清单和已授予范围为准。
 
-`src/agent_brain_client/interfaces/cli/sources.py` 只审阅调用者明确提供的非正文候选元数据，不发现来源、不授予权限、不采集、不上传。
+## 日常记忆
+
+使用已接入的 `agent_brain_server`。第一次使用或导入已有原生记忆时按 [Onboarding](../../BOOTSTRAP.md#onboarding)核对范围和覆盖。日常保存、检索和维护可直接使用现有工具。
+
+- **查找和使用。** 用 `memory_query` 按当前任务和来源范围查找，必要时用 `content_read` 读取选中主题的正文与 revision。核对来源和适用范围；其他项目的经验只作为相关参考。离线缓存或找不到合适结果时如实说明。列出完整目标清单才用 `content_catalog` 并遍历全部页面，召回预算不限制 Onboarding 的来源审阅。
+- **选择要保存的内容。** 在现有授权内保存用户明确要求记住的合适内容、用户陈述的事实／偏好／纠正、已核实的成果和可复用的经验。普通事实、短期进度有后续用途就可保留；不要把推测、一次性闲聊或整段会话写成记忆。按原范围处理项目专属内容；只把能安全泛化的部分写入个人共享池。秘密、LocalOnly、客户或雇主机密留在原处。
+- **新建或更新。** 先找相关主题，用新鲜的 `content_read` 确认记录和当前 revision。相同事实无需重写；纠正对应旧事实，更新保留仍适用的内容与来源。用 `content_put` 提交 `title`、`description`、`body`、`type`（`user`／`feedback`／`reference`）、读回的 `expected_revision` 及稳定 `request_id`。首次新建使用读回的 `missing`。如果宿主已有本轮摘要哈希，可以用 `content_request_id` 按操作与目标生成原请求 ID。用实际回执核对 Server 保存和备份状态，必要时读回当前版本。
+- **自动记忆。** 已登记并授权的 Hook 处理今后的实际对话，遵循现有范围、暂停与来源约束。分别核对实际 Hook 投递、Server 事件接收、派生记忆及召回；其中一个成功不证明其他步骤已完成。按[项目记忆](automatic-memory.md)或[已配置的全局记忆](global-memory.md)查看原入口。历史导入仍由独立的 [Onboarding](../../BOOTSTRAP.md#onboarding)处理。
+
+本仓库的 `src/agent_brain_client/interfaces/cli/sources.py` 可审阅调用者明确提供的非正文候选元数据。它仅处理所给数据；实际来源盘点、授权和保存证据来自正式工具及回执。
 
 ## 保存队列与冲突恢复
 
@@ -20,11 +29,11 @@
 
 合并确认后，同次队列处理会回头继续处理排在合并请求之前的等待项。发送遇到丢回执或其他未确认结果时立即停止，该调用随后的映射刷新不会再次发送。结果不明的 pending 不能被合并标记为已解决；应取回原请求及原 reconciliation 引用，显式原样重试以恢复同 ID 回执。全过程保留原请求、用户内容和旧冲突，不清队列、不改 CAS。
 
-## 安装后的 Onboard 交接\n\n安装与再次安装成功后，Client 返回 `coverage-check-required`、`source_scan_performed:false` 和 `data_transferred:false`。执行 Agent 按当前加载的 `agent-brain-onboard` Skill 继续；这些字段仅表示 Client 未执行来源扫描或迁移。\n\n## 辅助query
+## 查询接口
 
-memory_query(kind=memory,query='',since=null,until=null,limit=3)只读当前有效Memory，复用Core中英文词汇算法与服务器更新时间；时间必须带offset，最多3条preview/title/description/revision/updated_at，time_basis明确memory_updated_at，不冒称事件发生时间。先按actor/ID/ContentPolicy过滤再读/评分，旧record四字段不变，不默认查询历史旧偏好。其他类型blocked不阻止这个独立只读路径；离线不伪报新鲜查询。
+正式 MCP 的 `memory_query` 只需 `query`。当前目录来源在安装包内读取。普通目录可按 `non-project` 查询，项目来源省略 `repository_root` 时复用 `project_root`。L1 默认每 namespace 5 条，原生查询按相关性和字符预算装配上下文，L2／L3 另行组装。安装刷新保留两平台的召回设置。详见[共享 Hook 合同](../development/layered-recall.md)。
 
-检索只使用 `memory_query`；`content_catalog` 只负责目录与分页，不能携带 query/since/until/limit。旧 `memory_recall` 和目录检索别名已移除，全部当前调用方使用同一查询合同。安装只接受当前执行布局，不为旧工具白名单保留例外；协议测试不代表 Windows 原生凭据或宿主验收。
+`content_catalog` 负责目标目录。先传 `kinds`，再按同一 `kinds` 传回 `structuredContent.result.next_cursor`；末页省略该字段。每页最多 256 条，工具没有 `limit` 参数。原生持久记忆使用下文的来源盘点。旧 `memory_recall` 和目录检索别名已移除。
 
 ## Codex 原生持久记忆导入（Mac / Windows）
 
@@ -38,25 +47,14 @@ Windows 使用 `CreateFileW` 的 `OPEN_EXISTING`、`FILE_FLAG_OPEN_REPARSE_POINT
 
 `memories_v2`、原生记忆 SQLite 和聊天 `sessions` 不属于此导入契约，不自动回退或扩大扫描范围。若某个 Codex 版本只写 `memories_v2`，需先另行确认其原生持久记忆契约；本实现仍只报告 `memories` 的实际可用状态。原生历史导入与未来 Hook 自动采集是两个独立状态；支持导入不会开启 Hook。
 
-回归检查：隔离 `HOME` / `USERPROFILE` / `CODEX_HOME` 后运行 `python -B -m unittest test_codex_memory_inventory test_windows_native`（`PYTHONPATH` 包含 `scripts`、`adapters/codex`、`tools`、`tests`）。现有 Windows CI 已选择 `test_windows_native`；其中原生记忆测试继承完整共享导入套件，并增加 junction、竞争写入、目录固定及中文原生路径离线重启检查。Windows 原生 API 测试在其他系统跳过；Windows 缺少符号链接权限时仅跳过需要该权限的测试，junction 测试仍需执行。
+按[开发说明](../development/README.md#隔离检查)隔离环境后回归 `test_codex_memory_inventory`。Windows 原生检查使用 `test_windows_native`，包括 junction、竞争写入、目录固定及中文原生路径离线重启。
 
-## 本批边界
+## 内容及映射边界
 
-源码测试不写生产 Rule/Skill/Memory，不采集新来源或执行真实生命周期验收。未来新增短记或纠正复用 content_put；既有 read/put 不增加 delete/admin；Rule/Skill 的明确用户启停由独立 content_set_enabled 处理，普通正文编辑仍保留 enabled，见 [启停与同步](rule-skill-management.md)。行为指引与查询的源码实现、发布、部署和实际运行验收分别报告。
+新增短记或纠正复用 `content_put`。如用户明确要求遗忘，仅在已授权并且宿主公开相应移除工具时按该工具处理，避免自动恢复已移除的条目。Rule／Skill 的明确用户启停由独立 `content_set_enabled` 处理，普通正文编辑保留 `enabled`。参见[启停与同步](rule-skill-management.md)。
 
-安装结果交接和本机 status 随仓库安装入口源码交付；运行期 MCP 的新指引及 `model_loaded:"unknown"` 回执需发布并激活经过审核的活动 Client 包后才生效，运行中的旧 worker 不会热替换。共享三套 Skill 的正文如需调整，应另用受控内容更新流程，不能直接修改受管映射或仅凭源码更新宣称服务端 Skill 已改变。
+安装交接随安装入口源码交付。运行期 MCP 指引随受信活动包及实际 worker 生效；旧 worker 可直接从公开 README 与 [Onboarding](../../BOOTSTRAP.md#onboarding)继续。源码、映射文件或 `model_loaded:"unknown"` 均不能证明当前模型加载了内容。设备维护见[日常维护](../installation/maintenance.md)。
 
-## 查询默认值与手动来源
-
-正式 MCP 的 `memory_query` 只需 `query`。当前目录来源在安装包内读取，不依赖开发仓库工具；L1 结果按原生可配置数量返回，默认每 namespace 5 条，L2/L3 另行组装。普通目录可按 non-project 查询，项目来源省略 repository_root 时复用 project_root。内部执行错误不会再误报为 JSON 解析失败。
+## 手动记忆的来源
 
 Memory 写入自动附带当前目录元数据；宿主提供 `CODEX_THREAD_ID` 时记录该真实会话，也可显式传 `source_context`。不可用的会话或位置记为 null，不从正文猜测，也不沿用服务端迁移会话。来源在请求首次入队时固定，重启及重试复用原请求。旧客户端未提供来源时返回 `unknown-source`；历史记录中已知设备不一致的迁移来源只在读取时标为未知位置与会话，保留原账本。Server 应先于 Client 升级以支持可选字段。
-
-Native Memory Query uses a configurable L1 count (default 5 per namespace),
-relevance threshold and character budgets, with L2/L3 assembled separately.
-Follow [the shared Hook contract](../development/layered-recall.md). At coordinated
-release, managed agent-brain-memory/agent-brain-onboard Skill text must remove the
-old fixed three-topic retrieval instruction through the official read/CAS path;
-keep existing privacy, scope, source coverage, revision and receipt semantics.
-Installer refresh preserves these settings on both platforms. Updating code does
-not itself update a cloud Skill record or prove a running model reloaded it.
