@@ -45,7 +45,6 @@ def capture_messages(core, value, local, payload, messages, phase):
     generation = payload.get("generation_id") or uuid.uuid4().hex
     if not isinstance(generation, str) or not generation or len(generation) > 1024:
         raise ValueError("CodeBuddy generation identity invalid")
-    metadata_io.write(queue.cache / "origin.json", local, cache=True)
     result = stage_messages(queue, project_id=project, session_id=session_id(payload["session_id"]),
                             operation_id="native_" + digest(generation.encode()), phase=phase, messages=messages)
     # Deferred final readers also enter here outside the foreground lifecycle.

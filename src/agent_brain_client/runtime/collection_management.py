@@ -36,6 +36,10 @@ def flush_host(value, harness, *, services):
     for directory in root.iterdir():
         if directory.is_symlink() or not directory.is_dir():
             continue
+        # Opening a queue creates its directory before the origin record.
+        # An empty directory has no queued writes to flush.
+        if not (directory / "outbox").exists():
+            continue
         local = metadata_io.private_json(directory / "origin.json", cache=True)
         if not services.approved(value) or select(value["scope"], local) is None:
             continue
