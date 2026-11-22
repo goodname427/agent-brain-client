@@ -86,7 +86,8 @@ def main(argv=None, *, verified_release=False):
     p.add_argument("--all-projects", action="store_true")
     p.add_argument("--profile-id")
     p.add_argument("--packet-output")
-    p.add_argument("--activate-packet")
+    p.add_argument("--activate-packet",
+                   help="Explicitly enable collection using the original device enrollment packet")
     p.add_argument(
         "--check-server",
         action="store_true",

@@ -313,6 +313,63 @@ class GlobalMemoryActivation(unittest.TestCase):
 class AutomaticCapture(unittest.TestCase):
     setUp = GlobalMemoryActivation.setUp
 
+    def test_unbound_client_retries_edit_without_offering_initial_activation(self):
+        from agent_brain_client.adapters.storage import registration
+
+        device = "c" * 32
+        old_scope = dict(self.scope, profile_id="b" * 32)
+        local = dict(self.value, enabled=False, scope=dict(self.scope, include_roots=[]),
+                     approved_scope_sha256=None, server_scope_sha256=None)
+        metadata.write(self.file, local)
+        profile = self.file.with_name("synthetic-profile.json")
+        metadata.write(profile, {"endpoint": "https://synthetic.invalid",
+                                 "grant": {"actor": "synthetic-owner"}})
+        runtime = {"https_profile": str(profile),
+                   "https_profile_sha256": metadata.digest(profile.read_bytes()),
+                   "content_policy_sha256": "f" * 64}
+
+        def configure():
+            with patch.object(sys, "stdout", io.StringIO()) as output:
+                code = collection_cli.main(["global-configure", "--device-home", str(self.home),
+                                            "--include-root", str(self.home / "selected")])
+            return code, json.loads(output.getvalue())
+
+        for stopped in (False, True):
+            with self.subTest(server_stopped=stopped):
+                metadata.write(self.file, local)
+                remote_scope, calls = old_scope, []
+
+                def wire(method, params, rid=None):
+                    nonlocal remote_scope
+                    calls.append(method)
+                    if method == "memory_global_register":
+                        remote_scope = copy.deepcopy(params["scope"])
+                        return {"error": {"code": "transport_unconfirmed"}}
+                    self.assertEqual(method, "memory_global_status")
+                    return {"result": {"metadata_only": True, "source_registered": True,
+                        "source_device_id": device, "global_profile_id": old_scope["profile_id"],
+                        "scope_sha256": digest(remote_scope), "stopped": stopped}}
+
+                client = SimpleNamespace(device_id=device, wire=wire)
+                with (patch.object(source_policy, "load", side_effect=lambda *a, **k: metadata.private_json(self.file)),
+                      patch.object(registration, "registration", return_value=(None, {"runtime": runtime})),
+                      patch("agent_brain_client.adapters.server.collection.CollectionClient", return_value=client)):
+                    code, edit = configure()
+                    self.assertEqual(code, 2, edit)
+                    self.assertEqual(edit["status"], "global-memory-registration-pending")
+                    recovery = operator.maintain(self.home)
+                    self.assertEqual(recovery["next_action"], operator.RETRY_SCOPE_EDIT)
+                    self.assertFalse(recovery["collection_enabled"])
+                    self.assertEqual(metadata.private_json(self.file), local)
+                    code, edit = configure()
+                    self.assertEqual(code, 0, edit)
+                    self.assertTrue(edit["scope_applied"])
+                    self.assertFalse(edit["collection_enabled"])
+                self.assertEqual(calls, ["memory_global_status", "memory_global_register",
+                                         "memory_global_status", "memory_global_status"])
+                self.assertEqual(metadata.private_json(self.file)["scope"], remote_scope)
+                self.assertFalse(self.file.with_name(operator.PENDING_SCOPE_EDIT).exists())
+
     def test_first_setup_binds_placeholder_and_update_reconciles_lost_resume_reply(self):
         from agent_brain_client.runtime.installation_completion import source_setup
         from agent_brain_client.domain.scopes import select

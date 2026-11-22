@@ -17,6 +17,7 @@ from agent_brain_client.domain.scopes import validate, digest, has_origins, ordi
 
 
 RETRY_SCOPE_EDIT = "Retry global-configure with the same scope options."
+PENDING_SCOPE_EDIT = "pending-scope-edit.json"
 
 
 def operator(value, packet):
@@ -152,7 +153,7 @@ def paused(*, retained=False, local_fence=False, server=False, pending=False):
         local_stop_fence=local_fence,
         server_stopped=True if server else None,
         next_action=(
-            "Use global-configure --activate-packet with the saved device packet to finish this stopped registration."
+            "To explicitly enable this initial registration, use global-configure --activate-packet with the saved device packet."
             if pending else
             "Use explicit global-resume for the approved source, or global-configure to change source settings."
         ),
@@ -352,6 +353,9 @@ def save_packet(pending, packet):
 
 def apply_packet(value, pending, packet, *, automatic=False, preserve_admission=False):
     target = save_packet(pending, packet)
+    if preserve_admission:
+        # An interrupted edit is retried as an edit, including on an unbound Client.
+        metadata_io.write(pending.with_name(PENDING_SCOPE_EDIT), packet["scope"])
     # A recoverable scope always has its matching device packet on disk.
     metadata_io.write(pending, packet["scope"])
     if automatic:
@@ -415,6 +419,8 @@ def _maintain(home, *, initialize, retained):
         return paused(retained=retained_scope, local_fence=True)
     if bound:
         return maintain_bound(value, client, state, pending, expand=not initialize)
+    if pending.with_name(PENDING_SCOPE_EDIT).exists():
+        return dict(report_existing_source(state), next_action=RETRY_SCOPE_EDIT)
     if recover:
         saved = validate(metadata_io.private_json(pending))
         if saved["profile_id"] != state["global_profile_id"] or (
@@ -509,6 +515,7 @@ def _configure(args):
 
     value = load(args.device_home, verify_code=False)
     pending = settings_path(args.device_home).with_name("pending-scope.json")
+    pending_edit = pending.with_name(PENDING_SCOPE_EDIT)
     packet_input = getattr(args, "activate_packet", None)
     all_projects = getattr(args, "all_projects", False)
     all_directories = getattr(args, "all_directories", False)
@@ -554,19 +561,24 @@ def _configure(args):
         and value["approved_scope_sha256"] is None
         and value["server_scope_sha256"] is None
         and not local_stop(args.device_home)
+        and not pending_edit.exists()
     )
     preserve_admission = not packet_input and not initial_selection
     if matching_registration(state, scope, client.device_id):
         if preserve_admission:
-            return activate(value, scope, state=state, preserve_admission=True)
-        return activate(value, scope)
-    if packet is None:
-        packet = packet_for(value, scope, client)
-    result = apply_packet(
-        value, pending, packet, automatic=initial_selection,
-        preserve_admission=preserve_admission,
-    )
-    output = getattr(args, "packet_output", None)
-    if output and (result.get("activated") or result.get("scope_applied")):
-        metadata_io.write(metadata_io.canonical(output), packet)
+            result = activate(value, scope, state=state, preserve_admission=True)
+        else:
+            result = activate(value, scope)
+    else:
+        if packet is None:
+            packet = packet_for(value, scope, client)
+        result = apply_packet(
+            value, pending, packet, automatic=initial_selection,
+            preserve_admission=preserve_admission,
+        )
+        output = getattr(args, "packet_output", None)
+        if output and (result.get("activated") or result.get("scope_applied")):
+            metadata_io.write(metadata_io.canonical(output), packet)
+    if result.get("scope_applied") or result.get("activated"):
+        pending_edit.unlink(missing_ok=True)
     return result

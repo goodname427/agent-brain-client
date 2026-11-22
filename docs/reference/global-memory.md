@@ -93,7 +93,9 @@ local and Server pause settings. For example, `--exclude-root` replaces the
 exclusion list and keeps the selected project and ordinary-directory scopes.
 `scope_applied: true` confirms the edit, including while `collection_enabled`
 is false. Use `global-resume` to resume the approved scope, including edits made
-while collection was paused.
+while collection was paused. Retry an unconfirmed edit with the same scope
+options. `--activate-packet` explicitly enables collection using the original
+device enrollment packet, for example after an interrupted first registration.
 
 Directory exclusions apply before cache/upload/injection; previously excluded
 origin data is filtered from later derived recall. LocalOnly markers and known
