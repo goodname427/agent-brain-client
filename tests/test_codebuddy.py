@@ -76,6 +76,8 @@ class Configuration(unittest.TestCase):
         self.assertNotIn(cbhost.BEGIN, cbhost.guidance(mapped.decode(), previous=True, remove=True).decode())
         with self.assertRaises(ValueError):
             cbhost.guidance(mapped.decode())
+        prior = cbhost.BEGIN + "\nSynthetic prior instructions\n" + cbhost.END
+        self.assertEqual(cbhost.guidance(source + prior, previous=True, remove=True, recorded=prior), source.encode())
 
 
 @unittest.skipUnless(sys.platform in ('darwin', 'win32'), 'Native Client filesystem required')
@@ -124,6 +126,8 @@ class Installation(unittest.TestCase):
             host_before=host_security(self.settings)
         result = self.install()
         self.assertTrue(result['installed'])
+        for name in ("CODEBUDDY.md", "rules/agent-brain-client.md"):
+            self.assertIn(cbhost.HOST_GUIDANCE, (self.native / name).read_text())
         from agent_brain_client.adapters.platforms.filesystem import private_mode
         private_mode(cbhost.state_directory(self.home)/'registration.json',owner=True)
         if os.name == 'nt':
@@ -197,15 +201,17 @@ class Installation(unittest.TestCase):
         self.assertEqual(self.settings.read_text(), text)
 
     def test_ide_rule_migrates_legacy_receipt_and_preserves_user_rules(self):
-        self.install(surface='ide')
-        rule = self.native / 'rules/agent-brain-client.md'
-        self.assertIn(cbhost.GUIDANCE, rule.read_text())
-        self.assertFalse((self.native / 'CODEBUDDY.md').exists())
-        user_rule = self.native / 'rules/agent-brain.md'
-        user_rule.write_text('---\nenabled: false\n---\nKeep my personal rule unchanged.\n')
         legacy = self.native / 'CODEBUDDY.md'
-        legacy.write_bytes(('Personal instruction\n\n' + cbhost.GUIDANCE + '\n').encode('utf-8'))
-        rule.unlink()
+        legacy.write_text("Personal instruction\n")
+        prior = cbhost.BEGIN + "\nSynthetic prior instructions\n" + cbhost.END
+        with patch.object(cbhost, "instruction_paths", return_value=[legacy]), patch.object(cbhost, "GUIDANCE", prior):
+            self.install(surface='ide')
+        rule = self.native / 'rules/agent-brain-client.md'
+        self.assertIn(prior, legacy.read_text())
+        self.assertFalse(rule.exists())
+        user_rule = self.native / 'rules/agent-brain.md'
+        user_rule.parent.mkdir()
+        user_rule.write_text('---\nenabled: false\n---\nKeep my personal rule unchanged.\n')
         receipt_file = cbhost.state_directory(self.home) / 'registration.json'
         receipt = metadata.private_json(receipt_file)
         receipt.pop('instruction_paths')
@@ -223,19 +229,31 @@ class Installation(unittest.TestCase):
         self.assertEqual(user_rule.read_text(), '---\nenabled: false\n---\nKeep my personal rule unchanged.\n')
 
     def test_ide_rule_is_automatic_on_creation_and_keeps_user_disabled_header(self):
-        self.install(surface='both')
+        prior = cbhost.BEGIN + "\nSynthetic prior instructions\n" + cbhost.END
+        with patch.object(cbhost, "GUIDANCE", prior):
+            self.install(surface='both')
         rule = self.native / 'rules/agent-brain-client.md'
+        cli = self.native / 'CODEBUDDY.md'
         self.assertTrue(rule.read_text().startswith('---\nalwaysApply: true\nenabled: true\n---\n'))
-        self.assertFalse((self.native / 'CODEBUDDY.md').read_text().startswith('---'))
+        self.assertFalse(cli.read_text().startswith('---'))
         original_rule = rule.read_bytes()
         disabled_rule = original_rule.replace(b'enabled: true', b'enabled: false').replace(
             b'alwaysApply: true', b'alwaysApply: false\ndescription: User controlled')
-        rule.write_bytes(disabled_rule)
-        self.assertEqual(rule.read_bytes().split(cbhost.BEGIN.encode(), 1)[1],
-                         original_rule.split(cbhost.BEGIN.encode(), 1)[1])
-        disabled = disabled_rule.decode('utf-8')
-        cbhost.refresh(self.home, ROOT)
-        self.assertEqual(rule.read_text(), disabled)
+        user_prefix, user_suffix = b"Personal guidance.\n\n", b"\nPersonal note.\n"
+        before = {
+            rule: disabled_rule,
+            cli: user_prefix + prior.encode() + user_suffix,
+        }
+        for path, data in before.items():
+            path.write_bytes(data)
+        self.assertTrue(cbhost.refresh(self.home, ROOT, check_only=True)['update_available'])
+        for path, data in before.items():
+            self.assertEqual(path.read_bytes(), data)
+        refreshed = cbhost.refresh(self.home, ROOT)
+        self.assertEqual(refreshed['native_changes'], {'mcp': False, 'hooks': False, 'guidance': True})
+        self.assertEqual(rule.read_bytes(), disabled_rule.replace(prior.encode(), cbhost.GUIDANCE.encode()))
+        self.assertEqual(cli.read_bytes(), user_prefix + cbhost.GUIDANCE.encode() + user_suffix)
+        self.assertFalse(cbhost.refresh(self.home, ROOT, check_only=True)['update_available'])
         self.install(remove=True)
         self.assertIn('enabled: false', rule.read_text())
         self.assertIn('alwaysApply: false', rule.read_text())
