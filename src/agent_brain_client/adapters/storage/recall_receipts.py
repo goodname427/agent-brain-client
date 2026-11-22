@@ -30,10 +30,16 @@ def _valid_reference(ref, counts, *, emitted=False):
 
 def _valid_retrieval(retrieval, counts, item_count):
     required = {"candidate_count", "returned", "selected", "omitted_for_budget"}
+    partial_reasons = {"server_budget_trimmed", "source_verification_failed"}
+    optional = {"unselected_without_evidence", "partial"} | partial_reasons
     if (
         not isinstance(retrieval, dict)
-        or set(retrieval) - {"unselected_without_evidence", "partial"} != required
+        or set(retrieval) - optional != required
         or type(retrieval.get("partial", False)) is not bool
+        or any(
+            retrieval.get("partial") is not True or retrieval[key] is not True
+            for key in partial_reasons.intersection(retrieval)
+        )
     ):
         return False
     if (

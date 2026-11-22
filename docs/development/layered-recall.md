@@ -42,12 +42,21 @@ Mac and Windows use the same implementation:
 The shared question Hook validates each complete source group before adding
 any of its rows. A rejected group leaves independently verified groups
 available. A response with only rejected groups and no usable rows fails the
-recall. A partial response does not replace the offline cache. The receipt's
-optional `retrieval.partial` flag indicates this outcome without recording
-rejected sources or their hashes. Complete recalls retain the earlier schema
-2 receipt shape.
-The offline snapshot is eligible after a retryable transport failure.
-An explicit authorization denial leaves it unread.
+recall. A source verification failure preserves the previous offline snapshot.
+The receipt sets `retrieval.partial` and `retrieval.source_verification_failed`
+without recording rejected sources or their hashes.
+
+An authenticated, successful recall response may carry the top-level boolean
+`recall_partial: true` beside `result` when the Server trims its response to fit
+its budget. The Hook records `retrieval.partial` and
+`retrieval.server_budget_trimmed`. Both reason flags can appear on the same
+receipt. Verified rows still follow normal online context selection. Both
+partial outcomes preserve any previous offline snapshot and leave the cache
+empty if there is no snapshot. The reason flags are confined to the local
+diagnostic receipt. Complete recalls retain the earlier schema 2 shape, and
+earlier partial receipts remain readable. The offline snapshot is eligible
+after a retryable transport failure. An explicit authorization denial leaves
+the snapshot unread.
 
 `tests/test_layered_recall.py` covers both path directions, valid L2/L3 output,
 legacy compatibility, negative scope/provenance cases and bounded empty groups.
