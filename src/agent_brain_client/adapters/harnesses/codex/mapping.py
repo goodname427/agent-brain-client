@@ -5,7 +5,11 @@ import re
 from agent_brain_client.adapters.storage.native_mapping import NativeMapping
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.errors import CacheBlocked, CollectionCapacityExceeded
-from agent_brain_client.application.memory.guidance import HOST_GUIDANCE
+from agent_brain_client.application.memory.guidance import (
+    HOST_GUIDANCE,
+    HOST_HEADING,
+    MAPPING_GUIDANCE,
+)
 from agent_brain_client.adapters.harnesses.codex.content_limits import BEGIN, END, BLOCK
 from agent_brain_client.adapters.storage.content_limits import MAPPING_BYTES
 
@@ -54,12 +58,7 @@ class CodexContentMapping(NativeMapping):
 
     def _mapping(self, snapshot, owned):
         desired = {}
-        lines = [
-            "# Agent Brain cloud content",
-            "This mapping is a rebuildable cache. Read/upload through the approved Server API; do not write GitHub directly.",
-            "Cloud refresh does not replace already loaded model context.",
-        ]
-        lines.append(HOST_GUIDANCE)
+        lines = [HOST_HEADING, HOST_GUIDANCE, MAPPING_GUIDANCE]
         for value in snapshot["records"]:
             kind, identity, record = value["kind"], value["id"], value["record"]
             if kind in ("memory", "rule"):
