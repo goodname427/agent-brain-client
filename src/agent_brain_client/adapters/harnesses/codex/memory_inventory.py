@@ -27,5 +27,8 @@ class CodexMemorySources:
     def inventory(self):
         return inventory_tree(self.root, prefix=self.prefix, select=_memory_source)
 
-    def read(self, source_id):
-        return read_tree(self.root, source_id, prefix=self.prefix, select=_memory_source)
+    def read(self, source_id, *, with_mtime=False):
+        return read_tree(
+            self.root, source_id, prefix=self.prefix,
+            select=_memory_source, with_mtime=with_mtime,
+        )

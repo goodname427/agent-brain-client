@@ -3,7 +3,7 @@
 from agent_brain_client.application.memory.guidance import ONBOARDING_URL
 
 ONBOARD_COVERAGE_GUIDANCE = (
-    f"Once host MCP tools are available, follow the public Onboarding guide at {ONBOARDING_URL} for connection verification, authorized source review, CAS writes and coverage reporting. "
+    f"Once host MCP tools are available, follow the public Onboarding guide at {ONBOARDING_URL} for read-only connection verification and separately authorized source import and receipt checks. "
     "The guide can be used with an empty Agent Brain account and without preloaded Skills. This handoff records that no source scan or data transfer has occurred. "
 )
 

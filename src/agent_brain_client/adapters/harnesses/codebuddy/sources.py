@@ -1,8 +1,10 @@
 """CodeBuddy persistent auto-memory and user memory; no transcript discovery."""
 
 from collections import Counter
+import os
 
 from agent_brain_client.adapters.platforms.source_files import open_native_source
+from agent_brain_client.adapters.platforms.tree import file_version
 from agent_brain_client.adapters.storage.content_limits import sha
 from agent_brain_client.adapters.storage.native_sources import inventory_tree, read_tree
 from agent_brain_client.domain import contract
@@ -57,12 +59,14 @@ class CodeBuddyMemorySources:
                 ]
             )
 
-    def _user(self):
+    def _user(self, *, with_mtime=False):
         stream, info = open_native_source(self.home / "CODEBUDDY.md")
         with stream:
             if info.st_size > 131072:
                 raise CacheBlocked()
             raw = stream.read(131073)
+            if file_version(info) != file_version(os.fstat(stream.fileno())):
+                raise CacheBlocked()
         if len(raw) > 131072:
             raise CacheBlocked()
         # The owned connection guidance contains no user memory. Never import it.
@@ -74,15 +78,14 @@ class CodeBuddyMemorySources:
         user = raw
         for block in guidance_forms(GUIDANCE):
             user = user.replace(block.encode(), b"")
-        if user != raw or BEGIN.encode() not in raw:
-            return user
-        journal = state_directory(self.device_home) / "transaction.json"
-        if journal.exists():
-            block = recorded_guidance(metadata.private_json(journal), self.home / "CODEBUDDY.md")
-            if block is not None:
-                for form in guidance_forms(block):
-                    raw = raw.replace(form.encode(), b"")
-        return raw
+        if user == raw and BEGIN.encode() in raw:
+            journal = state_directory(self.device_home) / "transaction.json"
+            if journal.exists():
+                block = recorded_guidance(metadata.private_json(journal), self.home / "CODEBUDDY.md")
+                if block is not None:
+                    for form in guidance_forms(block):
+                        user = user.replace(form.encode(), b"")
+        return (user, info.st_mtime_ns) if with_mtime else user
 
     def inventory(self):
         rows = []
@@ -131,14 +134,14 @@ class CodeBuddyMemorySources:
             "cursor": sha(contract.encode(rows)),
         }
 
-    def read(self, source_id):
+    def read(self, source_id, *, with_mtime=False):
         if source_id == self.prefix + sha(b"CODEBUDDY.md"):
-            return self._user()
+            return self._user(with_mtime=with_mtime)
         for root, namespace, select in self._trees:
             try:
                 return read_tree(
                     root, source_id, prefix=self.prefix, identity_namespace=namespace,
-                    select=select,
+                    select=select, with_mtime=with_mtime,
                 )
             except (OSError, CacheBlocked):
                 continue

@@ -490,6 +490,31 @@ class ContentServer(Server):
                         {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
                     ],
                 }
+            if name == "content_sources_import":
+                if "content_put" not in self.adapter.methods():
+                    raise ContentToolUnavailable("Native Memory import requires a Memory write grant.")
+                required = {"source_id", "source_fingerprint"}
+                if (
+                    not isinstance(arguments, dict)
+                    or required - set(arguments)
+                    or set(arguments) - required - {"status_only"}
+                    or type(arguments.get("status_only", False)) is not bool
+                ):
+                    raise ContentParameterError("Import one approved source by ID and fingerprint.")
+                from agent_brain_client.runtime.collection import import_native_source
+
+                result = import_native_source(
+                    self.adapter,
+                    arguments["source_id"], arguments["source_fingerprint"],
+                    status_only=arguments.get("status_only", False),
+                )
+                return {
+                    "isError": "error" in result,
+                    "structuredContent": result,
+                    "content": [
+                        {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
+                    ],
+                }
             if name in contract.HOOK_METHODS or name not in self.adapter.methods():
                 raise ContentToolUnavailable(
                     "Tool is not exposed by this worker. Inspect tools/list and the installed tool grant; retry the normal MCP connection if it failed to initialize. Tool absence alone does not prove a remote outage."

@@ -86,7 +86,6 @@ def submit_hook(value, local, payload, *, services):
     ):
         return exclude()
     _, queue = services.adapter(value, local)
-    metadata_io.write(queue.cache / "origin.json", local, cache=True)
     previous = queue._load("outbox/agentbrain_event_" + key + ".json")
     if previous is not None:
         return dict(queue._queue_result(previous), status="retained-paired-event")

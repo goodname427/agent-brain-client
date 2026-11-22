@@ -180,7 +180,7 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
         tools.append(
             {
                 "name": "content_sources_review",
-                "description": "Record an explicit review decision for a previously read exact source. This creates only a path-free status marker in the private cache, never stores text or transfers content. A shareable decision is required before any candidate from this source can be staged. Mark LocalOnly, secrets, or confidential sources excluded; mark unsafe project scope or uncertainty deferred. The legacy no-durable-user-fact reason is not a durability or importance threshold; do not use it to skip ordinary experiences, events, corrections or short-term progress.",
+                "description": "Review a previously read exact source locally. Use approved-native-original only after the user authorizes the exact original for the approved memory scope. Use safe-cross-project-personal-summary for legacy CAS candidates. Exclude LocalOnly, secrets and confidential sources. Defer uncertain content or scope. The legacy no-durable-user-fact reason is not a durability or importance threshold. Review stores only a status marker and transfers no content.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -200,6 +200,7 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
                             "type": "string",
                             "enum": [
                                 "safe-cross-project-personal-summary",
+                                "approved-native-original",
                                 "secret-localonly-or-confidential",
                                 "project-scope-unavailable",
                                 "uncertain-content",
@@ -266,6 +267,33 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
                 },
             }
         )
+        tools.append(
+            {
+                "name": "content_sources_import",
+                "description": "Submit one approved native Memory original into the current approved origin through the capture queue. Use the exact ID and fingerprint reviewed as approved-native-original. Retry the same inputs in that origin. Set status_only for a read-only check of local queue, Server acceptance and extraction.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "source_id": {
+                            "type": "string",
+                            "pattern": "^(codex|codebuddy)-memory:[a-f0-9]{64}$",
+                        },
+                        "source_fingerprint": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{64}$",
+                        },
+                        "status_only": {"type": "boolean"},
+                    },
+                    "required": ["source_id", "source_fingerprint"],
+                    "additionalProperties": False,
+                },
+                "annotations": {
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "idempotentHint": True,
+                },
+            }
+        )
     return tools
 
 
@@ -294,6 +322,8 @@ def tool_names(methods, memory_sources):
     }
     if not set(methods) & CONTENT_WRITES:
         names.discard("content_queue_inspect")
+    if "content_put" not in methods:
+        names.discard("content_sources_import")
     return sorted(names)
 
 
