@@ -195,9 +195,180 @@ class GlobalMemoryActivation(unittest.TestCase):
         self.assertFalse(self.file.exists())
         client.wire.assert_called_once_with('memory_global_status', {})
 
+    def test_scope_edit_keeps_each_pause_and_only_explicit_resume_lifts_it(self):
+        from agent_brain_client.adapters.packages.frozen import runtime_pins
+        from agent_brain_client.adapters.storage import registration
+        from agent_brain_client.application.installation.update import ClientUpdate
+
+        scope = dict(
+            self.scope, all_projects=False,
+            include_roots=[{"root": str(self.home / "projects"), "sharing": "project"}],
+            exclude_roots=[str(self.home / "old-exclusion")],
+            non_project_roots=[str(self.home / "notes")], recall_personal=False,
+        )
+        excluded = str(self.home / "new-exclusion")
+        expected = dict(scope, exclude_roots=[excluded])
+        queue = self.file.parent / "outboxes" / "synthetic-queue"
+        queue.parent.mkdir()
+        queue.write_bytes(b"original synthetic event")
+        profile = self.file.parent / "synthetic-profile.json"
+        metadata.write(profile, {"endpoint": "https://synthetic.invalid",
+                                 "grant": {"actor": "synthetic-owner"}})
+        runtime = {"https_profile": str(profile),
+                   "https_profile_sha256": metadata.digest(profile.read_bytes()),
+                   "content_policy_sha256": "f" * 64}
+        code_pins = runtime_pins(source_policy.ROOT, fallback=source_policy.FILES)
+
+        def cli(*args):
+            with patch.object(sys, "stdout", io.StringIO()) as output:
+                code = collection_cli.main([*args, "--device-home", str(self.home)])
+            return code, json.loads(output.getvalue())
+
+        for local_stop, server_stop, enabled, lose_reply in (
+            (True, False, True, False), (False, True, True, False),
+            (True, True, True, False), (True, True, True, True),
+            (False, False, True, False), (False, False, False, False),
+        ):
+            with self.subTest(local_stop=local_stop, server_stop=server_stop,
+                              enabled=enabled, lose_reply=lose_reply):
+                if local_stop:
+                    self.off.touch(mode=0o600)
+                original = dict(self.value, enabled=enabled, scope=scope, schema=1,
+                                code_sha256=code_pins, operator_sha256=None, recall={"maxResults": 3},
+                                approved_scope_sha256=digest(scope), server_scope_sha256=digest(scope))
+                metadata.write(self.file, original)
+                before = self.file.read_bytes()
+                remote_scope, stopped, calls = scope, server_stop, []
+                device = "c" * 32
+
+                def wire(method, params, rid=None):
+                    nonlocal remote_scope, stopped
+                    calls.append(method)
+                    if method == "memory_global_register":
+                        # Existing-device registration edits policy in place.
+                        remote_scope = copy.deepcopy(params["scope"])
+                        if lose_reply:
+                            return {"error": {"code": "transport_unconfirmed"}}
+                    elif method == "memory_global_resume":
+                        stopped = False
+                        return {"result": {"schema": 1, "stopped": stopped}}
+                    else:
+                        self.assertEqual(method, "memory_global_status")
+                    return {"result": {"schema": 1, "metadata_only": True,
+                        "source_registered": True, "source_device_id": device,
+                        "global_profile_id": scope["profile_id"],
+                        "scope_sha256": digest(remote_scope), "stopped": stopped}}
+
+                client = SimpleNamespace(device_id=device, wire=wire)
+                capture_enabled = enabled and not local_stop and not server_stop
+                with (patch.object(registration, "registration", return_value=(None, {"runtime": runtime})),
+                      patch("agent_brain_client.adapters.server.collection.CollectionClient", return_value=client),
+                      patch.object(gm, "CollectionClient", return_value=client),
+                      patch.object(ClientUpdate, "_run", return_value={"status": "client-update-current"})):
+                    update = runtime_updates.manage_update(self.home, "update")
+                    self.assertEqual(update["source_setup"]["collection_enabled"], capture_enabled)
+                    self.assertEqual(self.file.read_bytes(), before)
+                    self.assertIs(remote_scope, scope)
+                    self.assertEqual(stopped, server_stop)
+                    self.assertEqual(self.off.exists(), local_stop)
+                    self.assertNotIn("memory_global_resume", calls)
+                    calls.clear()
+
+                    if lose_reply:
+                        code, receipt = cli("global-configure", "--exclude-root", excluded)
+                        self.assertEqual(code, 2, receipt)
+                        self.assertEqual(receipt["status"], "global-memory-registration-pending")
+                        self.assertEqual(receipt["next_action"], operator.RETRY_SCOPE_EDIT)
+                        self.assertEqual(self.file.read_bytes(), before)
+                        self.assertTrue(stopped and self.off.exists())
+                    code, receipt = cli("global-configure", "--exclude-root", excluded)
+                    self.assertEqual(code, 0, receipt)
+                    self.assertEqual(remote_scope, expected)
+                    self.assertEqual(stopped, server_stop)
+                    self.assertEqual(self.off.exists(), local_stop)
+                    self.assertNotIn("memory_global_resume", calls)
+                    self.assertTrue(receipt["scope_applied"])
+                    self.assertEqual(receipt["activated"], capture_enabled)
+                    self.assertEqual(receipt["collection_enabled"], capture_enabled)
+                    self.assertEqual(receipt["server_stopped"], server_stop)
+                    self.assertEqual(source_policy.load(self.home), dict(
+                        original, scope=expected, approved_scope_sha256=digest(expected),
+                        server_scope_sha256=digest(expected),
+                    ))
+                    calls.clear()
+                    self.assertEqual(cli("global-configure", "--exclude-root", excluded)[0], 0)
+                    self.assertEqual(calls, ["memory_global_status"])
+                    if enabled and (local_stop or server_stop):
+                        code, receipt = cli("global-resume")
+                        self.assertEqual(code, 0, receipt)
+                        self.assertTrue(receipt["collection_enabled"])
+                        self.assertFalse(self.off.exists())
+                        self.assertFalse(stopped)
+                        self.assertEqual(calls.count("memory_global_resume"), 1)
+                        self.assertEqual(remote_scope, expected)
+                        self.assertEqual(source_policy.load(self.home)["scope"], expected)
+                self.assertEqual(queue.read_bytes(), b"original synthetic event")
+
 
 class AutomaticCapture(unittest.TestCase):
     setUp = GlobalMemoryActivation.setUp
+
+    def test_unbound_client_retries_edit_without_offering_initial_activation(self):
+        from agent_brain_client.adapters.storage import registration
+
+        device = "c" * 32
+        old_scope = dict(self.scope, profile_id="b" * 32)
+        local = dict(self.value, enabled=False, scope=dict(self.scope, include_roots=[]),
+                     approved_scope_sha256=None, server_scope_sha256=None)
+        metadata.write(self.file, local)
+        profile = self.file.with_name("synthetic-profile.json")
+        metadata.write(profile, {"endpoint": "https://synthetic.invalid",
+                                 "grant": {"actor": "synthetic-owner"}})
+        runtime = {"https_profile": str(profile),
+                   "https_profile_sha256": metadata.digest(profile.read_bytes()),
+                   "content_policy_sha256": "f" * 64}
+
+        def configure():
+            with patch.object(sys, "stdout", io.StringIO()) as output:
+                code = collection_cli.main(["global-configure", "--device-home", str(self.home),
+                                            "--include-root", str(self.home / "selected")])
+            return code, json.loads(output.getvalue())
+
+        for stopped in (False, True):
+            with self.subTest(server_stopped=stopped):
+                metadata.write(self.file, local)
+                remote_scope, calls = old_scope, []
+
+                def wire(method, params, rid=None):
+                    nonlocal remote_scope
+                    calls.append(method)
+                    if method == "memory_global_register":
+                        remote_scope = copy.deepcopy(params["scope"])
+                        return {"error": {"code": "transport_unconfirmed"}}
+                    self.assertEqual(method, "memory_global_status")
+                    return {"result": {"metadata_only": True, "source_registered": True,
+                        "source_device_id": device, "global_profile_id": old_scope["profile_id"],
+                        "scope_sha256": digest(remote_scope), "stopped": stopped}}
+
+                client = SimpleNamespace(device_id=device, wire=wire)
+                with (patch.object(source_policy, "load", side_effect=lambda *a, **k: metadata.private_json(self.file)),
+                      patch.object(registration, "registration", return_value=(None, {"runtime": runtime})),
+                      patch("agent_brain_client.adapters.server.collection.CollectionClient", return_value=client)):
+                    code, edit = configure()
+                    self.assertEqual(code, 2, edit)
+                    self.assertEqual(edit["status"], "global-memory-registration-pending")
+                    recovery = operator.maintain(self.home)
+                    self.assertEqual(recovery["next_action"], operator.RETRY_SCOPE_EDIT)
+                    self.assertFalse(recovery["collection_enabled"])
+                    self.assertEqual(metadata.private_json(self.file), local)
+                    code, edit = configure()
+                    self.assertEqual(code, 0, edit)
+                    self.assertTrue(edit["scope_applied"])
+                    self.assertFalse(edit["collection_enabled"])
+                self.assertEqual(calls, ["memory_global_status", "memory_global_register",
+                                         "memory_global_status", "memory_global_status"])
+                self.assertEqual(metadata.private_json(self.file)["scope"], remote_scope)
+                self.assertFalse(self.file.with_name(operator.PENDING_SCOPE_EDIT).exists())
 
     def test_first_setup_binds_placeholder_and_update_reconciles_lost_resume_reply(self):
         from agent_brain_client.runtime.installation_completion import source_setup
