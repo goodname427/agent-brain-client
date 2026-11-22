@@ -23,3 +23,14 @@ Mac 的隔离回归通过 `test_mcp_single_entry_release` 使用精确 0.8.27 �
 `tool_discovery` 报告活动包的工具声明、登记过滤和被过滤工具。MCP 的 `client_runtime.offered_tools` 表示实际 worker 提供的工具；CLI 无法观察 worker 或模型时保持 unknown。活动包、固定启动器、正在运行的 worker 和模型采用指令是四个独立状态，不能互相代替。
 
 Windows 检查正式 0.8.25 的已登记运行包时，先核验完整文件清单和每个成员，再以该公开导出的精确清单摘要确认已审阅的 MCP 描述入口。工具 catalog 及其领域源码与当前包相同时，复用当前的纯工具声明计算。旧包中的描述入口由精确清单固定，当前 worker 的启动或租约变化不影响此计算。其它运行包沿用既有目标包描述入口。
+
+## 已运行的旧启动器与工具列表刷新
+
+[#241](https://github.com/goodname427/agent-brain-client/issues/241) 在隔离 Mac Codex 中用正式 0.8.31 作为起点。从同一会话通过普通更新激活同契约候选时，保留原固定入口可以切到新版 Worker。将候选的固定入口变更并刷新登记时，原连接仍运行旧 Worker，空闲退出后下一次只读无法分派。旧程序无法在已协商连接上启用未来的 `listChanged`。Codex App Server 的 `config/mcpServer/reload` 由宿主控制端调用，当前请求没有线程或服务选择参数。Codex 和 CodeBuddy CLI 的 `mcp` 命令均未提供指定服务重新连接的子命令。现有更新 Agent 的入口缺少可确认的单服务平滑迁移机制。参见 [Codex App Server](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md#mcp-configuration-reload)及 [CodeBuddy CLI](https://www.codebuddy.ai/docs/cli/reference#mcp-commands-mcp)。
+
+预先运行支持动态工具声明的固定入口后，隔离原型在初始化时声明 `tools.listChanged`。原 Worker 处理完已接收请求并退出后，启动器验证新 Worker，发布工具表，再发 `notifications/tools/list_changed`。空闲时，新候选也能触发这一过程。相同连接的实际宿主结果如下。
+
+- **CodeBuddy Code CLI 2.185.0** 在默认延迟工具模式下自动重列工具。实验的 Agent 按精确命令权限调用合成更新，下一轮通过 `ToolSearch` 和 `DeferExecuteTool` 在原会话调用新版只读工具。两轮共用一次 MCP 初始化及同一固定入口进程。参见 [CodeBuddy 动态工具更新发行说明](https://staging-codebuddy.tencent.com/docs/cli/release-notes/v2.53.0)。
+- **Codex CLI 0.171.0-alpha.13 的 App Server** 默认收到通知后未重列。隔离实例开启实验 `mcp_tool_list_changed` 且原会话已授权确切新增名称时，下一轮同一线程的模型请求可见并调用新版工具。只更新磁盘白名单时，原会话重列后仍过滤该名称。原会话明确禁用的名称继续不可见。参见 [Codex MCP 列表刷新实现](https://github.com/openai/codex/blob/main/codex-rs/codex-mcp/src/connection_manager.rs)。
+
+原型覆盖同一缓存 ABI 下的新增工具、在途只读完成和空闲切换。正式采用前需核对跨 ABI 时的缓存租约、迁移失败和回滚，并通过实际工具调用确认宿主已采纳工具表。已授权工具过滤及明确禁用需继续生效。CodeBuddy IDE、Windows 原会话和旧固定入口的一次迁移仍待实测通过。[MCP 工具列表通知](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#list-changed-notification)
