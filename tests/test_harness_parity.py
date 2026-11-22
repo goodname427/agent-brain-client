@@ -25,6 +25,77 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class HarnessParity(unittest.TestCase):
+    def test_both_harnesses_read_exact_approved_original_and_file_time(self):
+        original = "Synthetic memory ☃\r\nSecond line.\r\n"
+        for harness in ("codex", "codebuddy"):
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp).resolve()
+                cloud = Cloud()
+                native = home / ("." + harness)
+                source = native / "memories/synthetic.md"
+                source.parent.mkdir(parents=True)
+                source.write_bytes(original.encode())
+                os.utime(source, ns=(1234567890000000000, 1234567890000000000))
+                session = ContentSession(
+                    home, home / "cache", POLICY, cloud,
+                    host=content_host(harness), native_home=native,
+                )
+                row = session.sources.inventory_memory_sources()["sources"][0]
+                selected = (row["source_id"], row["source_fingerprint"])
+                session.sources.read_memory_source(*selected)
+                session.sources.review_memory_source(
+                    *selected, "shareable", "safe-cross-project-personal-summary",
+                )
+                with self.assertRaises(CacheBlocked):
+                    session.sources.capture_native_original(*selected)
+                session.sources.review_memory_source(
+                    *selected, "shareable", "approved-native-original",
+                )
+                self.assertEqual(session.sources.capture_native_original(*selected), {
+                    "status": "approved", "text": original,
+                    "mtime_ns": source.stat().st_mtime_ns,
+                })
+                with self.assertRaises(CacheBlocked):
+                    session.sources.stage_memory_import(*selected, "memory", "synthetic-topic", MEMORY)
+                source.write_bytes(b"Synthetic changed source")
+                with self.assertRaises(CacheBlocked):
+                    session.sources.capture_native_original(*selected)
+                self.assertEqual(cloud.calls, [])
+
+    def test_original_capture_preserves_legacy_receipt_and_uncertain_write(self):
+        for acknowledgement_lost in (False, True):
+            with self.subTest(acknowledgement_lost=acknowledgement_lost), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp).resolve()
+                native = home / ".codex"
+                source = native / "memories/synthetic.md"
+                source.parent.mkdir(parents=True)
+                source.write_bytes(b"Synthetic durable source")
+                cloud = Cloud()
+                session = ContentSession(
+                    home, home / "cache", POLICY, cloud,
+                    host=content_host("codex"), native_home=native,
+                )
+                row = session.sources.inventory_memory_sources()["sources"][0]
+                selected = (row["source_id"], row["source_fingerprint"])
+                session.sources.read_memory_source(*selected)
+                session.sources.review_memory_source(
+                    *selected, "shareable", "safe-cross-project-personal-summary",
+                )
+                staged = session.sources.stage_memory_import(
+                    *selected, "memory", "synthetic-topic", MEMORY,
+                )
+                cloud.lose_ack = acknowledgement_lost
+                session.invoke({
+                    "request_id": "synthetic-legacy-source-cas",
+                    "method": "content_put",
+                    "params": dict(kind="memory", id="synthetic-topic", record=MEMORY,
+                                   expected_revision="missing"),
+                }, reconciles={"request_ids": [], "source_keys": [staged["source_key"]]})
+                calls = len(cloud.calls)
+                status = "legacy-receipt-unconfirmed" if acknowledgement_lost else "already-migrated"
+                self.assertEqual(session.sources.capture_native_original(*selected), {"status": status})
+                self.assertEqual(len(cloud.calls), calls)
+
     def test_same_content_cas_queue_offline_and_mapping_contract(self):
         outcomes = []
         for harness in ("codex", "codebuddy"):

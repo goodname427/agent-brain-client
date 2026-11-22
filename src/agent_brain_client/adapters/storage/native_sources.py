@@ -2,6 +2,7 @@
 
 import hashlib
 import itertools
+import os
 from pathlib import Path
 import stat
 from agent_brain_client.adapters.platforms.tree import open_tree, is_link
@@ -248,7 +249,7 @@ def inventory_tree(
     }
 
 
-def read_tree(root, source_id, *, prefix, identity_namespace="", select=None):
+def read_tree(root, source_id, *, prefix, identity_namespace="", select=None, with_mtime=False):
     identity_prefix = prefix
     try:
         tree = open_tree(root)
@@ -314,6 +315,8 @@ def read_tree(root, source_id, *, prefix, identity_namespace="", select=None):
                                 directory_fd, entry, info
                             ) as source:
                                 raw = source.read(131073)
+                                if with_mtime:
+                                    raw = (raw, os.fstat(source.fileno()).st_mtime_ns)
                         except OSError:
                             raise CacheBlocked() from None
                         break
