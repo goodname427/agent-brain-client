@@ -66,11 +66,9 @@ class ClientUpdate:
                     else "The verified local package is ready. "
                 )
                 + "Call an already available Agent Brain MCP tool and inspect its fresh client_runtime. "
-                "If client_runtime.reload_required is false, no MCP worker reload is needed. For a compatible update, call again after in-flight work completes so the same connection can start the new worker. "
-                "Use the normal Agent Brain MCP reconnect if the worker still requires it or the host cannot see a newly required tool. "
-                "If the worker or commit is unobservable, report unknown; do not request a restart merely because update ran. "
-                "offered_tools describes the worker. Compare with the tools available in the current host session. "
-                "If a required offered tool is missing, refresh the host tool connection using normal host controls. "
+                "If client_runtime.reload_required is false, no MCP worker reload is needed. A compatible worker can take over the same connection after in-flight work completes. "
+                "Check the actual session tools against offered_tools. When the host supports an in-session refresh, use it after in-flight work finishes and verify the worker and tools in the same session. "
+                "Report same-session use as incomplete if the host cannot refresh or the next tool call fails. If the worker, commit or session tools are unobservable, report them as unknown. "
                 "Hook configuration/trust and mapped Rules/Skills have separate host loading states; review them only when changed. "
                 "Do not infer model context loading from a package or worker version."
             )
@@ -233,11 +231,12 @@ class ClientUpdate:
                         + "The CLI cannot observe the running worker. Confirm MCP client_runtime; a normal host reload starts a new worker when needed.",
                     )
                     return result
-                if not launcher_changed:
-                    launcher_changed = self.installation.refresh_launcher(
-                        channel=channel, before=before
-                    )
-                    result["native_changed"] = launcher_changed or hook_changed
+                # Recovery may finish a handover for an earlier candidate. Apply
+                # the current channel's handover in this same invocation as well.
+                launcher_changed = self.installation.refresh_launcher(
+                    channel=channel, before=before
+                ) or launcher_changed
+                result["native_changed"] = launcher_changed or hook_changed
                 updated = channel.update()
                 after = channel.verified_active()
                 if updated.get("status") not in ("current", "updated") or after is None:
@@ -271,15 +270,9 @@ class ClientUpdate:
                         + "Retry the same public update entry after reviewing the installation/channel state. Do not repeat pairing or import.",
                     )
                 changed = after != before
-                registration = self.installation.load_registration()
-                result["tool_discovery"] = self.installation.tool_discovery(after)
-                result.update(registration.launcher)
-                result["registered_tool_count"] = len(
-                    result["tool_discovery"]["registered_enabled_tools"]
-                )
                 result.update(
                     status="client-update-updated"
-                    if changed
+                    if changed or launcher_changed or hook_changed
                     else "client-update-current",
                     active_package_version=after["version"],
                     active_package_commit=after.get("commit"),
@@ -288,10 +281,34 @@ class ClientUpdate:
                     update_available=False,
                     channel_checked=True,
                     active_package_changed=changed,
-                    native_changed=launcher_changed,
+                    native_changed=launcher_changed or hook_changed,
                     reload_required=None,
                     next_action="The verified local package is ready; inspect fresh MCP worker evidence before deciding whether a reload is needed. This command does not import real memories.",
                 )
+                try:
+                    registration = self.installation.load_registration()
+                    result.update(registration.launcher)
+                    result["tool_discovery"] = self.installation.tool_discovery(after)
+                except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+                    return dict(
+                        result,
+                        status="client-update-review-required",
+                        reason="mcp-registration-unverified",
+                        update_available=None,
+                        tool_discovery=None,
+                        next_action="The verified package is active. The owned MCP registration could not be confirmed; preserve it and inspect the registration state.",
+                    )
+                result["registered_tool_count"] = len(
+                    result["tool_discovery"]["registered_enabled_tools"]
+                )
+                if result["tool_discovery"]["registration_update_required"]:
+                    return dict(
+                        result,
+                        status="client-update-review-required",
+                        reason="mcp-registration-refresh-required",
+                        update_available=True,
+                        next_action="The verified package is active, but its tools do not match the owned MCP registration. Resume the public update entry to finish registration.",
+                    )
                 # A current channel may still have an older global Hook command.
                 # Update only its executable code, preserving all source decisions.
                 try:
