@@ -2,6 +2,7 @@
 
 import copy
 from hashlib import sha256
+import io
 import json
 import os
 from pathlib import Path
@@ -9,12 +10,19 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.error import URLError
 
+from agent_brain_client.adapters.server.collection import CollectionClient
+from agent_brain_client.adapters.storage.content import FileEventQueue
 from agent_brain_client.adapters.storage.content_session import ContentSession
+from agent_brain_client.application.queue.delivery import deliver_pending
 from agent_brain_client.application.memory.guidance import HOST_GUIDANCE, MAPPING_GUIDANCE
+from agent_brain_client.runtime import collection
 from agent_brain_client.runtime.harness_content import content_host
 from agent_brain_client.domain import contract
+from agent_brain_client.domain.scopes import digest
 from agent_brain_client.adapters.platforms.filesystem import private_directory
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.interfaces.mcp.content import ContentServer
@@ -23,6 +31,165 @@ from test_content_outbox import Cloud, POLICY, MEMORY, RULE, SKILL
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+class SyntheticCaptureServer:
+    def __init__(self):
+        self.requests = []
+        self.receipts = {}
+        self.lose_ack = True
+        self.extraction = "staged"
+
+    def open(self, request, **_):
+        body = json.loads(request.data)
+        self.requests.append(body)
+        params = body["params"]
+        key = (digest(params["origin"]), params["session_id"])
+        if body["method"] == "memory_global_status":
+            assert params["event_only"] is True
+            accepted = (*key, params["event_id"]) in self.receipts
+            result = {"capture_extraction": {
+                "l0_accepted": accepted, "state": self.extraction if accepted else "unknown",
+            }}
+            persistence = {"state": "read-only", "durable": False}
+        else:
+            assert body["method"] == "memory_global_event_submit"
+            event = params["event"]
+            assert event["contract"] == "agentbrain.native-memory.v1"
+            assert set(event) == {"contract", "event_id", "occurred_at", "content"}
+            key = (*key, event["event_id"])
+            if key in self.receipts:
+                assert self.receipts[key] == body
+            self.receipts[key] = body
+            if self.lose_ack:
+                self.lose_ack = False
+                raise URLError("Synthetic lost reply")
+            result = {
+                "event_id": event["event_id"], "state": "committed",
+                "message_ids": ["synthetic-l0-id"], "ledger_sync": "sqlite-wal-full",
+                "core_acceptance": "acknowledged-not-durability-proof",
+                "pipeline_state": "unverified", "model_extraction_verified": False,
+                "capture_extraction": {"state": self.extraction},
+            }
+            persistence = {
+                "state": "core-accepted", "durable": False, "github_confirmed": False,
+                "receipt_ledger_durable": True,
+            }
+        return io.BytesIO(json.dumps({
+            "request_id": body["request_id"], "result": result, "persistence": persistence,
+        }).encode())
+
+
+class NativeMemoryCapture(unittest.TestCase):
+    def exercise(self, home, harness):
+        home.mkdir()
+        workspace = home / "synthetic-workspace"
+        workspace.mkdir()
+        native = home / ("." + harness)
+        source_file = native / "memories/example.md"
+        source_file.parent.mkdir(parents=True)
+        original = "合成记忆\r\nA fictional preference.\r\n"
+        source_file.write_bytes(original.encode())
+        source_epoch = 1234567890123000000
+        os.utime(source_file, ns=(source_epoch, source_epoch))
+        peer = SyntheticCaptureServer()
+        cloud = Cloud()
+        cloud.queue_identity = {"device_id": "synthetic"}
+        value = {
+            "device_home": str(home), "legacy_projects": [],
+            "scope": {
+                "schema": 1, "profile_id": "a" * 32,
+                "include_roots": [], "exclude_roots": [], "non_project_roots": [],
+                "recall_personal": True, "all_non_projects": True,
+            },
+        }
+        staged_queue = []
+
+        def build(value, origin, selected_harness):
+            self.assertEqual(selected_harness, harness)
+            client = object.__new__(CollectionClient)
+            client.value, client.local, client.actor = value, origin, "synthetic-owner"
+            client.base = SimpleNamespace(
+                queue_identity=cloud.queue_identity,
+                _credential=lambda: "synthetic-credential",
+                profile={"endpoint": "https://synthetic.invalid"},
+                transport=SimpleNamespace(opener=peer),
+            )
+            client.grant, client.queue_identity = cloud.grant, dict(cloud.queue_identity, origin=digest(origin))
+            queue = FileEventQueue(home, home / "capture", POLICY, client, binding={"host": harness})
+            staged_queue[:] = [queue]
+            return client, queue
+
+        def server():
+            return ContentServer(ContentSession(
+                home, home / "content", POLICY, cloud,
+                host=content_host(harness), native_home=native,
+            ))
+
+        def tool(worker, name, arguments):
+            return worker.invoke(name, arguments)["structuredContent"]
+
+        with (
+            patch.object(collection, "load", return_value=value),
+            patch.object(collection, "approved", return_value=True),
+            patch("agent_brain_client.adapters.server.collection.approved", return_value=True),
+            patch.object(collection, "build_delivery_queue", side_effect=build),
+            patch("os.getcwd", return_value=str(workspace)),
+        ):
+            worker = server()
+            names = {item["name"] for item in worker.catalog()}
+            self.assertIn("content_sources_import", names)
+            self.assertFalse(names & {"memory_global_event_submit", "memory_event_submit", "memory_global_status"})
+            row = tool(worker, "content_sources_inventory", {})["sources"][0]
+            source = {key: row[key] for key in ("source_id", "source_fingerprint")}
+            with self.assertRaises(ContentParameterError):
+                tool(worker, "content_sources_import", dict(source, content="caller-supplied text"))
+            with self.assertRaises(ProtocolError):
+                tool(worker, "content_sources_import", source)
+            self.assertEqual(peer.requests, [])
+            tool(worker, "content_sources_read", source)
+            tool(worker, "content_sources_review", dict(
+                source, decision="shareable", reason_code="approved-native-original",
+            ))
+            queued = tool(worker, "content_sources_import", source)
+            self.assertEqual(queued["local_queue"]["state"], "pending")
+            self.assertEqual(len(peer.receipts), 1)
+            self.assertEqual(peer.requests[0]["params"]["event"]["content"], original)
+            self.assertEqual(peer.requests[0]["params"]["event"]["occurred_at"], "2009-02-13T23:31:30.123Z")
+            # Ordinary Hook drains cannot send an explicit historical request.
+            self.assertFalse(deliver_pending(staged_queue[0], allowed=lambda _: True))
+            self.assertEqual(len(peer.requests), 1)
+
+            worker = server()
+            received = tool(worker, "content_sources_import", dict(source, status_only=True))
+            self.assertEqual(received["local_queue"]["state"], "pending")
+            self.assertEqual(received["result"]["capture_extraction"], {"l0_accepted": True, "state": "staged"})
+            tool(worker, "content_sources_review", dict(
+                source, decision="excluded", reason_code="secret-localonly-or-confidential",
+            ))
+            blocked = tool(worker, "content_sources_import", source)
+            self.assertEqual(blocked["error"]["code"], "native_import_not_approved")
+            self.assertEqual(len(peer.requests), 2)
+            tool(worker, "content_sources_review", dict(
+                source, decision="shareable", reason_code="approved-native-original",
+            ))
+            source_file.unlink()
+            replay = tool(worker, "content_sources_import", source)
+            self.assertEqual(replay["local_queue"]["state"], "confirmed")
+            self.assertEqual(replay["request_id"], queued["request_id"])
+            self.assertEqual(peer.requests[2], peer.requests[0])
+            self.assertEqual(len(peer.receipts), 1)
+            tool(worker, "content_sources_import", source)
+            self.assertEqual(len(peer.requests), 3)
+            peer.extraction = "succeeded"
+            done = tool(worker, "content_sources_import", dict(source, status_only=True))
+            self.assertTrue(done["result"]["capture_extraction"]["l0_accepted"])
+            self.assertEqual(done["result"]["capture_extraction"]["state"], "succeeded")
+            self.assertEqual(cloud.calls, [])
+
+    def test_exact_original_routes_once_and_status_is_read_only(self):
+        for harness in ("codex", "codebuddy"):
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as tmp:
+                self.exercise(Path(tmp).resolve() / "home", harness)
 
 class HarnessParity(unittest.TestCase):
     def test_both_harnesses_read_exact_approved_original_and_file_time(self):
@@ -60,6 +227,15 @@ class HarnessParity(unittest.TestCase):
                 source.write_bytes(b"Synthetic changed source")
                 with self.assertRaises(CacheBlocked):
                     session.sources.capture_native_original(*selected)
+                source.write_bytes(b"[LocalOnly]\nSynthetic private source")
+                row = session.sources.inventory_memory_sources()["sources"][0]
+                private = (row["source_id"], row["source_fingerprint"])
+                session.sources.read_memory_source(*private)
+                session.sources.review_memory_source(
+                    *private, "shareable", "approved-native-original",
+                )
+                with self.assertRaises(CacheBlocked):
+                    session.sources.capture_native_original(*private)
                 self.assertEqual(cloud.calls, [])
 
     def test_original_capture_preserves_legacy_receipt_and_uncertain_write(self):
@@ -93,7 +269,8 @@ class HarnessParity(unittest.TestCase):
                 }, reconciles={"request_ids": [], "source_keys": [staged["source_key"]]})
                 calls = len(cloud.calls)
                 status = "legacy-receipt-unconfirmed" if acknowledgement_lost else "already-migrated"
-                self.assertEqual(session.sources.capture_native_original(*selected), {"status": status})
+                with patch.object(session.sources.provider, "read", side_effect=AssertionError("Legacy source read")):
+                    self.assertEqual(session.sources.capture_native_original(*selected), {"status": status})
                 self.assertEqual(len(cloud.calls), calls)
 
     def test_same_content_cas_queue_offline_and_mapping_contract(self):

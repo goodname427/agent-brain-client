@@ -43,7 +43,7 @@ Windows 使用 `CreateFileW` 的 `OPEN_EXISTING`、`FILE_FLAG_OPEN_REPARSE_POINT
 
 调用者明确选择一条来源后，`content_sources_read` 重新进行有界遍历，核对打开对象与枚举对象身份，再核对读取前后元数据、大小和内容指纹，严格按 UTF-8 解码。正文只返回本地 MCP 调用者；盘点和审阅账本不保留原文。文件替换或内容变化后，旧指纹不能读取新正文；重新盘点得到新指纹后重新读取与审阅。
 
-后续继续使用既有 `content_sources_review`、`content_sources_stage` 和 `content_put` CAS / outbox / 持久化回执流程。读取后才可审阅，只有 `shareable` 来源可以暂存；暂存本身不上传。显式 `content_put` 离线时保留同一请求 ID，重启重放并收到服务器持久化回执后才报告远端确认。
+Codex 和 CodeBuddy 共用 [Onboarding](../../BOOTSTRAP.md#onboarding) 的原文审阅和导入流程。导入以文件修改时间标记原文，在当前已授权来源下提交。用相同参数显式续跑，或用 `status_only:true` 分别核对 L0 接收与后台提炼。已有同机旧 CAS 凭据可核验时跳过相同指纹。旧凭据丢失的历史来源仍需确认其迁移状态。
 
 `memories_v2`、原生记忆 SQLite 和聊天 `sessions` 不属于此导入契约，不自动回退或扩大扫描范围。若某个 Codex 版本只写 `memories_v2`，需先另行确认其原生持久记忆契约；本实现仍只报告 `memories` 的实际可用状态。原生历史导入与未来 Hook 自动采集是两个独立状态；支持导入不会开启 Hook。
 

@@ -165,6 +165,92 @@ def build_delivery_queue(value, local, harness):
     return open_queue(value, local, harness, services=native_services())
 
 
+def import_native_source(adapter, source_id, fingerprint, *, status_only=False):
+    """Submit or inspect an exact, pre-approved original via the capture outbox."""
+    import os
+    from datetime import datetime, timedelta, timezone
+
+    from agent_brain_client.adapters.storage.project_settings import source_active
+    from agent_brain_client.domain.errors import EventDiagnosticsUnavailable
+    from agent_brain_client.domain.events import (
+        MAX_NATIVE_MEMORY_UNITS, NATIVE_MEMORY_CONTRACT, native_source_identity,
+    )
+    from agent_brain_client.domain.scopes import digest, namespace, select, source_id as route_id
+
+    native_source_identity(source_id, fingerprint)
+    harness = adapter.host.name
+    if not source_id.startswith(harness + "-memory:"):
+        raise ValueError("Source must belong to the currently bound Harness")
+    try:
+        value = load(adapter.home)
+    except FileNotFoundError:
+        return {"error": {"code": "native_import_origin_unavailable"}, "data_transferred": False}
+    local = eligible(value, os.getcwd())
+    if local is None or legacy(value, local) is not None:
+        return {"error": {"code": "native_import_origin_unavailable"}, "data_transferred": False}
+    client, queue = build_delivery_queue(value, local, harness)
+    if adapter.client.queue_identity != client.base.queue_identity:
+        return {"error": {"code": "native_import_device_changed"}, "data_transferred": False}
+
+    scope = value["scope"]
+    sharing = select(scope, local)["sharing"]
+    project = namespace(client.actor, route_id(scope, local, sharing))
+    group = "native-source-" + digest(adapter.binding)
+    key = digest([project, group, source_id, fingerprint])
+    event_id, request_id = "native-" + key[:56], "native_memory_" + key
+    retained = queue._load("outbox/" + request_id + ".json")
+    identity = {"request_id": request_id, "event_id": event_id, "session_id": group}
+    if status_only:
+        local_queue = queue._queue_result(retained)["local_queue"] if retained is not None else None
+        try:
+            result = client.status(group, event_id=event_id, event_only=True)
+        except (EventDiagnosticsUnavailable, OSError, ValueError):
+            result = {"capture_extraction": {"state": "unknown", "reason": "status-unavailable"}}
+        return dict(identity, local_queue=local_queue, result=result, data_transferred=False)
+
+    def allowed():
+        current = load(adapter.home, verify_code=False)
+        return (
+            current["scope"] == scope
+            and eligible(current, local["cwd"]) == local
+            and legacy(current, local) is None
+            and source_active(adapter.home, local["cwd"], harness)
+            and adapter.sources.native_original_approved(source_id, fingerprint)
+        )
+
+    if retained is not None:
+        request = retained["request"]
+    else:
+        prepared = adapter.sources.capture_native_original(source_id, fingerprint)
+        if prepared["status"] != "approved":
+            return dict(prepared, data_transferred=False)
+        body = prepared["text"]
+        if "\0" in body or len(body.encode("utf-16-le")) // 2 > MAX_NATIVE_MEMORY_UNITS:
+            return {"error": {"code": "native_import_content_outside_bound"}, "data_transferred": False}
+        original_time = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(
+            milliseconds=prepared["mtime_ns"] // 1_000_000,
+        )
+        occurred_at = original_time.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        event = {
+            "contract": NATIVE_MEMORY_CONTRACT,
+            "event_id": event_id,
+            "project_id": project,
+            "session_id": group,
+            "source_id": source_id,
+            "source_fingerprint": fingerprint,
+            "occurred_at": occurred_at,
+            "content": body,
+        }
+        request = {
+            "request_id": request_id,
+            "method": "memory_event_submit",
+            "params": {"kind": "memory", "id": event_id, "event": event},
+        }
+    if not allowed():
+        return dict(identity, error={"code": "native_import_not_approved"}, data_transferred=False)
+    return dict(queue.invoke(request, event_gate=allowed), **identity)
+
+
 def schedule_delivery(home, harness, local):
     from agent_brain_client.runtime.delivery import schedule_delivery as schedule
     return schedule(home, harness, local)

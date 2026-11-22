@@ -267,6 +267,33 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
                 },
             }
         )
+        tools.append(
+            {
+                "name": "content_sources_import",
+                "description": "Submit one approved native Memory original into the current approved origin through the capture queue. Use the exact ID and fingerprint reviewed as approved-native-original. Retry the same inputs in that origin. Set status_only for a read-only check of local queue, Server acceptance and extraction.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "source_id": {
+                            "type": "string",
+                            "pattern": "^(codex|codebuddy)-memory:[a-f0-9]{64}$",
+                        },
+                        "source_fingerprint": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{64}$",
+                        },
+                        "status_only": {"type": "boolean"},
+                    },
+                    "required": ["source_id", "source_fingerprint"],
+                    "additionalProperties": False,
+                },
+                "annotations": {
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "idempotentHint": True,
+                },
+            }
+        )
     return tools
 
 
@@ -295,6 +322,8 @@ def tool_names(methods, memory_sources):
     }
     if not set(methods) & CONTENT_WRITES:
         names.discard("content_queue_inspect")
+    if "content_put" not in methods:
+        names.discard("content_sources_import")
     return sorted(names)
 
 
