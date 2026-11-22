@@ -354,7 +354,12 @@ def apply_packet(value, pending, packet, *, automatic=False, preserve_admission=
     target = save_packet(pending, packet)
     # A recoverable scope always has its matching device packet on disk.
     metadata_io.write(pending, packet["scope"])
-    result = register(value, packet, automatic=automatic, preserve_admission=preserve_admission)
+    if automatic:
+        result = register(value, packet, automatic=True)
+    elif preserve_admission:
+        result = register(value, packet, preserve_admission=True)
+    else:
+        result = register(value, packet)
     return dict(result, packet=str(target), packet_sha256=metadata_io.digest(target.read_bytes()))
 
 
