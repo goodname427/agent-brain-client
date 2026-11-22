@@ -1,7 +1,8 @@
 """Retrieved-memory context and its UTF-8 budget; no native file mapping."""
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import Counter
+from itertools import zip_longest
 import json
 import re
 
@@ -72,7 +73,7 @@ def _query_anchors(query, items):
         for pair in sorted({run[i:i + 2] for run in han_runs for i in range(len(run) - 1)})
     )
     if not patterns:
-        return [(None, False, False)] * len(items)
+        return [(None, 0, False)] * len(items)
     matcher = re.compile("(?=(" + "|".join(patterns) + "))", re.IGNORECASE)
     matches = [
         [(m.group(1).casefold(), m.start(1)) for m in matcher.finditer(item["content"])]
@@ -90,20 +91,28 @@ def _query_anchors(query, items):
     for item, hits, terms in zip(items, matches, terms_by_item):
         evidence = terms & specific if specific else terms
         position = _anchor_position(item["content"], hits, evidence, query.casefold()) if evidence else None
-        anchors.append((position, bool(evidence), bool(specific and evidence)))
+        anchors.append((position, len(evidence), bool(specific and evidence)))
     return anchors
 
 
 def _excerpt(item, reference, position):
     text = item["content"]
     stops = _passage_stops(text)
-    hit = bisect_right(stops, position) - 1
-    # Keep adjacent units even across a blank line. A hit’s neighbors can
-    # identify an example or qualification that reverses its meaning.
-    start = stops[max(0, hit - 1)]
-    end = stops[min(len(stops) - 1, hit + 2)]
-    if end - start > EXCERPT_CHARS:
-        return None
+    if position is None:
+        # Native relevance covers the record. Without a passage match, keep
+        # its closing context intact and mark the omitted opening.
+        end = len(text)
+        start = stops[bisect_left(stops, end - EXCERPT_CHARS)]
+        if start > stops[max(0, len(stops) - 3)]:
+            return None
+    else:
+        hit = bisect_right(stops, position) - 1
+        # Keep adjacent units even across a blank line. A hit’s neighbors can
+        # identify an example or qualification that reverses its meaning.
+        start = stops[max(0, hit - 1)]
+        end = stops[min(len(stops) - 1, hit + 2)]
+        if end - start > EXCERPT_CHARS:
+            return None
     excerpt = text[start:end]
     if privacy.private_content(excerpt) or restricted(excerpt):
         return None
@@ -178,23 +187,30 @@ def select_context_items(items, references, query, *, cached=False, automatic=Tr
     """Select evidence before fitting its presentation to the UTF-8 budget."""
     positions = range(len(items))
     native = set()
-    anchors = [(None, False, False)] * len(items)
+    anchors = [(None, 0, False)] * len(items)
     if automatic and not cached:
         anchors = _query_anchors(query, items)
         native = {i for i in positions if items[i].get("relevance") == "native-query-match"}
         corroborated = [i for i in positions if i not in native and anchors[i][1]]
-        direct = [
-            i for i in corroborated
-            if anchors[i][2]
-            or items[i].get("source_context", {}).get("relation") == "current-source"
+        current = {
+            i for i in positions
+            if items[i].get("source_context", {}).get("relation") == "current-source"
+        }
+        direct = sorted(
+            (i for i in corroborated if anchors[i][2] or i in current),
+            key=lambda i: (-anchors[i][1], i not in current),
+        )
+        # Native rank and local textual evidence are independent signals.
+        # Alternate their best hits so either can contribute under pressure.
+        priority = [
+            i for pair in zip_longest(direct, sorted(native)) for i in pair if i is not None
         ]
-        # L1 stays in native relative order. Approved L2/L3 without a lexical
-        # anchor stay eligible, with their existing unranked relevance label.
-        priority = direct + sorted(native) + [i for i in corroborated if i not in direct]
         ranked = set(priority)
-        order = priority + sorted(
+        weaker = [i for i in corroborated if i not in ranked]
+        ranked.update(weaker)
+        order = priority + weaker + sorted(
             (i for i in positions if i not in ranked),
-            key=lambda i: items[i].get("source_context", {}).get("relation") != "current-source",
+            key=lambda i: i not in current,
         )
     else:
         # Manual recall retains whole rows. Previously selected cache rows
@@ -203,38 +219,29 @@ def select_context_items(items, references, query, *, cached=False, automatic=Tr
 
     remaining = CONTEXT_BYTES - len(CONTEXT_POLICY.encode("utf-8"))
     selected = {}
-    native_without_span = []
     unsafe_excerpt = set()
     for i in order:
         item = items[i]
-        position, matched, _ = anchors[i]
+        position = anchors[i][0]
         if (
             automatic and not cached and i < len(references)
             and len(item["content"]) > EXCERPT_CHARS
         ):
-            if not matched:
-                if i in native:
-                    native_without_span.append(i)
+            if position is None and i not in native:
                 continue
             item = _excerpt(item, references[i], position)
-            if item is None:
+            if item is None and position is not None:
                 unsafe_excerpt.add(i)
         if item is not None and (size := _row_bytes(item)) <= remaining:
             selected[i] = item
-            remaining -= size
-
-    # The native rank attests to the row, not to a matched passage. Keep the
-    # complete return if it fits after short evidence has had its chance.
-    for i in native_without_span:
-        size = _row_bytes(items[i])
-        if size <= remaining:
-            selected[i] = items[i]
             remaining -= size
 
     if not automatic:
         return selected
     for i in order:
         if i in selected or i >= len(references):
+            continue
+        if not cached and len(items[i]["content"]) <= EXCERPT_CHARS:
             continue
         preview = "" if cached else _index_preview(items[i]["content"])
         if i in unsafe_excerpt and preview is not None:

@@ -192,12 +192,37 @@ class LayeredRecall(unittest.TestCase):
         with self.assertRaises(ValueError): self.read()
 
     def test_hook_receipts_preserve_more_than_three_native_results(self):
-        self.response['result']['namespace_results']=[self.group(),self.group()]
+        first = self.group()
+        self.foreign = self.origin('/synthetic/another-source')
+        self.response['result']['namespace_results'] = [first, self.group()]
         result=self.run_hook()
         self.assertTrue(result)
         receipt=recall_receipts.recall_observation(self.value)
         self.assertEqual(receipt['item_count'],6)
         self.assertEqual(len(receipt['retrieval']['selected']),6)
+
+    def test_duplicate_text_with_same_applicability_uses_the_native_match_once(self):
+        group = self.response['result']['namespace_results'][0]
+        native = group['recall']['L1'][0]
+        other = self.origin('/synthetic/another-source')
+        derived = self.group()
+        derived['recall'].update(L1=[], L3={'content': None, 'provenance': {}})
+        derived['recall']['L2'][0]['content'] = native['content']
+        self.response['result']['namespace_results'].insert(0, derived)
+        group['recall']['L2'] = []
+        group['recall']['L3'].update(content=native['content'],
+                                    source_context=source_context([other], self.local))
+
+        rows, receipt = self.fitted_hook('Fictional question with no literal match')
+        self.assertEqual([row['layer'] for row in rows], ['L1', 'L3'])
+        self.assertEqual([row['content'] for row in rows], [native['content']] * 2)
+        self.assertEqual(rows[0]['source_context'], native['source_context'])
+        self.assertEqual(rows[1]['source_context']['origins'], [other])
+        retrieval = receipt['retrieval']
+        self.assertEqual(retrieval['candidate_count'], 3)
+        self.assertEqual(retrieval['unselected_without_evidence'], 1)
+        self.assertEqual(retrieval['omitted_for_budget'], 0)
+        self.assertEqual(retrieval['selected'][0], retrieval['returned'][1])
 
     def test_empty_peer_groups_preserve_native_per_namespace_results(self):
         empty = self.group(); empty['recall'].update(L1=[], L2=[], L3={'content': None, 'provenance': {}})
@@ -527,8 +552,8 @@ class LayeredRecall(unittest.TestCase):
                     stage.assert_not_called()
                     self.assertEqual(self.sent, [])
 
-    def fitted_hook(self, question):
-        output = self.run_hook(question=question)
+    def fitted_hook(self, question, **kwargs):
+        output = self.run_hook(question=question, **kwargs)
         context = output['hookSpecificOutput']['additionalContext']
         receipt = recall_receipts.recall_observation(self.value)
         self.assertEqual(receipt['context_sha256'], digest(context))
@@ -619,11 +644,14 @@ class LayeredRecall(unittest.TestCase):
     def test_cjk_budget_uses_delivered_utf8_and_keeps_whole_facts(self):
         group = self.response['result']['namespace_results'][0]
         content = '虚构中文记忆。' * 57
-        for layer in ('L1', 'L2', 'L3'):
-            row = group['recall'][layer] if layer == 'L3' else group['recall'][layer][0]
-            row['content'] = content
         groups = self.response['result']['namespace_results']
         groups.extend(copy.deepcopy(group) for _ in range(3))
+        expected = set()
+        for i, group in enumerate(groups):
+            for layer in ('L1', 'L2', 'L3'):
+                row = group['recall'][layer] if layer == 'L3' else group['recall'][layer][0]
+                row['content'] = f'{i} {layer} {content}'
+                expected.add(row['content'])
         self.assertGreater(len(json.dumps(groups).encode()), 24576)
         wire = io.BytesIO()
         with (io.TextIOWrapper(wire, encoding='utf-8') as output,
@@ -641,8 +669,7 @@ class LayeredRecall(unittest.TestCase):
         self.assertLessEqual(receipt['context_bytes'], 24576)
         self.assertEqual(receipt['context_sha256'], digest(context))
         self.assertEqual(receipt['item_count'], 12)
-        self.assertEqual([json.loads(line)['content'] for line in context.split('\n')[1:]],
-                         [content] * 12)
+        self.assertEqual({json.loads(line)['content'] for line in context.split('\n')[1:]}, expected)
         self.assertEqual(receipt['retrieval']['omitted_for_budget'], 0)
 
     def test_context_budget_counts_every_rendered_row_and_separator(self):
@@ -661,28 +688,19 @@ class LayeredRecall(unittest.TestCase):
         second['content'] += 'x'
         self.assertEqual(select_context_items([first, second], [], '', cached=True), {0: first})
 
-    def test_budget_keeps_small_current_source_evidence_after_two_long_l1_rows(self):
-        from agent_brain_client.application.memory.context import render_context
-
+    def test_short_current_source_evidence_keeps_space_when_native_passages_cannot_fit(self):
         group = self.response['result']['namespace_results'][0]
         first = dict(self.row('L1'), id='synthetic-first', content='Background. ' + 'x' * 11000)
         second = dict(self.row('L1'), id='synthetic-second', content='Quartz history. ' + 'y' * 11000)
         target = dict(self.row('L2'), content='Quartz beacon code is UMBER.',
                       source_context=source_context([self.local], self.local))
-        group['recall'].update(L1=[first, second], L2=[], L3={'content': None, 'provenance': {}})
-        rows = [
-            dict(scope='personal', layer='L1', content=row['content'],
-                 source_context=row['source_context'], relevance='native-query-match')
-            for row in (first, second)
-        ]
-        room = 24576 - len(render_context(rows).encode('utf-8'))
-        self.assertGreater(room, 32)
-        second['content'] += 'y' * (room - 32)
-        group['recall']['L2'] = [target]
+        group['recall'].update(L1=[first, second], L2=[target], L3={'content': None, 'provenance': {}})
 
         rows, receipt = self.fitted_hook('What is the Quartz beacon code?')
         self.assertEqual(rows[0]['content'], target['content'])
         self.assertEqual(rows[0]['source_context'], target['source_context'])
+        self.assertEqual([row['presentation'] for row in rows[1:]], ['index', 'index'])
+        self.assertEqual([row['content'] for row in rows[1:]], ['', ''])
         self.assertEqual(receipt['layer_counts'], {'L1': 2, 'L2': 1, 'L3': 0})
         self.assertEqual(receipt['retrieval']['selected'][0]['record_sha256'], digest(target['id']))
         self.assertEqual([ref['record_sha256'] for ref in receipt['retrieval']['selected'][1:]],
@@ -693,7 +711,7 @@ class LayeredRecall(unittest.TestCase):
     def test_selects_and_presents_evidence_below_budget(self):
         group = self.response['result']['namespace_results'][0]
         semantic = dict(self.row('L1'), id='synthetic-semantic',
-                        content='背景' * 250 + '\nThe night crew checks the secondary lantern.')
+                        content='虚构背景。\n' * 100 + 'At night the crew checks the secondary lantern.')
         target = dict(self.row('L2'), id='synthetic-answer', content='The Kestrel beacon is violet.',
                       source_context=source_context([self.local], self.local))
         key_long = dict(self.row('L2'), id='synthetic-long',
@@ -705,14 +723,15 @@ class LayeredRecall(unittest.TestCase):
         rows, receipt = self.fitted_hook('What color is the Kestrel beacon?')
         refs = receipt['retrieval']['selected']
         self.assertEqual([ref['record_sha256'] for ref in refs],
-                         [digest(row['id']) for row in (target, key_long, semantic, noise)])
+                         [digest(row['id']) for row in (target, semantic, key_long, noise)])
         self.assertEqual(rows[0]['content'], target['content'])
         self.assertNotIn('presentation', rows[0])
         self.assertEqual(rows[1]['presentation'], 'excerpt')
-        self.assertIn(target['content'], rows[1]['content'])
-        self.assertEqual(rows[2]['content'], semantic['content'])
-        self.assertNotIn('presentation', rows[2])
-        self.assertEqual(rows[2]['source_context'], semantic['source_context'])
+        self.assertIn('At night the crew checks the secondary lantern.', rows[1]['content'])
+        self.assertIn(rows[1]['content'], semantic['content'])
+        self.assertEqual(rows[1]['source_context'], semantic['source_context'])
+        self.assertEqual(rows[2]['presentation'], 'excerpt')
+        self.assertIn(target['content'], rows[2]['content'])
         self.assertEqual(rows[3]['relevance'], 'assess-against-current-question')
         self.assertEqual(receipt['retrieval']['omitted_for_budget'], 0)
 
@@ -890,13 +909,14 @@ class LayeredRecall(unittest.TestCase):
         index['index_metadata'].update(
             description_kind='notice', description='Source preview omitted to fit the context budget.'
         )
-        filler = {'layer': 'L1', 'relevance': 'native-query-match', 'content': ''}
-        filler['content'] = 'x' * (24576 - len(render_context([filler, index]).encode('utf-8')))
-        selected = select_context_items(
-            [filler, item], [{'record_sha256': digest('synthetic-filler')}, ref], 'unmatched'
-        )
+        filler = {'layer': 'L1', 'relevance': 'native-query-match', 'content': 'x' * 40}
+        budget = len(render_context([filler, index]).encode('utf-8'))
+        with patch('agent_brain_client.application.memory.context.CONTEXT_BYTES', budget):
+            selected = select_context_items(
+                [filler, item], [{'record_sha256': digest('synthetic-filler')}, ref], 'unmatched'
+            )
         self.assertEqual(selected, {0: filler, 1: index})
-        self.assertEqual(len(render_context(list(selected.values())).encode('utf-8')), 24576)
+        self.assertEqual(len(render_context(list(selected.values())).encode('utf-8')), budget)
 
     def test_oversized_hit_preserves_verbatim_excerpt_reference_and_offline_cache(self):
         group = self.response['result']['namespace_results'][0]
@@ -937,7 +957,7 @@ class LayeredRecall(unittest.TestCase):
     def test_budget_prioritizes_corroborated_text_over_unranked_indexes(self):
         group = self.response['result']['namespace_results'][0]
         noise = [
-            dict(self.row('L2'), id=f'synthetic-noise-{i}', content='Kestrel gardening. ' + '花' * 800)
+            dict(self.row('L2'), id=f'synthetic-noise-{i}', content=f'Kestrel gardening {i}. ' + '花' * 800)
             for i in range(21)
         ]
         evidence = [
@@ -962,6 +982,68 @@ class LayeredRecall(unittest.TestCase):
                 self.assertIn(row['content'], original['content'])
                 self.assertEqual(row['source_context'], original['source_context'])
             self.assertEqual(ref.get('output_content_sha256', ref['content_sha256']), digest(row['content']))
+
+    def test_both_hooks_keep_short_and_long_semantic_evidence_under_summary_pressure(self):
+        from agent_brain_client.adapters.harnesses.codebuddy import events, transcript
+        from agent_brain_client.application.memory.context import CONTEXT_BYTES, render_context
+
+        directory = self.root / 'ordinary'
+        directory.mkdir()
+        self.local = gm.discover(str(directory))
+        scope = dict(self.value['scope'], all_projects=True, all_non_projects=True, include_roots=[])
+        pin = digest(scope)
+        self.value.update(scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin)
+        group = self.group()
+        self.response['result']['namespace_results'] = [group]
+        source = source_context([self.local], self.local)
+        sample = dict(layer='L2', scope='personal', content='Departure traffic jam notes 00. ',
+                      source_context=source, relevance='assess-against-current-question')
+        padding = (CONTEXT_BYTES - len(render_context([sample] * 24).encode('utf-8'))) // (3 * 24)
+        noise = [
+            dict(self.row('L2'), id=f'synthetic-traffic-{i}',
+                 content=f'Departure traffic jam notes {i:02d}. ' + '花' * padding,
+                 source_context=source)
+            for i in range(66)
+        ]
+        answer = 'Set out before sunrise. The route is quiet then.'
+        long_body = 'The log tracks fictional road work.\n' * 24 + answer
+        question = 'Which departure avoids the traffic jam?'
+        results = {}
+        for content in (answer, long_body):
+            target = dict(self.row('L1'), content=content)
+            group['recall'].update(L1=[target], L2=noise, L3={'content': None, 'provenance': {}})
+            for harness in ('codex', 'codebuddy'):
+                with (self.subTest(harness=harness, long=content == long_body),
+                      patch.object(gm, 'load', return_value=self.value),
+                      patch.object(events, 'capture_messages', return_value={'status': 'staged'}),
+                      patch.object(transcript, 'observe', return_value='synthetic'),
+                      patch.object(sys, 'stderr', io.StringIO())):
+                    self.sent.clear()
+                    rows, receipt = self.fitted_hook(question, harness=harness)
+                    retrieval = receipt['retrieval']
+                    self.assertEqual(retrieval['candidate_count'], 67)
+                    self.assertGreater(retrieval['omitted_for_budget'], 0)
+                    original = retrieval['returned'][0]
+                    self.assertEqual(original['content_sha256'], digest(content))
+                    index = next((i for i, ref in enumerate(retrieval['selected'])
+                                  if ref['record_sha256'] == original['record_sha256']), None)
+                    self.assertIsNotNone(index, receipt['layer_counts'])
+                    row = rows[index]
+                    self.assertIn(answer, row['content'])
+                    self.assertEqual(row['source_context'], target['source_context'])
+                    if content == long_body:
+                        self.assertEqual(row['presentation'], 'excerpt')
+                        self.assertEqual(row['excerpt_omissions'], {'before': True, 'after': False})
+                        self.assertIn(row['content'], long_body)
+                        self.assertEqual(retrieval['selected'][index]['output_content_sha256'],
+                                         digest(row['content']))
+                    else:
+                        self.assertEqual(row['content'], answer)
+                        self.assertNotIn('presentation', row)
+                    self.assertEqual([method for method, _ in self.sent], ['memory_query'])
+                    if content in results:
+                        self.assertEqual(rows, results[content])
+                    results[content] = rows
 
     def test_native_semantic_match_without_keyword_keeps_verified_source_on_overflow(self):
         group = self.response['result']['namespace_results'][0]
