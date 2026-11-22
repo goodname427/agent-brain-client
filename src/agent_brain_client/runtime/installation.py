@@ -547,7 +547,7 @@ def confirm_target(message, buttons=("Cancel", "Continue")):
 def existing_connection(home, native, connection, metadata):
     from agent_brain_client.adapters.installation.installation import context
 
-    policy, _, _, configured_native, _ = context(
+    policy, _, _, configured_native = context(
         home,
         metadata["package"],
         metadata["release_policy"],

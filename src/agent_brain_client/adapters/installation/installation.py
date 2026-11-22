@@ -110,6 +110,13 @@ def command_harness(command):
 
 
 def context(home, package, policy_path, policy_sha, *, harness, inspection=False):
+    policy, mcp, package_sha, native, _ = _package_context(
+        home, package, policy_path, policy_sha, harness=harness, inspection=inspection,
+    )
+    return policy, mcp, package_sha, native
+
+
+def _package_context(home, package, policy_path, policy_sha, *, harness, inspection=False):
     if harness not in (None, "codex", "codebuddy"):
         raise InstallBlocked("Explicit supported Harness required")
     require_platform("native-install")
@@ -316,7 +323,7 @@ def registered_context(home, metadata, config_image=None):
     harness = arguments[arguments.index("--harness") + 1] if "--harness" in arguments else None
     if harness is None and b'"--harness"' in raw(safe(metadata["package"]) / "src/agent_brain_client/interfaces/mcp/launcher.py"):
         raise InstallBlocked("Explicit installed Harness command required")
-    policy, mcp, package_sha, native, _ = context(home, metadata["package"], metadata["release_policy"],
+    policy, mcp, package_sha, native = context(home, metadata["package"], metadata["release_policy"],
                                               metadata["release_policy_sha256"], inspection=True, harness=harness)
     command = recorded.get("command")
     if not isinstance(command, str):
@@ -354,7 +361,7 @@ def tool_discovery(home, metadata, active):
     Callers must supply a verified active snapshot from the original channel.
     """
     _, registered, _, _ = registered_context(home, metadata)
-    _, declared, _, _, _ = context(
+    _, declared, _, _ = context(
         home,
         active["package"],
         metadata["release_policy"],
@@ -427,7 +434,9 @@ INSPECTION_REASONS = {
 def prepare(home, package, policy_path, policy_sha, replace_existing=False, *, harness):
     if harness not in ("codex", "codebuddy"):
         raise InstallBlocked("Explicit installation Harness required")
-    policy, mcp, package_sha, native, tool_version = context(home, package, policy_path, policy_sha, harness=harness)
+    policy, mcp, package_sha, native, tool_version = _package_context(
+        home, package, policy_path, policy_sha, harness=harness,
+    )
     config = native / "config.toml"
     registration = Path(home) / ".config/agent-brain-client/codex-mcp.json"
     before = raw(config)
