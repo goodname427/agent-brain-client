@@ -130,7 +130,8 @@ def recall(
         or len(data["namespace_results"]) > 18
     ):
         raise ValueError("Bounded global recall required")
-    if observe is not None and response.get("recall_partial") is True:
+    server_budget_trimmed = response.get("recall_partial") is True
+    if observe is not None and server_budget_trimmed:
         observe.update(partial=True, server_budget_trimmed=True)
     ids = {}
     if scope["recall_personal"]:
@@ -156,7 +157,7 @@ def recall(
         if not items:
             raise ValueError("No usable verified recall source") from invalid_group
     items, refs = _fit_context(items, references, query, observe)
-    if invalid_group is None:  # Source verification failures preserve the previous snapshot.
+    if invalid_group is None and not server_budget_trimmed:
         try:
             services.write_cache(
                 cache,

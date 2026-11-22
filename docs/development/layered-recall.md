@@ -50,12 +50,13 @@ An authenticated, successful recall response may carry the top-level boolean
 `recall_partial: true` beside `result` when the Server trims its response to fit
 its budget. The Hook records `retrieval.partial` and
 `retrieval.server_budget_trimmed`. Both reason flags can appear on the same
-receipt. Verified rows still follow normal context selection and caching. The
-reason flags are confined to the local diagnostic receipt. Complete recalls
-retain the earlier schema 2 shape, and earlier partial receipts remain readable.
-The offline snapshot is eligible after a retryable transport failure. Offline
-replay does not carry forward the Server's budget signal. An explicit
-authorization denial leaves the snapshot unread.
+receipt. Verified rows still follow normal online context selection. Both
+partial outcomes preserve any previous offline snapshot and leave the cache
+empty if there is no snapshot. The reason flags are confined to the local
+diagnostic receipt. Complete recalls retain the earlier schema 2 shape, and
+earlier partial receipts remain readable. The offline snapshot is eligible
+after a retryable transport failure. An explicit authorization denial leaves
+the snapshot unread.
 
 `tests/test_layered_recall.py` covers both path directions, valid L2/L3 output,
 legacy compatibility, negative scope/provenance cases and bounded empty groups.

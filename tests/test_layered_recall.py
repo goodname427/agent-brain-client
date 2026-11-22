@@ -330,6 +330,38 @@ class LayeredRecall(unittest.TestCase):
         self.assertIs(receipt['retrieval']['server_budget_trimmed'], True)
         self.assertNotIn('source_verification_failed', receipt['retrieval'])
 
+    def test_server_budget_trim_preserves_the_last_complete_offline_snapshot(self):
+        cache = self.root / ('recall-' + digest(self.local) + '.json')
+        complete = copy.deepcopy(self.response)
+        partial = dict(copy.deepcopy(complete), recall_partial=True)
+        partial['result']['namespace_results'][0]['recall']['L1'][0]['content'] = 'Synthetic newer answer marker'
+        unavailable = {'error': {'code': 'transport_unconfirmed', 'retryable': True}}
+
+        self.response = partial
+        output = self.run_hook()
+        self.assertIn('Synthetic newer answer marker', output['hookSpecificOutput']['additionalContext'])
+        self.assertFalse(cache.exists())
+        self.response = unavailable
+        self.assertEqual(self.run_hook(), {})
+        self.assertEqual(recall_receipts.recall_observation(self.value)['status'], 'failed')
+
+        self.response = complete
+        self.run_hook()
+        snapshot = cache.read_bytes()
+        self.response = partial
+        self.assertEqual(self.run_hook(), output)
+        receipt = recall_receipts.recall_observation(self.value)
+        self.assertIs(receipt['retrieval']['server_budget_trimmed'], True)
+        self.assertEqual(cache.read_bytes(), snapshot)
+
+        self.response = unavailable
+        offline = self.run_hook()['hookSpecificOutput']['additionalContext']
+        self.assertIn('Synthetic L1 answer marker', offline)
+        self.assertNotIn('Synthetic newer answer marker', offline)
+        receipt = recall_receipts.recall_observation(self.value)
+        self.assertIs(receipt['offline_cache'], True)
+        self.assertNotIn('partial', receipt['retrieval'])
+
     def test_old_cache_is_only_read_on_retryable_transport_failure(self):
         from agent_brain_client.adapters.server.collection import CollectionClient
 
