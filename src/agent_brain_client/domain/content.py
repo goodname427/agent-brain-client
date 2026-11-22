@@ -9,7 +9,8 @@ from agent_brain_client.domain.validation import strings
 from agent_brain_client.domain.validation import text
 
 
-TYPES = {"memory", "rule", "skill"}
+RULE_SKILL = {"rule", "skill"}
+TYPES = {"memory"} | RULE_SKILL
 
 
 def skill_frontmatter(value, identity=None):
@@ -145,6 +146,26 @@ def envelope(kind, identity, value, raw=None):
 
 def path(kind, identity):
     return "content/" + kind + "/" + identity + ".json"
+
+
+def validate_lifecycle_target(value, kind, identity):
+    """Check the lifecycle envelope. Its CAS can include a Server generation."""
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"content_api_version", "kind", "id", "revision", "record", "archived"}
+        or type(value["content_api_version"]) is not int
+        or value["content_api_version"] != 1
+        or kind not in RULE_SKILL
+        or (value["kind"], value["id"]) != (kind, identity)
+        or type(value["archived"]) is not bool
+        or not isinstance(value["revision"], str)
+        or not re.fullmatch(r"[a-f0-9]{64}|missing", value["revision"])
+        or (value["record"] is None) != (value["archived"] or value["revision"] == "missing")
+        or value["archived"] and value["revision"] == "missing"
+    ):
+        raise ValueError("Invalid content lifecycle result")
+    if value["record"] is not None:
+        record(kind, value["record"], identity)
 
 
 def same_record(kind, left, right, preserve_enabled=True):

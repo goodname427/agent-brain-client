@@ -18,6 +18,7 @@ from agent_brain_client.adapters.server.http import RemoteClient, NoRedirect
 from agent_brain_client.application.control import RequestStopped, recall_timing_stage
 from agent_brain_client.domain.enrollment import enrollment_record
 from agent_brain_client.domain.authorization import valid_secret
+from agent_brain_client.domain.operations import LIFECYCLE_WRITES, RULE_SKILL_WRITES
 from agent_brain_client.domain.service import endpoint_check
 from agent_brain_client.application.installation.pairing import (
     EnrollmentTerminal,
@@ -648,7 +649,7 @@ class HTTPSContentClient:
                 if self.device_task is None:
                     raise ValueError("Explicit finite task required")
                 self.device_task.check(request, self.device_id)
-            elif method not in (
+            elif method not in LIFECYCLE_WRITES and method not in (
                 "memory_query",
                 "memory_event_submit",
                 "memory_status",
@@ -675,22 +676,19 @@ class HTTPSContentClient:
                 validate(method, params)
                 if "memory" not in self.grant["artifact_types"]:
                     raise ValueError("Memory grant required")
-            if method == "content_set_enabled":
+            if method in RULE_SKILL_WRITES or method == "content_read" and "include_archived" in params:
                 from agent_brain_client.domain.contract import validate, permits_scope
 
                 validate(method, params)
                 if not permits_scope(self.grant["scopes"], method):
-                    raise ValueError("Content put grant required")
+                    raise ValueError("Content grant required")
             if (
                 method == "memory_query"
                 and "memory" not in self.grant["artifact_types"]
             ):
                 raise ValueError("Memory read grant required")
-            if method in (
-                "content_read",
-                "content_put",
-                "content_set_enabled",
-                "memory_event_submit",
+            if (
+                method in RULE_SKILL_WRITES or method in ("content_read", "content_put", "memory_event_submit")
             ) and not allowed_id(self.grant["ids"], params["kind"], params["id"]):
                 raise ValueError("Unreviewed content ID")
             result = self.transport.request(request)

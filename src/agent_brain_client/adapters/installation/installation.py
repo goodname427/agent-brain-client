@@ -36,7 +36,10 @@ from agent_brain_client.adapters.packages.client import (
 )
 from agent_brain_client.adapters.storage.metadata import unique as pairs
 from agent_brain_client.adapters.storage.pinned import pinned
-from agent_brain_client.domain.tool_contract import TOOL_CONTRACT_VERSION
+from agent_brain_client.domain.tool_contract import (
+    DESCRIBED_TOOL_CONTRACT_VERSIONS,
+    TOOL_CONTRACT_VERSION,
+)
 from agent_brain_client.domain.content_policy import validate_policy
 from agent_brain_client.adapters.storage.content_limits import sha
 from agent_brain_client.domain import contract
@@ -107,6 +110,13 @@ def command_harness(command):
 
 
 def context(home, package, policy_path, policy_sha, *, harness, inspection=False):
+    policy, mcp, package_sha, native, _ = _package_context(
+        home, package, policy_path, policy_sha, harness=harness, inspection=inspection,
+    )
+    return policy, mcp, package_sha, native
+
+
+def _package_context(home, package, policy_path, policy_sha, *, harness, inspection=False):
     if harness not in (None, "codex", "codebuddy"):
         raise InstallBlocked("Explicit supported Harness required")
     require_platform("native-install")
@@ -190,7 +200,9 @@ def context(home, package, policy_path, policy_sha, *, harness, inspection=False
         raise InstallBlocked("Personal content profile required")
     validate_policy(content, client.grant)
     package_sha = package_check(package, policy)
-    methods = package_tools(package, content, client.grant)
+    tool_version, methods = package_tools(
+        package, content, client.grant, lifecycle=getattr(client, "supports_content_lifecycle", True)
+    )
     metadata = json.loads(
         raw(
             safe(package)
@@ -226,10 +238,10 @@ def context(home, package, policy_path, policy_sha, *, harness, inspection=False
     environment = dependency_environment(policy, runtime_check=not inspection)
     if environment is not None:
         mcp["env"] = environment
-    return policy, mcp, package_sha, native
+    return policy, mcp, package_sha, native, tool_version
 
 
-def package_tools(package, content, grant):
+def package_tools(package, content, grant, *, lifecycle=True):
     package = safe(package)
     from agent_brain_client.application.tools import catalog as tool_catalog
 
@@ -242,7 +254,7 @@ def package_tools(package, content, grant):
     local = {n: h for n, h in local_pins.items() if n.startswith(prefixes)}
     target = {n: h for n, h in target_pins.items() if n.startswith(prefixes)}
     if target == local:
-        return tool_catalog.enabled_tools(content, grant)
+        return TOOL_CONTRACT_VERSION, tool_catalog.enabled_tools(content, grant, lifecycle=lifecycle)
     command = [
         sys.executable,
         "-I",
@@ -252,15 +264,20 @@ def package_tools(package, content, grant):
     ]
     run = subprocess.run(
         command,
-        input=contract.encode({"policy": content, "grant": grant}),
+        input=contract.encode({"policy": content, "grant": grant, "lifecycle": lifecycle}),
         capture_output=True,
         timeout=15,
     )
     if run.returncode or len(run.stdout) > 16384:
         raise InstallBlocked("Verified package tool contract unavailable")
     value = json.loads(run.stdout, object_pairs_hook=pairs)
-    if set(value) != {"tools", "version"} or value["version"] != TOOL_CONTRACT_VERSION:
-        raise InstallBlocked("Current tool contract required")
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"tools", "version"}
+        or type(value["version"]) is not int
+        or value["version"] not in DESCRIBED_TOOL_CONTRACT_VERSIONS
+    ):
+        raise InstallBlocked("Supported package tool contract required")
     tools = value["tools"]
     if (
         not isinstance(tools, list)
@@ -271,7 +288,7 @@ def package_tools(package, content, grant):
         )
     ):
         raise InstallBlocked("Invalid package tool contract")
-    return tools
+    return value["version"], tools
 
 
 def render(config, mcp, existing):
@@ -417,7 +434,9 @@ INSPECTION_REASONS = {
 def prepare(home, package, policy_path, policy_sha, replace_existing=False, *, harness):
     if harness not in ("codex", "codebuddy"):
         raise InstallBlocked("Explicit installation Harness required")
-    policy, mcp, package_sha, native = context(home, package, policy_path, policy_sha, harness=harness)
+    policy, mcp, package_sha, native, tool_version = _package_context(
+        home, package, policy_path, policy_sha, harness=harness,
+    )
     config = native / "config.toml"
     registration = Path(home) / ".config/agent-brain-client/codex-mcp.json"
     before = raw(config)
@@ -496,7 +515,7 @@ def prepare(home, package, policy_path, policy_sha, replace_existing=False, *, h
     desired = render(before, mcp, bool(old))
     plan = {
         "schema": 1,
-        "tool_contract_version": TOOL_CONTRACT_VERSION,
+        "tool_contract_version": tool_version,
         "adapter": "codex",
         "platform": policy["platform"],
         "device_home": str(home),
@@ -601,7 +620,7 @@ def validate_install_scope(plan):
             "tool_contract_version" in plan
             and (
                 type(plan["tool_contract_version"]) is not int
-                or plan["tool_contract_version"] not in (2, TOOL_CONTRACT_VERSION)
+                or plan["tool_contract_version"] not in (2, *DESCRIBED_TOOL_CONTRACT_VERSIONS)
             )
         )
         or plan["schema"] != 1

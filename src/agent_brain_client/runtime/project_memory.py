@@ -1287,7 +1287,7 @@ def finish_codebuddy_project(home, task, *, verified_release=False):
 def refresh_project_hooks(home, harness, *, check_only=False):
     """Migrate only receipt-owned project Hooks already known to this device."""
     from agent_brain_client.adapters.storage.collection import settings_path
-    from agent_brain_client.adapters.storage.project_settings import hook_registration
+    from agent_brain_client.adapters.storage.project_settings import hook_registration, read_hook_receipt
 
     if harness == "codex":
         from agent_brain_client.adapters.harnesses.codex.project_configuration import definitions
@@ -1309,7 +1309,7 @@ def refresh_project_hooks(home, harness, *, check_only=False):
             _, file = hook_registration(harness, path, enrolled["project_root"])
             if not file.exists():
                 continue
-            receipt = private_json(file)
+            receipt = read_hook_receipt(harness, file)
             pin = receipt["settings_sha256"]
             phase = receipt["phase"]
             if phase not in ("complete", "prepared", "applying", "rolled-back"):

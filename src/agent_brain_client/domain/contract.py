@@ -2,11 +2,11 @@
 
 import hashlib
 import re
-from agent_brain_client.domain.operations import FIELDS
+from agent_brain_client.domain.operations import CONTENT_WRITES, FIELDS, RULE_SKILL_WRITES
 from agent_brain_client.domain.operations import HOOK_METHODS
 from agent_brain_client.domain.authorization import OWNER_SCOPE
 from agent_brain_client.domain.operations import SCOPES
-from agent_brain_client.domain.content import TYPES
+from agent_brain_client.domain.content import RULE_SKILL, TYPES
 from agent_brain_client.domain.operations import WRITES
 from agent_brain_client.domain.authorization import allows
 from agent_brain_client.domain.recall import core_recall
@@ -71,6 +71,10 @@ def validate(method, params):
         ):
             raise ValueError("Invalid catalog cursor")
         params = {k: v for k, v in params.items() if k != "cursor"}
+    if method == "content_read" and isinstance(params, dict) and "include_archived" in params:
+        if params["include_archived"] is not True or params.get("kind") not in ("rule", "skill"):
+            raise ValueError("Archive read requires an explicit Rule/Skill target")
+        params = {k: v for k, v in params.items() if k != "include_archived"}
     if (
         method not in FIELDS
         or not isinstance(params, dict)
@@ -173,18 +177,17 @@ def validate(method, params):
         event(params["event"])
         if params["id"] != params["event"]["event_id"]:
             raise ValueError("Event identity mismatch")
-    if method in ("content_set_enabled", "content_put", "content_remove") and (
+    if method in CONTENT_WRITES and (
         not isinstance(params["expected_revision"], str)
         or not re.fullmatch(r"missing|[a-f0-9]{64}", params["expected_revision"])
     ):
         raise ValueError("Read revision required")
-    if method == "content_set_enabled":
-        if (
-            params["kind"] not in ("rule", "skill")
-            or type(params["enabled"]) is not bool
-            or params["expected_revision"] == "missing"
-        ):
-            raise ValueError("Existing Rule/Skill and explicit enabled state required")
+    if method in RULE_SKILL_WRITES and (
+        params["kind"] not in RULE_SKILL or params["expected_revision"] == "missing"
+    ):
+        raise ValueError("Existing Rule/Skill revision required")
+    if method == "content_set_enabled" and type(params["enabled"]) is not bool:
+        raise ValueError("Explicit enabled state required")
     if method == "content_put":
         record(params["kind"], params["record"], params["id"])
 

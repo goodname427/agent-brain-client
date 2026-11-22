@@ -5,6 +5,7 @@ boundaries is automatic when this candidate is wired; no new daemon is created.
 """
 
 from agent_brain_client.domain.errors import CacheBlocked, CollectionCapacityExceeded
+from agent_brain_client.domain.content import validate_lifecycle_target
 from agent_brain_client.application.synchronization.pull import ContentSynchronization
 from agent_brain_client.application.synchronization.ports import NativeContentHost
 from agent_brain_client.adapters.storage.source_imports import SourceImports
@@ -135,7 +136,12 @@ class ContentSession(FileContentOutbox):
                 and isinstance(error, dict)
                 and error.get("code") == "catalog_changed"
             )
-            if not race and (
+            unavailable_lifecycle = (
+                params.get("include_archived") is True
+                and isinstance(error, dict)
+                and error.get("code") == "invalid_request"
+            )
+            if not (race or unavailable_lifecycle) and (
                 not isinstance(error, dict)
                 or error.get("retryable") is not True
                 or error.get("code") not in OFFLINE_TRANSPORT_ERRORS
@@ -146,9 +152,15 @@ class ContentSession(FileContentOutbox):
             raise CacheBlocked()
         return response["result"]
 
-    def _read_target(self, kind, identity):
-        value = self._request("content_read", {"kind": kind, "id": identity})
-        self._validate_target(value, kind, identity)
+    def _read_target(self, kind, identity, *, lifecycle=False):
+        params = {"kind": kind, "id": identity}
+        if lifecycle:
+            params["include_archived"] = True
+        value = self._request("content_read", params)
+        if lifecycle:
+            validate_lifecycle_target(value, kind, identity)
+        else:
+            self._validate_target(value, kind, identity)
         return value
 
     @staticmethod
@@ -460,6 +472,7 @@ class ContentSession(FileContentOutbox):
                 "persistence": {"durable": False},
             }
         check_request()
+        lifecycle = request["params"].get("include_archived") is True
         # Authentication, scope, credential/identity failures and invalid responses
         # must remain errors even if an old local snapshot exists.
         error = result.get("error", {}) if isinstance(result, dict) else {}
@@ -470,7 +483,8 @@ class ContentSession(FileContentOutbox):
             and error.get("retryable") is True
             and error.get("code") in OFFLINE_TRANSPORT_ERRORS
         ):
-            return self._offline_read(request)
+            # An active snapshot cannot supply a lifecycle revision or archived state.
+            return result if lifecycle else self._offline_read(request)
         if (
             request["method"] == "content_catalog"
             and isinstance(error, dict)
@@ -479,7 +493,9 @@ class ContentSession(FileContentOutbox):
             and result.get("request_id") == request["request_id"]
         ):
             return result
-        if isinstance(result, dict) and "error" in result:
+        if isinstance(result, dict) and "error" in result and not (
+            lifecycle and isinstance(error, dict) and error.get("code") == "invalid_request"
+        ):
             self.offline_denied = True
             try:
                 with locked(self.cache / "content.lock", cancel_check=check_request):
@@ -547,7 +563,10 @@ class ContentSession(FileContentOutbox):
         method = request.get("method")
         params = request.get("params")
         contract.validate(method, params)
-        if method not in self.methods():
+        lifecycle_read = method == "content_read" and params.get("include_archived") is True
+        if method not in self.methods() or (
+            lifecycle_read and not getattr(self.client, "supports_content_lifecycle", True)
+        ):
             raise CacheBlocked()
         if method == "memory_query":
             if (
@@ -644,7 +663,8 @@ class ContentSession(FileContentOutbox):
             ):
                 raise CacheBlocked()
             if "error" not in result and method == "content_read":
-                self._validate_target(
+                validate_target = validate_lifecycle_target if lifecycle_read else self._validate_target
+                validate_target(
                     result.get("result"), params["kind"], params["id"]
                 )
         if method == "content_catalog" and "error" not in result:

@@ -33,6 +33,8 @@ import os
 from pathlib import Path
 
 import agent_brain_client.domain.contract as contract
+from agent_brain_client.domain.content import RULE_SKILL
+from agent_brain_client.domain.operations import LIFECYCLE_WRITES, RULE_SKILL_WRITES
 from agent_brain_client.adapters.storage.host_files import atomic
 from agent_brain_client.adapters.platforms.filesystem import (
     require_platform,
@@ -96,7 +98,8 @@ def operation_lock(path, stage):
 
 # Stable on-disk contract shared by the content workers. Bump this declaration
 # only with a reviewed incompatible change to the content ledgers.
-CONTENT_CACHE_ABI = "content-ledgers-v1"
+# Lifecycle rows keep the schema-1 layout but cannot be read by older workers.
+CONTENT_CACHE_ABI = "content-ledgers-v2"
 
 
 class FileContentOutbox(DurableOutbox):
@@ -216,8 +219,10 @@ class FileContentOutbox(DurableOutbox):
             if set(self.policy["kinds"]) <= set(grant["artifact_types"])
             else set()
         )
-        if not set(self.policy["kinds"]) & {"rule", "skill"}:
-            methods.discard("content_set_enabled")
+        if not set(self.policy["kinds"]) & RULE_SKILL:
+            methods -= RULE_SKILL_WRITES
+        if not getattr(self.client, "supports_content_lifecycle", True):
+            methods -= LIFECYCLE_WRITES
         return (
             methods
             if "memory" in self.policy["kinds"]
@@ -278,7 +283,7 @@ class FileContentOutbox(DurableOutbox):
             ):
                 raise CacheBlocked()
             rows.append(row)
-        if sum(row["state"] not in ("confirmed", "reconciled") for row in rows) > 1024:
+        if sum(self._awaits_resolution(row) for row in rows) > 1024:
             raise CacheBlocked()
         return sorted(
             rows, key=lambda row: (row["created"], row["request"]["request_id"])

@@ -159,6 +159,8 @@ class ComponentClient:
     The injectable runner is for synthetic tests; default runs only fixed argv.
     """
 
+    supports_content_lifecycle = False
+
     def __init__(self, plan_path, plan_sha256, signing, runner=None):
         import hashlib
         import json
@@ -268,6 +270,8 @@ class ComponentClient:
                 from agent_brain_client.domain.contract import validate
 
                 validate(name, params)
+            if name == "content_read" and "include_archived" in params:
+                return blocked("invalid_content_request")
             if name == "content_remove":
                 return blocked("device_scope_review_required")
             if (

@@ -101,6 +101,8 @@ class WindowsTree(VerifiedTreeFiles):
             str(path), 0x80000000, 1, None, 3, 0x02200000, None
         )
         if handle == self.W.HANDLE(-1).value:
+            if self.C.get_last_error() in (2, 3):  # FILE_NOT_FOUND, PATH_NOT_FOUND
+                raise FileNotFoundError("File source path missing")
             raise OSError("File source unavailable or busy")
         try:
             info = self.FileInformation()
