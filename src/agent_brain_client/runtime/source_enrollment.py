@@ -16,6 +16,9 @@ from agent_brain_client.adapters.platforms.filesystem import locked
 from agent_brain_client.domain.scopes import validate, digest, has_origins, ordinary_default
 
 
+RETRY_SCOPE_EDIT = "Retry global-configure with the same scope options."
+
+
 def operator(value, packet):
     if not value["operator"] or not value["operator_sha256"]:
         raise ValueError("Existing operator reference required")
@@ -179,8 +182,11 @@ def report_existing_source(state):
     return source_result("global-memory-source-preserved")
 
 
-def activate(value, scope, *, automatic=False, newly_registered=False, state=None):
-    """Finalize exact admission, respecting stops on automatic paths."""
+def activate(
+    value, scope, *, automatic=False, newly_registered=False, state=None,
+    preserve_admission=False,
+):
+    """Finalize the confirmed scope with the requested admission behavior."""
     from agent_brain_client.adapters.server.collection import CollectionClient
     from agent_brain_client.adapters.storage.collection import settings_path
 
@@ -194,8 +200,33 @@ def activate(value, scope, *, automatic=False, newly_registered=False, state=Non
         return source_result(
             "global-memory-admission-pending",
             server_error=response.get("error"),
-            next_action="Retry the same source setup with the saved packet.",
+            next_action=(RETRY_SCOPE_EDIT if preserve_admission else
+                         "Retry the same source setup with the saved packet."),
         )
+    if preserve_admission:
+        from agent_brain_client.adapters.storage.collection import load
+
+        # A scope edit owns only the policy and its two approval pins. In
+        # particular, registration leaves an existing Server stop untouched.
+        latest = load(home, verify_code=False)
+        pin = digest(scope)
+        latest.update(scope=scope, approved_scope_sha256=pin, server_scope_sha256=pin)
+        metadata_io.write(settings_path(home), latest)
+        local_fence = local_stop(home)
+        server_stopped = result.get("stopped")
+        enabled = latest["enabled"] and not local_fence and server_stopped is False
+        return {
+            "status": "global-memory-configured",
+            "scope_applied": True,
+            "scope_sha256": pin,
+            "source_device_id": client.device_id,
+            "activated": enabled,
+            "collection_enabled": enabled,
+            "local_stop_fence": local_fence,
+            "server_stopped": server_stopped,
+            "historical_import": False,
+            "model_calls": 0,
+        }
     if automatic and local_stop(home):
         return paused(local_fence=True)
     if not automatic or result.get("stopped") is not False:
@@ -248,7 +279,7 @@ def activate(value, scope, *, automatic=False, newly_registered=False, state=Non
     }
 
 
-def register(value, packet, *, automatic=False):
+def register(value, packet, *, automatic=False, preserve_admission=False):
     """Register this enrolled device; retries retain the exact packet identity."""
     from agent_brain_client.adapters.server.collection import CollectionClient
 
@@ -270,10 +301,13 @@ def register(value, packet, *, automatic=False):
         return source_result(
             "global-memory-registration-pending",
             server_error=response.get("error"),
-            next_action="Retry the same source setup with the saved packet and device.",
+            next_action=(RETRY_SCOPE_EDIT if preserve_admission else
+                         "Retry the same source setup with the saved packet and device."),
         )
     if automatic:
         return activate(value, packet["scope"], automatic=True, newly_registered=True)
+    if preserve_admission:
+        return activate(value, packet["scope"], preserve_admission=True)
     return activate(value, packet["scope"])
 
 
@@ -316,11 +350,11 @@ def save_packet(pending, packet):
     return target
 
 
-def apply_packet(value, pending, packet, *, automatic=False):
+def apply_packet(value, pending, packet, *, automatic=False, preserve_admission=False):
     target = save_packet(pending, packet)
     # A recoverable scope always has its matching device packet on disk.
     metadata_io.write(pending, packet["scope"])
-    result = register(value, packet, automatic=True) if automatic else register(value, packet)
+    result = register(value, packet, automatic=automatic, preserve_admission=preserve_admission)
     return dict(result, packet=str(target), packet_sha256=metadata_io.digest(target.read_bytes()))
 
 
@@ -508,12 +542,26 @@ def _configure(args):
     packet = packet_for(value, scope, client) if packet_input else None
     if packet_input and previous != packet:
         raise ValueError("Original device and scope packet required")
+    initial_selection = (
+        not packet_input
+        and not state["source_registered"]
+        and not has_origins(value["scope"])
+        and value["approved_scope_sha256"] is None
+        and value["server_scope_sha256"] is None
+        and not local_stop(args.device_home)
+    )
+    preserve_admission = not packet_input and not initial_selection
     if matching_registration(state, scope, client.device_id):
+        if preserve_admission:
+            return activate(value, scope, state=state, preserve_admission=True)
         return activate(value, scope)
     if packet is None:
         packet = packet_for(value, scope, client)
-    result = apply_packet(value, pending, packet)
+    result = apply_packet(
+        value, pending, packet, automatic=initial_selection,
+        preserve_admission=preserve_admission,
+    )
     output = getattr(args, "packet_output", None)
-    if result.get("activated") and output:
+    if output and (result.get("activated") or result.get("scope_applied")):
         metadata_io.write(metadata_io.canonical(output), packet)
     return result

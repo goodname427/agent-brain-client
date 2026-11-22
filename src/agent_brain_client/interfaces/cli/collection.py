@@ -177,12 +177,14 @@ def main(argv=None, *, verified_release=False):
                     "native_hook_verified": False,
                 }
         print(json.dumps(result, ensure_ascii=False), flush=True)
-        failed_activation = (
-            a.action == "global-configure" and result.get("activated") is not True
+        incomplete_configuration = (
+            a.action == "global-configure"
+            and result.get("activated") is not True
+            and result.get("scope_applied") is not True
         )
         return (
             2
-            if failed_activation
+            if incomplete_configuration
             or result.get("status")
             in ("global-memory-activation-required", "global-memory-stop-unconfirmed", "global-memory-resume-unconfirmed", "global-queue-sync-incomplete")
             else 0

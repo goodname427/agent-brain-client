@@ -603,8 +603,10 @@ class SourceClosure(unittest.TestCase):
                     if params['scope']['profile_id'] != state['profile_id']:
                         return {'error':{'code':'global_source_profile_mismatch'}}
                     state['scope'] = copy.deepcopy(params['scope'])
-                    state['stopped'] = True
+                    if current is None:
+                        state['stopped'] = True
                     return {'result':{'source_registered':True,'scope_sha256':digest(params['scope']),
+                        'stopped':state['stopped'], 'resumed':False,
                         'source_device_id':self.device_id,'global_profile_id':state['profile_id']}}
                 if method == 'memory_global_resume':
                     state['stopped'] = False
