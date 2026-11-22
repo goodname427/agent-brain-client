@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from agent_brain_client.adapters.storage.content_session import ContentSession
+from agent_brain_client.application.memory.guidance import HOST_GUIDANCE, MAPPING_GUIDANCE
 from agent_brain_client.runtime.harness_content import content_host
 from agent_brain_client.domain import contract
 from agent_brain_client.adapters.platforms.filesystem import private_directory
@@ -52,6 +53,11 @@ class HarnessParity(unittest.TestCase):
                     self.assertFalse((home / ".codex").exists())
                     self.assertFalse((home / ".agents").exists())
                     self.assertIn("alwaysApply: true", (home / ".codebuddy/rules/agent-brain-synthetic-rule.md").read_text())
+                    index = home / ".codebuddy/rules/agent-brain-client/index.md"
+                else:
+                    index = home / ".codex/AGENTS.md"
+                    self.assertIn(HOST_GUIDANCE, index.read_text())
+                self.assertIn(MAPPING_GUIDANCE, index.read_text())
         self.assertEqual(outcomes[0], outcomes[1])
 
     def test_codebuddy_ide_memory_uses_observed_host_directory_contract(self):
@@ -77,6 +83,21 @@ class HarnessParity(unittest.TestCase):
             source.parent.mkdir(parents=True)
             source.write_text("Synthetic preference only")
             adapter = ContentSession(home, home / "cache", POLICY, Cloud(), host=content_host("codebuddy"), native_home=native)
+            from agent_brain_client.adapters.harnesses.codebuddy import configuration
+            from agent_brain_client.adapters.storage.host_files import host_plan
+            from agent_brain_client.adapters.storage.metadata import write
+
+            instructions = native / "CODEBUDDY.md"
+            prior = configuration.BEGIN + "\nSynthetic prior instructions\n" + configuration.END
+            journal = private_directory(configuration.state_directory(home)) / "transaction.json"
+            write(
+                journal,
+                {"schema": 1, "phase": "complete", "host": host_plan({instructions: prior.encode()})},
+            )
+            for block in (prior, configuration.GUIDANCE):
+                instructions.write_text(block + "\n")
+                rows = adapter.sources.inventory_memory_sources()["sources"]
+                self.assertEqual(len(rows), 1)
             inventory = adapter.sources.inventory_memory_sources()
             row = inventory["sources"][0]
             self.assertTrue(row["source_id"].startswith("codebuddy-memory:"))
