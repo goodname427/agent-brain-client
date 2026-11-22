@@ -33,7 +33,7 @@
 
 正式 MCP 的 `memory_query` 只需 `query`。当前目录来源在安装包内读取。普通目录可按 `non-project` 查询，项目来源省略 `repository_root` 时复用 `project_root`。L1 默认每 namespace 5 条，原生查询按相关性和字符预算装配上下文，L2／L3 另行组装。安装刷新保留两平台的召回设置。详见[共享 Hook 合同](../development/layered-recall.md)。
 
-`content_catalog` 负责目标目录与分页，使用 `kinds` 和可选的 `cursor`。旧 `memory_recall` 和目录检索别名已移除。
+`content_catalog` 负责目标目录。先传 `kinds`，再按同一 `kinds` 传回 `structuredContent.result.next_cursor`；末页省略该字段。每页最多 256 条，工具没有 `limit` 参数。原生持久记忆使用下文的来源盘点。旧 `memory_recall` 和目录检索别名已移除。
 
 ## Codex 原生持久记忆导入（Mac / Windows）
 

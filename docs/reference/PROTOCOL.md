@@ -132,7 +132,7 @@ typed records, revisions and scope checks remain required. Mapping refresh and
 outbox/import recovery still run at MCP startup and after confirmed writes.
 Read responses report `local_refresh.status:read-only` and do not claim model reload.
 
-Full destination inventory starts with `content_catalog` and `kinds`, then follows every `next_cursor` using the same kinds. Cursors pin the collection revision and authorization scope. A changed snapshot requires restarting without a cursor. Use `memory_query` for bounded retrieval and Onboarding for source coverage. Invalid parameters are local JSON-RPC `-32602`, with
+Full destination inventory starts with `content_catalog` and `kinds`. In the MCP response the Server page is under `structuredContent.result`. Pass its `next_cursor`, when present, as `cursor` with the same `kinds`, even if the current page has no visible artifacts. The last page omits `next_cursor`. The tool accepts no `limit`; the separate local `content_sources_inventory` returns its own cursor directly under `structuredContent`. Destination cursors pin the collection revision and authorization scope. A changed snapshot requires restarting without a cursor. Use `memory_query` for bounded retrieval and Onboarding for source coverage. Invalid parameters are local JSON-RPC `-32602`, with
 `data.stage:parameters`; no adapter or HTTP request is made. Read parameter
 errors do not request write-only CAS fields.
 

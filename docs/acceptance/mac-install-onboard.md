@@ -20,7 +20,7 @@
 | check-update | 填 status、channel_checked、最新候选版本/commit；失败填原因，最新版未知 |
 | update | 填 status、前后活动包版本/commit、是否改变、回滚/重试实际结果 |
 | worker 重载 | 填宿主实际操作与 MCP client_runtime 版本/commit；未观测写未知 |
-| 完整目录 | 填实际 kinds-only 参数、实际条目数、耗时与响应结果 |
+| 目标目录 | 填起始 `kinds`、页数、实际条目数、耗时与响应结果 |
 | 原生盘点 | 填实际宿主、页数、受支持范围和缺口 |
 | 暂存和保存 | 填本地暂存数、核验的 CAS／Server 保存／备份回执与读回数 |
 | 本轮读取 | 填发起/成功/失败/取消/未读数与各阶段，HTTP 响应才填状态码 |

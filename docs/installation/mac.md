@@ -108,7 +108,7 @@ check-update 成功返回 client-update-available/current 与 channel_checked:tr
 
 安全错误字段只给阶段和类别：parameters、transport、http、response-parse、response-validation、content-validation 或 client-policy-or-credential。HTTP 状态来自实际响应；transport 没有 HTTP 状态，不能单凭它认定偶发网络。解析/回执失败不归类为网络。读取参数错误不给 stable request_id/expected_revision 的写入提示；写入未知结果仍沿用原 ID 和 CAS 参数，不生成新 ID。报告不包含凭据、响应正文或记忆正文。
 
-已确认 outbox 也占累计 1024 条上限，目前没有自动归档；达到上限会拒绝新请求，保留旧数据。Server 本地提交后 GitHub 推送未确认，会阻塞后续新写；当前 `storage_unowned` 也可能阻断缓存读取，须恢复原请求。256 条 catalog / 512 KiB snapshot 限制仍在。此版本不承诺无限写或弱网下始终可读。
+已确认 outbox 也占累计 1024 条上限，目前没有自动归档；达到上限会拒绝新请求，保留旧数据。Server 本地提交后 GitHub 推送未确认，会阻塞后续新写；当前 `storage_unowned` 也可能阻断缓存读取，须恢复原请求。目标目录每页最多 256 条，本机快照另受[容量边界](../development/content-cache-capacity.md)约束。此版本不承诺无限写或弱网下始终可读。
 
 源码和合成隔离测试不是独立实机验收。真实当前设备卸载/固定入口切换、Keychain、新邀请与发布渠道操作须先确认具体对象及影响；不要自动操作。安装成功后的实际 MCP 读写、卸载、再次安装由未参与开发的执行者仅按本文验证并记录版本、状态和数据保留。未实测另一台裸 Mac，不宣称完成裸机、签名、公证或 Gatekeeper 验收。
 
