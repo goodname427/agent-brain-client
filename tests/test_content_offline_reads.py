@@ -10,9 +10,33 @@ from unittest.mock import patch
 from test_content_outbox import Cloud,MEMORY,RULE,SKILL,POLICY
 from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 from agent_brain_client.adapters.storage.content_session import ContentSession
+from agent_brain_client.application.tools.catalog import enabled_tools
+from agent_brain_client.domain.content import validate_lifecycle_target
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.interfaces.mcp.content import ContentServer
 import agent_brain_client.domain.contract as contract
+
+
+class LifecycleContract(unittest.TestCase):
+    def test_explicit_read_and_write_shapes_and_scope(self):
+        target = {'kind': 'rule', 'id': 'synthetic-rule'}
+        contract.validate('content_read', dict(target, include_archived=True))
+        for kind in ('memory', 'other'):
+            with self.assertRaises(ValueError):
+                contract.validate('content_read', dict(target, kind=kind, include_archived=True))
+        with self.assertRaises(ValueError):
+            contract.validate('content_read', dict(target, include_archived=False))
+        for method in ('content_archive', 'content_restore'):
+            contract.validate(method, dict(target, expected_revision='a' * 64))
+            with self.assertRaises(ValueError):
+                contract.validate(method, dict(target, expected_revision='missing'))
+            cloud = Cloud()
+            self.assertIn(method, enabled_tools(POLICY, cloud.grant))
+            self.assertNotIn(method, enabled_tools(POLICY, dict(cloud.grant, scopes=['read'])))
+        archived = dict(contract.envelope('rule', target['id'], None), archived=True, revision='b' * 64)
+        validate_lifecycle_target(archived, target['kind'], target['id'])
+        with self.assertRaises(ValueError):
+            validate_lifecycle_target(dict(archived, record=RULE), target['kind'], target['id'])
 
 
 class OfflineReads(unittest.TestCase):

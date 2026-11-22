@@ -20,7 +20,7 @@ TARGETS = [
     ("src/agent_brain_client/adapters/harnesses/", ["test_host_entrypoints"]),
     (
         "src/agent_brain_client/adapters/storage/content",
-        ["test_content_offline_reads"],
+        ["test_content_offline_reads.LifecycleContract"],
     ),
     ("dev/checks/", ["test_client_checks"]),
     ("dev/release/", ["test_release_pipeline"]),
