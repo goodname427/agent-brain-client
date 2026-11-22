@@ -56,6 +56,8 @@ Codex 项目设置保留原目录摘要；CodeBuddy 项目使用独立前缀及�
 
 IDE 的原生 Memory 路径不是公开版本化 API；其他 IDE 版本应核对来源契约并以明确 unavailable / incomplete 状态报告，不能猜测其他目录或扩大扫描范围。CLI 智能选取 Rule 的差异有官方文档依据；“已写入原生文件”不代表宿主当前模型已采用。
 
+IDE 4.12.2 / `genie` 3.10.0 的安装代码确认了 Windows 实机盘点遗漏的两个来源，即 `~/.codebuddy/memery/*_memery.md` 和 `~/.codebuddy/projects/<project>/memory/` 下的 Markdown 主题文件。Windows 的盘点和读取使用这些来源及原有 CLI / IDE 根，保留已有记忆 ID，跳过状态、`MEMORY.md` 索引和会话，并拒绝跟随链接。缺少任一可选根仍可完成可用来源的盘点。`account_complete` 始终为 `false`。正文仍需经既有的读取、审阅、暂存和带来源的 CAS 保存流程，服务端持久化以回执为准。[Windows CodeBuddy Onboarding 工单 #225](https://github.com/goodname427/agent-brain-client/issues/225)
+
 ## 回归依据
 
 `tests/test_harness_parity.py` 覆盖双宿主 CAS、原队列幂等、离线快照、Rule/Skill 映射和来源审核；CodeBuddy-only 子进程禁止导入整个 Codex 适配器包，并检查不会创建 `.codex` 或 `.agents`。原安装、卸载、暂停、恢复及历史队列字节回归仍需通过完整检查后才可发布。

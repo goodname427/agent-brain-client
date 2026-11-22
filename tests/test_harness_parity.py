@@ -1,7 +1,9 @@
 """The same real content contract through each host, plus a forbidden-host runtime."""
 
 import copy
+from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -14,6 +16,8 @@ from agent_brain_client.runtime.harness_content import content_host
 from agent_brain_client.domain import contract
 from agent_brain_client.adapters.platforms.filesystem import private_directory
 from agent_brain_client.domain.errors import CacheBlocked
+from agent_brain_client.interfaces.mcp.content import ContentServer
+from agent_brain_client.interfaces.mcp.framing import ContentParameterError, ProtocolError
 from test_content_outbox import Cloud, POLICY, MEMORY, RULE, SKILL
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,6 +120,178 @@ with tempfile.TemporaryDirectory() as tmp:
 '''
         result = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(ROOT / "src"), str(ROOT / "tests")], capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr.decode())
+
+
+class WindowsCodeBuddySources(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name).resolve()
+        self.native = self.home / ".codebuddy"
+        self.cloud = Cloud()
+        self.adapter = self.restart()
+        self.server = ContentServer(self.adapter)
+
+    def restart(self):
+        adapter = ContentSession(self.home, self.home / "cache", POLICY, self.cloud,
+                                 host=content_host("codebuddy"), native_home=self.native)
+        if os.name != "nt":
+            # Select Windows layouts while exercising the local platform's real I/O.
+            with patch.object(adapter, "platform", "win32-x64"):
+                adapter.sources.provider = adapter.host.sources(adapter)
+        return adapter
+
+    def write_source(self, relative, *, root=None):
+        file = (self.native if root is None else root) / relative
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(f"Synthetic fixture for {relative}".encode())
+        return file
+
+    def source_id(self, relative):
+        return "codebuddy-memory:" + sha256(relative.encode()).hexdigest()
+
+    def invoke(self, name, arguments):
+        result = self.server.invoke(name, arguments)
+        self.assertFalse(result["isError"], result)
+        return result["structuredContent"]
+
+    def inventory(self, **arguments):
+        return self.invoke("content_sources_inventory", arguments)
+
+    def link_directory(self, link, target):
+        if os.name == "nt":
+            result = subprocess.run(["cmd", "/d", "/c", "mklink", "/J", str(link), str(target)],
+                                    capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.addCleanup(link.rmdir)
+        else:
+            link.symlink_to(target, target_is_directory=True)
+
+    def test_new_layouts_without_old_roots_and_metadata_are_filtered(self):
+        sources = {
+            path: self.write_source(path) for path in (
+                "memery/全局_memery.md",
+                "projects/示例项目/memory/topic.md",
+                "projects/second-project/memory/topic.md",
+            )
+        }
+        for path in (
+            "memery/user-memery-state.json", "memery/notes.md", "memery/archive_memery.md.bak",
+            "projects/示例项目/memory/MEMORY.md", "projects/示例项目/memory/.ide-migrated.json",
+            "projects/示例项目/memory/session.jsonl", "projects/示例项目/session.jsonl",
+            "projects/示例项目/sessions/memory.md", "projects/示例项目/memory/history/turn.md",
+            "sessions/other-project_memery.md",
+        ):
+            self.write_source(path)
+            with self.assertRaises(CacheBlocked):
+                self.adapter.sources.provider.read(self.source_id(path))
+
+        first = self.inventory()
+        self.assertEqual(first["status"], "complete")
+        self.assertFalse(first["account_complete"])
+        self.assertFalse(first["data_transferred"])
+        self.assertEqual(first, self.inventory())
+        self.assertEqual(first["counts"], {"not-checked": 3})
+        expected = {self.source_id(path): file.read_bytes() for path, file in sources.items()}
+        self.assertEqual({row["source_id"] for row in first["sources"]}, set(expected))
+        for row in first["sources"]:
+            raw = expected[row["source_id"]]
+            self.assertEqual(row["source_fingerprint"], sha256(raw).hexdigest())
+            self.assertEqual(self.invoke("content_sources_read", {
+                "source_id": row["source_id"], "source_fingerprint": row["source_fingerprint"],
+            })["text"], raw.decode())
+        self.assertFalse(self.cloud.calls)
+
+    def test_old_layouts_can_coexist_and_keep_existing_ids(self):
+        paths = {
+            "cli/global/preferences.md": self.write_source("memories/global/preferences.md"),
+            "ide/synthetic.mdc": self.write_source("synthetic.mdc", root=self.adapter.sources.provider.ide),
+            "CODEBUDDY.md": self.write_source("CODEBUDDY.md"),
+        }
+        self.write_source("memories/global/MEMORY.md")
+        self.write_source(".memory-global-config.json", root=self.adapter.sources.provider.ide)
+        self.write_source("sessions/turn.md", root=self.adapter.sources.provider.ide)
+        before = {row["source_id"]: row for row in self.inventory()["sources"]}
+        self.assertEqual(set(before), {self.source_id(path) for path in paths})
+        self.write_source("memery/global_memery.md")
+        self.write_source("projects/example/memory/topic.md")
+        after = {row["source_id"]: row for row in self.inventory()["sources"]}
+        self.assertEqual(len(after), len(before) + 2)
+        for path, file in paths.items():
+            source_id = self.source_id(path)
+            self.assertEqual(before[source_id], after[source_id])
+            self.assertEqual(self.invoke("content_sources_read", {
+                "source_id": source_id, "source_fingerprint": after[source_id]["source_fingerprint"],
+            })["text"], file.read_bytes().decode())
+
+    def test_linked_project_memory_is_not_read_and_linked_root_is_incomplete(self):
+        self.write_source("memery/global_memery.md")
+        project = self.write_source("projects/example/memory/topic.md")
+        original = self.inventory()
+        selected = next(row for row in original["sources"]
+                        if row["source_id"] == self.source_id("projects/example/memory/topic.md"))
+        outside = self.home / "outside"
+        project.parent.rename(outside)
+        self.link_directory(project.parent, outside)
+        with self.assertRaises(ProtocolError):
+            self.invoke("content_sources_read", {
+                "source_id": selected["source_id"], "source_fingerprint": selected["source_fingerprint"],
+            })
+        self.assertEqual(self.inventory()["status"], "complete")
+        self.link_directory(self.native / "memories", outside)
+        result = self.inventory()
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["counts"], {"not-checked": 1, "excluded": 1})
+        self.assertEqual({row["source_id"] for row in result["sources"] if row["source_fingerprint"]},
+                         {self.source_id("memery/global_memery.md")})
+
+    def test_paged_inventory_fingerprint_review_stage_and_durable_source_receipt(self):
+        selected = "projects/example/memory/selected.md"
+        local = self.write_source(selected)
+        for index in range(64):
+            self.write_source(f"memery/fixture_{index}_memery.md")
+        first = self.inventory()
+        second = self.inventory(cursor=first["next_cursor"])
+        self.assertEqual(len(first["sources"]), 64)
+        self.assertEqual(len(second["sources"]), 1)
+        self.assertIsNone(second["next_cursor"])
+        rows = first["sources"] + second["sources"]
+        self.assertEqual(len({row["source_id"] for row in rows}), 65)
+        row = next(row for row in rows if row["source_id"] == self.source_id(selected))
+        source = {key: row[key] for key in ("source_id", "source_fingerprint")}
+
+        local.write_bytes(b"Synthetic changed project memory")
+        with self.assertRaises(ProtocolError):
+            self.invoke("content_sources_read", source)
+        with self.assertRaises(ContentParameterError):
+            self.inventory(cursor=first["next_cursor"])
+        source["source_fingerprint"] = sha256(local.read_bytes()).hexdigest()
+        self.assertEqual(self.invoke("content_sources_read", source)["text"], local.read_bytes().decode())
+        self.invoke("content_sources_review", dict(source, decision="shareable",
+                    reason_code="safe-cross-project-personal-summary"))
+
+        target = {"kind": "memory", "id": "synthetic-topic"}
+        current = self.invoke("content_read", target)
+        staged = self.invoke("content_sources_stage", dict(source, id=target["id"], record=MEMORY))
+        self.assertFalse(staged["data_transferred"])
+        self.assertEqual([call["method"] for call in self.cloud.calls], ["content_read"])
+        self.assertEqual(self.adapter.queue_status()["pending"], 0)
+        rid = "synthetic_windows_codebuddy_import"
+        reconciles = {"request_ids": [], "source_keys": [staged["source_key"]]}
+        saved = self.invoke("content_put", dict(target, record=MEMORY, request_id=rid,
+                            expected_revision=current["result"]["revision"], reconciles=reconciles))
+        self.assertTrue(saved["persistence"]["durable"])
+        self.assertEqual(self.cloud.puts, 1)
+
+        restored = self.restart()
+        self.server = ContentServer(restored)
+        retained = self.invoke("content_queue_inspect", {"request_id": rid})
+        self.assertEqual(retained["reconciles"], reconciles)
+        self.assertEqual(retained["response"]["persistence"], saved["persistence"])
+        self.assertEqual(self.invoke("content_read", target)["result"]["record"], MEMORY)
+        statuses = restored.sources.import_status()
+        self.assertEqual(statuses["counts"], {"reconciled": 1})
+        self.assertFalse(statuses["account_complete"])
 
 
 class QueueParity(unittest.TestCase):
