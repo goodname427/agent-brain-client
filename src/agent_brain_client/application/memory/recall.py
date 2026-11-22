@@ -16,7 +16,7 @@ import re
 
 def _unique_evidence_positions(items):
     # Equal text from another authorized source can have different applicability.
-    unique = {}
+    unique: dict[tuple[str | None, str, str], int] = {}
     for index, item in enumerate(items):
         key = (item.get("scope"), digest(item.get("source_context")), item["content"])
         first = unique.setdefault(key, index)
