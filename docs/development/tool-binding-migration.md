@@ -28,6 +28,15 @@ Windows 检查正式 0.8.25 的已登记运行包时，先核验完整文件清�
 
 [#241](https://github.com/goodname427/agent-brain-client/issues/241) 在隔离 Mac Codex 中用正式 0.8.31 作为起点。从同一会话通过普通更新激活同契约候选时，保留原固定入口可以切到新版 Worker。将候选的固定入口变更并刷新登记时，原连接仍运行旧 Worker，空闲退出后下一次只读无法分派。旧程序无法在已协商连接上启用未来的 `listChanged`。Codex App Server 的 `config/mcpServer/reload` 由宿主控制端调用，当前请求没有线程或服务选择参数。Codex 和 CodeBuddy CLI 的 `mcp` 命令均未提供指定服务重新连接的子命令。参见 [Codex App Server](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md#mcp-configuration-reload)及 [CodeBuddy CLI](https://www.codebuddy.ai/docs/cli/reference#mcp-commands-mcp)。
 
+Mac ARM64 用正式包和由草稿 `6d74943` 构建的隔离 0.8.32 候选做了同会话对照。宿主使用发行版本和默认工具刷新行为，模型端点及数据为本机合成夹具。每组只运行一次当前公开 macOS 更新入口，立即发起同一会话的下一轮模型请求。
+
+| 起点 | Codex App Server 0.171.0-alpha.13 | CodeBuddy Code CLI 2.185.0 |
+| --- | --- | --- |
+| 0.8.31 | 原登记不变，下一轮模型可见 13 项，`content_read(include_archived=true)` 由 0.8.32 Worker 完成。 | Agent 执行一次更新，原登记不变。下一轮通过默认延迟工具发现归档和恢复，并用 0.8.32 Worker 真正完成只读调用。 |
+| 0.8.30 | 活动包和 13 项登记已更新，下一轮仍由 0.8.30 Worker 完成，模型只有 11 项工具。 | Agent 执行一次更新，活动包和 13 项登记已更新，下一轮仍由 0.8.30 Worker 完成，工具搜索找不到归档与恢复。 |
+
+0.8.31 到候选的固定入口摘要、工具契约 4 和缓存 ABI 相同。保留这些边界可复用现有连接的温切路径。Codex 对照中在更新前已经接收的读取正常返回，随后新一轮切到 0.8.32。CodeBuddy 的无关 MCP 在更新前后只初始化一次。0.8.30 初始会话持有契约 3 和旧缓存 ABI。已运行的旧启动器不会采用新版登记、工具表或缓存合同。跨契约继续需要宿主能在原会话内只刷新 Agent Brain，保留用户权限和在途结果。以上对照没有通过该跨契约场景，也未覆盖 CodeBuddy IDE 或 Windows 原会话。
+
 CodeBuddy Code CLI 2.185.0 的隔离 Agent 也执行了一次正式 0.8.30 → 0.8.31 更新。以 `--mcp-config` 显式载入原生登记文件时，宿主随后只重建 Agent Brain 连接。立即发起下一轮时工具尚不可用。延后读回时，同一会话的只读请求返回 0.8.31、`reload_required=false`，模型可见 13 项工具。无关 MCP 保持同一次初始化。按默认方式加载登记时，立即调用返回旧 Worker，延后对照仍显示旧工具表且调用失败。更新轮内调用按名称定向的 `WaitForMcpServers` 时，工具表仍为旧版。当前该接口不能作为新版工具已可用的确认。参见 [CodeBuddy 工具参考](https://www.codebuddy.ai/docs/cli/tools-reference)。
 
 预先运行支持动态工具声明的固定入口后，隔离原型在初始化时声明 `tools.listChanged`。原 Worker 处理完已接收请求并退出后，启动器验证新 Worker，发布工具表，再发 `notifications/tools/list_changed`。空闲时，新候选也能触发这一过程。相同连接的实际宿主结果如下。
