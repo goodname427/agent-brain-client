@@ -19,6 +19,9 @@ from agent_brain_client.adapters.platforms.host_files import (
 )
 
 
+HOST_IMAGE_BYTES = 1024 * 1024
+
+
 def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
@@ -65,7 +68,7 @@ def host_image(path):
         st = path.stat()
     except FileNotFoundError:
         return None
-    if not path.is_file() or st.st_nlink != 1 or st.st_size > 1048576:
+    if not path.is_file() or st.st_nlink != 1 or st.st_size > HOST_IMAGE_BYTES:
         raise ValueError("Single bounded host file required")
     metadata = host_metadata(st)
     return (path.read_bytes(), st.st_dev, st.st_ino, st.st_mtime_ns, metadata)
@@ -115,13 +118,13 @@ def host_stage(path, raw, mode, expected, *, private=False):
     if inplace_host_updates() and image is not None and not private:
         with open_host_file(path) as file:
             st = os.fstat(file.fileno())
-            original = file.read(1048577)
+            original = file.read(HOST_IMAGE_BYTES + 1)
             if original != expected or (st.st_dev, st.st_ino) != image[1:3]:
                 raise HostConfigChanged("Host configuration concurrently changed")
 
             def commit_inplace():
                 file.seek(0)
-                if file.read(1048577) != expected or host_image(path) != image:
+                if file.read(HOST_IMAGE_BYTES + 1) != expected or host_image(path) != image:
                     raise HostConfigChanged("Host configuration concurrently changed")
                 host_write(file, raw)
 
@@ -174,7 +177,7 @@ def host_plan(payload, *, private_paths=()):
         image = host_image(path)
         before = image[0] if image else None
         if target is not None and (
-            not isinstance(target, bytes) or len(target) > 1048576
+            not isinstance(target, bytes) or len(target) > HOST_IMAGE_BYTES
         ):
             raise ValueError("Bounded host target required")
         rows[str(path)] = {
@@ -205,7 +208,7 @@ def host_row(path, row):
         for k in ("before", "target")
     )
     if (
-        any(v is not None and len(v) > 1048576 for v in (before, target))
+        any(v is not None and len(v) > HOST_IMAGE_BYTES for v in (before, target))
         or (sha(before) if before is not None else None) != row["before_sha"]
         or (sha(target) if target is not None else None) != row["target_sha"]
     ):

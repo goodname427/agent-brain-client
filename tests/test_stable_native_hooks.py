@@ -143,7 +143,7 @@ class StableHooks(unittest.TestCase):
         metadata.write(self.registration, dict(metadata.private_json(self.registration),
                                               package=str(package), package_sha256=digest(encode(files))))
 
-    def run_hook(self, command, *, harness="codex"):
+    def run_hook(self, command, *, harness="codex", payload="合成"):
         if os.name == "nt" and harness == "codex":
             # Codex 0.167.0-alpha.3.2 passes an outer-quoted raw argument to cmd.exe /C.
             shell = subprocess.list2cmdline([os.environ["COMSPEC"]])
@@ -151,7 +151,7 @@ class StableHooks(unittest.TestCase):
             self.assertLessEqual(len(argv.encode("utf-16le")) // 2, 8191)
         else:
             argv = command if os.name == "nt" else shlex.split(command)
-        result = subprocess.run(argv, input="合成", encoding="utf-8", cwd=self.home,
+        result = subprocess.run(argv, input=payload, encoding="utf-8", cwd=self.home,
                                 capture_output=True, check=True, timeout=45)
         return json.loads(result.stdout), result.stderr
 
@@ -475,6 +475,233 @@ class StableHooks(unittest.TestCase):
         code, result = command(second, "status")
         self.assertEqual(code, 2, result)
         self.assertEqual(result["status"], "memory-operation-review-required")
+
+
+    @unittest.skipUnless(sys.platform == "darwin", "Exact macOS release history")
+    def test_large_codebuddy_receipt_survives_verified_updates_and_project_stop(self):
+        import ast
+        from stat import S_IMODE
+        from unittest.mock import patch
+
+        from agent_brain_client.adapters.storage.content import FileEventQueue
+        from agent_brain_client.adapters.storage.project_settings import hook_registration, project_settings
+        from agent_brain_client.runtime.updates import refresh_bindings
+        from test_content_outbox import Cloud, POLICY
+
+        harness = "codebuddy"
+        git = ["git", "-C", str(ROOT)]
+        engine_inputs = {}
+        for version in ("0.8.29", "0.8.30"):
+            ref = f"client-{version}-macos"
+            resolved = subprocess.run([*git, "rev-parse", "--verify", ref], capture_output=True, text=True)
+            if resolved.returncode:
+                self.skipTest(f"Fetch {ref} for the exact release regression")
+            sha = resolved.stdout.strip()
+
+            def read(name, revision=sha):
+                return subprocess.check_output([*git, "show", f"{revision}:{name}"])
+
+            engine_inputs[version] = (sha, json.loads(read("releases/manifest.json")), read)
+        # Reconstruct the original enrollment order from the exact old layout.
+        old_layout = ast.parse(engine_inputs["0.8.29"][2](
+            "src/agent_brain_client/adapters/packages/layout.py"))
+        legacy_members = next(ast.literal_eval(row.value) for row in old_layout.body
+                              if isinstance(row, ast.Assign)
+                              and any(isinstance(key, ast.Name) and key.id == "PYTHON_FILES" for key in row.targets))
+        registration = metadata.private_json(self.registration)
+        policy_file = registration["release_policy"]
+        policy = metadata.private_json(policy_file)
+        required = https_files(native_platform())
+        policy["file_prefixes"] = [*required[:5], *legacy_members, required[-1]]
+        self.policy_pin = metadata.write(policy_file, policy)
+        metadata.write(self.registration, dict(registration, release_policy_sha256=self.policy_pin))
+        self.channel = ClientReleases(policy_file, self.policy_pin)
+        engine = self.channel.engine
+
+        _, manifest, _ = engine_inputs["0.8.30"]
+        self.assertEqual(set(manifest["files"]), set(self.files))
+        engine_inputs["0.8.31"] = ("4" * 40, dict(manifest, version="0.8.31", files=self.files),
+                                   lambda name: (self.bundle / name).read_bytes())
+
+        def update(version):
+            # Only remote discovery is replaced. The package, active pointer
+            # transaction and registered native verifier use their real code.
+            with patch.object(engine.source, "latest", return_value=engine_inputs[version]):
+                result = engine.check()
+            self.assertEqual(result["status"], "updated", result)
+            pointer = result["active"]
+            self.register_package(pointer)
+            return pointer
+
+        def command(pointer, project, action, *args):
+            entry = Path(pointer["package"]) / "src/agent_brain_client/interfaces/cli/project.py"
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", str(entry), action, "--harness", harness,
+                 "--device-home", str(self.home), "--project-root", str(project), *args],
+                capture_output=True, text=True, timeout=20,
+            )
+            return result.returncode, json.loads(result.stdout)
+
+        def session_start(native, project):
+            registered = json.loads(native.read_bytes())["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            payload = json.dumps({"hook_event_name": "SessionStart", "cwd": str(project),
+                                  "session_id": "synthetic-session"})
+            return self.run_hook(registered, harness=harness, payload=payload)
+
+        first = update("0.8.29")
+        snapshots = {}
+        for name, length in (("large", 150 * 1024), ("neighbor", 0)):
+            project = private_directory(self.home / name)
+            settings = project_settings(self.home, project, harness=harness)
+            native, receipt = hook_registration(harness, settings, project)
+            private_directory(native.parent)
+            original = {"permissions": {"deny": ["Synthetic(" + "x" * length + ")"]}}
+            native.write_text(json.dumps(original), encoding="utf-8")
+            native.chmod(0o640)
+            self.assertEqual(command(first, project, "setup", "--output", str(settings))[0], 0)
+            code, installed = command(first, project, "install")
+            self.assertEqual(code, 0, installed)
+            self.assertEqual(json.loads(native.read_bytes())["permissions"], original["permissions"])
+            self.assertEqual(S_IMODE(native.stat().st_mode), 0o640)
+            cache = metadata.private_json(settings)["cache"]
+            cloud = Cloud()
+            queue = FileEventQueue(self.home, cache, POLICY, cloud, binding={"project_root": str(project)})
+            event_id = "evt-codebuddy-" + "a" * 48
+            request = {"request_id": "codebuddy_event_" + "a" * 64, "method": "memory_event_submit",
+                       "params": {"kind": "memory", "id": event_id,
+                                  "event": {"contract": "agentbrain.event.v1", "event_id": event_id,
+                                            "project_id": "synthetic-" + name, "session_id": "synthetic-session",
+                                            "occurred_at": "2026-11-22T00:00:00.000Z",
+                                            "messages": [{"role": "user", "content": "Synthetic pending turn"}]}}}
+            self.assertEqual(queue.invoke(request, event_gate=lambda: False)["local_queue"]["state"], "pending")
+            self.assertEqual(cloud.calls, [])
+            pending = Path(cache) / "outbox" / (request["request_id"] + ".json")
+            snapshots[name] = (project, native, receipt,
+                               {path: (path.read_bytes(), S_IMODE(path.stat().st_mode))
+                                for path in (settings, native, receipt, pending)})
+
+        project, native, receipt, before = snapshots["large"]
+        neighbor, neighbor_native, _, neighbor_before = snapshots["neighbor"]
+        self.assertGreater(receipt.stat().st_size, 256 * 1024)
+        self.assertEqual(session_start(native, project),
+                         ({}, "agent-brain Hook project registration unavailable\n"))
+        old = update("0.8.30")
+        old_refresh = refresh_bindings(self.home, Path(old["package"]), harness=harness)
+        self.assertEqual(old_refresh["projects"]["review_needed"], 1)
+        self.assertIn("project registration unavailable", session_start(native, project)[1])
+        for action in ("status", "stop"):
+            code, result = command(old, project, action)
+            self.assertEqual((code, result["status"]), (2, "memory-operation-review-required"))
+        self.assertEqual(command(old, neighbor, "status")[1]["status"], "enabled")
+        self.assertFalse((receipt.parent / "memory.off").exists())
+
+        fixed = update("0.8.31")
+        refreshed = refresh_bindings(self.home, Path(fixed["package"]), harness=harness)
+        self.assertEqual(refreshed["projects"]["review_needed"], 0)
+        self.assertFalse(refreshed["projects"]["native_changed"])
+        self.assertIn('"status": "session-ready"', session_start(native, project)[1])
+        self.assertEqual(command(fixed, project, "status")[1]["status"], "enabled")
+        code, installed = command(fixed, project, "install")
+        self.assertEqual(code, 0, installed)
+        self.assertFalse(installed["native_changed"])
+
+        def assert_review_required():
+            self.assertIn("project registration unavailable", session_start(native, project)[1])
+            for action in ("status", "stop"):
+                code, result = command(fixed, project, action)
+                self.assertEqual((code, result["status"]), (2, "memory-operation-review-required"))
+            self.assertFalse((receipt.parent / "memory.off").exists())
+            self.assertEqual(command(fixed, neighbor, "status")[1]["status"], "enabled")
+
+        receipt.chmod(0o644)
+        assert_review_required()
+        receipt.chmod(0o600)
+        for invalid in (b'{"phase":', b"[]"):
+            receipt.write_bytes(invalid)
+            assert_review_required()
+        receipt.write_bytes(before[receipt][0])
+
+        code, stopped = command(fixed, project, "stop")
+        self.assertEqual(code, 0, stopped)
+        self.assertTrue(stopped["local_source_stopped"])
+        self.assertTrue((receipt.parent / "memory.off").is_file())
+        self.assertEqual(command(fixed, project, "status")[1]["status"], "stopped")
+        self.assertEqual(session_start(native, project), ({}, ""))
+        self.assertEqual(command(fixed, neighbor, "status")[1]["status"], "enabled")
+        self.assertIn('"status": "session-ready"', session_start(neighbor_native, neighbor)[1])
+        for path, (raw, mode) in (before | neighbor_before).items():
+            self.assertEqual(path.read_bytes(), raw, path.name)
+            self.assertEqual(S_IMODE(path.stat().st_mode), mode, path.name)
+
+    def test_large_codebuddy_receipt_keeps_interrupted_install_recoverable(self):
+        from base64 import b64encode
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from agent_brain_client.adapters.harnesses.codebuddy import project_configuration as buddy
+        from agent_brain_client.adapters.storage.host_files import HOST_IMAGE_BYTES
+        from agent_brain_client.adapters.storage.project_settings import (
+            hook_registration,
+            project_settings,
+            read_hook_receipt,
+            write_codebuddy_hook_receipt,
+        )
+        from agent_brain_client.runtime import project_memory
+
+        self.release("0.8.31", "4" * 40, instrument=False)
+        project = private_directory(self.home / "large-project")
+        settings = project_settings(self.home, project, harness="codebuddy")
+        native, receipt = hook_registration("codebuddy", settings, project)
+        private_directory(native.parent)
+        original = b'{"permissions":{"deny":["Synthetic"]},"padding":"' + b"x" * (HOST_IMAGE_BYTES - 32 * 1024) + b'"}'
+        native.write_bytes(original)
+        pin = project_memory.setup(SimpleNamespace(
+            device_home=self.home, project_root=project, harness="codebuddy",
+            output=settings, server_bundle=None, query="synthetic",
+        ))["settings_sha256"]
+        data = project_memory.load(settings, pin)
+
+        def interrupt(path, record):
+            if record["phase"] == "complete":
+                raise KeyboardInterrupt
+            write_codebuddy_hook_receipt(path, record)
+
+        with patch.object(buddy, "write_codebuddy_hook_receipt", side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                buddy.install(data, settings, pin)
+        pending = read_hook_receipt("codebuddy", receipt)
+        self.assertEqual(pending["phase"], "applying")
+        self.assertEqual(pending["host"][str(native)]["before"], b64encode(original).decode())
+        applied = native.read_bytes()
+        self.assertNotEqual(applied, original)
+        # The retry first restores the original host bytes, then reapplies the same Hook.
+        with patch.object(buddy, "host_restore", wraps=buddy.host_restore) as restore:
+            self.assertTrue(buddy.install(data, settings, pin)["native_changed"])
+            restore.assert_called_once()
+        self.assertEqual(native.read_bytes(), applied)
+        complete = read_hook_receipt("codebuddy", receipt)
+        self.assertEqual(complete["phase"], "complete")
+        self.assertEqual(complete["host"][str(native)]["before"], b64encode(original).decode())
+        with self.assertRaisesRegex(ValueError, "Private owned metadata required"):
+            metadata.private_json(receipt)
+
+        # A Windows journal can retain three full images during rollback.
+        image_bytes = b"x" * HOST_IMAGE_BYTES
+        image = b64encode(image_bytes).decode()
+        image_sha = digest(image_bytes)
+        row = complete["host"][str(native)]
+        row.update(before=image, target=image, before_sha=image_sha, target_sha=image_sha,
+                   rollback={"data": image, "sha": image_sha})
+        write_codebuddy_hook_receipt(receipt, complete)
+        self.assertEqual(read_hook_receipt("codebuddy", receipt), complete)
+        saved_bytes = receipt.read_bytes()
+        oversized = dict(complete, definitions={"padding": "x" * HOST_IMAGE_BYTES})
+        with self.assertRaisesRegex(ValueError, "size limit"):
+            write_codebuddy_hook_receipt(receipt, oversized)
+        self.assertEqual(receipt.read_bytes(), saved_bytes)
+        metadata.write(receipt, oversized)
+        with self.assertRaisesRegex(ValueError, "Private owned metadata required"):
+            read_hook_receipt("codebuddy", receipt)
 
 
 if __name__ == "__main__":
