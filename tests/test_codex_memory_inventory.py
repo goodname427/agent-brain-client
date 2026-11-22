@@ -22,10 +22,11 @@ import agent_brain_client.adapters.storage.content_session as content_cache
 from agent_brain_client.adapters.storage.content_session import ContentSession, contract, locked
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.adapters.harnesses.codex.memory_inventory import inventory_codex_memories
+from agent_brain_client.adapters.storage.native_sources import inventory_tree
 sys.path.insert(0,str(ROOT/'tests'))
 import test_content_outbox as base
 from agent_brain_client.interfaces.mcp.content import ContentServer
-from agent_brain_client.interfaces.mcp.framing import ContentParameterError
+from agent_brain_client.interfaces.mcp.framing import ContentParameterError, ProtocolError
 from agent_brain_client.interfaces.mcp.server import serve
 
 
@@ -49,6 +50,69 @@ class CodexMemoryInventory(unittest.TestCase):
             self.assertEqual(row['source_id'],'codex-memory:'+content_cache.sha('中文目录/经历.md'.encode('utf-8')))
             self.assertEqual(row['source_fingerprint'],content_cache.sha(raw))
             self.assertEqual(len(inventory_codex_memories(home)['sources']),1)
+
+    def test_git_metadata_is_never_visited_and_old_ids_cannot_read_it(self):
+        helper = base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        native_home = helper.home / '.codex'
+        root = native_home / 'memories'
+        files = {
+            '.git/config': b'synthetic repository metadata',
+            'nested/.GIT/index': b'synthetic repository index',
+            'worktree/.GiT': b'gitdir: synthetic-metadata',
+            'worktree/.git-notes/remember.md': b'synthetic user memory',
+        }
+        for relative, raw in files.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+
+        def identifier(relative):
+            return 'codex-memory:' + content_cache.sha(relative.encode('utf-8'))
+
+        server = ContentServer(helper.adapter)
+        provider = helper.adapter.sources.provider
+        # Populate the private ledger as an older Client would.
+        with patch.object(provider, 'inventory', return_value=inventory_tree(root, prefix=provider.prefix)):
+            previous = server.invoke('content_sources_inventory', {})['structuredContent']
+        self.assertEqual(len(previous['sources']), len(files))
+        rows = {row['source_id']: row for row in previous['sources']}
+
+        backend = WindowsTree if os.name == 'nt' else PosixTree
+        original_info = backend.info
+
+        def reject_git_metadata(tree, directory, entry):
+            self.assertNotEqual(entry.name.casefold(), '.git', 'Git metadata must be skipped before stat')
+            return original_info(tree, directory, entry)
+
+        note = 'worktree/.git-notes/remember.md'
+        note_id = identifier(note)
+        with patch.object(backend, 'info', reject_git_metadata):
+            # Exercise exact reads before a new inventory can remove the old rows.
+            for relative, raw in files.items():
+                row = rows[identifier(relative)]
+                self.assertEqual(row['source_fingerprint'], content_cache.sha(raw))
+                params = {key: row[key] for key in ('source_id', 'source_fingerprint')}
+                if relative == note:
+                    result = server.invoke('content_sources_read', params)['structuredContent']
+                    self.assertEqual(result['text'].encode('utf-8'), raw)
+                    self.assertFalse(result['data_transferred'])
+                    self.assertFalse(result['native_changed'])
+                else:
+                    with self.assertRaises(ProtocolError) as blocked:
+                        server.invoke('content_sources_read', params)
+                    self.assertEqual(blocked.exception.code, -32010)
+
+            current = server.invoke('content_sources_inventory', {})['structuredContent']
+            self.assertEqual(current['status'], 'complete')
+            self.assertEqual(current['counts'], {'read': 1})
+            self.assertEqual([row['source_id'] for row in current['sources']], [note_id])
+            standalone = inventory_codex_memories(native_home)
+            self.assertEqual(standalone['sources'], [rows[note_id]])
+
+        self.assertEqual({relative: (root / relative).read_bytes() for relative in files}, files)
+        self.assertEqual(helper.cloud.calls, [])
 
     def test_reparse_attribute_is_excluded_even_for_regular_file_or_directory(self):
         for mode in (stat.S_IFREG,stat.S_IFDIR):
