@@ -68,24 +68,29 @@ it is never part of a release and never activates host credentials.
 
 The Hook selects and presents evidence from its existing authorized
 `memory_query` result on every turn, regardless of the candidates' total size.
-It keeps native L1 relative order. Distinguishing query terms and current-source
-applicability can promote a derived result. L2/L3 stay eligible without a
-literal match and retain their unranked relevance label. The Core does not
-provide query ranks for those rows or a matched passage for native L1 hits.
+It alternates the strongest local textual matches and native ranked hits,
+preserving native relative order. Distinguishing term coverage and current-source
+applicability order the strongest textual matches. Derived L2/L3 without a
+literal match stay eligible and retain their unranked relevance label. Exact
+text duplicates with the same sharing scope and source context contribute once,
+preferring the native ranked copy when available. The Core provides native L1
+rank and no matched passage. It supplies no query ranks for L2/L3.
 
 Short records can be written whole in evidence order. A long record with a
 locatable anchor can use a bounded verbatim `excerpt` containing the adjacent
 text before and after the hit, including across a blank line. Its
-`excerpt_omissions` flags mark which sides of the source were omitted. If the
-adjacent passage cannot fit, the fallback is an `index` with an empty answer
-body. Indexes use an authorized scenario's readable file name when available,
+`excerpt_omissions` flags mark which sides of the source were omitted. For a
+long native hit without a locatable anchor, the same evidence pass can use a
+verbatim closing excerpt within the 420-character bound if it can keep the
+last two source units together. The closing passage follows the native record
+rank and may miss relevant text elsewhere in the record. Long records without
+an excerpt that fits can use an `index` with an empty answer body. Indexes use
+an authorized scenario's readable file name when available,
 and otherwise show a record label. The description can contain a labeled,
 bounded original-text preview for navigation. The preview is omitted for
 private text, insufficient context or insufficient budget, and the index
 can show an explanatory notice. Internal paths stay out of the presentation.
-A long native hit without a locatable passage can use its complete returned
-text after short evidence gets space. If that text cannot fit, it also uses
-an index. Each compact form retains source context and a record digest.
+Each compact form retains source context and a record digest.
 The existing `memory_query` remains available under its normal origin and
 authorization. The digest is a correlation reference, and neither the digest
 nor a scenario path is an exact read selector in the current Client grant.
@@ -101,6 +106,13 @@ presentation mode to match the request. A newer lookup in the other mode
 replaces the slot. Older untagged caches are accepted only if they contain
 whole rows, which the current request formats in its own mode.
 
+Client 0.8.27 introduced both budget failures tracked in #248. Commit `cab5791`
+placed every strong textual match before the native hits, and `01f7d4e` let
+the entire evidence pass spend its budget before considering a long native
+hit without an anchor. The shared Hook regression recreates the 67-candidate
+case with fictional records and checks the actual short answer and long
+excerpt in `additionalContext` from both Codex and CodeBuddy.
+
 The paired Tencent Core already supplies native L1 order and score, and the
 Server adapter uses its scenario list, scenario read and core profile handlers.
 The scenario list can include native descriptions. The current AB results
@@ -114,7 +126,9 @@ per attempt as well as the latest summary in `last-recall.json`. The request key
 binds the approved scope, origin, session, turn and full question. The wire
 request ID is `global_recall_<request_key>`. Schema 2 receipts contain hashes of
 the session, turn, actual query, returned and selected record IDs/content, and emitted
-context, plus layer/count/byte totals and the number omitted for budget.
+context, plus layer/count/byte totals and the number omitted for budget. When
+an exact duplicate adds no evidence, `unselected_without_evidence` counts it
+separately from budget omissions.
 For a selected excerpt or index, `content_sha256` identifies the verified candidate and
 `output_content_sha256` identifies the answer body actually presented.
 An enriched index also carries `index_metadata_sha256` for its title and

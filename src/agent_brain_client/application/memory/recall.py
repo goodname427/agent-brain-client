@@ -14,16 +14,35 @@ from agent_brain_client.application.control import recall_timing_stage
 import re
 
 
+def _unique_evidence_positions(items):
+    # Equal text from another authorized source can have different applicability.
+    unique = {}
+    for index, item in enumerate(items):
+        key = (item.get("scope"), digest(item.get("source_context")), item["content"])
+        first = unique.setdefault(key, index)
+        if (
+            item.get("relevance") == "native-query-match"
+            and items[first].get("relevance") != "native-query-match"
+        ):
+            unique[key] = index
+    return sorted(unique.values())
+
+
 def _fit_context(items, references, query, observe, *, cached=False):
+    automatic = observe is not None
+    positions = _unique_evidence_positions(items) if automatic and not cached else range(len(items))
     selected = select_context_items(
-        items, references, query, cached=cached, automatic=observe is not None
+        [items[i] for i in positions],
+        [references[i] for i in positions if i < len(references)],
+        query, cached=cached, automatic=automatic,
     )
     returned = [
         {key: ref[key] for key in ("layer", "record_sha256", "content_sha256")}
         for ref in references
     ]
     refs = []
-    for index, item in selected.items():
+    for position, item in selected.items():
+        index = positions[position]
         if index >= len(returned):
             continue  # Legacy private caches did not record the original ID.
         ref = returned[index]
@@ -41,8 +60,10 @@ def _fit_context(items, references, query, observe, *, cached=False):
             candidate_count=len(items),
             returned=returned,
             selected=refs,
-            omitted_for_budget=len(items) - len(selected),
+            omitted_for_budget=len(positions) - len(selected),
         )
+        if len(positions) < len(items):
+            observe["unselected_without_evidence"] = len(items) - len(positions)
     return list(selected.values()), refs
 
 
