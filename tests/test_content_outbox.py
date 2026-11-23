@@ -1,6 +1,7 @@
 """Offline/restart/import failure tests with synthetic sources and fake homes."""
 
 import copy
+from hashlib import sha256
 import json
 from pathlib import Path
 import subprocess
@@ -21,6 +22,32 @@ MEMORY={'title':'Synthetic','description':'Synthetic only','body':'Synthetic loc
 RULE={'title':'Synthetic rule','body':'Synthetic rule body','enabled':False,'trigger':{'mode':'on-demand','patterns':[]}}
 SKILL={'description':'Synthetic skill','enabled':False,'files':{'SKILL.md':'---\nname: synthetic-skill\ndescription: Synthetic skill\n---\nSynthetic only'},'dependencies':{'commands':[],'python_modules':[]}}
 POLICY={'schema':1,'adapter':'codex','kinds':['memory','rule','skill'],'ids':{'memory':'*','rule':['synthetic-rule'],'skill':['synthetic-skill']},'dependencies':{'commands':[],'python_modules':[]}}
+
+def seed_legacy_native_plan(adapter, source, record):
+    """Load synthetic private state shaped like a plan written before #270."""
+    exact = {key: source[key] for key in ("source_id", "source_fingerprint")}
+    key = sha256(contract.encode(list(exact.values()))).hexdigest()
+    reviews = adapter._load("memory-reviews.json")
+    reviews["items"][key] = dict(
+        exact, decision="shareable", reason_code="safe-cross-project-personal-summary",
+    )
+    adapter._save("memory-reviews.json", reviews)
+    imports = adapter.sources._imports()
+    imports["items"][key] = dict(
+        source=dict(exact, kind="memory", id="synthetic-topic", record=record),
+        status="inventoried", request_id=None, remote=None,
+    )
+    adapter._save("imports.json", imports)
+    return key
+
+
+def seed_legacy_native_write(adapter, key, request):
+    """Retain the old, explicitly submitted request before exercising recovery."""
+    reconciles = {"request_ids": [], "source_keys": [key]}
+    with patch.object(adapter.sources, "validate_reconciliation"):
+        adapter._enqueue(request, reconciles)
+    return reconciles
+
 
 class Cloud:
     def __init__(self):

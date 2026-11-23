@@ -30,10 +30,10 @@ Windows 的正常安装入口还会继续受信 launcher 交接、有限 Rule/Sk
 
 ## Onboarding
 
-从此公开引导开始。即使 Agent Brain 里还没有记忆，或宿主没有加载任何 Agent Brain Skill，也可使用已安装的 `agent_brain_server` MCP 完成首次使用。`onboard_check.status:coverage-check-required` 表示进入本节。安装和重装回执中的 `source_scan_performed:false`、`data_transferred:false` 记录截至交接时的实际状态。安装与未来 Hook 自动采集的授权不等于历史导入授权。
+已接入的 Codex 和 CodeBuddy 直接使用当前 Client 随 MCP 提供的 Onboarding 指引。即使 Agent Brain 里还没有记忆，或宿主没有加载任何 Agent Brain Skill，也可使用已安装的 `agent_brain_server` MCP 完成首次使用。`onboard_check.status:coverage-check-required` 表示进入本节。安装和重装回执中的 `source_scan_performed:false`、`data_transferred:false` 记录截至交接时的实际状态。安装与未来 Hook 自动采集的授权不等于历史导入授权。
 
-1. **核对接入。** 用新鲜的 `content_catalog({"kinds":["memory"]})` 验证当前 worker 与在线目标。空目录也是有效结果。仅安装或检查连通性时到此结束。
-2. **盘点获准范围。** 在当前宿主调用 `content_sources_inventory`，沿 `structuredContent.next_cursor` 取需要的页面。Codex 使用已绑定的 `CODEX_HOME/memories`，CodeBuddy 使用其支持的持久来源。保留来源 ID、指纹和覆盖缺口。聊天历史、数据库及未获准目录不在范围内。
+1. **核对接入。** 用新鲜的 `content_catalog({"kinds":["memory"]})` 验证当前 worker 与在线目标。空目录也是有效结果。只要求检查连通性时到此结束。收到 Onboarding 请求时，直接继续盘点当前已获准的原生来源。
+2. **盘点获准范围。** 在当前宿主调用 `content_sources_inventory`，沿 `structuredContent.next_cursor` 取需要的页面。Codex 使用已绑定的 `CODEX_HOME/memories`，CodeBuddy 使用其支持的持久来源。这一步无需历史原文写入授权。保留来源 ID、指纹和覆盖缺口。聊天历史、数据库及未获准目录不在范围内。
 3. **审阅并提交原文。** 用 `content_sources_read` 读取选定指纹。排除秘密、LocalOnly、机密和原始对话，暂缓归属不清或疑似已迁移但凭据缺失的来源。得到用户对确切原文和当前已授权目标的许可后，用 `content_sources_review` 记录 `shareable` 和 `approved-native-original`，再用同一个来源 ID 和指纹调用 `content_sources_import`。指纹变化时重新盘点和审阅。单条上限为 8192 个 UTF-16 代码单元，超限或工具不可用时报告缺口。
 4. **核对结果。** 在同一个目标用原参数重试未确认投递，用 `status_only:true` 只读查询接收与后台提炼。按来源报告本机待投递、Server 已接收和后台提炼状态，以及旧迁移、排除、待处理和不可访问数量。
 

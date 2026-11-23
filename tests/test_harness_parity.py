@@ -18,7 +18,7 @@ from agent_brain_client.adapters.server.collection import CollectionClient
 from agent_brain_client.adapters.storage import metadata, registration
 from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.application.queue.delivery import deliver_pending
-from agent_brain_client.application.memory.guidance import HOST_GUIDANCE, MAPPING_GUIDANCE
+from agent_brain_client.application.memory.guidance import HOST_GUIDANCE, MAPPING_GUIDANCE, ONBOARDING_GUIDANCE
 from agent_brain_client.application.memory.observations import stage_messages
 from agent_brain_client.runtime import collection, collection_management
 from agent_brain_client.runtime.harness_content import content_host
@@ -26,9 +26,11 @@ from agent_brain_client.domain import contract
 from agent_brain_client.domain.scopes import digest, namespace, source_id
 from agent_brain_client.adapters.platforms.filesystem import private_directory
 from agent_brain_client.domain.errors import CacheBlocked
-from agent_brain_client.interfaces.mcp.content import ContentServer
+from agent_brain_client.interfaces.mcp.content import ContentServer, ManagedContentServer
 from agent_brain_client.interfaces.mcp.framing import ContentParameterError, ProtocolError
-from test_content_outbox import Cloud, POLICY, MEMORY, RULE, SKILL
+from test_content_outbox import (
+    Cloud, POLICY, MEMORY, RULE, SKILL, seed_legacy_native_plan, seed_legacy_native_write,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -94,11 +96,8 @@ class NativeMemoryCapture(unittest.TestCase):
         workspace.mkdir()
         native = home / ("." + harness)
         source_file = native / "memories/example.md"
-        source_file.parent.mkdir(parents=True)
         original = "合成记忆\r\nA fictional preference.\r\n"
-        source_file.write_bytes(original.encode())
         source_epoch = 1234567890123000000
-        os.utime(source_file, ns=(source_epoch, source_epoch))
         peer = SyntheticCaptureServer()
         cloud = Cloud()
         cloud.queue_identity = {"device_id": "synthetic"}
@@ -133,10 +132,10 @@ class NativeMemoryCapture(unittest.TestCase):
             return client
 
         def server():
-            return ContentServer(ContentSession(
+            return ManagedContentServer(ContentSession(
                 home, home / "content", POLICY, cloud,
                 host=content_host(harness), native_home=native,
-            ))
+            ), "0.0.0", "initial")
 
         def tool(worker, name, arguments):
             return worker.invoke(name, arguments)["structuredContent"]
@@ -150,10 +149,48 @@ class NativeMemoryCapture(unittest.TestCase):
             patch("os.getcwd", return_value=str(workspace)),
         ):
             worker = server()
-            names = {item["name"] for item in worker.catalog()}
-            self.assertIn("content_sources_import", names)
-            self.assertFalse(names & {"memory_global_event_submit", "memory_event_submit", "memory_global_status"})
-            row = tool(worker, "content_sources_inventory", {})["sources"][0]
+            initialized = worker.handle({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "synthetic", "version": "1"}},
+            })
+            self.assertIn(ONBOARDING_GUIDANCE, initialized["instructions"])
+            self.assertIn("call content_sources_inventory", ONBOARDING_GUIDANCE)
+            self.assertIn("before recording shareable / approved-native-original", ONBOARDING_GUIDANCE)
+            worker.handle({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            tools = {item["name"]: item for item in worker.handle({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/list",
+            })["tools"]}
+            self.assertIn("content_sources_import", tools)
+            self.assertTrue(tools["content_sources_inventory"]["annotations"]["readOnlyHint"])
+            self.assertFalse(tools.keys() & {
+                "content_sources_stage", "memory_global_event_submit",
+                "memory_event_submit", "memory_global_status",
+            })
+            with self.assertRaises(ProtocolError):
+                tool(worker, "content_sources_stage", {})
+            missing = tool(worker, "content_sources_inventory", {})
+            self.assertEqual(missing["status"], "unavailable")
+            self.assertEqual(missing["sources"], [])
+            source_file.parent.mkdir(parents=True)
+            source_file.write_bytes(original.encode())
+            os.utime(source_file, ns=(source_epoch, source_epoch))
+
+            scopes = cloud.grant["scopes"]
+            cloud.grant["scopes"] = ["read"]
+            self.assertNotIn("content_sources_import", {item["name"] for item in worker.catalog()})
+            with patch.object(worker.adapter.sources.provider, "inventory",
+                              side_effect=AssertionError("Grants must gate source enumeration")):
+                kinds = cloud.grant["artifact_types"]
+                cloud.grant["artifact_types"] = ["rule"]
+                with self.assertRaises(ContentParameterError):
+                    tool(worker, "content_sources_inventory", {})
+                cloud.grant["artifact_types"] = kinds
+            inventory = tool(worker, "content_sources_inventory", {})
+            self.assertFalse(inventory["data_transferred"])
+            self.assertNotIn(original, json.dumps(inventory, ensure_ascii=False))
+            row, = inventory["sources"]
+            cloud.grant["scopes"] = scopes
             source = {key: row[key] for key in ("source_id", "source_fingerprint")}
             with self.assertRaises(ContentParameterError):
                 tool(worker, "content_sources_import", dict(source, content="caller-supplied text"))
@@ -161,6 +198,23 @@ class NativeMemoryCapture(unittest.TestCase):
                 tool(worker, "content_sources_import", source)
             self.assertEqual(peer.requests, [])
             tool(worker, "content_sources_read", source)
+            with self.assertRaises(ProtocolError):
+                tool(worker, "content_sources_review", dict(
+                    source, decision="shareable", reason_code="safe-cross-project-personal-summary",
+                ))
+            self.assertEqual(peer.requests, [])
+            large_file = source_file.with_name("synthetic-large.md")
+            large_file.write_text("合" * 8193, encoding="utf-8")
+            oversized = next(item for item in tool(worker, "content_sources_inventory", {})["sources"]
+                             if item["source_id"] != source["source_id"])
+            oversized = {key: oversized[key] for key in source}
+            self.assertEqual(len(tool(worker, "content_sources_read", oversized)["text"]), 8193)
+            tool(worker, "content_sources_review", dict(
+                oversized, decision="shareable", reason_code="approved-native-original",
+            ))
+            self.assertEqual(tool(worker, "content_sources_import", oversized)["error"]["code"],
+                             "native_import_content_outside_bound")
+            self.assertEqual(peer.requests, [])
             tool(worker, "content_sources_review", dict(
                 source, decision="shareable", reason_code="approved-native-original",
             ))
@@ -250,9 +304,10 @@ class HarnessParity(unittest.TestCase):
                 row = session.sources.inventory_memory_sources()["sources"][0]
                 selected = (row["source_id"], row["source_fingerprint"])
                 session.sources.read_memory_source(*selected)
-                session.sources.review_memory_source(
-                    *selected, "shareable", "safe-cross-project-personal-summary",
-                )
+                with self.assertRaises(CacheBlocked):
+                    session.sources.review_memory_source(
+                        *selected, "shareable", "safe-cross-project-personal-summary",
+                    )
                 with self.assertRaises(CacheBlocked):
                     session.sources.capture_native_original(*selected)
                 session.sources.review_memory_source(
@@ -262,8 +317,6 @@ class HarnessParity(unittest.TestCase):
                     "status": "approved", "text": original,
                     "mtime_ns": source.stat().st_mtime_ns,
                 })
-                with self.assertRaises(CacheBlocked):
-                    session.sources.stage_memory_import(*selected, "memory", "synthetic-topic", MEMORY)
                 source.write_bytes(b"Synthetic changed source")
                 with self.assertRaises(CacheBlocked):
                     session.sources.capture_native_original(*selected)
@@ -294,24 +347,30 @@ class HarnessParity(unittest.TestCase):
                 row = session.sources.inventory_memory_sources()["sources"][0]
                 selected = (row["source_id"], row["source_fingerprint"])
                 session.sources.read_memory_source(*selected)
-                session.sources.review_memory_source(
-                    *selected, "shareable", "safe-cross-project-personal-summary",
-                )
-                staged = session.sources.stage_memory_import(
-                    *selected, "memory", "synthetic-topic", MEMORY,
-                )
+                key = seed_legacy_native_plan(session, row, MEMORY)
                 cloud.lose_ack = acknowledgement_lost
-                session.invoke({
+                request = {
                     "request_id": "synthetic-legacy-source-cas",
                     "method": "content_put",
                     "params": dict(kind="memory", id="synthetic-topic", record=MEMORY,
                                    expected_revision="missing"),
-                }, reconciles={"request_ids": [], "source_keys": [staged["source_key"]]})
+                }
+                reconciles = seed_legacy_native_write(session, key, request)
+                session.invoke(request, reconciles=reconciles)
                 calls = len(cloud.calls)
                 status = "legacy-receipt-unconfirmed" if acknowledgement_lost else "already-migrated"
+                original_review = session._load("memory-reviews.json")
                 with patch.object(session.sources.provider, "read", side_effect=AssertionError("Legacy source read")):
+                    self.assertEqual(session.sources.review_memory_source(
+                        *selected, "shareable", "approved-native-original",
+                    )["status"], status)
                     self.assertEqual(session.sources.capture_native_original(*selected), {"status": status})
+                self.assertEqual(session._load("memory-reviews.json"), original_review)
                 self.assertEqual(len(cloud.calls), calls)
+                if acknowledgement_lost:
+                    replay = session.invoke(request, reconciles=reconciles)
+                    self.assertEqual(replay["local_queue"]["state"], "confirmed")
+                    self.assertEqual(cloud.puts, 1)
 
     def test_same_content_cas_queue_offline_and_mapping_contract(self):
         outcomes = []
@@ -413,11 +472,12 @@ class HarnessParity(unittest.TestCase):
             row = inventory["sources"][0]
             self.assertTrue(row["source_id"].startswith("codebuddy-memory:"))
             self.assertEqual(adapter.sources.read_memory_source(row["source_id"], row["source_fingerprint"])["text"], source.read_bytes().decode())
+            selected = row["source_id"], row["source_fingerprint"]
             with self.assertRaises(CacheBlocked):
-                adapter.sources.stage_memory_import(row["source_id"], row["source_fingerprint"], "memory", "synthetic-topic", MEMORY)
-            adapter.sources.review_memory_source(row["source_id"], row["source_fingerprint"], "shareable", "safe-cross-project-personal-summary")
-            adapter.sources.stage_memory_import(row["source_id"], row["source_fingerprint"], "memory", "synthetic-topic", MEMORY)
-            self.assertEqual(adapter.sources.import_status()["counts"].get("inventoried"), 1)
+                adapter.sources.capture_native_original(*selected)
+            adapter.sources.review_memory_source(*selected, "shareable", "approved-native-original")
+            self.assertEqual(adapter.sources.capture_native_original(*selected)["text"],
+                             "Synthetic preference only")
             with self.assertRaises(CacheBlocked):
                 adapter.sources.read_memory_source("codex-memory:" + "a" * 64, "a" * 64)
 
@@ -577,7 +637,7 @@ class WindowsCodeBuddySources(unittest.TestCase):
         self.assertEqual({row["source_id"] for row in result["sources"] if row["source_fingerprint"]},
                          {self.source_id("memery/global_memery.md")})
 
-    def test_paged_inventory_fingerprint_review_stage_and_durable_source_receipt(self):
+    def test_paged_inventory_fingerprint_review_and_exact_original(self):
         selected = "projects/example/memory/selected.md"
         local = self.write_source(selected)
         for index in range(64):
@@ -600,30 +660,12 @@ class WindowsCodeBuddySources(unittest.TestCase):
         source["source_fingerprint"] = sha256(local.read_bytes()).hexdigest()
         self.assertEqual(self.invoke("content_sources_read", source)["text"], local.read_bytes().decode())
         self.invoke("content_sources_review", dict(source, decision="shareable",
-                    reason_code="safe-cross-project-personal-summary"))
-
-        target = {"kind": "memory", "id": "synthetic-topic"}
-        current = self.invoke("content_read", target)
-        staged = self.invoke("content_sources_stage", dict(source, id=target["id"], record=MEMORY))
-        self.assertFalse(staged["data_transferred"])
-        self.assertEqual([call["method"] for call in self.cloud.calls], ["content_read"])
-        self.assertEqual(self.adapter.queue_status()["pending"], 0)
-        rid = "synthetic_windows_codebuddy_import"
-        reconciles = {"request_ids": [], "source_keys": [staged["source_key"]]}
-        saved = self.invoke("content_put", dict(target, record=MEMORY, request_id=rid,
-                            expected_revision=current["result"]["revision"], reconciles=reconciles))
-        self.assertTrue(saved["persistence"]["durable"])
-        self.assertEqual(self.cloud.puts, 1)
-
-        restored = self.restart()
-        self.server = ContentServer(restored)
-        retained = self.invoke("content_queue_inspect", {"request_id": rid})
-        self.assertEqual(retained["reconciles"], reconciles)
-        self.assertEqual(retained["response"]["persistence"], saved["persistence"])
-        self.assertEqual(self.invoke("content_read", target)["result"]["record"], MEMORY)
-        statuses = restored.sources.import_status()
-        self.assertEqual(statuses["counts"], {"reconciled": 1})
-        self.assertFalse(statuses["account_complete"])
+                    reason_code="approved-native-original"))
+        captured = self.adapter.sources.capture_native_original(
+            source["source_id"], source["source_fingerprint"],
+        )
+        self.assertEqual(captured["text"], "Synthetic changed project memory")
+        self.assertEqual(self.cloud.calls, [])
 
 
 class QueueParity(unittest.TestCase):

@@ -470,26 +470,6 @@ class ContentServer(Server):
                         {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
                     ],
                 }
-            if name == "content_sources_stage":
-                expected = {"source_id", "source_fingerprint", "id", "record"}
-                if not isinstance(arguments, dict) or set(arguments) != expected:
-                    raise ContentParameterError(
-                        "Stage requires one locally read source and a normalized AgentBrain Memory record."
-                    )
-                result = self.adapter.sources.stage_memory_import(
-                    arguments["source_id"],
-                    arguments["source_fingerprint"],
-                    "memory",
-                    arguments["id"],
-                    arguments["record"],
-                )
-                return {
-                    "isError": False,
-                    "structuredContent": result,
-                    "content": [
-                        {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
-                    ],
-                }
             if name == "content_sources_import":
                 if "content_put" not in self.adapter.methods():
                     raise ContentToolUnavailable("Native Memory import requires a Memory write grant.")
@@ -702,7 +682,7 @@ class ContentServer(Server):
                 RECALL_EVIDENCE_GUIDANCE
                 + MEMORY_GUIDANCE
                 + "content_catalog lists authorized AgentBrain destination records only; it does not discover Harness-native sources. "
-                + "Writes require the current expected_revision and stable request_id; retain exact request arguments on retries. "
+                + "Ordinary CAS writes require the current expected_revision and stable request_id; retain exact request arguments on retries. "
                 + "Pending/local-confirmed/remote-confirmed and durable fields distinguish client, Server and backup status. "
                 + "Ordinary edits retain Rule/Skill enabled state; content_set_enabled requires an explicit user activation request. Refreshing mappings does not reload an already running model. "
                 + "Only granted methods and IDs are exposed; pairing and publication remain separate. "
