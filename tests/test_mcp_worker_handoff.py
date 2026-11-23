@@ -185,7 +185,9 @@ class BrokerTestCase(unittest.TestCase):
 
         def read():
             for line in self.broker.stdout:
-                self.output.put(json.loads(line))
+                response = json.loads(line)
+                if "id" in response:
+                    self.output.put(response)
             self.output.put(None)
 
         self.reader = threading.Thread(target=read, daemon=True)
@@ -249,7 +251,7 @@ class BrokerTestCase(unittest.TestCase):
 
 
 class HandoffTests(BrokerTestCase):
-    def test_same_connection_drains_queue_routes_cancellation_and_freezes_catalog(self):
+    def test_same_connection_drains_queue_routes_cancellation_and_refreshes_catalog(self):
         self.call(3, "hold")
         self.await_marker("holding-old")
         self.call(4, "queued")
@@ -267,7 +269,7 @@ class HandoffTests(BrokerTestCase):
         self.await_marker("queued-old")
         self.assertFalse((self.root / "initialized-new").exists())
         self.send("tools/list", 6)
-        self.assertEqual(self.receive(6)["result"], self.original)
+        self.assertEqual(self.receive(6)["result"]["tools"][0]["description"], "Worker new")
 
     def test_request_id_can_be_reused_and_cancelled_on_new_generation(self):
         self.call("shared-id")

@@ -313,7 +313,7 @@ def isolated_stdio(args):
     return supervise_stdio(initial, observe, sys.stdin.buffer, sys.stdout, {},
                            idle_timeout=30, can_switch=registration_current,
                            prepare_worker=prepare_worker, remember_worker=remember_worker,
-                           background_tick=tasks.tick, dynamic_catalog=True,
+                           background_tick=tasks.tick,
                            binding_observed=binding_observed)
 
 
@@ -448,22 +448,21 @@ def _read_contract(record):
     tool_contract(record["tools"])
     for tool in record["tools"]:
         schema = tool.get("inputSchema")
-        if not isinstance(schema, dict):
-            raise ValueError("Worker tool input schema required")
+        if not isinstance(schema, dict) or schema.get("type") != "object":
+            raise ValueError("Worker tool object input schema required")
         required = schema.get("required", [])
         if not isinstance(required, list) or not all(isinstance(name, str) for name in required):
             raise ValueError("Invalid required tool arguments")
     return record
 
 
-def _compatible_session(first, second, protocol, *, dynamic_catalog):
+def _compatible_session(first, second, protocol):
     return (
         protocol in second["versions"]
         and first["capabilities"] == second["capabilities"]
         and first["toolContract"] == second["toolContract"]
         and first["cacheIdentity"] == second["cacheIdentity"]
         and first["cacheAbi"] == second["cacheAbi"]
-        and (dynamic_catalog or tool_contract(first["tools"]) == tool_contract(second["tools"]))
     )
 
 
@@ -471,7 +470,7 @@ def supervise_stdio(
     initial, observe, source, output, options, *,
     poll_interval=2, probe_timeout=20, request_timeout=90, drain_timeout=90, max_pending=255,
     can_switch=None, idle_timeout=None, prepare_worker=None, remember_worker=None, background_tick=None,
-    dynamic_catalog=False, binding_observed=None,
+    binding_observed=None,
 ):
     """Keep one host session while locally verified workers change.
 
@@ -607,7 +606,7 @@ def supervise_stdio(
                 pending.pop(rid, None)
                 write_response(output, _response(rid, QUEUE_DEADLINE_ERROR))
                 return
-            if dynamic_catalog and method == "tools/call":
+            if method == "tools/call":
                 error = tool_error(line)
                 if error is not None:
                     pending.pop(rid, None)
@@ -784,8 +783,7 @@ def supervise_stdio(
                 elif not any(owner is active for _, owner in pending.values()):
                     if registration_current():
                         previous, active, candidate = active, candidate, None
-                        if dynamic_catalog:
-                            publish(active)
+                        publish(active)
                         last_good = previous.spec
                         restart_attempted = False
                         drain_id = None
@@ -852,7 +850,7 @@ def supervise_stdio(
                         active.close_input()
             elif owner is release:
                 latest = line
-                if dynamic_catalog and active is not None and active.contract is not None:
+                if active is not None and active.contract is not None:
                     publish(active)
                 if serial_target is not None and serial_target != latest:
                     drain_id = None
@@ -875,7 +873,7 @@ def supervise_stdio(
                         if owner.contract["cacheAbi"] != owner.spec.cache_abi:
                             raise ValueError("MCP worker cache ABI changed")
                         if catalog is not None and not _compatible_session(
-                            catalog, owner.contract, protocol, dynamic_catalog=dynamic_catalog,
+                            catalog, owner.contract, protocol,
                         ):
                             raise ValueError("MCP catalog changed")
                         if (
@@ -895,8 +893,7 @@ def supervise_stdio(
                     if owner is active or active is None:
                         active, candidate = owner, None
                         catalog = owner.contract if catalog is None else catalog
-                        if dynamic_catalog:
-                            publish(owner)
+                        publish(owner)
                         if remember_worker is not None:
                             last_good = owner.spec
                             remember_worker(owner.spec, owner.command)
@@ -940,24 +937,19 @@ def supervise_stdio(
                 method, _ = pending.pop(rid, (None, None))
                 result = response.get("result")
                 if method == "initialize" and isinstance(result, dict):
-                    if dynamic_catalog:
-                        capabilities = result["capabilities"]
-                        caps = dict(capabilities.get("tools", {}), listChanged=True)
-                        response["result"] = dict(result, capabilities=dict(capabilities, tools=caps))
+                    capabilities = result["capabilities"]
+                    caps = dict(capabilities.get("tools", {}), listChanged=True)
+                    response["result"] = dict(result, capabilities=dict(capabilities, tools=caps))
                     negotiated = result.get("protocolVersion")
                     if negotiated in catalog["versions"]:
                         protocol = negotiated
                 if method == "tools/list" and isinstance(result, dict) and "tools" in result:
-                    if dynamic_catalog:
-                        tools = list(published_tools.values())
-                        if not binding_ready():
-                            write_response(output, _response(rid, {
-                                "code": -32003, "message": "MCP registration or release changed; retry after verification."
-                            }))
-                            continue
-                    else:
-                        tools = catalog["tools"]
-                    response["result"] = dict(result, tools=tools)
+                    if not binding_ready():
+                        write_response(output, _response(rid, {
+                            "code": -32003, "message": "MCP registration or release changed; retry after verification."
+                        }))
+                        continue
+                    response["result"] = dict(result, tools=list(published_tools.values()))
                 write_response(output, response)
     finally:
         halt.set()

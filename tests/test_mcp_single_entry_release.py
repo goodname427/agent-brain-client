@@ -144,7 +144,6 @@ status = supervise(
     spec("A", "A", cache_abi), observe, sys.stdin.buffer, sys.stdout, {},
     poll_interval=0.02, probe_timeout=3,
     **({"idle_timeout": 0.35, "can_switch": registration_current} if mode == "fixed" else {}),
-    **({"dynamic_catalog": True} if (root / "dynamic-catalog").exists() else {}),
 )
 if mode == "fixed":
     assert not any(name.startswith("agent_brain_client") for name in sys.modules)
@@ -264,7 +263,8 @@ class SingleEntryPair(SingleEntryFixture):
         self.assertEqual((self.root / "write-invocations").read_bytes(),
                          b"write:A\nunknown-write:B\n")
         self.send("tools/list", 8)
-        self.assertEqual(self.receive(8)["result"], self.catalog)
+        rolled_back_tools = self.receive(8)["result"]["tools"]
+        self.assertEqual(launcher.tool_contract(rolled_back_tools), launcher.tool_contract(self.catalog["tools"]))
         self.assertEqual(self.broker.pid, broker_pid)
         self.assertEqual((self.root / "persistent-started").read_bytes(), fixed_identity)
 
