@@ -178,7 +178,7 @@ def deliver_approved_batch(home, task, core):
 
 def approval_snapshot(sources, queue, route_scope_sha, group, project, resume, approval_id):
     binding = {
-        "schema": 2, "scope": SOURCE_SCOPE, "queue_sha": queue.queue_sha,
+        "schema": 1, "scope": SOURCE_SCOPE, "queue_sha": queue.queue_sha,
         "source_group": group, "project_id": project, "route_scope_sha": route_scope_sha,
     }
     if resume:
@@ -196,11 +196,8 @@ def approval_snapshot(sources, queue, route_scope_sha, group, project, resume, a
         saved = queue._load("onboarding/" + approval_id + ".json")
         if saved is None:
             return None
-        # Keep old approvals resumable. An explicit new approval must
-        # not reuse a terminal batch evaluated under the old content filters.
         if (not isinstance(saved, dict) or set(saved) != {"binding", "inventory"}
-                or saved["binding"] not in (binding, dict(binding, schema=1))
-                or digest(saved) != approval_id):
+                or saved["binding"] != binding or digest(saved) != approval_id):
             raise CacheBlocked()
         return approval_id, saved["inventory"]
 

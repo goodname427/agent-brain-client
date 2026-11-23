@@ -196,10 +196,7 @@ same tool with `resume: true`, the same scope and destination, and optionally
 the returned `approval_id`. Without an ID, the tool resumes the latest saved
 batch at that exact destination. It uses the original snapshot and skips
 files added after approval. Source and pause gates are rechecked on resume.
-A changed file requires approval for its new fingerprint. To reconsider files
-skipped by an older Client's disclosure rules after a batch ended, explicitly
-approve the current scope and destination again to start a fresh batch. The
-Client reuses exact L0 receipts across batches.
+A changed file does not inherit approval for its new fingerprint.
 
 Replies contain the approval reference and aggregate received, already present,
 excluded, pending and failed counts without source bodies, paths or credentials.

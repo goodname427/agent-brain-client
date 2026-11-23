@@ -417,43 +417,7 @@ class NativeMemoryCapture(unittest.TestCase):
             for filename, expected in legacy_ledgers.items():
                 self.assertEqual(worker.adapter._load(filename), expected)
             if harness == "codex" and not windows_layout:
-                formerly_excluded = source_file.with_name("former-rule.md")
-                former_body = "confidential: another fictional heading"
-                formerly_excluded.write_text(former_body, encoding="utf-8")
-                # Simulate a terminal approval and summary saved by Client 0.8.39.
-                previous = imported_queue._load(f"onboarding/{queued['approval_id']}.json")
-                inventory = worker.adapter.sources.provider.inventory(onboarding=True)
-                historical = {
-                    "binding": dict(previous["binding"], schema=1),
-                    "inventory": {field: inventory[field] for field in ("status", "sources")},
-                }
-                prior_id = digest(historical)
-                imported_queue._save(f"onboarding/{prior_id}.json", historical)
-                prior_summary = {key: value for key, value in done.items() if key != "approval_id"}
-                prior_summary.update(
-                    counts={"received": 0, "already_exists": 2, "excluded": 7, "failed": 1, "pending": 0},
-                    reasons={"retained-exclusion": 1, "private-or-sensitive": 5,
-                             "shareability-unconfirmed": 1, "original-outside-bound": 1},
-                )
-                imported_queue._save(onboarding.progress_name(prior_id),
-                                     {"started": 0, "summary": prior_summary})
-                before_reapproval = len(peer.requests)
-                prior_resume = dict(resume, approval_id=prior_id)
-                self.assertEqual(tool(server(), "memory_onboard", prior_resume),
-                                 dict(prior_summary, approval_id=prior_id))
-                self.assertEqual(len(peer.requests), before_reapproval)
-                accepted = tool(worker, "memory_onboard", args)
-                self.assertNotEqual(accepted["approval_id"], prior_id)
-                self.assertEqual(accepted["counts"]["already_exists"], allowed_count)
-                self.assertEqual(accepted["counts"]["received"], 1)
-                self.assertEqual(accepted["counts"]["excluded"], 0)
-                resent = peer.requests[before_reapproval:]
-                self.assertEqual([row["method"] for row in resent],
-                                 ["memory_global_status", "memory_global_event_submit"])
-                self.assertEqual(resent[1]["params"]["event"]["content"], former_body)
-                self.assertEqual(tool(server(), "memory_onboard", args), accepted)
-                self.assertEqual(len(peer.requests), before_reapproval + 2)
-                for filename in (*originals, formerly_excluded.name, legacy_source.name):
+                for filename in (*originals, legacy_source.name):
                     source_file.with_name(filename).unlink()
                 for index in range(213):
                     raw = f"Fictional onboard batch item {index}".encode()
