@@ -2,12 +2,16 @@
 
 import copy
 import json
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
 import test_content_outbox as fixture
+from agent_brain_client.adapters.harnesses.codebuddy.content_ports import CodeBuddyContentPorts
 from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 from agent_brain_client.adapters.storage.content_session import ContentSession
+from agent_brain_client.interfaces.mcp.content import ManagedContentServer
 import agent_brain_client.domain.contract as contract
 
 
@@ -122,6 +126,128 @@ class IncrementalRefresh(unittest.TestCase):
         self.assertEqual(result['reason'],'file-access-failed')
         self.assertNotIn('Synthetic private path',str(result))
         self.assertEqual((self.f.cache/'active.json').read_bytes(),active)
+
+
+class BackgroundContentRefreshPort(unittest.TestCase):
+    """Exercise the existing no-replay pull used by a background invocation."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name).resolve()
+        self.cloud = fixture.Cloud()
+
+    def session(self, host):
+        return ContentSession(
+            self.home, self.home / (host.name + "-cache"), fixture.POLICY,
+            self.cloud, host=host, native_home=self.home / ("." + host.name),
+        )
+
+    def test_remote_content_changes_reach_both_projections_on_an_existing_connection(self):
+        codex = self.session(CodexContentPorts)
+        codebuddy = self.session(CodeBuddyContentPorts)
+        servers = [ManagedContentServer(session, "0.8.34", "2025-11-25")
+                   for session in (codex, codebuddy)]
+        ordinary = self.home / ".codebuddy/rules/user-owned.md"
+        ordinary.parent.mkdir(parents=True)
+        ordinary.write_bytes(b"Synthetic unmanaged rule\n")
+        codex_instructions = self.home / ".codex/AGENTS.md"
+        codex_instructions.parent.mkdir()
+        codex_instructions.write_bytes(b"Synthetic unmanaged instructions\n")
+        base = self.home / ".config/agent-brain-client/content"
+        memory_paths = [base / path / "synthetic-topic.md"
+                        for path in ("memory", "codebuddy/memory")]
+        rule_paths = [base / path / "synthetic-rule.md"
+                      for path in ("rule", "codebuddy/rule")]
+        skill_paths = [self.home / path / "synthetic-skill/SKILL.md"
+                       for path in (".agents/skills", ".codebuddy/skills")]
+        hosts = (CodexContentPorts, CodeBuddyContentPorts)
+
+        rule = dict(fixture.RULE, enabled=True, trigger={"mode": "always", "patterns": []})
+        skill = dict(fixture.SKILL, enabled=True)
+        self.cloud.records.update({
+            ("memory", "synthetic-topic"): fixture.MEMORY,
+            ("rule", "synthetic-rule"): rule,
+            ("rule", "outside-grant"): dict(rule, body="Synthetic unauthorized rule"),
+            ("skill", "synthetic-skill"): skill,
+        })
+        for host in hosts:
+            self.assertEqual(self.session(host).refresh(replay=False)["status"], "content-refreshed")
+        for path in memory_paths:
+            self.assertEqual(path.read_text(), fixture.MEMORY["body"])
+        for path in rule_paths:
+            self.assertEqual(path.read_text(), rule["body"])
+        for path in skill_paths:
+            self.assertEqual(path.read_text(), skill["files"]["SKILL.md"])
+        self.assertIn(rule["body"], codex_instructions.read_text())
+        self.assertIn(rule["body"], (ordinary.parent / "agent-brain-synthetic-rule.md").read_text())
+        self.cloud.calls.clear()
+        for host in hosts:
+            self.assertEqual(self.session(host).refresh(replay=False)["status"], "content-current")
+        self.assertTrue(self.cloud.calls)
+        self.assertTrue(all(row["method"] == "content_catalog" for row in self.cloud.calls))
+        before = {path: path.read_bytes() for path in (*memory_paths, *rule_paths, *skill_paths)}
+
+        revised_skill = skill["files"]["SKILL.md"] + "\nSynthetic changed skill"
+        self.cloud.records["skill", "synthetic-skill"] = dict(skill, files={"SKILL.md": revised_skill})
+        self.cloud.records["memory", "synthetic-topic"] = dict(fixture.MEMORY, body="Synthetic changed memory")
+        revised_rule = dict(rule, body="Synthetic changed rule")
+        self.cloud.records["rule", "synthetic-rule"] = revised_rule
+        self.cloud.puts += 1
+        self.cloud.offline = True
+        for host in hosts:
+            self.assertEqual(self.session(host).refresh(replay=False)["status"], "content-refresh-blocked")
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+        self.cloud.offline = False
+        for host in hosts:
+            self.assertEqual(self.session(host).refresh(replay=False)["status"], "content-refreshed")
+        for path in memory_paths:
+            self.assertEqual(path.read_text(), "Synthetic changed memory")
+        for path in rule_paths:
+            self.assertEqual(path.read_text(), revised_rule["body"])
+        for path in skill_paths:
+            self.assertEqual(path.read_text(), revised_skill)
+
+        # A remote archive removes the active rows from the catalog.
+        del self.cloud.records["rule", "synthetic-rule"]
+        del self.cloud.records["skill", "synthetic-skill"]
+        self.cloud.puts += 1
+        for host in hosts:
+            self.assertEqual(self.session(host).refresh(replay=False)["status"], "content-refreshed")
+        for path in (*rule_paths, *skill_paths):
+            self.assertFalse(path.exists(), path)
+        self.assertNotIn(revised_rule["body"], codex_instructions.read_text())
+        self.assertTrue(codex_instructions.read_bytes().startswith(b"Synthetic unmanaged instructions\n"))
+        self.assertFalse((ordinary.parent / "agent-brain-synthetic-rule.md").exists())
+        self.assertEqual(ordinary.read_bytes(), b"Synthetic unmanaged rule\n")
+        self.assertFalse(list(self.home.rglob("*outside-grant*")))
+        self.assertTrue(all(row["method"] in ("content_catalog", "content_read")
+                            and row["params"].get("id") != "outside-grant"
+                            for row in self.cloud.calls))
+        for server in servers:
+            reply = server.handle({"jsonrpc": "2.0", "method": "tools/list", "id": 1})
+            self.assertIn("content_read", {tool["name"] for tool in reply["tools"]})
+
+    def test_no_replay_pull_preserves_the_pending_request_bytes(self):
+        request = fixture.Outbox().request()
+        self.cloud.records["memory", "synthetic-remote"] = fixture.MEMORY
+        for host in (CodexContentPorts, CodeBuddyContentPorts):
+            with self.subTest(host=host.name):
+                session = self.session(host)
+                self.assertEqual(session.refresh(replay=False)["status"], "content-refreshed")
+                active = (session.cache / "active.json").read_bytes()
+                self.cloud.offline = True
+                self.assertEqual(session.invoke(request)["local_queue"]["state"], "pending")
+                pending = session.cache / "outbox" / (request["request_id"] + ".json")
+                saved = pending.read_bytes()
+                self.cloud.offline = False
+                self.cloud.calls.clear()
+                result = self.session(host).refresh(replay=False)
+                self.assertEqual(result["status"], "content-local-changes-retained")
+                self.assertEqual(pending.read_bytes(), saved)
+                self.assertEqual((session.cache / "active.json").read_bytes(), active)
+                self.assertEqual(self.cloud.calls, [])
 
 
 if __name__=='__main__':unittest.main()
