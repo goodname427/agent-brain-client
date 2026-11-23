@@ -2,6 +2,7 @@
 
 from typing import Any
 from agent_brain_client.domain import contract
+from agent_brain_client.application.memory.onboarding import INPUT_SCHEMA, TOOL_NAME
 from agent_brain_client.domain.content import RULE_SKILL
 from agent_brain_client.domain.content_policy import validate_policy
 from agent_brain_client.domain.operations import CONTENT_WRITES, LIFECYCLE_WRITES, RULE_SKILL_WRITES
@@ -135,119 +136,16 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
         }
     )
     if memory_sources:
-        tools.append(
-            {
-                "name": "content_sources_inventory",
-                "description": "Start Onboarding with this tool for the already authorized current Harness, without waiting for transfer approval. Enumerate only its selected persistent memories. Returns path-free IDs, file fingerprints and per-item processing status in pages of 64; never returns memory text or reads session/transcript files. Inventory is not semantic review or import coverage. Use the returned cursor for the next page; restart if it changes. Local-only read; no Server request or data transfer.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {"cursor": {"type": "string", "maxLength": 96}},
-                    "additionalProperties": False,
-                },
-                "annotations": {
-                    "readOnlyHint": True,
-                    "destructiveHint": False,
-                    "idempotentHint": True,
-                },
-            }
-        )
-        tools.append(
-            {
-                "name": "content_sources_read",
-                "description": "Read the bounded body of exactly one previously inventoried selected Harness persistent Memory file, matching its ID and fingerprint. Local-only; never reads transcript/session paths and does not transfer data. Review the returned text for secrets, LocalOnly, customer/employer confidential data and the approved destination scope before requesting permission to submit the original.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "source_id": {
-                            "type": "string",
-                            "pattern": "^(codex|codebuddy)-memory:[a-f0-9]{64}$",
-                        },
-                        "source_fingerprint": {
-                            "type": "string",
-                            "pattern": "^[a-f0-9]{64}$",
-                        },
-                    },
-                    "required": ["source_id", "source_fingerprint"],
-                    "additionalProperties": False,
-                },
-                "annotations": {
-                    "readOnlyHint": True,
-                    "destructiveHint": False,
-                    "idempotentHint": True,
-                },
-            }
-        )
-        tools.append(
-            {
-                "name": "content_sources_review",
-                "description": "Review a previously read exact source locally. Use approved-native-original only after the user authorizes the exact original for the approved memory scope. Exclude LocalOnly, secrets and confidential sources. Defer uncertain content or scope. Review stores only a status marker and transfers no content.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "source_id": {
-                            "type": "string",
-                            "pattern": "^(codex|codebuddy)-memory:[a-f0-9]{64}$",
-                        },
-                        "source_fingerprint": {
-                            "type": "string",
-                            "pattern": "^[a-f0-9]{64}$",
-                        },
-                        "decision": {
-                            "type": "string",
-                            "enum": ["shareable", "excluded", "deferred"],
-                        },
-                        "reason_code": {
-                            "type": "string",
-                            "enum": [
-                                "approved-native-original",
-                                "secret-localonly-or-confidential",
-                                "project-scope-unavailable",
-                                "uncertain-content",
-                            ],
-                        },
-                    },
-                    "required": [
-                        "source_id",
-                        "source_fingerprint",
-                        "decision",
-                        "reason_code",
-                    ],
-                    "additionalProperties": False,
-                },
-                "annotations": {
-                    "readOnlyHint": False,
-                    "destructiveHint": False,
-                    "idempotentHint": True,
-                },
-            }
-        )
-        tools.append(
-            {
-                "name": "content_sources_import",
-                "description": "Submit one approved native Memory original into the current approved origin through the capture queue. Use the exact ID and fingerprint reviewed as approved-native-original. Retry the same inputs in that origin. Set status_only for a read-only check of local queue, Server acceptance and extraction.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "source_id": {
-                            "type": "string",
-                            "pattern": "^(codex|codebuddy)-memory:[a-f0-9]{64}$",
-                        },
-                        "source_fingerprint": {
-                            "type": "string",
-                            "pattern": "^[a-f0-9]{64}$",
-                        },
-                        "status_only": {"type": "boolean"},
-                    },
-                    "required": ["source_id", "source_fingerprint"],
-                    "additionalProperties": False,
-                },
-                "annotations": {
-                    "readOnlyHint": False,
-                    "destructiveHint": False,
-                    "idempotentHint": True,
-                },
-            }
-        )
+        tools.append({
+            "name": TOOL_NAME,
+            "description": "Run Agent Brain Onboarding once for the current host, after the user's explicit approval of its shareable personal native memory and the exact enrolled destination. The Client calculates source fingerprints, filters locally, uses the existing L0 queue, and returns counts without original text. Use resume=true with the same scope and destination to continue the retained batch.",
+            "inputSchema": INPUT_SCHEMA,
+            "annotations": {
+                "readOnlyHint": False,
+                "destructiveHint": False,
+                "idempotentHint": True,
+            },
+        })
     return tools
 
 
@@ -277,7 +175,7 @@ def tool_names(methods, memory_sources):
     if not set(methods) & CONTENT_WRITES:
         names.discard("content_queue_inspect")
     if "content_put" not in methods:
-        names.discard("content_sources_import")
+        names.discard(TOOL_NAME)
     return sorted(names)
 
 
