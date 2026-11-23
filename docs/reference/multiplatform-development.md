@@ -1,12 +1,12 @@
 # 多平台开发与后续 Harness 接入
 
-> 状态：当前维护。适用：当前共用核心、平台边界与后续 Harness 开发约定。文档核对日期：2026-11-03；验收范围见 [0.5 交付状态](../releases/0.5-status.md)。
+> 状态：当前维护。适用：当前共用核心、平台边界与后续 Harness 开发约定。入口核对基线为 Client 0.8.36。早期平台验收见 [0.5 交付状态](../releases/0.5-status.md)。
 
 这次探索的主要重复来自原先把 Mac 路径、Swift helper、安装入口和单设备 Server 身份混进业务流程。Windows 与 Mac 的业务差异很小，但凭据、权限及进程锁不能靠换平台字符串解决。
 
-共用业务核心：HTTPS 请求与回执、CAS/outbox、断网缓存、Rule/Skill 映射、安装事务及前后像、release manifest/健康回滚、来源语法和排除规则。共用 Codex 适配：Hook 输入、事件身份、来源发现、召回上下文、用户级 owned Hook 块与 MCP 协议。薄 OS 层：实际平台识别、路径语法、凭据 API、DACL/POSIX 权限、原子替换/刷盘、命令转义、共享锁与 worker 生命周期。
+共用业务核心：HTTPS 请求与回执、CAS/outbox、断网缓存、Rule/Skill 映射、安装事务及前后像、release manifest/健康回滚、来源语法和排除规则。共用宿主合同：事件身份、来源范围、召回上下文和 MCP 工具契约。Codex 与 CodeBuddy 各自负责原生注册、Hook 输入及受管配置。薄 OS 层：实际平台识别、路径语法、凭据 API、DACL/POSIX 权限、原子替换/刷盘、命令转义、共享锁与 worker 生命周期。
 
-`src/agent_brain_client/interfaces/cli/install.py` 是两平台共用的安装流程，原 `tools/mac_first_install.py` 入口已删除；`install-mac.sh` 与 `install-windows.ps1` 只是依赖/入口包装。Windows 原生边界集中在 `src/agent_brain_client/adapters/platforms/windows/native.py`，公共文件调用在 `adapters/platforms/filesystem.py`，Win32 细节在 `adapters/platforms/windows/filesystem.py`。不为假想 OS 建框架，也不复制整套 OS×Harness 产品。
+仓库源码的 `bootstrap/macos/install.sh` 与 `bootstrap/windows/install.ps1` 分别准备平台依赖并调用共用的 `src/agent_brain_client/interfaces/cli/install.py`。用户和 Agent 从[统一引导](../../BOOTSTRAP.md)进入，日常项目、全局和本机 Rule／Skill 管理由[日常维护](../installation/maintenance.md)指向 `bin/memory.sh` 或 `bin/memory.ps1`。Windows 原生边界集中在 `src/agent_brain_client/adapters/platforms/windows/native.py`，公共文件调用在 `adapters/platforms/filesystem.py`，Win32 细节在 `adapters/platforms/windows/filesystem.py`。
 
 服务端个人池采用明确登记的设备路由与读取合并。每台设备独立 source/cursor/session/receipt/Core 目录，沿用同一 owner、profile_id 和累计预算。这样不会违反 Core 的单写入者 lease，也不需要搬迁现有 Mac 数据。跨设备 recall 仍使用真实请求者身份；provenance 按原来源设备的 scope、暂停和 enrollment 检查。主设备 schema-1 原目录保持兼容。新设备暂停不暂停 Mac；撤销设备后不继续从该设备召回。
 
@@ -29,9 +29,7 @@
 
 这些差异留在已有平台边界和可重复回归里。新功能默认检查两平台，不另造业务流程或为了潜在 OS 提前抽象。
 
-0.5.4 补充验收要求：不能只测平台 helper、包自检或 bootstrap。必须在实际发布包和最小启动环境里进入默认 `remote_mcp.Server` checkpoint、`ContentServer` 初始化及只读 installation check；历史版本的真实失败路径作为回归基线。平台选择只在 `adapters/platforms/filesystem.py` 实现，Windows 架构查询属于 Windows 适配器，源码检查拒绝其他生产模块直接调用 platform.machine/system/uname/architecture 或 os.uname（含别名导入）。Mac-only 入口仍明确限制 Mac，显式协议 checkpoint 的既有白名单保留。已验证活动运行包在重试间前向更新，不等于重写固定 bootstrap 或重置设备身份。
-
-0.5.5 将该审计覆盖到根目录及所有生产 Python 文件，不以目录白名单遗漏旧入口；根目录 HTTP 入口也复用统一检测，其原 Windows 拒绝边界继续保留。
+安装与更新验证覆盖正式运行包、最小启动环境、实际登记、内容 Worker 的 `initialize` / `tools/list` 和只读安装检查。平台选择集中在 `adapters/platforms/filesystem.py`，Windows 架构查询属于 Windows 适配器。活动包、固定启动器以及原生宿主实际可见性分别核对。[0.5 系列验收记录](../releases/0.5-status.md)和[旧版平台约定](https://github.com/goodname427/agent-brain-client/blob/7136ee3319511ccb27df5a03f413d6b583eba1ed/docs/reference/multiplatform-development.md)保留当时的 checkpoint 和兼容边界。
 
 后续 Harness 需交付：受支持官方事件来源及真实代码证据、稳定 request/event/session 身份、origin 与获准未来范围、取消/重复/中断语义、启动召回接口、正常安装/卸载/trust、断网队列与撤销合同。其适配器输出公共事件，不直接调用系统凭据 API或另造模型调度。缺某个生命周期事件时提供明确的固定补救步骤，不通过读取历史数据库伪装全自动。DeepSeek Harness 留待独立开发任务；当前 DeepSeek 提取 provider 不能计为 Harness 适配。
 

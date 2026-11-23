@@ -1,34 +1,16 @@
-# 服务协议 1
+# Client 服务协议 1
 
-认证为获授权 Bearer token，服务器 grant 固定身份与 read/write。只接受 HTTPS 或 SSH 隧道回环 HTTP，重定向不转发凭据。请求 POST /v1/requests，JSON 为 request_id/method/params。request_id 为稳定的 16–128 字符；重试同一写入保持 ID 和完整参数。
+> 当前参考。核对基线为 Client 0.8.36 和 Server 0.3.12。安装、更新和恢复见[统一引导](https://github.com/goodname427/agent-brain-client/blob/main/BOOTSTRAP.md)与[日常维护](https://github.com/goodname427/agent-brain-client/blob/main/docs/installation/maintenance.md)。
 
-topic(id)、recall(query,limit) 只读；remember(id,title,description,body,expected_revision,type)、forget(id,expected_revision) 写入。新主题 revision 为 missing；旧主题必须使用读出的 revision。客户端不能传 Core 路径、actor、凭据、项目或 local_only。写头声明 X-Agent-Brain-Adapter=codex、X-Agent-Brain-Protocol=1、X-Agent-Brain-State-Schema=1；它们是兼容信息，不授予身份或权限。
+## HTTPS device requests and local MCP
 
-只有响应 persistence.durable=true、state=remote-confirmed 才说明该请求已确认远端保存。CAS 冲突重读协调，用新请求 ID；网络/503 中断保留旧 ID 重试，不能声称尚未发生写入。client_upgrade_required 说明版本不兼容；storage_unowned 或 operation_uncertain 要保留现场交 Agent 处理，不重置或强推。
+Codex and CodeBuddy register the local stdio service `agent_brain_server`. The verified worker advertises its authorized `tools/list` after MCP initialization. Device grant, allowed kinds and lifecycle support determine the list. `clientInfo`, `_meta` and MCP JSON-RPC IDs do not authorize requests or identify writes across processes.
 
-client_updates(adapter,platform,installed_version) 只读发现状态、受信 release manifest/commit 和兼容信息。未配置时为 not-configured；配置后为 current、compatible-update、adapter-review-required、release-review-required 或 release-unavailable，并给 next_action。服务目录检查不激活代码；客户端只用已经固定的 policy origin/ref/anchor 和 SHA256 检查同一发布，不把服务返回的来源当授权。桥接由固定 startup 传入逻辑 Harness 平台与已验证版本，不能把执行桥接的 Linux 服务器冒称 Mac Harness。数据提交与客户端发布分开。
+The installed Client sends `POST /v1/requests` to the configured HTTPS origin. The Server's device ingress routes that public path to `/v1/device/requests` and authenticates an enrolled device Bearer. The JSON envelope contains `request_id`, `method` and `params`. A request ID is 16–128 characters. Write retries reuse the exact original ID and parameters. The adapter header remains `codex` for both hosts with protocol and state schema at 1. These headers describe compatibility. Server authorization independently checks the device identity, allowed method and target scope.
 
-stdio MCP 桥接器提供相同五个方法；记忆写工具必须由调用者提供 request_id 和 expected_revision，MCP JSON-RPC id 不充当跨进程幂等 ID。工具 arguments 不能传 token、路径、actor 或作用域。工具执行失败用 isError=true 和原服务 error/durable=false 返回，传输未确认时保留原参数重试。initialize/initialized 与 tools/list/call 只做协议协商；clientInfo 和 _meta 不授予身份。它不宣称 HTTP API 已实现 MCP Streamable HTTP，也不自动安装 native 配置、启动调度或迁移真实数据。
+`memory_query` is the Agent's query tool. The Content calls below use the Server's typed API. Local request ID generation and queue inspection run in the Client. Event capture, source controls and release discovery use their device methods without adding them to the Agent's MCP list. The local stdio interface and the HTTPS request API use separate transports.
 
-personal模式的每个请求额外声明X-Agent-Brain-Data-Mode=personal，仍要求Codex/API1/schema1；不合约调用在数据读写前拒绝。固定personal policy绑定独立root/origin/branch/actor及导入manifest SHA。import-only只接受清单内稳定request_id与完整请求摘要一致的remember，expected_revision必须missing；explicit-personal才允许其他已授权个人写操作。固定清单导入始终不覆盖已有主题，失败保留同一清单、请求ID与服务回执恢复。策略、身份、真实内容采集范围不会由请求参数授予。
-
-## Unified content v1 candidate (opt-in; not a stable permission grant)
-
-The private service candidate supports `content_catalog`, `content_read`,
-`content_put`, and `content_remove` at the existing versioned request boundary.
-These methods are disabled by default and are not added to the current five MCP
-tools. Existing token grants cover memory only. A paired device needs explicit
-read/write scopes, `artifact_types`, and frozen `ids` keyed by every granted type.
-Only memory may explicitly use `"*"`; Rule/Skill IDs are exact lists. The signed
-proxy rejects unlisted reads and CAS writes before accessing credentials; the
-Server independently enforces these IDs and filters catalog metadata. Legacy
-memory methods are denied for devices whose memory grant uses an ID list.
-Catalog cannot request extra types. The
-existing personal policy rejects these methods without a separately pinned
-content policy. That opt-in policy binds the same store, actor, prior policy SHA,
-exact IDs, rule modes and dependencies. Memory keeps import-only/daily-personal
-write restrictions, and paired content devices cannot bypass it via legacy data
-methods. Activation and native tool permissions require their deployment approval.
+## Typed Content methods
 
 All requests retain the stable `request_id`; writes retain
 `expected_revision` (`missing` or SHA256). Params are exact:
@@ -38,11 +20,10 @@ All requests retain the stable `request_id`; writes retain
 | `content_catalog` | `kinds`: nonempty unique list; optional opaque `cursor` from the preceding `next_cursor` |
 | `content_read` | `kind`, `id`; optional `include_archived: true` for an exact Rule or Skill over HTTPS |
 | `content_put` | `kind`, `id`, `record`, `expected_revision` |
-| `content_remove` | `kind`, `id`, `expected_revision` |
 | `content_set_enabled` | existing `rule` / `skill` `kind`, `id`, boolean `enabled`, non-missing `expected_revision` |
 | `content_archive`, `content_restore` | existing `rule` / `skill` `kind`, `id`, non-missing `expected_revision` from the opt-in read |
 
-Default personal scope is `read/put`, exposing catalog/read/put and the explicit Rule/Skill activation method. `put` permits both creation and CAS update. Legacy `write` is a put alias for typed content and does not imply removal. `content_remove` requires a separately approved explicit `remove` scope at both device and Server policy boundaries; personal daily Memory removal remains blocked. Protocol support never grants an operation automatically. The signed component candidate supports its reviewed read/write profile and rejects removal; no new signing permission is inferred.
+Default personal scope is `read/put`. The Client and Server check approved artifact types and IDs for each request, including the approved personal-owner collection where applicable. `put` permits creation and CAS updates. Legacy `write` is a typed `put` alias and does not grant removal. The shared contract still describes `content_remove` for separately authorized transports. The current HTTPS Client and Server device request boundaries both reject that method. Rule and Skill archive/restore use their separate lifecycle methods.
 
 `content_set_enabled` requires an explicit user enable/disable request and changes only enabled under the Server CAS lock. Ordinary read/put devices still create disabled Rules/Skills and preserve enabled on content_put edits. Activation uses the same finite/owner ID and put checks, durable outbox and persistence receipt; a confirmed save triggers transactional local mapping. Reads remain read-only; other devices pull at startup or explicitly. Server save, GitHub backup, local mapping and model loading are separate outcomes. See [Rule / Skill management](https://github.com/goodname427/agent-brain-client/blob/main/docs/reference/rule-skill-management.md).
 
@@ -70,35 +51,16 @@ edits are not imported. A successful local commit or cache refresh does not prov
 durability or that an already running model loaded the changed content.
 
 
-The optional operator-only `/v1/pairing/issue` route is disabled by default. Its
-private issuer policy binds an independent administrator credential hash, fixed
-grant/TTL, personal/content policy hashes and data store. Clients send only the
-pinned issuer-policy digest and device adapter/platform, never new grant fields.
-Legacy and paired credentials cannot act as issuer credentials. The signed
-component consumes the short-lived code internally; it returns only pairing
-metadata. No issuance or administrator credential operation is an MCP tool.
+## Requests, receipts and recovery
 
-
-The separate ssh-server-credential-proxy capability carries only typed JSON on
-a strictly pinned SSH stdio channel. The fixed server process owns the bearer
-record; the Mac owns no API/operator secret. It rejects model-selected paths,
-authentication, legacy memory methods and grant changes. Fixed read-only
-client_updates discovery is also allowed; its source metadata grants no trust. Credentials are provisioned
-under an explicit server-only plan, saved pending before confirm, and never
-returned by that command. Policy/record digests and the frozen grant are checked
-before each forwarded request. Reads/puts/removes still cross the same Server
-HTTP boundary and journal/CAS/confirmed-Git rules. The SSH identity and forced
-command association must be explicitly approved; an existing five-tool MCP
-command does not grant this candidate protocol. Only memory supports '*'.
-
-Codex content writes are saved in a private local outbox before any transport.
+The Client saves Content writes in a private local outbox before transport.
 The complete typed parameters, original request ID and CAS revision are atomically
 written and the file/directories fsynced. Startup and write boundaries replay those
 exact requests after reconnect or restart. Client 0.2.5 requires a matching
 request ID, durable=true, state=remote-confirmed, a Git commit and matching content.
 Only a client declaring X-Agent-Brain-Write-Receipt: local-durable-v1 accepts
 the strict local-confirmed receipt described below; frozen 0.2.6 does not declare it.
-confirmed then means Server storage, with GitHub backup reported separately.
+For those receipts, confirmed means Server storage, with GitHub backup reported separately.
 Memory follows Core's boundary-whitespace/CRLF normalization and opaque metadata
 revision; Rule/Skill revisions must match the returned JSON record. Queued means
 saved on the device, awaiting a validated Server storage receipt. Lost acknowledgements
@@ -107,12 +69,12 @@ never generate a new operation ID or silently change expected_revision.
 Queue identity binds the native mapping policy and service/principal/destination,
 independently of the Core code repository or private Data remote. Switching the
 service identity blocks replay until pending operations are reviewed. No API
-credential or Git repository URL is stored in the outbox. Queue/import state is
-bounded to 1024 entries and 1 MiB per file; capacity failures preserve prior state
-for review. Confirmed entries remain available as evidence. Private temporary
-files left by killed atomic saves are retained; only renamed request files replay.
+credential or Git repository URL is stored in the outbox. Queue and import state
+have bounded local capacity. Capacity failures preserve prior state for review.
+Confirmed entries and temporary files left by interrupted atomic saves are
+retained as evidence. Only completed request files are eligible for replay.
 
-Client 0.2.1 introduces local outbox/import state. Release transactions never
+Client 0.2.1 introduced local outbox/import state. Release transactions never
 delete or migrate this content cache, including health rollback or interrupted
 activation recovery. A separately reviewed fixed startup must reject content
 runtimes older than 0.2.1 whenever outbox or imports.json exists, including empty,
@@ -245,40 +207,16 @@ package. A future split must preserve request/CAS/deletion history and separatel
 review deployment references, credentials and rollback. This batch performs no
 repository split or data/history migration.
 
-This alternative does not relax the signed-device-proxy requirement. Each
-transport has an exact independent file/runtime/capability policy; signed
-native changes still require the separately pinned Swift/binary/identity plan.
+## HTTPS credentials and persistence
 
-A replacement from the owned legacy MCP may explicitly include retirement of
-its AGENTS.md block as a third native path. The old complete receipt must prove
-the exact preimage; otherwise preserve the file. Install rollback restores all
-planned paths. Later cloud mapping is independently owned by the bound private
-content cache; legitimate mapped hashes are accepted, external edits are blocked.
+The installed adapter attaches the active device Bearer internally. The original profile and device grant bind read/put and the approved artifact types and IDs. Device credentials are stored through the platform credential boundary. Normal HTTPS requests verify TLS and use the original endpoint. Redirects are rejected.
 
-The opt-in HTTPS system-credential candidate uses the same typed contract and
-durable outbox. Its trusted adapter adds an active device Bearer internally;
-credentials are never tool arguments/results. The profile freezes read/put and either the legacy 31 exact IDs or the explicit
-personal-owner collection described in docs/reference/personal-owner-scope.md. No plaintext fallback, redirect, ambient proxy, SSH client identity,
-Apple Team or access-group is required by this candidate.
+The Server device gate accepts Content and memory requests and restricts pairing and enrollment to their own paths. It checks device grants, rejects static service and administrator credentials on the device request path, and applies global, enrollment and per-device budgets. Server configuration determines the available capabilities.
 
-Native-only pairing saves preparing(code, nonce, profile digest) before POST
-/v1/pairing/prepare, then pending(credential, nonce, device ID, exact grant) before
-POST /v1/pairing/confirm. Active confirm remains replayable after invite expiry.
-Failed saves prevent the next network step; cancellation creates no item. Unknown
-or changed records are preserved. Terminal reset rechecks Server and requires a
-native confirmation UI plus exact observed-record CAS.
-
-The separately enabled Server gate accepts only three internal POST paths:
-/v1/device/requests, /v1/device/pairing/prepare, /v1/device/pairing/confirm. It rejects
-static service/admin tokens and legacy methods, enforces the grant before pending
-or activation, and applies bounded global/pairing/per-device budgets. Responses
-are no-store; fixed errors omit raw secrets. Original private routes remain.
-Public routing, issuer/key/ledger configuration and real credential installation
-require separate precise deployment approval; exporting source enables no route.
-
-Server-local durability and GitHub backup are separate receipts. A strict
+Server-local durability and GitHub backup are separate receipts. For Git-backed Content, a strict
 local-confirmed write has local_durable=true, github_confirmed=false and
-durable=false; its commit is a journaled, hardened Server Git commit. The device
+durable=false, with a journaled Server Git commit. Native Memory L1 writes carry
+their validated native persistence proof. The device
 outbox acknowledges Server storage and continues CAS/mapping without claiming
 GitHub persistence. remote-confirmed with durable=true remains the original
 GitHub acknowledgement, including legacy receipts without additive flags.
@@ -293,9 +231,10 @@ publication require separate approval. Missing/unknown write-receipt declaration
 retain the original retryable persistence_pending error until GitHub confirms.
 0.2.5 and frozen 0.2.6 do not declare this capability. Server deployment need not
 wait for their workers to exit; their original GitHub-outage queue behavior stays.
-The new HTTPS client declares the capability and its HTTP transport accepts only
-strict local-confirmed receipts before the content adapter validates the record.
-The header changes neither authorization, CAS nor the request digest.
+The HTTPS client declares this capability. The transport validates
+local-confirmed and remote-confirmed receipts, and the content adapter validates
+the returned record. The header leaves authorization, CAS and the request digest
+unchanged.
 
 Additive receipt labels distinguish operation and storage: writes may carry
 operation=write, save_status=saved and backup_status=pending/confirmed. Reads may
@@ -363,7 +302,7 @@ committed source provenance. It does not assert model output truth. No implicit
 retry, new credential, background upload, capture registration or model call is
 introduced by installing the source.
 
-## Address and long-term access-key bootstrap (installer 0.5.1)
+## Address and long-term access-key bootstrap
 
 The explicitly selected, normally verified HTTPS Server origin supplies bootstrap authority. POST `/v1/access/bootstrap` uses `Authorization: Bearer <access-key>` and body `{"device":{"adapter":"codex","platform":"<actual-platform>"}}`; only successful authentication returns `{"schema":1,"connection":<credential-free-platform-connection>}`. The connection pins the exact grant and official release origin/ref/anchor. Subsequent Git ancestry, manifest, file-scope and health checks remain required; hashes supplied alongside untrusted package bytes cannot establish trust.
 
@@ -377,3 +316,7 @@ the paged catalog before committing mappings. A page race retains the prior
 verified snapshot. Restart and offline inventory retain the complete collection
 and expose the same page shape. Snapshot byte budgets remain independent local
 resource guards; they do not impose a 256-record count limit.
+
+## Historical transports and candidates
+
+The exact [historical protocol text](https://github.com/goodname427/agent-brain-client/blob/7136ee3319511ccb27df5a03f413d6b583eba1ed/docs/reference/PROTOCOL.md) records the legacy Topic method schemas, the private HTTPS/SSH request path, signed-device and issuer candidates, retained pairing transactions and receipt negotiation for older releases. Use that record to interpret an old binding or receipt. Current device setup and updates start with the official platform installer.
