@@ -66,3 +66,11 @@ CodeBuddy Code CLI 2.185.0 的隔离 Agent 也执行了一次正式 0.8.30 → 0
 支持工具表更新的固定启动器在 `initialize` 声明 MCP `tools.listChanged`。通过协议能力、工具协议版本、缓存身份和 ABI 校验后，启动器等待已接收请求完成，启用新 Worker，更新 `tools/list` 并发送 `notifications/tools/list_changed`。宿主继续使用缓存工具表时，既有且获准的兼容调用仍可直接由新 Worker 处理。工具退出当前 Worker 或受管登记后，缓存调用会收到 MCP 错误。新必填参数缺失时按新契约返回错误，原请求参数原样交给 Worker。
 
 普通更新可以同时提交新包和新工具登记。保持同一策略、受管宿主命令身份和已验证启动器字节时，旧进程继续使用该连接，并等待新登记和活动包通过验证。已经运行的旧版启动器仍使用原始规则。首次迁移需从宿主读取新的 MCP 登记并连接一次；之后的兼容更新复用同一连接。宿主是否已重新发现工具需读回确认。宿主尚未采纳变更通知时，按宿主支持的 MCP 刷新流程操作。
+
+### #283 更新回执与宿主采纳
+
+使用本版本正式安装器源码或包含本改动的官方 main 操作更新。Windows 和 Mac 的 `update` 使用调用方检出的安装器源码（必要时换回登记的 Python，仍执行同一份源码），不会为了维护自动切换到新的源码 checkout。若从旧源码更新，旧 updater 不会提供以下新增回执；已经升级且工具仍旧时直接按宿主刷新，不要再跑一次更新。
+
+普通更新对比更新前后已验证的 MCP 登记工具名称集合。名称变化时，更新结果的 `reload_check.host_tool_list_refresh` 为 `pending-verification`，并告知先看同一会话实际可见工具是否与 `offered_tools` 一致。若还没采纳变更，在在途调用结束后走宿主正常的 MCP 刷新（Codex 桌面为「设置 → MCP servers → Restart」），无需再执行更新。名称未变不提示此次更新需要刷新工具名单。更新器不能观察宿主会话，不把宿主是否刷新误报为已确认。
+
+`client_runtime.reload_required` 仅表示 MCP Worker（`reload_required_scope=mcp-worker`）；`false` 不表示宿主已更新工具名单。`host_tool_visibility` 保持未知，由同一会话读回核实。固定入口已有的 `notifications/tools/list_changed`、请求排空和授权过滤保持不变，避免仅为报告变化而更换运行中的启动器。

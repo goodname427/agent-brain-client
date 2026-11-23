@@ -1,7 +1,10 @@
 """Application use cases against semantic ports, without host files or transports."""
 
-from contextlib import nullcontext
+from contextlib import nullcontext, redirect_stdout
+import io
+import json
 import unittest
+from unittest.mock import patch
 from agent_brain_client.application.installation.update import ClientUpdate
 from agent_brain_client.application.installation.update_ports import (
     RegisteredInstallation,
@@ -75,6 +78,8 @@ class MaintenancePorts:
         self.active = {"version": "1.0.0", "commit": "a" * 40}
         self.channel_result = "updated"
         self.hook_error = None
+        self.tools_before = ["synthetic"]
+        self.tools_after = self.tools_before
 
     def recover_hooks(self, *, check_only):
         self.calls.append(("recover-hooks", check_only))
@@ -121,7 +126,8 @@ class MaintenancePorts:
     def tool_discovery(self, active):
         return {
             "registration_update_required": False,
-            "registered_enabled_tools": ["synthetic"],
+            "registered_enabled_tools": self.tools_before
+            if active["version"] == "1.0.0" else self.tools_after,
         }
 
     def launcher_update_available(self, version, commit):
@@ -229,6 +235,56 @@ class ApplicationWorkflows(unittest.TestCase):
                 "source-setup",
             ],
         )
+
+    def test_tool_change_reports_pending_host_adoption_not_worker_reload(self):
+        ports = MaintenancePorts()
+        ports.tools_before = ["old", "retained"]
+        ports.tools_after = ["new", "retained"]
+        value = ClientUpdate(ports).run("update")
+        self.assertTrue(value["registered_tool_list_changed"])
+        self.assertEqual(value["reload_check"]["host_tool_list_refresh"], "pending-verification")
+        self.assertEqual(value["reload_check"]["host_tool_visibility"], "unknown")
+        self.assertIsNone(value["reload_required"])
+        self.assertIn("MCP servers", value["next_action"])
+        self.assertIn("Do not run update again", value["next_action"])
+
+    def test_public_cli_reports_pending_host_adoption_on_first_update(self):
+        from agent_brain_client.interfaces.cli import install
+        from agent_brain_client.runtime import updates
+
+        ports = MaintenancePorts()
+        ports.tools_before = ["old"]
+        ports.tools_after = ["new"]
+        stdout = io.StringIO()
+        with (
+            patch.object(updates, "reexec_update_runtime", return_value=None),
+            patch.object(updates, "manage_update",
+                         side_effect=lambda _, action: ClientUpdate(ports).run(action)),
+            redirect_stdout(stdout),
+        ):
+            self.assertEqual(install.main(["--action", "update"]), 0)
+        receipt = json.loads(stdout.getvalue())
+        self.assertEqual(ports.calls.count("update"), 1)
+        self.assertEqual(receipt["outcome"], "completed")
+        self.assertEqual(receipt["reload_check"]["host_tool_list_refresh"], "pending-verification")
+        self.assertIn("Restart", receipt["next_action"])
+
+    def test_same_tool_names_have_no_host_refresh_prompt(self):
+        ports = MaintenancePorts()
+        ports.tools_before = ["a", "b"]
+        ports.tools_after = ["b", "a"]
+        value = ClientUpdate(ports).run("update")
+        self.assertFalse(value["registered_tool_list_changed"])
+        self.assertEqual(value["reload_check"]["host_tool_list_refresh"], "not-needed-for-this-update")
+        self.assertNotIn("MCP servers", value["next_action"])
+
+    def test_read_only_check_does_not_infer_host_refresh(self):
+        ports = MaintenancePorts()
+        ports.tools_after = ["new"]
+        value = ClientUpdate(ports).run("check-update")
+        self.assertNotIn("registered_tool_list_changed", value)
+        self.assertEqual(value["reload_check"]["host_tool_list_refresh"], "unknown")
+        self.assertNotIn("MCP servers", value["next_action"])
 
     def test_hook_conflict_preserves_updated_package_and_reports_exact_field(self):
         ports = MaintenancePorts()
