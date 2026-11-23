@@ -3,8 +3,6 @@
 import re
 from collections import Counter
 
-from agent_brain_client.domain.events import native_memory_content
-from agent_brain_client.domain.privacy import private_recall_text
 from agent_brain_client.domain.service import endpoint_check
 
 
@@ -43,31 +41,6 @@ INPUT_SCHEMA = {
     "additionalProperties": False,
 }
 
-# The user confirms the shareable source scope. Known credentials and local
-# restrictions still exclude exact originals before any network submission.
-_CREDENTIAL = re.compile(
-    r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----"
-    r"|\b(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}"
-    r"|(?:AKIA|ASIA)[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]{12,}"
-    r"|sk-(?:proj-|ant-)?[A-Za-z0-9_-]{16,})\b"
-    r"|\bauthorization\s*:\s*bearer\s+[A-Za-z0-9_./+=-]{4,}"
-    r"|(?:^|[\s{,;])[\x22\x27]?(?:[a-z][a-z0-9]*[-_])*(?:api[-_ ]?key|"
-    r"access[-_ ]?key|client[-_ ]?secret|access[-_ ]?token|refresh[-_ ]?token|"
-    r"password|passwd|credential|secret|token|令牌|密码|密钥)[\x22\x27]?\s*[:=]"
-    r"\s*[\x22\x27]?[A-Za-z0-9_./+@!#$%^&*=:-]{4,}"
-    r"|\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@",
-    re.IGNORECASE,
-)
-_CONFIDENTIAL = re.compile(
-    r"(?im)^\s*(?:\[(?:confidential|secret|internal[-_ ]?only)\]"
-    r"|(?:confidential|internal[-_ ]?only|do not distribute|机密|保密)\s*[:：])"
-)
-_UNVERIFIED_SCOPE = re.compile(
-    r"(?im)^\s*(?:(?:sharing|scope)\s*:\s*(?:unknown|unverified|project|private)\b"
-    r"|\[(?:unverified|unreviewed)\])"
-)
-
-
 def authorization(arguments):
     if (
         not isinstance(arguments, dict)
@@ -103,18 +76,6 @@ def authorization(arguments):
     return arguments["harness"], endpoint, actor, origin, resume, approval_id
 
 
-def excluded_original(body):
-    if private_recall_text(body) or _CONFIDENTIAL.search(body) or _CREDENTIAL.search(body):
-        return "private-or-sensitive"
-    if _UNVERIFIED_SCOPE.search(body):
-        return "shareability-unconfirmed"
-    try:
-        native_memory_content(body)
-    except ValueError:
-        return "original-outside-bound"
-    return None
-
-
 class Summary:
     def __init__(self, harness):
         self.harness = harness
@@ -138,9 +99,7 @@ class Summary:
             inventory != "complete"
             or self.counts["pending"] > 0
             or self.counts["failed"] > 0
-            or any(self.reasons[key] for key in (
-                "shareability-unconfirmed", "project-origin-unverified",
-            ))
+            or self.reasons["project-origin-unverified"] > 0
         )
         return {
             "status": "onboarding-incomplete" if incomplete else "onboarding-processed",

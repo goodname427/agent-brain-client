@@ -9,7 +9,7 @@ import time
 import tempfile
 from agent_brain_client.adapters.platforms.filesystem import command_line
 from agent_brain_client.domain.privacy import private_content
-from agent_brain_client.domain.scopes import ordinary_drive_path, restricted
+from agent_brain_client.domain.scopes import ordinary_drive_path
 from agent_brain_client.adapters.storage.registration import registration
 from agent_brain_client.adapters.storage.metadata import (
     canonical,
@@ -541,29 +541,12 @@ def capture(p, payload):
     if blocked.exists():
         return {"status": "excluded-turn", "data_transferred": False}
 
-    def exclude():
-        try:
-            write(
-                blocked,
-                {"schema": 1, "reason": "local-only-or-sensitive", "turn_sha256": key},
-                exclusive=True,
-            )
-        except FileExistsError:
-            pass
-        return {"status": "excluded-turn", "data_transferred": False}
-
-    if private_content(text) or restricted(text):
-        return exclude()
     client = HTTPSContentClient(p["profile"], p["profile_sha256"])
     content = pinned(p["content_policy"], p["content_policy_sha256"])
     validate_policy(content, client.grant)
     adapter = ContentSession(
         p["device_home"], p["cache"], content, client, host=project_content_host(p), native_home=p["codex_home"] if p["harness"] == "codex" else Path(p["device_home"]) / ".codebuddy"
     )
-    if kind == "Stop":
-        staged = adapter._load("hook-turns/" + key + ".json")
-        if isinstance(staged, dict) and (private_content(staged.get("prompt", "")) or restricted(staged.get("prompt", ""))):
-            return exclude()
     previous = adapter._load("outbox/agentbrain_event_" + key + ".json")
     if previous is not None:
         return dict(adapter._queue_result(previous), status="retained-paired-event")
@@ -571,7 +554,7 @@ def capture(p, payload):
         from agent_brain_client.adapters.harnesses.codex.hooks import stage_hook_messages
 
         return stage_hook_messages(
-            adapter, scope, turn, kind, text, payload, exclude=exclude, excluded=blocked.exists,
+            adapter, scope, turn, kind, text, payload, excluded=blocked.exists,
             native_home=lambda: p["codex_home"],
         )
     from agent_brain_client.application.memory.observations import stage_messages
@@ -1070,7 +1053,7 @@ def daily_command(p, action, *, event_id=None, session_id=None):
                 and event.get("session_id") != policy["source_session_id"]
             ):
                 continue
-            if any(
+            if policy["source_mode"] == "operator-notes" and any(
                 private_content(m.get("content", "")) for m in event.get("messages", [])
             ):
                 continue

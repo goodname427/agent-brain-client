@@ -9,10 +9,10 @@ from agent_brain_client.adapters.platforms.filesystem import cache_locked
 from agent_brain_client.adapters.storage import metadata
 from agent_brain_client.adapters.storage.project_settings import source_active
 from agent_brain_client.application.control import check_request, request_timeout
-from agent_brain_client.application.memory.onboarding import SOURCE_SCOPE, Summary, authorization, excluded_original
+from agent_brain_client.application.memory.onboarding import SOURCE_SCOPE, Summary, authorization
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.errors import CacheBlocked, GlobalRequestTooLarge
-from agent_brain_client.domain.events import NATIVE_MEMORY_CONTRACT, native_memory_event
+from agent_brain_client.domain.events import NATIVE_MEMORY_CONTRACT, native_memory_content, native_memory_event
 from agent_brain_client.domain.receipts import core_receipt
 from agent_brain_client.domain.scopes import digest, namespace, ordinary_drive_path, origin, select
 from agent_brain_client.runtime import collection
@@ -217,7 +217,6 @@ def approval_snapshot(sources, queue, route_scope_sha, group, project, resume, a
 
 def process_batch(sources, harness, client, queue, project, group, inventory, allowed, *, started):
     summary = Summary(harness)
-    excluded_sources = sources.onboarding_exclusions()
     wanted = {
         "native_memory_" + digest([project, group, item["source_id"], item["source_fingerprint"]])
         for item in inventory["sources"] if item["status"] == "not-checked"
@@ -251,9 +250,6 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
             else:
                 summary.add("failed", "prior-origin-receipt-unconfirmed")
             continue
-        if source_id in excluded_sources:
-            summary.add("excluded", "retained-exclusion")
-            continue
 
         try:
             if retained is not None:
@@ -280,9 +276,10 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
                     "request_id": request_id, "method": "memory_event_submit",
                     "params": {"kind": "memory", "id": event_id, "event": event},
                 }
-            exclusion = excluded_original(body)
-            if exclusion:
-                summary.add("failed" if exclusion == "original-outside-bound" else "excluded", exclusion)
+            try:
+                native_memory_content(body)
+            except ValueError:
+                summary.add("failed", "original-outside-bound")
                 continue
             if not allowed():
                 summary.add("pending", "onboarding-origin-changed")
