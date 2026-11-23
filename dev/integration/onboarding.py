@@ -9,7 +9,6 @@ import argparse
 from contextlib import contextmanager
 import io
 import json
-from hashlib import sha256
 from pathlib import Path
 import sys
 from threading import RLock
@@ -30,6 +29,7 @@ def verify(server_root):
     from agent_brain_server.memory.sources.router import _native_session
     from agent_brain_server.persistence.source_registry import SourceRegistry
     from agent_brain_client.adapters.server.collection import CollectionClient
+    from agent_brain_client.application.memory.onboarding import SOURCE_SCOPE
     from agent_brain_client.adapters.storage import metadata, registration
     from agent_brain_client.adapters.storage.content_session import ContentSession
     from agent_brain_client.domain.scopes import digest, namespace
@@ -56,6 +56,7 @@ def verify(server_root):
         harness = "codex"
         native = home / ".codex"
         original = "Fictional preference for native SQLite boundary verification."
+        uncertain = "Fictional offline native memory approved in the second batch."
         denied = "[LocalOnly] Fictional protected sample."
         memory = native / "memories"
         memory.mkdir(parents=True)
@@ -86,6 +87,7 @@ def verify(server_root):
         adapter = TencentAdapter(str(receipt_dir / "adapter.sqlite3"), lambda: core.core)
         server.addCleanup(adapter.close)
         events, identities, errors = [], [], []
+        lose_next = False
 
         def native_submit(request, _principal, _client, _write_receipt, *, native_source):
             assert native_source
@@ -104,6 +106,7 @@ def verify(server_root):
         principal = dict(server.grant, device_id=hub.owner["device_id"])
 
         def open_in_process(request, **_):
+            nonlocal lose_next
             wire = json.loads(request.data)
             submitted = wire["method"] == "memory_global_event_submit"
             try:
@@ -113,7 +116,8 @@ def verify(server_root):
                 raise
             if submitted:
                 events.append(wire)
-                if len(events) == 1:
+                if lose_next:
+                    lose_next = False
                     raise URLError("Fictional connection loss after the committed response")
             return io.BytesIO(json.dumps(result).encode())
 
@@ -138,14 +142,23 @@ def verify(server_root):
             client.scope_sha = digest(hub.scope)
             return client
 
-        def run():
+        def run(arguments):
             content = ContentSession(home, home / "content", POLICY, cloud,
                                      host=content_host(harness), native_home=native)
-            return ContentServer(content).invoke("memory_onboard", args)["structuredContent"]
+            worker = ContentServer(content)
+            worker.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": {"name": "fictional-onboarding", "version": "1"},
+            }})
+            worker.handle({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            result = worker.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                "name": "memory_onboard", "arguments": arguments,
+            }})
+            return result["structuredContent"]
 
-        args = {"harness": harness, "approved": True,
-                "destination": {"endpoint": endpoint, "actor": principal["actor"], "origin": str(work)},
-                "source_fingerprints": [sha256(text.encode()).hexdigest() for text in (original, denied)]}
+        args = {"harness": harness, "source_scope": SOURCE_SCOPE,
+                "destination": {"endpoint": endpoint, "actor": principal["actor"], "origin": str(work)}}
+
         with (
             patch.object(collection, "load", return_value=settings),
             patch.object(collection, "approved", return_value=True),
@@ -153,16 +166,27 @@ def verify(server_root):
             patch.object(collection, "CollectionClient", side_effect=transport),
             patch.object(registration, "registration", return_value=({}, enrolled)),
         ):
-            first, second, repeat = run(), run(), run()
-        assert first["counts"]["pending"] == 1, first
-        assert second["counts"]["already_exists"] == 1, (second, errors, len(events))
-        assert repeat["counts"]["already_exists"] == 1, repeat
-        assert all(result["counts"]["excluded"] == 1 for result in (first, second, repeat))
-        assert len(events) == 2 and events[0] == events[1]
-        assert (denied not in json.dumps(events) and not cloud.calls)
-        assert all(original not in json.dumps(result) for result in (first, second, repeat))
+            first = run(dict(args, approved=True))
+            (memory / "offline.md").write_text(uncertain)
+            lose_next = True
+            interrupted = run(dict(args, approved=True))
+            (memory / "later.md").write_text("Fictional memory added after the user approved this batch.")
+            resumed = run(dict(args, resume=True))
+            repeat = run(dict(args, resume=True, approval_id=interrupted["approval_id"]))
+        assert first["counts"]["received"] == 1, first
+        assert interrupted["counts"]["pending"] == 1, interrupted
+        assert interrupted["approval_id"] == resumed["approval_id"] == repeat["approval_id"]
+        assert resumed["counts"]["already_exists"] == 2, (resumed, errors, len(events))
+        assert repeat["counts"]["already_exists"] == 2, repeat
+        assert all(result["counts"]["excluded"] == 1 for result in (first, interrupted, resumed, repeat))
+        assert len(events) == 3 and events[1] == events[2]
+        assert denied not in json.dumps(events)
+        assert not any(request["method"] == "content_put" for request in cloud.calls)
+        assert all(original not in json.dumps(result) for result in (first, interrupted, resumed, repeat))
         rows = adapter.session_rows(identities[0])
-        assert [(row["role"], row["content"]) for row in rows] == [("native-memory", original)]
+        assert sorted((row["role"], row["content"]) for row in rows) == sorted(
+            ("native-memory", text) for text in (original, uncertain)
+        )
         event_id = events[0]["params"]["event"]["event_id"]
         params = {"origin": events[0]["params"]["origin"], "session_id": events[0]["params"]["session_id"],
                   "event_id": event_id, "event_only": True}
@@ -171,7 +195,8 @@ def verify(server_root):
         assert status["result"]["capture_extraction"].get("l0_accepted") is True, status
         assert status["result"]["capture_extraction"]["state"] == "unknown", status
         return {"l0_rows": len(rows), "same_id_replayed": True, "excluded_submissions": 0,
-                "l0_accepted": True, "extraction": status["result"]["capture_extraction"]["state"]}
+                "l0_accepted": True, "initial_call_received": 1,
+                "extraction": status["result"]["capture_extraction"]["state"]}
     finally:
         server.doCleanups()
         core.doCleanups()

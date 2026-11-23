@@ -218,26 +218,30 @@ retains the existing exact-request recovery protocol.
 
 MCP `memory_onboard` accepts the bound `harness`, an exact
 `destination` (enrolled HTTPS endpoint, actor, and canonical approved origin),
-and `approved: true` after the user's explicit permission for that route and its
-shareable personal native sources. An optional batch of `source_fingerprints`
-identifies originals the user explicitly approved as shareable personal memory
-for that destination. A retained exact approval can resume a request already
-bound to the same origin. Older reviews alone contain no destination binding.
-The Client defers sources without that evidence, skips Windows CodeBuddy project memories
-whose origin is unverified, and applies local privacy, sensitivity and size
-checks before enqueue. The current wire bound is 8192 UTF-16 units per original.
-Native transcript history and databases stay outside the authorized readers.
-Installation consent and future collection approval do
-not authorize historical transfer.
+and `source_scope: "shareable-personal-native-memory"`. Set `approved: true`
+after the user confirms this host's supported personal native-memory scope is
+shareable and approves that exact destination. The Client calculates source
+fingerprints locally. It skips Windows CodeBuddy project memories with no
+verified origin, files with uncertain sharing, and content excluded by local
+privacy, sensitivity and size checks. The wire bound is 8192 UTF-16 units per
+original. Native transcripts and databases stay outside the authorized readers.
+Installation and future capture approval do not authorize historical transfer.
 
-The tool returns aggregate received, already present, excluded, pending and
-failed counts without source bodies, paths, or credentials. A verified L0
-receipt confirms original acceptance. The extraction summary reports a
-separate state. Repeat the same call to resume its exact queue requests. The
-target, origin, source identity and original time stay fixed across replay.
-Legacy CAS and summary evidence is retained and reported as exclusion evidence.
-Onboarding uses the existing authenticated L0 protocol and durable outbox.
-It never changes capture settings or Server authorization.
+The Client retains a path-free snapshot of the approved source scope, bound to
+the device, host, destination and existing route policy. To resume, call the
+same tool with `resume: true`, the same scope and destination, and optionally
+the returned `approval_id`. Without an ID, the tool resumes the latest saved
+batch at that exact destination. It uses the original snapshot and skips
+files added after approval. Source and pause gates are rechecked on resume.
+A changed file does not inherit approval for its new fingerprint.
+
+Replies contain the approval reference and aggregate received, already present,
+excluded, pending and failed counts without source bodies, paths or credentials.
+A verified L0 receipt confirms original acceptance. Extraction is reported
+separately. Legacy CAS and summary evidence stays in the existing ledgers and is
+reported as exclusion evidence. The existing authenticated L0 protocol and
+durable outbox handle transfer. Capture settings and Server authorization are
+unchanged.
 
 Other explicit imports accept a reviewed private normalized source plan selected
 with --import-plan and --import-plan-sha256. Inventory is persisted

@@ -7,7 +7,7 @@ from agent_brain_client.adapters.platforms.filesystem import cache_locked
 from agent_brain_client.adapters.storage import metadata
 from agent_brain_client.adapters.storage.project_settings import source_active
 from agent_brain_client.application.control import check_request, request_timeout
-from agent_brain_client.application.memory.onboarding import Summary, authorization, excluded_original
+from agent_brain_client.application.memory.onboarding import SOURCE_SCOPE, Summary, authorization, excluded_original
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.errors import CacheBlocked, EventDiagnosticsUnavailable
 from agent_brain_client.domain.events import NATIVE_MEMORY_CONTRACT, native_memory_event
@@ -18,7 +18,7 @@ from agent_brain_client.runtime import collection
 
 def onboard_native_memory(adapter, arguments):
     """Stage only eligible host originals and send through the enrolled L0 route."""
-    harness, endpoint, actor, path, fingerprints = authorization(arguments)
+    harness, endpoint, actor, path, resume, approval_id = authorization(arguments)
     if harness != adapter.host.name or not Path(path).is_absolute():
         raise ValueError("Explicit bound host and destination directory required")
     try:
@@ -62,13 +62,56 @@ def onboard_native_memory(adapter, arguments):
     with cache_locked(queue.cache.parent / "onboarding.lock"):
         if not allowed():
             return {"error": {"code": "onboarding-origin-changed"}}
-        return process_batch(adapter.sources, harness, client, queue, project, group, fingerprints, allowed)
+        batch = approval_snapshot(adapter.sources, queue, client.scope_sha, group, project, resume, approval_id)
+        if batch is None:
+            return {"error": {"code": "onboarding-approval-unavailable"}}
+        approval_id, inventory = batch
+        summary = process_batch(adapter.sources, harness, client, queue, project, group, inventory, allowed)
+        return dict(summary, approval_id=approval_id)
 
 
-def process_batch(sources, harness, client, queue, project, group, fingerprints, allowed):
-    summary = Summary(harness)
-    reviewed, rejected, legacy_sources = sources.onboarding_evidence()
+def approval_snapshot(sources, queue, route_scope_sha, group, project, resume, approval_id):
+    binding = {
+        "schema": 1, "scope": SOURCE_SCOPE, "queue_sha": queue.queue_sha,
+        "source_group": group, "project_id": project, "route_scope_sha": route_scope_sha,
+    }
+    if resume:
+        if approval_id is None:
+            latest = queue._load("onboarding/latest.json")
+            if latest is None:
+                return None
+            if not isinstance(latest, dict) or set(latest) != {"approval_id"}:
+                raise CacheBlocked()
+            approval_id = latest["approval_id"]
+        if not isinstance(approval_id, str) or len(approval_id) != 64 or any(
+            char not in "0123456789abcdef" for char in approval_id
+        ):
+            raise CacheBlocked()
+        saved = queue._load("onboarding/" + approval_id + ".json")
+        if saved is None:
+            return None
+        if (not isinstance(saved, dict) or set(saved) != {"binding", "inventory"}
+                or saved["binding"] != binding or digest(saved) != approval_id):
+            raise CacheBlocked()
+        return approval_id, saved["inventory"]
+
     inventory = sources.provider.inventory(onboarding=True)
+    snapshot = {field: inventory[field] for field in ("status", "sources")}
+    saved = {"binding": binding, "inventory": snapshot}
+    approval_id = digest(saved)
+    entry = "onboarding/" + approval_id + ".json"
+    prior = queue._load(entry)
+    if prior is None:
+        queue._save(entry, saved)
+    elif prior != saved:
+        raise CacheBlocked()
+    queue._save("onboarding/latest.json", {"approval_id": approval_id})
+    return approval_id, snapshot
+
+
+def process_batch(sources, harness, client, queue, project, group, inventory, allowed):
+    summary = Summary(harness)
+    rejected, legacy_sources = sources.onboarding_evidence()
     wanted = {
         "native_memory_" + digest([project, group, item["source_id"], item["source_fingerprint"]])
         for item in inventory["sources"] if item["status"] == "not-checked"
@@ -106,9 +149,6 @@ def process_batch(sources, harness, client, queue, project, group, fingerprints,
             continue
         if source_id in rejected or source_key in legacy_sources:
             summary.add("excluded", legacy_sources.get(source_key, "retained-exclusion"))
-            continue
-        if fingerprint not in fingerprints and not (retained and source_key in reviewed):
-            summary.add("excluded", "shareability-unconfirmed")
             continue
 
         try:

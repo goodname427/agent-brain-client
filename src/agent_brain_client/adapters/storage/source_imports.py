@@ -241,7 +241,6 @@ class SourceImports:
                     "imported", "duplicate", "pending", "conflict", "reconciled",
                 ):
                     legacy[key] = "legacy-receipt-unconfirmed"
-            reviewed = set()
             excluded = set()
             for key, review in reviews["items"].items():
                 if not isinstance(review, dict) or set(review) != {
@@ -259,11 +258,9 @@ class SourceImports:
                     raise CacheBlocked()
                 if review["decision"] != "shareable":
                     excluded.add(source_id)
-                elif review["reason_code"] == APPROVED_NATIVE_ORIGINAL:
-                    reviewed.add(key)
-                else:
+                elif review["reason_code"] != APPROVED_NATIVE_ORIGINAL:
                     legacy.setdefault(key, "legacy-summary-retained")
-            return reviewed, excluded, legacy
+            return excluded, legacy
 
     def read_onboarding_original(self, source_id, fingerprint):
         require_platform("cache-storage", self.session.platform)

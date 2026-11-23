@@ -20,6 +20,7 @@ from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.application.queue.delivery import deliver_pending
 from agent_brain_client.application.memory.guidance import HOST_GUIDANCE, MAPPING_GUIDANCE, ONBOARDING_GUIDANCE
 from agent_brain_client.application.memory.observations import stage_messages
+from agent_brain_client.application.memory.onboarding import SOURCE_SCOPE
 from agent_brain_client.runtime import collection, collection_management
 from agent_brain_client.runtime.harness_content import content_host
 from agent_brain_client.domain import contract
@@ -29,7 +30,7 @@ from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.interfaces.mcp.content import ContentServer, ManagedContentServer
 from agent_brain_client.interfaces.mcp.framing import ContentParameterError, ProtocolError
 from test_content_outbox import (
-    Cloud, POLICY, MEMORY, RULE, SKILL, seed_legacy_native_plan, seed_legacy_native_review, seed_legacy_native_write,
+    Cloud, POLICY, MEMORY, RULE, SKILL, seed_legacy_native_plan, seed_legacy_native_write,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -174,7 +175,7 @@ class NativeMemoryCapture(unittest.TestCase):
                 "destination": {"endpoint": "https://synthetic.invalid", "actor": "synthetic-owner",
                                 "origin": str(workspace)},
                 "approved": True,
-                "source_fingerprints": [sha256(original.encode()).hexdigest()],
+                "source_scope": SOURCE_SCOPE,
             }
             missing = tool(worker, "memory_onboard", args)
             self.assertEqual(missing["inventory"], "unavailable")
@@ -184,18 +185,17 @@ class NativeMemoryCapture(unittest.TestCase):
             protected = {
                 "private.md": "[LocalOnly] fictional protected material",
                 "credential.md": "password: synthetic-password-12345",
+                "variables.md": 'EXAMPLE_SECRET_ACCESS_KEY="synthetic-credential-fixture"',
                 "confidential.md": "confidential: fictional unavailable material",
                 "oversized.md": "合" * 8193,
             }
             for filename, raw in protected.items():
                 source_file.with_name(filename).write_bytes(raw.encode())
-                args["source_fingerprints"].append(sha256(raw.encode()).hexdigest())
-            source_file.with_name("unapproved.md").write_bytes(b"An unapproved synthetic preference.")
+            source_file.with_name("unapproved.md").write_bytes(b"sharing: unverified\nAn unapproved synthetic preference.")
             if windows_layout and harness == "codebuddy":
                 project = native / "projects/unverified/memory/topic.md"
                 project.parent.mkdir(parents=True)
                 project.write_bytes(b"An isolated Windows CodeBuddy project synthetic preference.")
-                args["source_fingerprints"].append(sha256(project.read_bytes()).hexdigest())
 
             scopes = cloud.grant["scopes"]
             cloud.grant["scopes"] = ["read"]
@@ -214,12 +214,6 @@ class NativeMemoryCapture(unittest.TestCase):
                 self.assertEqual(tool(worker, "memory_onboard", args)["error"]["code"],
                                  "onboarding-personal-origin-required")
             self.assertEqual(peer.requests, [])
-            original_row = next(row for row in worker.adapter.sources.provider.inventory()["sources"]
-                                if row["source_fingerprint"] == args["source_fingerprints"][0])
-            seed_legacy_native_review(worker.adapter, original_row, "shareable", "approved-native-original")
-            unbound = tool(worker, "memory_onboard", dict(args, source_fingerprints=[]))
-            self.assertEqual(unbound["counts"]["received"], 0)
-            self.assertEqual(peer.requests, [])
             peer.admitted = False
             denied = tool(worker, "memory_onboard", args)
             self.assertEqual(denied["reasons"]["server-source-paused-or-denied"], 1)
@@ -230,7 +224,7 @@ class NativeMemoryCapture(unittest.TestCase):
             queued = tool(worker, "memory_onboard", args)
             self.assertEqual(queued["counts"]["pending"], 1, queued)
             self.assertEqual(queued["counts"]["excluded"], len(protected) + 1 + (windows_layout and harness == "codebuddy"))
-            self.assertEqual(queued["reasons"]["private-or-sensitive"], 3)
+            self.assertEqual(queued["reasons"]["private-or-sensitive"], 4)
             self.assertEqual(queued["reasons"]["shareability-unconfirmed"], 1)
             if windows_layout and harness == "codebuddy":
                 self.assertEqual(queued["reasons"]["project-origin-unverified"], 1)
@@ -273,17 +267,25 @@ class NativeMemoryCapture(unittest.TestCase):
             worker = server()
             calls = len(peer.requests)
             peer.extraction = "succeeded"
-            done = tool(worker, "memory_onboard", args)
+            resume = {key: value for key, value in args.items() if key != "approved"}
+            resume["resume"] = True
+            source_file.with_name("after-approval.md").write_text("A later fictional memory outside this approval.")
+            done = tool(worker, "memory_onboard", resume)
+            self.assertEqual(done["approval_id"], queued["approval_id"])
             self.assertEqual(done["counts"]["already_exists"], 1, done)
             self.assertEqual(done["extraction"], {"succeeded": 1})
             self.assertEqual(peer.requests[-1], initial_wire)
             self.assertEqual(len(peer.requests), calls + 2)
             self.assertEqual(len(peer.receipts), 2)
             alternate = dict(args["destination"], origin=str(other_workspace))
+            wrong_resume = tool(worker, "memory_onboard", dict(resume, destination=alternate,
+                                approval_id=queued["approval_id"]))
+            self.assertEqual(wrong_resume["error"]["code"], "onboarding-approval-unavailable")
+            source_file.with_name("after-approval.md").unlink()
             existing = tool(worker, "memory_onboard", dict(args, destination=alternate))
             self.assertEqual(existing["counts"]["already_exists"], 1)
             self.assertEqual(len(peer.requests), calls + 2)  # no rebind or disclosure
-            repeated = tool(worker, "memory_onboard", args)
+            repeated = tool(worker, "memory_onboard", resume)
             self.assertEqual(repeated["counts"]["already_exists"], 1)
             self.assertEqual(peer.requests[-1]["method"], "memory_global_status")
             self.assertEqual(len(peer.receipts), 2)
@@ -292,7 +294,6 @@ class NativeMemoryCapture(unittest.TestCase):
                 for index in range(70):
                     raw = f"Fictional onboard batch item {index}".encode()
                     source_file.with_name(f"batch-{index}.md").write_bytes(raw)
-                    args["source_fingerprints"].append(sha256(raw).hexdigest())
                 batch = tool(worker, "memory_onboard", args)
                 self.assertEqual(batch["counts"]["received"], 70, batch)
                 self.assertEqual(batch["counts"]["already_exists"], 1)
@@ -363,9 +364,9 @@ class HarnessParity(unittest.TestCase):
                 status = "legacy-receipt-unconfirmed" if acknowledgement_lost else "legacy-cas-record-retained"
                 original_review = session._load("memory-reviews.json")
                 with patch.object(session.sources.provider, "read", side_effect=AssertionError("Legacy source read")):
-                    reviewed, excluded, legacy = session.sources.onboarding_evidence()
+                    excluded, legacy = session.sources.onboarding_evidence()
                     self.assertEqual(legacy, {key: status})
-                    self.assertEqual((reviewed, excluded), (set(), set()))
+                    self.assertEqual(excluded, set())
                 self.assertEqual(session._load("memory-reviews.json"), original_review)
                 self.assertEqual(len(cloud.calls), calls)
                 if acknowledgement_lost:

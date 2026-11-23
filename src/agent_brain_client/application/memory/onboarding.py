@@ -9,6 +9,7 @@ from agent_brain_client.domain.service import endpoint_check
 
 
 TOOL_NAME = "memory_onboard"
+SOURCE_SCOPE = "shareable-personal-native-memory"
 
 INPUT_SCHEMA = {
     "type": "object",
@@ -24,32 +25,36 @@ INPUT_SCHEMA = {
             "required": ["endpoint", "actor", "origin"],
             "additionalProperties": False,
         },
-        "source_fingerprints": {
-            "type": "array",
-            "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-            "maxItems": 1024,
-            "uniqueItems": True,
-            "description": "Fingerprints of originals the user explicitly approves as shareable personal memory for this destination. Omit to resume only previously approved requests already bound to this origin.",
+        "source_scope": {
+            "const": SOURCE_SCOPE,
+            "description": "The current host's supported personal native-memory scope, explicitly confirmed shareable by the user.",
         },
         "approved": {
             "const": True,
-            "description": "The user explicitly approved importing this host's shareable personal originals to the exact destination.",
+            "description": "Required to start a batch. The user approved this shareable source scope and exact destination.",
         },
+        "resume": {
+            "type": "boolean",
+            "description": "Continue only an already approved batch at this destination, using its retained source snapshot.",
+        },
+        "approval_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     },
-    "required": ["harness", "destination", "approved"],
+    "required": ["harness", "destination", "source_scope"],
     "additionalProperties": False,
 }
 
-# Exclude recognizable credentials before constructing a network request. Exact
-# original approval is independently required for unmarked sensitive material.
+# The user confirms the shareable source scope. Known credentials and local
+# restrictions still exclude exact originals before any network submission.
 _CREDENTIAL = re.compile(
     r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----"
     r"|\b(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}"
     r"|(?:AKIA|ASIA)[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]{12,}"
     r"|sk-(?:proj-|ant-)?[A-Za-z0-9_-]{16,})\b"
-    r"|\b(?:authorization\s*:\s*bearer|(?:api[-_ ]?key|access[-_ ]?key|"
-    r"client[-_ ]?secret|access[-_ ]?token|refresh[-_ ]?token|password|passwd|"
-    r"credential|secret|令牌|密码|密钥)\s*[:=])\s*[\x22\x27]?[A-Za-z0-9_./+@!#$%^&*=:-]{4,}"
+    r"|\bauthorization\s*:\s*bearer\s+[A-Za-z0-9_./+=-]{4,}"
+    r"|(?:^|[\s{,;])[\x22\x27]?(?:[a-z][a-z0-9]*[-_])*(?:api[-_ ]?key|"
+    r"access[-_ ]?key|client[-_ ]?secret|access[-_ ]?token|refresh[-_ ]?token|"
+    r"password|passwd|credential|secret|token|令牌|密码|密钥)[\x22\x27]?\s*[:=]"
+    r"\s*[\x22\x27]?[A-Za-z0-9_./+@!#$%^&*=:-]{4,}"
     r"|\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@",
     re.IGNORECASE,
 )
@@ -57,14 +62,19 @@ _CONFIDENTIAL = re.compile(
     r"(?im)^\s*(?:\[(?:confidential|secret|internal[-_ ]?only)\]"
     r"|(?:confidential|internal[-_ ]?only|do not distribute|机密|保密)\s*[:：])"
 )
+_UNVERIFIED_SCOPE = re.compile(
+    r"(?im)^\s*(?:(?:sharing|scope)\s*:\s*(?:unknown|unverified|project|private)\b"
+    r"|\[(?:unverified|unreviewed)\])"
+)
 
 
 def authorization(arguments):
     if (
         not isinstance(arguments, dict)
-        or set(arguments) - {"harness", "destination", "source_fingerprints", "approved"}
-        or arguments.get("approved") is not True
+        or set(arguments) - {"harness", "destination", "source_scope", "approved", "resume", "approval_id"}
+        or arguments.get("source_scope") != SOURCE_SCOPE
         or arguments.get("harness") not in ("codex", "codebuddy")
+        or type(arguments.get("resume", False)) is not bool
     ):
         raise ValueError("Explicitly approved native-memory batch required")
     destination = arguments.get("destination")
@@ -80,21 +90,24 @@ def authorization(arguments):
         or any(ord(char) < 32 for char in origin)
     ):
         raise ValueError("Exact already-approved destination required")
-    fingerprints = arguments.get("source_fingerprints", [])
+    resume = arguments.get("resume", False)
+    approval_id = arguments.get("approval_id")
     if (
-        not isinstance(fingerprints, list)
-        or len(fingerprints) > 1024
-        or any(not isinstance(item, str) or not re.fullmatch(r"[a-f0-9]{64}", item)
-               for item in fingerprints)
-        or len(fingerprints) != len(set(fingerprints))
+        ("approved" in arguments and arguments["approved"] is not True)
+        or (not resume and arguments.get("approved") is not True)
+        or ("approval_id" in arguments and (
+            not resume or not isinstance(approval_id, str) or not re.fullmatch(r"[a-f0-9]{64}", approval_id)
+        ))
     ):
-        raise ValueError("Exact original fingerprints required")
-    return arguments["harness"], endpoint, actor, origin, frozenset(fingerprints)
+        raise ValueError("Start requires scope approval. Resume accepts only a retained approval ID.")
+    return arguments["harness"], endpoint, actor, origin, resume, approval_id
 
 
 def excluded_original(body):
     if private_recall_text(body) or _CONFIDENTIAL.search(body) or _CREDENTIAL.search(body):
         return "private-or-sensitive"
+    if _UNVERIFIED_SCOPE.search(body):
+        return "shareability-unconfirmed"
     if not body.strip() or "\0" in body or len(body.encode("utf-16-le")) // 2 > MAX_NATIVE_MEMORY_UNITS:
         return "original-outside-bound"
     return None
