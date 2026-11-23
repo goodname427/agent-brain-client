@@ -412,6 +412,67 @@ else:
         self.assertTrue(candidate.is_dir())
         self.engine.adapter.snapshot.assert_not_called()
 
+    def test_background_offline_attempt_recovers_on_next_due_check_after_restart(self):
+        target = dict(self.manifest, version="0.6.2")
+        self.engine.source = Mock()
+        self.engine.source.latest.side_effect = [
+            OSError("Synthetic disconnected"),
+            ("b" * 40, target, self.payload.__getitem__),
+        ]
+        self.engine.adapter.snapshot.return_value = {}
+        can_activate = Mock(return_value=True)
+        clock = Mock()
+        clock.time.return_value = 100
+
+        def restarted():
+            release = object.__new__(ClientReleases)
+            release.engine = self.engine
+            release.policy = dict(self.policy)
+            release.inspection = False
+            return release
+
+        with patch("agent_brain_client.adapters.packages.client.time", clock):
+            restarted().startup_check(can_activate=can_activate)
+            self.assertEqual(self.engine.serving_active(), self.old)
+            self.assertFalse(self.engine.journal.exists())
+            clock.time.return_value = 159
+            restarted().startup_check(can_activate=can_activate)
+            self.engine.source.latest.assert_called_once_with()
+            can_activate.assert_not_called()
+            clock.time.return_value = 160
+            restarted().startup_check(can_activate=can_activate)
+
+        self.assertEqual(self.engine.source.latest.call_count, 2)
+        self.assertEqual(self.engine.serving_active()["commit"], "b" * 40)
+        can_activate.assert_called_once()
+        self.engine.adapter.health.assert_called_once()
+
+    def test_background_yields_to_update_lock_and_its_marker_does_not_gate_manual_update(self):
+        from agent_brain_client.adapters.platforms.filesystem import locked
+
+        target = dict(self.manifest, version="0.6.2")
+        self.engine.source = Mock()
+        self.engine.source.latest.return_value = ("b" * 40, target, self.payload.__getitem__)
+        self.engine.adapter.snapshot.return_value = {}
+        release = object.__new__(ClientReleases)
+        release.engine = self.engine
+        release.policy = self.policy
+        release.inspection = False
+        can_activate = Mock(return_value=True)
+
+        with locked(self.engine.local / "update.lock", timeout=0), patch("sys.stderr", new=io.StringIO()):
+            release.startup_check(can_activate=can_activate)
+            self.engine.source.latest.assert_not_called()
+            can_activate.assert_not_called()
+        self.assertTrue((self.engine.local / "startup-check.json").exists())
+        self.assertEqual(self.engine.serving_active(), self.old)
+
+        result = release.update()
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual(self.engine.serving_active()["commit"], "b" * 40)
+        self.engine.source.latest.assert_called_once_with()
+        self.engine.adapter.health.assert_called_once()
+
 
 class EvidenceDiagnostics(unittest.TestCase):
     def test_formal_tool_metadata_and_current_run_evidence_guidance(self):
