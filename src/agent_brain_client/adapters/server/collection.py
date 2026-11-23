@@ -226,8 +226,6 @@ class CollectionClient:
         if event["project_id"] != namespace(self.actor, sid):
             raise ValueError("Global event outside source policy")
         if native:
-            if privacy.private_recall_text(event["content"]):
-                raise ValueError("Global event outside source policy")
             wire_event = {
                 key: event[key] for key in ("contract", "event_id", "occurred_at", "content")
             }
