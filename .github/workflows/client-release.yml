@@ -24,6 +24,10 @@ on:
         default: upgrade
         type: choice
         options: [upgrade, reinstall]
+      skip_preflight_tests:
+        description: Explicitly skip release tests and record them as not run
+        default: false
+        type: boolean
       publish:
         description: Publish immutable releases and advance selected existing platform channels
         default: false
@@ -85,7 +89,6 @@ jobs:
     runs-on: macos-15
     permissions:
       contents: write
-      actions: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -107,7 +110,13 @@ jobs:
       - name: Publish, promote and read back exact bytes
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python -B .local/release-tools/dev/release/client.py publish --source-root "$GITHUB_WORKSPACE" --output .local/release --allow-publish --wait-for-ci 1800
+          SKIP_PREFLIGHT_TESTS: ${{ inputs.skip_preflight_tests }}
+        run: |
+          options=()
+          if [[ "$SKIP_PREFLIGHT_TESTS" == true ]]; then
+            options+=(--skip-preflight-tests)
+          fi
+          python -B .local/release-tools/dev/release/client.py publish --source-root "$GITHUB_WORKSPACE" --output .local/release --allow-publish "${options[@]}"
       - name: Preserve publication evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

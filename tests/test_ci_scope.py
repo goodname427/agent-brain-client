@@ -279,11 +279,13 @@ class Results(unittest.TestCase):
 
 
 class WorkflowContract(unittest.TestCase):
-    def test_workflow_keeps_optional_full_regression_path(self):
+    def test_only_manual_workflow_runs_full_regression(self):
         source = (ci.ROOT / '.github/workflows/client-checks.yml').read_text()
         triggers, source_jobs = source.split('\njobs:\n', 1)
         self.assertNotRegex(triggers, r'\bpaths(?:-ignore)?:')
         self.assertIn('  workflow_dispatch:', triggers)
+        for event in ('pull_request', 'push', 'merge_group'):
+            self.assertNotIn(f'  {event}:', triggers)
         parts = re.split(r'^  ([a-z-]+):\n', source_jobs, flags=re.M)
         jobs = dict(zip(parts[1::2], parts[2::2]))
         for flag, job in (('code', 'source-checks'), ('mac', 'isolated-client'),

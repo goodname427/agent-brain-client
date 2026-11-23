@@ -106,17 +106,11 @@ class ReleasePipeline(unittest.TestCase):
                     selected = local if action == 'prepare-local' else prepare
                     selected.assert_called_once()
                     self.assertNotIn('validate_source', selected.call_args.kwargs)
-
-    def test_existing_hosted_publish_command_still_selects_default_preflight(self):
-        plan, _ = fixture()
-        with tempfile.TemporaryDirectory() as tmp:
-            args = ['client.py', 'publish', '--output', tmp, '--allow-publish', '--wait-for-ci', '1800']
-            with patch.dict(os.environ, {'GH_TOKEN': 'synthetic'}), \
-                    patch.object(rc.sys, 'argv', args), patch.object(rc, 'load_bundle', return_value=plan), \
-                    patch.object(rc, 'publish') as publish:
-                self.assertEqual(rc.main(), 0)
-            self.assertEqual(publish.call_args.args[2], plan)
-            self.assertEqual(publish.call_args.kwargs, {'preflight_result': None, 'skip_preflight_tests': False})
+        workflow = (rc.TOOL_ROOT / '.github/workflows/client-release.yml').read_text()
+        self.assertIn('client.py prepare-artifacts ', workflow)
+        self.assertIn('--allow-publish', workflow)
+        self.assertNotIn('--wait-for-ci', workflow)
+        self.assertIn('options+=(--skip-preflight-tests)', workflow)
 
     def test_invalid_bundle_blocks_publish_with_or_without_tests(self):
         for options in ([], ['--skip-preflight-tests']):
