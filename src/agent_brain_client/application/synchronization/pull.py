@@ -25,22 +25,33 @@ class ContentSynchronization:
                 progress["stage"] = "owned-files"
                 owned = self.session.mapping.owned_snapshot()
                 progress["stage"] = "remote-snapshot"
+                progress["offline_denial_epoch"] = self.session.offline_denial_epoch()
                 snapshot = self.session.fetch_snapshot()
                 return self.session.mapping.apply_snapshot(snapshot, owned, progress)
         except Exception as error:
             return self._failure(progress, error)
 
-    def background_pull(self, *, still_current, catalog_probe=None):
+    def background_pull(self, *, still_current, catalog_probe=None, replay=False):
         self.session.ensure_refresh_available()
         progress = {"stage": "local-recovery"}
         try:
             with self.session.refresh_transaction(background=True):
                 self.session.mapping.recover()
                 self.session.sources.reconcile_pending()
-                retained = self._retained()
+                queue = self.session.queue_status(for_mapping=True)
+                if replay and queue["pending"]:
+                    if not still_current():
+                        return {"status": "content-refresh-deferred", "native_changed": False}
+                    self.session.replay_writes()
+                    self.session.sources.reconcile_pending()
+                    queue = self.session.queue_status(for_mapping=True)
+                    # A replay can advance the catalog beyond a peer's recent scan.
+                    catalog_probe = None
+                retained = self._retained(queue)
                 if retained is not None:
                     return retained
                 baseline = self.session.refresh_baseline()
+                _, _, progress["offline_denial_epoch"] = baseline
             progress["stage"] = "remote-snapshot"
             snapshot = self.session.fetch_snapshot(background_baseline=baseline, catalog_probe=catalog_probe)
             current = still_current()
@@ -58,8 +69,9 @@ class ContentSynchronization:
         except Exception as error:
             return self._failure(progress, error)
 
-    def _retained(self):
-        queue = self.session.queue_status(for_mapping=True)
+    def _retained(self, queue=None):
+        if queue is None:
+            queue = self.session.queue_status(for_mapping=True)
         imports = self.session.sources.import_status()
         if not (
             queue["pending"] or queue["conflict"] or queue["blocked"]

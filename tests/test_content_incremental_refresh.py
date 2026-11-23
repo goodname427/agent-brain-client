@@ -332,5 +332,46 @@ class BackgroundContentRefreshPort(unittest.TestCase):
         self.assertEqual(reply["content_mapping"]["status"], "content-refresh-scheduled")
         self.assertEqual(self.cloud.calls, [])
 
+    def test_managed_reconnect_replays_pending_writes_while_only_reading(self):
+        from agent_brain_client.runtime.background import content_refresh
+
+        for host, lost_ack in ((CodexContentPorts, False), (CodeBuddyContentPorts, True)):
+            with self.subTest(host=host.name, lost_ack=lost_ack):
+                self.cloud = fixture.Cloud()
+                adapter = self.session(host)
+                request = fixture.Outbox().request()
+                self.cloud.offline = not lost_ack
+                self.cloud.lose_ack = lost_ack
+                self.assertEqual(adapter.invoke(request)["local_queue"]["state"], "pending")
+                self.cloud.offline = False
+
+                reconnected = self.session(host)
+                server = ManagedContentServer(reconnected, "0.8.35", "initial")
+                count = len(self.cloud.calls)
+                reply = server.handle({
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-11-25", "capabilities": {},
+                        "clientInfo": {"name": "synthetic", "version": "1"},
+                    },
+                })
+                self.assertEqual(reply["content_mapping"]["status"], "content-refresh-scheduled")
+                self.assertEqual(len(self.cloud.calls), count)
+                result = content_refresh(
+                    self.session(host), "a" * 40, host.name, still_current=lambda: True,
+                )
+                self.assertEqual(result["status"], "content-refreshed")
+
+                params = {"kind": "memory", "id": "synthetic-topic"}
+                read = server.invoke("content_read", params)
+                self.assertEqual(read["structuredContent"]["result"]["record"], fixture.MEMORY)
+                self.assertEqual(reconnected.queue_status()["pending"], 0)
+                self.assertEqual(self.cloud.puts, 1)
+                writes = [call for call in self.cloud.calls if call["method"] == "content_put"]
+                self.assertEqual(writes, [request, request])
+                base = self.home / ".config/agent-brain-client/content"
+                folder = "memory" if host is CodexContentPorts else "codebuddy/memory"
+                self.assertEqual((base / folder / "synthetic-topic.md").read_text(), fixture.MEMORY["body"])
+
 
 if __name__=='__main__':unittest.main()

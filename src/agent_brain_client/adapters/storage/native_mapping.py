@@ -397,7 +397,7 @@ class NativeMapping:
             == snapshot
             and mapping_matches
         ):
-            self.session._pin_offline_snapshot(snapshot)
+            self.session._pin_offline_snapshot(snapshot, progress["offline_denial_epoch"])
             return {
                 "status": "content-current",
                 "native_changed": self._prune_skill_directories(desired),
@@ -468,7 +468,7 @@ class NativeMapping:
             progress["stage"] = "verification"
             self.session.health()
             self.owned_snapshot()
-            self.session._pin_offline_snapshot(snapshot)
+            self.session._pin_offline_snapshot(snapshot, progress["offline_denial_epoch"])
             self.session._save("transaction.json", dict(journal, phase="complete"))
         except Exception:
             self._restore(journal)

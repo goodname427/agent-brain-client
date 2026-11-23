@@ -1,5 +1,6 @@
 """Verified offline read fallback: synthetic records/homes, no credentials or network."""
 
+from contextlib import ExitStack
 import copy
 import json
 from pathlib import Path
@@ -201,6 +202,46 @@ class OfflineReads(unittest.TestCase):
         self.failure();self.assertEqual(self.restart().invoke(self.request())['error']['code'],'content_offline_cache_unverified')
         self.cloud.request=original;self.assertEqual(self.restart().refresh()['status'],'content-current')
         self.cloud.offline=True;self.assertTrue(self.restart().invoke(self.request())['local_cache']['stale'])
+
+    def test_background_denial_under_mapping_lock_survives_restart(self):
+        from agent_brain_client.adapters.platforms.filesystem import cache_locked
+
+        self.warm()
+        ordinary = self.home / ".codex/user-note.md"
+        ordinary.write_bytes(b"Synthetic unmanaged note\n")
+        native = self.home / ".config/agent-brain-client/content/memory/synthetic-topic.md"
+        previous = native.read_bytes()
+        original = self.cloud.request
+        with ExitStack() as mapping:
+            def refuse(request):
+                mapping.enter_context(cache_locked(self.cache / "content.lock", timeout=0))
+                return {"request_id": request["request_id"],
+                        "error": {"code": "device_revoked", "retryable": False},
+                        "persistence": {"durable": False}}
+
+            self.cloud.request = refuse
+            blocked = self.adapter.synchronization.background_pull(still_current=lambda: True)
+            self.assertEqual(blocked["status"], "content-refresh-blocked")
+
+        self.cloud.request = original
+        self.cloud.offline = True
+        for session in (self.adapter, self.restart()):
+            response = session.invoke(self.request())
+            self.assertEqual(response["error"]["code"], "content_offline_cache_unverified")
+            self.assertFalse(response["local_cache"]["available"])
+        self.assertEqual(ordinary.read_bytes(), b"Synthetic unmanaged note\n")
+        self.assertEqual(native.read_bytes(), previous)
+
+        self.cloud.offline = False
+        def stale_catalog(_fetch):
+            self.fail("A coalesced catalog must not reauthorize a denied snapshot")
+
+        fresh = self.restart().synchronization.background_pull(
+            still_current=lambda: True, catalog_probe=stale_catalog,
+        )
+        self.assertEqual(fresh["status"], "content-current")
+        self.cloud.offline = True
+        self.assertTrue(self.restart().invoke(self.request())["local_cache"]["stale"])
 
     def test_failed_snapshot_pin_save_rolls_back_native_mapping_and_prior_active(self):
         self.warm();path=self.home/'.config/agent-brain-client/content/memory/synthetic-topic.md';before=path.read_bytes();active=(self.cache/'active.json').read_bytes();pin=(self.cache/'offline-snapshot.json').read_bytes()

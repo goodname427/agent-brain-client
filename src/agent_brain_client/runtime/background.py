@@ -57,7 +57,7 @@ def content_refresh(adapter, commit, registration, *, still_current, clock=time.
         try:
             with control.activate():
                 return adapter.synchronization.background_pull(
-                    still_current=still_current, catalog_probe=probe,
+                    still_current=still_current, catalog_probe=probe, replay=True,
                 )["status"]
         finally:
             control.close()
