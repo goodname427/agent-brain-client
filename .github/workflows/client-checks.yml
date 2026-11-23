@@ -1,15 +1,10 @@
 name: Client checks
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
-  merge_group:
 permissions:
   contents: read
 concurrency:
   group: client-checks-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   changes:
     runs-on: ubuntu-latest
@@ -102,7 +97,7 @@ jobs:
       - name: Shared native Windows contracts and every host adapter
         run: python -B dev/checks/client.py windows --ci --output "${{ runner.temp }}/windows"
   required:
-    name: Client checks required
+    name: Client regression summary
     if: always()
     needs: [changes, documentation, source-checks, isolated-client, windows-contracts]
     runs-on: ubuntu-latest

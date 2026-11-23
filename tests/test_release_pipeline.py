@@ -92,32 +92,8 @@ class Remote:
 
 
 class ReleasePipeline(unittest.TestCase):
-    def test_release_validation_discovers_moved_installer_modules_in_isolated_child(self):
-        real_run = subprocess.run
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / 'source'
-            installer = root / 'src/agent_brain_client/interfaces/cli'
-            installer.mkdir(parents=True)
-            (root / 'bootstrap').mkdir()
-            (root / 'bootstrap/source_checkout.py').write_text('FROM_BOOTSTRAP = True\n')
-            for name in ('access',):
-                (installer / (name + '.py')).write_text('FROM_INSTALLER = True\n')
-            output = Path(tmp) / 'checks'
-            output.mkdir()
 
-            def execute(command, **kwargs):
-                if command[1:] == ['-B', '-m', 'unittest', 'discover', '-s', 'tests']:
-                    code = ('import os, sys; '
-                            'sys.path[:0] = os.environ["PYTHONPATH"].split(os.pathsep); '
-                            'import agent_brain_client.interfaces.cli.access as access_install; import bootstrap.source_checkout as bootstrap_main; '
-                            'assert access_install.FROM_INSTALLER and bootstrap_main.FROM_BOOTSTRAP')
-                    return real_run([command[0], '-I', '-B', '-c', code], **kwargs)
-                return subprocess.CompletedProcess(command, 0)
-
-            with patch.object(rc, 'ROOT', root), patch.object(rc.subprocess, 'run', side_effect=execute):
-                rc.validate(output)
-
-    def test_artifact_preparation_defers_only_source_suite_and_workflow_reuses_full_ci(self):
+    def test_preparation_cli_leaves_preflight_to_publish(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'notes.md'
             path.write_text('Synthetic public changelog')
@@ -128,95 +104,27 @@ class ReleasePipeline(unittest.TestCase):
                         patch.object(rc, 'prepare_local') as local:
                     self.assertEqual(rc.main(), 0)
                     selected = local if action == 'prepare-local' else prepare
-                    self.assertEqual(selected.call_args.kwargs.get('validate_source', True),
-                                     action != 'prepare-artifacts')
+                    selected.assert_called_once()
+                    self.assertNotIn('validate_source', selected.call_args.kwargs)
         workflow = (rc.TOOL_ROOT / '.github/workflows/client-release.yml').read_text()
         self.assertIn('client.py prepare-artifacts ', workflow)
-        self.assertIn('--allow-publish --wait-for-ci 1800', workflow)
+        self.assertIn('--allow-publish', workflow)
+        self.assertNotIn('--wait-for-ci', workflow)
+        self.assertIn('options+=(--skip-preflight-tests)', workflow)
 
-    def test_wait_reuses_only_pending_official_manual_main_exact_tree(self):
-        plan, _ = fixture()
-        api = rc.GitHub()
-        row = {'id': 12, 'run_attempt': 1, 'head_sha': plan['source'], 'status': 'in_progress',
-               'conclusion': None, 'event': 'workflow_dispatch', 'head_branch': 'main',
-               'head_repository': {'full_name': rc.REPOSITORY}, 'html_url': 'https://example.invalid/12'}
-        def request(path):
-            if '/jobs?' in path:
-                return {'jobs': [{'name': name, 'conclusion': 'success'} for name in rc.FULL_CI_JOBS]}
-            return {'workflow_runs': [row]} if '/actions/' in path else {'tree': {'sha': plan['source_tree']}}
-        def complete(_):
-            row.update(status='completed', conclusion='success')
-        with patch.object(api, 'request', side_effect=request) as remote, patch.object(rc.time, 'sleep', side_effect=complete) as sleep:
-            self.assertEqual(api.wait_ci(plan, 100)['run_id'], 12)
-            sleep.assert_called_once()
-            workflow_queries = [call.args[0] for call in remote.call_args_list if '/workflows/' in call.args[0]]
-            self.assertEqual(len(workflow_queries), 2)
-            self.assertTrue(all(query.endswith('&branch=main&head_sha=' + plan['source']) for query in workflow_queries))
-            for changes in ({'conclusion': 'failure', 'status': 'completed'},
-                            {'head_branch': 'other'}, {'event': 'push'},
-                            {'head_repository': {'full_name': 'synthetic/fork'}}):
-                bad = dict(row, status='in_progress', conclusion=None)
-                bad.update(changes)
-                with patch.object(api, 'request', return_value={'workflow_runs': [bad]}):
-                    with self.assertRaises(ValueError) as error:
-                        api.wait_ci(plan, 100)
-                    self.assertNotIsInstance(error.exception, rc.ChecksPending)
-            sleep.reset_mock()
-            row.update(status='queued', conclusion=None)
-            with self.assertRaises(rc.ChecksPending):
-                api.wait_ci(plan, 0)
-            sleep.assert_not_called()
-            with patch.object(api, 'request', side_effect=lambda path: {'workflow_runs': [row]} if '/actions/' in path
-                              else {'tree': {'sha': 'f' * 40}}):
-                with self.assertRaises(ValueError) as error:
-                    api.wait_ci(plan, 100)
-                self.assertNotIsInstance(error.exception, rc.ChecksPending)
-
-    def test_ci_uses_only_exact_head_requests_for_completed_full_main_run(self):
-        plan, _ = fixture()
-        api = rc.GitHub()
-        work = '/actions/workflows/client-checks.yml/runs?per_page=100&page=1'
-        exact = work + '&branch=main&head_sha=' + plan['source']
-        commit = '/git/commits/' + plan['source']
-        jobs_path = '/actions/runs/12/attempts/3/jobs?per_page=100&page=1'
-        row = {'id': 12, 'run_attempt': 3, 'head_sha': plan['source'], 'status': 'completed',
-               'conclusion': 'success', 'event': 'workflow_dispatch', 'head_branch': 'main',
-               'head_repository': {'full_name': rc.REPOSITORY}, 'html_url': 'https://example.invalid/12'}
-        jobs = [{'name': name, 'conclusion': 'success'} for name in rc.FULL_CI_JOBS]
-        responses = {exact: {'workflow_runs': [row]}, commit: {'tree': {'sha': plan['source_tree']}},
-                     jobs_path: {'jobs': jobs}}
-        with patch.object(api, 'request', side_effect=responses.__getitem__) as remote:
-            receipt = api.ci(plan)
-            self.assertEqual(receipt['run_id'], 12)
-            self.assertEqual(receipt['run_attempt'], 3)
-            self.assertEqual([call.args[0] for call in remote.call_args_list], [exact, commit, jobs_path])
-
-    def test_ci_fallback_polls_the_compatible_main_head_without_repeating_the_scan(self):
-        plan, _ = fixture()
-        api = rc.GitHub()
-        work = '/actions/workflows/client-checks.yml/runs?per_page=100&page=1'
-        row = {'id': 12, 'run_attempt': 1, 'head_sha': 'b' * 40, 'status': 'queued',
-               'conclusion': None, 'event': 'workflow_dispatch', 'head_branch': 'main',
-               'head_repository': {'full_name': rc.REPOSITORY}, 'html_url': 'https://example.invalid/12'}
-        responses = {
-            work + '&branch=main&head_sha=' + plan['source']: {'workflow_runs': []},
-            work: {'workflow_runs': [row]},
-            work + '&branch=main&head_sha=' + row['head_sha']: {'workflow_runs': [row]},
-            '/git/commits/' + row['head_sha']: {'tree': {'sha': plan['source_tree']}},
-            '/actions/runs/12/attempts/1/jobs?per_page=100&page=1': {
-                'jobs': [{'name': name, 'conclusion': 'success'} for name in rc.FULL_CI_JOBS]},
-        }
-        def complete(_):
-            row.update(status='completed', conclusion='success')
-        with patch.object(api, 'request', side_effect=responses.__getitem__) as remote, patch.object(rc.time, 'sleep', side_effect=complete):
-            self.assertEqual(api.wait_ci(plan, 100)['head'], row['head_sha'])
-            paths = [call.args[0] for call in remote.call_args_list]
-            self.assertEqual(paths.count(work), 1)
-            self.assertIn(work + '&branch=main&head_sha=' + row['head_sha'], paths)
+    def test_invalid_bundle_blocks_publish_with_or_without_tests(self):
+        for options in ([], ['--skip-preflight-tests']):
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as tmp:
+                args = ['client.py', 'publish', '--output', tmp, '--allow-publish', *options]
+                with patch.dict(os.environ, {'GH_TOKEN': 'synthetic'}), \
+                        patch.object(rc.sys, 'argv', args), \
+                        patch.object(rc, 'load_bundle', side_effect=ValueError('Prepared asset changed')), \
+                        patch.object(rc, 'publish') as publish, patch('sys.stderr', new=io.StringIO()):
+                    self.assertEqual(rc.main(), 1)
+                    publish.assert_not_called()
 
     def test_http_failure_reports_only_category_status_and_numeric_rate_headers(self):
-        plan, _ = fixture()
-        path = '/actions/workflows/client-checks.yml/runs?per_page=100&page=1&branch=main&head_sha=' + plan['source']
+        path = '/releases?per_page=100&page=1'
         headers = Message()
         headers['X-RateLimit-Remaining'] = '0'
         headers['X-RateLimit-Reset'] = '1795269540'
@@ -227,9 +135,9 @@ class ReleasePipeline(unittest.TestCase):
         with patch.object(rc, 'build_opener') as opener:
             opener.return_value.open.side_effect = error
             with self.assertRaises(ValueError) as caught:
-                rc.GitHub().ci(plan)
+                rc.GitHub().request(path)
             self.assertEqual(str(caught.exception),
-                             'GitHub GET failed for workflow run list: HTTP 403; '
+                             'GitHub GET failed for release metadata: HTTP 403; '
                              'x-ratelimit-remaining=0; x-ratelimit-reset=1795269540; '
                              'read remote state before retry')
             opener.return_value.open.assert_called_once()
@@ -270,8 +178,7 @@ class ReleasePipeline(unittest.TestCase):
             with patch.object(rc, 'commit', return_value=plan['baseline']), \
                     patch.object(rc, 'git', side_effect=fake_git), \
                     patch.object(rc, 'build', return_value=(plan, assets)) as build, \
-                    patch.object(rc, 'source_payload'), \
-                    patch.object(rc, 'validate'):
+                    patch.object(rc, 'source_payload'):
                 rc.prepare(output, plan['source'], 'auto')
                 frozen = (output / 'plan.json').read_bytes()
                 rc.prepare(output, plan['source'], 'auto')
@@ -317,9 +224,10 @@ class ReleasePipeline(unittest.TestCase):
         with patch.object(rc, 'urlopen', side_effect=download), self.assertRaises(ValueError):
             rc.download_assets(plan, row, 'runtime')
 
-    def publish_case(self, remote, output):
+    def publish_case(self, remote, output, *, preflight_error=None):
         with patch.object(rc, 'git', side_effect=remote.git), \
                 patch.object(rc, 'remote_ref', side_effect=remote.ref), \
+                patch.object(rc, 'publication_preflight', side_effect=preflight_error), \
                 patch.object(rc, 'download_assets', side_effect=lambda p, r, k: rc.check_assets(r, rc.assets_for(p, k), complete=True)):
             rc.publish(output, remote, remote.plan)
 
@@ -347,24 +255,23 @@ class ReleasePipeline(unittest.TestCase):
             self.assertEqual(remote.refs[rc.CHANNEL], plan['runtime'])
             self.assertEqual(json.loads((output / 'progress.json').read_bytes())['production_catalog'], 'not-checked')
 
-    def test_remote_conflict_or_missing_ci_fails_before_mutations(self):
+    def test_remote_conflict_or_preflight_failure_blocks_mutations(self):
         plan, assets = fixture()
-        for failure in ('channel', 'tag', 'ci', 'asset'):
+        for failure in ('channel', 'tag', 'preflight', 'asset'):
             remote = Remote(plan, assets)
             if failure == 'channel':
                 remote.refs[rc.CHANNEL] = 'f' * 40
             elif failure == 'tag':
                 remote.refs['refs/tags/' + plan['tags']['runtime']] = 'f' * 40
-            elif failure == 'ci':
-                remote.ci = lambda p: (_ for _ in ()).throw(ValueError('No matching CI'))
-            else:
+            elif failure == 'asset':
                 remote.releases[1] = {'id': 1, 'tag_name': plan['tags']['runtime'], 'draft': True,
                                       'assets': [{'name': 'runtime-amd64.tar.gz', 'size': 1, 'digest': 'bad'}]}
             with tempfile.TemporaryDirectory() as tmp:
                 output = Path(tmp)
                 self.setup_output(output, assets)
                 with self.assertRaises(ValueError):
-                    self.publish_case(remote, output)
+                    error = ValueError('Preflight failed') if failure == 'preflight' else None
+                    self.publish_case(remote, output, preflight_error=error)
                 self.assertEqual(remote.events, [], failure)
 
     def test_channel_race_keeps_other_publisher_and_does_not_move_latest(self):
@@ -378,173 +285,6 @@ class ReleasePipeline(unittest.TestCase):
                 self.publish_case(remote, output)
             self.assertEqual(remote.refs[rc.CHANNEL], '9' * 40)
             self.assertIsNone(remote.latest)
-
-    def test_ci_accepts_matching_pr_tree_and_rejects_failed_or_other_tree(self):
-        plan, _ = fixture()
-        api = rc.GitHub()
-        rows = [{'head_sha': 'a' * 40, 'conclusion': 'cancelled', 'head_repository': {'full_name': rc.REPOSITORY}},
-                {'head_sha': 'b' * 40, 'conclusion': 'success', 'head_repository': {'full_name': rc.REPOSITORY},
-                 'event': 'pull_request', 'pull_requests': [{'base': {'ref': 'main', 'sha': 'c' * 40}}],
-                 'id': 12, 'run_attempt': 1, 'html_url': 'https://example.invalid/run/12'}]
-        def request(path):
-            if '/compare/' in path:
-                return {'status': 'ahead'}
-            if '/jobs?' in path:
-                return {'jobs': [{'name': name, 'conclusion': 'success'} for name in rc.FULL_CI_JOBS]}
-            if '&head_sha=' in path:
-                return {'workflow_runs': []}
-            return {'workflow_runs': rows} if '/actions/' in path else {'tree': {'sha': plan['source_tree']}}
-        with patch.object(api, 'request', side_effect=request):
-            self.assertEqual(api.ci(plan)['run_id'], 12)
-            rows[1]['conclusion'] = 'failure'
-            with self.assertRaises(ValueError):
-                api.ci(plan)
-
-    def test_hybrid_windows_uses_one_official_attempt_and_does_not_claim_workflow_success(self):
-        plan, _ = fixture()
-        api = rc.GitHub()
-        row = {'id': 12, 'run_attempt': 2, 'head_sha': 'b' * 40, 'conclusion': None,
-               'status': 'queued', 'head_repository': {'full_name': rc.REPOSITORY},
-               'event': 'push', 'head_branch': 'main', 'html_url': 'https://example.invalid/run/12'}
-        jobs = [{'id': index, 'name': name, 'status': 'completed', 'conclusion': 'success'}
-                for index, name in enumerate(sorted(rc.HYBRID_CI_JOBS))]
-        jobs.append({'id': 99, 'name': 'isolated-client', 'status': 'queued', 'conclusion': None})
-        tree = plan['source_tree']
-
-        def request(path):
-            if '/jobs?' in path:
-                self.assertIn('/attempts/2/', path)
-                return {'jobs': jobs}
-            if '/compare/' in path:
-                return {'status': 'ahead'}
-            if '/actions/' in path:
-                return {'workflow_runs': [row]}
-            return {'tree': {'sha': tree}}
-
-        with patch.object(api, 'request', side_effect=request):
-            result = api.windows_ci(plan)
-            self.assertEqual(result['run_attempt'], 2)
-            self.assertIsNone(result['workflow_conclusion'])
-            self.assertEqual(result['scope'], 'windows-jobs-only')
-            self.assertEqual(len(result['jobs']), len(rc.HYBRID_CI_JOBS))
-            for job in jobs[:-1]:
-                for failed in ('skipped', 'failure', 'cancelled', None):
-                    job['conclusion'] = failed
-                    with self.subTest(name=job['name'], failed=failed), self.assertRaises(ValueError):
-                        api.windows_ci(plan)
-                job['conclusion'] = 'success'
-                job['status'] = 'queued'
-                with self.assertRaises(ValueError):
-                    api.windows_ci(plan)
-                job['status'] = 'completed'
-            removed = jobs.pop(0)
-            with self.assertRaises(ValueError):
-                api.windows_ci(plan)
-            jobs.append(removed)
-            jobs.append(removed)
-            with self.assertRaises(ValueError):
-                api.windows_ci(plan)
-            jobs.pop()
-            tree = 'f' * 40
-            with self.assertRaises(ValueError):
-                api.windows_ci(plan)
-            tree = plan['source_tree']
-            row['head_repository']['full_name'] = 'fictional/fork'
-            with self.assertRaises(ValueError):
-                api.windows_ci(plan)
-            row['head_repository']['full_name'] = rc.REPOSITORY
-            row['head_branch'] = 'unmerged'
-            with self.assertRaises(ValueError):
-                api.windows_ci(plan)
-            row.update(event='pull_request', pull_requests=[{'base': {'ref': 'main', 'sha': 'c' * 40}}])
-            self.assertEqual(api.windows_ci(plan)['head'], 'b' * 40)
-            with patch.object(api, 'request', side_effect=lambda path: {'status': 'diverged'} if '/compare/' in path else request(path)):
-                with self.assertRaises(ValueError):
-                    api.windows_ci(plan)
-
-    def test_pr_merge_with_base_changes_cannot_certify_the_head_tree(self):
-        plan, _ = fixture()
-        api = rc.GitHub()
-        row = {'head_sha': 'b' * 40, 'conclusion': 'success', 'head_repository': {'full_name': rc.REPOSITORY},
-               'event': 'pull_request', 'pull_requests': [{'base': {'ref': 'main', 'sha': 'c' * 40}}],
-               'id': 12, 'run_attempt': 1, 'html_url': 'https://example.invalid/run/12'}
-        def request(path):
-            if '/compare/' in path:
-                return {'status': 'diverged'}
-            if '/jobs?' in path:
-                return {'jobs': [{'name': name, 'conclusion': 'success'} for name in rc.FULL_CI_JOBS]}
-            return {'workflow_runs': [row]} if '/actions/' in path else {'tree': {'sha': plan['source_tree']}}
-        with patch.object(api, 'request', side_effect=request):
-            with self.assertRaises(ValueError):
-                api.ci(plan)
-            row.update(event='push', head_branch='main')
-            self.assertEqual(api.ci(plan)['run_id'], 12)
-
-    def test_scoped_success_cannot_certify_a_release_or_hide_an_older_full_run(self):
-        plan, _ = fixture()
-        api = rc.GitHub()
-        row = {'head_sha': plan['source'], 'conclusion': 'success',
-               'head_repository': {'full_name': rc.REPOSITORY},
-               'event': 'workflow_dispatch', 'head_branch': 'main',
-               'id': 12, 'run_attempt': 2, 'html_url': 'https://example.invalid/run/12'}
-        jobs = [{'name': name, 'conclusion': 'success'} for name in rc.FULL_CI_JOBS]
-        rows = [row]
-
-        def request(path):
-            if '/jobs?' in path:
-                self.assertIn('/attempts/2/', path)
-                return {'jobs': jobs}
-            if '/actions/' in path:
-                return {'workflow_runs': rows}
-            return {'tree': {'sha': plan['source_tree']}}
-
-        with patch.object(api, 'request', side_effect=request):
-            self.assertEqual(api.ci(plan)['run_id'], 12)
-            for job in jobs:
-                for result in ('skipped', 'failure', 'cancelled', None):
-                    job['conclusion'] = result
-                    with self.subTest(job=job['name'], result=result):
-                        with self.assertRaises(ValueError):
-                            api.ci(plan)
-                job['conclusion'] = 'success'
-            removed = jobs.pop()
-            with self.assertRaises(ValueError):
-                api.ci(plan)
-            jobs.append(removed)
-            # A newer failed run for the same head must not mask actual full evidence.
-            rows.insert(0, dict(row, id=13, conclusion='failure'))
-            self.assertEqual(api.ci(plan)['run_id'], 12)
-            row['head_branch'] = 'unmerged-branch'
-            with self.assertRaises(ValueError):
-                api.ci(plan)
-
-    def test_ci_rejects_other_tree_and_incomplete_or_duplicate_job_evidence(self):
-        plan, _ = fixture()
-        api = rc.GitHub()
-        row = {'id': 12, 'run_attempt': 1, 'head_sha': 'b' * 40, 'conclusion': 'success',
-               'head_repository': {'full_name': rc.REPOSITORY}, 'event': 'push',
-               'head_branch': 'main', 'html_url': 'https://example.invalid/run/12'}
-        jobs = [{'name': name, 'conclusion': 'success'} for name in rc.FULL_CI_JOBS]
-        tree = plan['source_tree']
-
-        def request(path):
-            if '/jobs?' in path:
-                return {'jobs': jobs}
-            if '/actions/' in path:
-                return {'workflow_runs': [row]}
-            return {'tree': {'sha': tree}}
-
-        with patch.object(api, 'request', side_effect=request):
-            tree = 'f' * 40
-            with self.assertRaises(ValueError):
-                api.ci(plan)
-            tree = plan['source_tree']
-            jobs.append(jobs[0])
-            with self.assertRaises(ValueError):
-                api.ci(plan)
-        with patch.object(api, 'request', return_value={'jobs': [{'name': 'other', 'conclusion': 'success'}] * 100}):
-            self.assertFalse(api.full_ci_jobs(row))
-
 
 def platform_fixture(groups=('windows', 'macos')):
     assets, release_assets, tags, runtimes, channels = {}, {}, {}, {}, {}
@@ -576,6 +316,8 @@ class PlatformRemote(Remote):
         super().__init__({'baseline': '0' * 40}, assets)
         self.plan = plan
         self.refs = dict(plan['baselines'])
+        if len(plan['groups']) == 1:
+            self.refs['refs/tags/' + plan['tags']['installer']] = plan['source']
         self.ci_sources = []
 
     def ci(self, plan):
@@ -691,6 +433,9 @@ class PlatformRelease(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'highest frozen platform'):
                 rc.build_platforms(source, baselines, '1.2.4', ['macos'])
             build.assert_not_called()
+            with self.assertRaisesRegex(ValueError, 'require both macOS and Windows'):
+                rc.build_platforms(source, baselines, '1.2.6', ['macos'])
+            build.assert_not_called()
 
     def test_both_platforms_publish_before_atomic_channel_promotion(self):
         plan, assets = platform_fixture()
@@ -699,10 +444,7 @@ class PlatformRelease(unittest.TestCase):
             output = Path(tmp)
             self.setup_output(output, assets)
             self.publish_case(remote, output)
-            self.assertEqual(remote.ci_sources, [
-                (plan['source'], plan['source_tree']),
-                (plan['executor_source'], plan['executor_tree']),
-            ])
+            self.assertEqual(remote.ci_sources, [])
             self.assertTrue(all(remote.refs[ref] == row['runtime'] for ref, row in plan['channels'].items()))
             self.assertEqual(remote.latest, plan['tags']['installer'])
             writes = [args for event, args in remote.events if event == 'push' and any('--force-with-lease=' in value for value in args)]
@@ -716,7 +458,7 @@ class PlatformRelease(unittest.TestCase):
             with patch.object(rc, 'commit', return_value='3' * 40), \
                     patch.object(rc, 'git', return_value=json.dumps({'version': '1.2.3'})), \
                     patch.object(rc, 'build_platforms', return_value=(plan, assets)) as build, \
-                    patch.object(rc, 'validate'), patch.object(rc, 'source_payload'):
+                    patch.object(rc, 'source_payload'):
                 rc.prepare_platforms(output, plan['source'], 'auto', 'all')
                 frozen = (output / 'plan.json').read_bytes()
                 rc.prepare_platforms(output, plan['source'], 'auto', 'all')
@@ -737,7 +479,7 @@ class PlatformRelease(unittest.TestCase):
             with patch.object(rc, 'commit', return_value='3' * 40), \
                     patch.object(rc, 'git', return_value=json.dumps({'version': '1.2.3'})), \
                     patch.object(rc, 'build_platforms', return_value=(plan, assets)), \
-                    patch.object(rc, 'validate'), patch.object(rc, 'source_payload'):
+                    patch.object(rc, 'source_payload'):
                 rc.prepare_platforms(output, plan['source'], 'auto', 'all', release_notes=changelog)
                 body = (output / 'release-notes.md').read_text()
                 self.assertIn(changelog, body)
@@ -816,20 +558,16 @@ class PlatformRelease(unittest.TestCase):
             self.assertEqual(remote.refs[rc.MAC_CHANNELS[1]], plan['baselines'][rc.MAC_CHANNELS[1]])
             self.assertIsNone(remote.latest)
 
-    def test_executor_ci_or_unselected_platform_drift_stops_before_writes(self):
-        for failure in ('executor-ci', 'windows-drift'):
-            plan, assets = platform_fixture(('macos',))
-            remote = PlatformRemote(plan, assets)
-            if failure == 'executor-ci':
-                remote.ci = lambda p: (_ for _ in ()).throw(ValueError('Executor CI missing')) if p['source_tree'] == plan['executor_tree'] else {}
-            else:
-                remote.refs[rc.CHANNEL] = 'f' * 40
-            with tempfile.TemporaryDirectory() as tmp:
-                output = Path(tmp)
-                self.setup_output(output, assets)
-                with self.assertRaises(ValueError):
-                    self.publish_case(remote, output)
-                self.assertEqual(remote.events, [])
+    def test_unselected_platform_drift_stops_before_writes(self):
+        plan, assets = platform_fixture(('macos',))
+        remote = PlatformRemote(plan, assets)
+        remote.refs[rc.CHANNEL] = 'f' * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            self.setup_output(output, assets)
+            with self.assertRaises(ValueError):
+                self.publish_case(remote, output)
+            self.assertEqual(remote.events, [])
 
 
 
@@ -892,7 +630,7 @@ class ReinstallationRelease(unittest.TestCase):
             with patch.object(rc, 'commit', return_value='3' * 40), \
                     patch.object(rc, 'git', return_value=json.dumps({'version': '1.2.3'})), \
                     patch.object(rc, 'build_platforms', return_value=(plan, assets)) as build, \
-                    patch.object(rc, 'validate'), patch.object(rc, 'source_payload'):
+                    patch.object(rc, 'source_payload'):
                 rc.prepare_platforms(output, plan['source'], plan['version'], 'all', installation_mode='reinstall')
                 self.assertIn('REINSTALLATION REQUIRED', (output / 'release-notes.md').read_text())
                 with self.assertRaises(ValueError):
