@@ -23,6 +23,7 @@ from agent_brain_client.adapters.packages.client import (
     MCP_CONTENT_ENTRY,
     MCP_LAUNCHER_ENTRY,
     launcher_package_files,
+    single_entry_pin,
     managed_worker_abi,
     UpdateBlocked,
     version,
@@ -246,6 +247,42 @@ def registration_stamp(runtime, harness):
     return before["package"], before, owned
 
 
+def foreground_binding(registered, harness, runtime):
+    """Keep the verified command identity across application-managed catalog updates."""
+    from agent_brain_client.interfaces.mcp.launcher import runtime_fingerprint
+
+    from agent_brain_client.adapters.harnesses.codex import binding
+    from agent_brain_client.adapters.installation.installation import registered_mcp_digest
+
+    package, metadata, entries = registered
+    entry_path = str(Path(package) / MCP_LAUNCHER_ENTRY)
+    home = Path(runtime["device_home"])
+    native = binding.native_home(home, runtime) / "config.toml"
+    watch = [native]
+    if harness == "codex":
+        host_entries = [(str(native), entries)]
+        content_entry = entries
+    else:
+        host_entries = entries
+        watch.extend(Path(path) for path, _ in entries)
+        content_entry = binding.entry(binding.read(native))
+        if not isinstance(content_entry, dict) or registered_mcp_digest(content_entry) != metadata["mcp_sha256"]:
+            raise UpdateBlocked("Verified Content registration required")
+    normalized = []
+    for path, entry in host_entries:
+        if entry["args"].count(entry_path) != 1:
+            raise UpdateBlocked("Verified fixed native MCP command required")
+        value = dict(entry, args=[None if arg == entry_path else arg for arg in entry["args"]])
+        if harness == "codex":
+            value.pop("enabled_tools")
+        normalized.append((path, value))
+    state = home / ".config/agent-brain-client"
+    watch.extend((state / "codex-mcp.json", state / "launcher-handover.json"))
+    watch.extend(Path(runtime[key]) for key in ("https_profile", "content_policy") if key in runtime)
+    identity = (harness, metadata["release_policy"], metadata["release_policy_sha256"], normalized)
+    return runtime_fingerprint(identity), content_entry["enabled_tools"], watch
+
+
 def isolated_stdio_operation(policy_path, policy_sha256, harness, mode, ticket, protocol):
     """Run in a transient verified-release authority/worker bootstrap."""
     releases = ClientReleases(policy_path, policy_sha256)
@@ -261,7 +298,6 @@ def isolated_stdio_operation(policy_path, policy_sha256, harness, mode, ticket, 
     registered = registration_stamp(runtime, harness)
     if (
         registered is None
-        or Path(registered[0]) != Path(__file__).resolve().parents[3]
         or registered[1]["release_policy"] != str(policy_path)
         or registered[1]["release_policy_sha256"] != policy_sha256
     ):
@@ -276,10 +312,21 @@ def isolated_stdio_operation(policy_path, policy_sha256, harness, mode, ticket, 
         releases.engine.adapter.preflight(package, manifest)
         return active
 
+    installed = Path(registered[0])
+    invoked = Path(__file__).resolve().parents[3]
+    fixed = single_entry_pin(installed, launcher_package_files(installed))
+    if installed != invoked:
+        from agent_brain_client.adapters.installation.installation import package_check
+
+        bootstrap = Path(runtime["device_home"]) / ".config/agent-brain-client/first-install/bootstrap"
+        if (
+            (invoked != bootstrap and invoked.parent != Path(releases.engine.local) / "packages")
+            or fixed is None or single_entry_pin(invoked, launcher_package_files(invoked)) != fixed
+        ):
+            raise UpdateBlocked("Reconnect to the changed MCP supervisor")
+        package_check(invoked, releases.policy)
     stamp = runtime_fingerprint(registered)
     request = json.loads(ticket, object_pairs_hook=private_files.pairs) if ticket is not None else None
-    if mode == "check":
-        return {"current": request == {"registration": stamp}}
     if mode in ("discover", "background-content", "background-update"):
         expected = None if mode == "discover" else {"registration": stamp}
         if request != expected or protocol is not None:
@@ -305,6 +352,9 @@ def isolated_stdio_operation(policy_path, policy_sha256, harness, mode, ticket, 
         if len(result.stdout) > 1024:
             raise UpdateBlocked("Bounded Content background status required")
         return json.loads(result.stdout)
+    binding_stamp, enabled_tools, binding_watch = foreground_binding(registered, harness, runtime)
+    if mode == "check":
+        return {"current": request == {"registration": binding_stamp}}
     if mode == "plan":
         if request is not None or protocol is not None:
             raise UpdateBlocked("Read-only worker plan required")
@@ -312,8 +362,8 @@ def isolated_stdio_operation(policy_path, policy_sha256, harness, mode, ticket, 
     elif mode in ("resolve", "verify-retained"):
         if (
             not isinstance(request, dict)
-            or set(request) != {"registration", "active"}
-            or request["registration"] != stamp
+            or set(request) != {"registration", "native_registration", "active"}
+            or request["registration"] != binding_stamp
             or not isinstance(request["active"], dict)
             or protocol is not None
         ):
@@ -321,6 +371,8 @@ def isolated_stdio_operation(policy_path, policy_sha256, harness, mode, ticket, 
         if mode == "verify-retained":
             active = verified_retained(request["active"])
         else:
+            if request["native_registration"] != stamp:
+                raise UpdateBlocked("MCP worker ticket no longer matches the native registration")
             # A new command can only come from the verified serving pointer
             # or its exact retained journal predecessor.
             active = releases.verified_active(serving=True)
@@ -342,7 +394,6 @@ def isolated_stdio_operation(policy_path, policy_sha256, harness, mode, ticket, 
         raise UpdateBlocked("Unknown private stdio operation")
     if active is None or content_runtime_blocker(active, releases.policy):
         raise UpdateBlocked("Verified serving MCP worker required")
-    fixed = launcher_package_files(registered[0]).get(MCP_LAUNCHER_ENTRY)
     if fixed is None or launcher_package_files(active["package"]).get(MCP_LAUNCHER_ENTRY) != fixed:
         raise UpdateBlocked("Reconnect to the changed MCP supervisor")
     worker = content_worker(active, runtime, harness)
@@ -354,10 +405,11 @@ def isolated_stdio_operation(policy_path, policy_sha256, harness, mode, ticket, 
         return {"fingerprint": worker.fingerprint, "cache_abi": worker.cache_abi}
     if mode == "plan":
         return {
-            "ticket": {"registration": stamp, "active": active},
+            "ticket": {"registration": binding_stamp, "native_registration": stamp, "active": active},
+            "enabled_tools": enabled_tools,
             "fingerprint": worker.fingerprint,
             "cache_abi": worker.cache_abi,
-            "watch": list(map(str, (releases.engine.journal, releases.engine.pointer))),
+            "watch": list(map(str, (releases.engine.journal, releases.engine.pointer, *binding_watch))),
         }
     return {
         "command": [*worker.command, "--own-runtime-lease"],

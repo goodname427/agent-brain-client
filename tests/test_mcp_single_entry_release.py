@@ -58,6 +58,18 @@ def worker_main(root, directory, label, protocol):
     marker(root, "spawn-" + label)
     if label == "B" and (root / "change-registration-on-B-ready").exists():
         marker(root, "changed-registration")
+    if (root / "dynamic-catalog").exists():
+        args = {"type": "object", "properties": {"action": {"type": "string"}}}
+        worker_tool = dict(server.catalog[0], inputSchema=args)
+        server.catalog = [worker_tool, {"name": "disabled_by_binding", "inputSchema": args}]
+        if label == "A":
+            server.catalog.append({"name": "withdrawn", "inputSchema": args})
+            server.catalog.append({"name": "changed", "inputSchema": args})
+        if label == "B":
+            args["properties"]["optional"] = {"type": "boolean"}
+            worker_tool["description"] = "Updated description"
+            server.catalog.append({"name": "added", "inputSchema": args})
+            server.catalog.append({"name": "changed", "inputSchema": dict(args, required=["optional"])})
     write_response(sys.stdout, {
         "abWorkerReady": HANDOFF_VERSION,
         "versions": [PROTOCOL],
@@ -93,9 +105,14 @@ else:
     from agent_brain_client.interfaces.mcp.server import WorkerSpec, supervise_stdio as supervise
 
 def spec(label, fingerprint, cache):
+    enabled = None
+    if (root / "dynamic-catalog").exists():
+        enabled = frozenset(("fixture", "withdrawn", "changed", "disabled_by_binding") if label == "A"
+                            else ("fixture", "added", "changed"))
     return WorkerSpec(
         (sys.executable, "-B", test_file, "worker", str(root),
          str(root / ("release-" + label)), label), fingerprint, cache,
+        *([enabled] if enabled is not None else []),
     )
 
 stamp = None
@@ -127,6 +144,7 @@ status = supervise(
     spec("A", "A", cache_abi), observe, sys.stdin.buffer, sys.stdout, {},
     poll_interval=0.02, probe_timeout=3,
     **({"idle_timeout": 0.35, "can_switch": registration_current} if mode == "fixed" else {}),
+    **({"dynamic_catalog": True} if (root / "dynamic-catalog").exists() else {}),
 )
 if mode == "fixed":
     assert not any(name.startswith("agent_brain_client") for name in sys.modules)
@@ -135,11 +153,15 @@ raise SystemExit(status)
 """
 
 
-class SingleEntryPair(BrokerTestCase):
+class SingleEntryFixture(BrokerTestCase):
+    dynamic_catalog = False
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
+        if self.dynamic_catalog:
+            marker(self.root, "dynamic-catalog")
         for label, body in (("A", FIXTURE_A), ("B", FIXTURE_B), ("rollback", FIXTURE_A)):
             release = self.root / ("release-" + label)
             release.mkdir()
@@ -174,22 +196,32 @@ class SingleEntryPair(BrokerTestCase):
             lambda: self.assertTrue((self.root / "persistent-exited").is_file(),
                                     "Persistent entry should shut down without importing business"))
         self.addCleanup(self.stop_broker)
-        self.output, self.buffered = Queue(), {}
+        self.output, self.buffered, self.notifications = Queue(), {}, Queue()
 
         def read():
             for line in self.broker.stdout:
-                self.output.put(json.loads(line))
+                response = json.loads(line)
+                if "method" in response:
+                    self.notifications.put(response)
+                else:
+                    self.output.put(response)
             self.output.put(None)
 
         self.reader = threading.Thread(target=read, daemon=True)
         self.reader.start()
         self.send("initialize", 1, INIT)
         self.await_marker("spawn-A")
-        self.assertEqual(self.receive(1)["result"]["protocolVersion"], PROTOCOL)
+        initialized = self.receive(1)["result"]
+        self.assertEqual(initialized["protocolVersion"], PROTOCOL)
+        if self.dynamic_catalog:
+            self.assertTrue(initialized["capabilities"]["tools"]["listChanged"])
         self.send("notifications/initialized")
         self.send("tools/list", 2)
         self.catalog = self.receive(2)["result"]
 
+
+
+class SingleEntryPair(SingleEntryFixture):
     def test_ordinary_release_adds_module_drains_and_rolls_back_on_same_connection(self):
         fixed_identity = (self.root / "persistent-started").read_bytes()
         broker_pid = self.broker.pid
@@ -265,6 +297,46 @@ class SingleEntryPair(BrokerTestCase):
         self.await_marker("spawn-B")
         self.await_diagnostic("native-registration-changed")
         self.assertEqual(self.receive(4)["result"]["worker"], "A")
+
+
+class DynamicSingleEntryPair(SingleEntryFixture):
+    dynamic_catalog = True
+
+    def test_new_catalog_preserves_cached_calls_and_drains_in_flight_work(self):
+        self.call(3, "write")
+        self.await_marker("writing-A")
+        self.activate("B")
+        self.await_marker("barrier-A")
+        self.call(4, "read")  # The host still has the earlier tool list.
+        marker(self.root, "release")
+        self.assertEqual(self.receive(3)["result"]["worker"], "A")
+        self.assertEqual(self.receive(4)["result"]["worker"], "B")
+        self.assertEqual(self.notifications.get(timeout=8)["method"], "notifications/tools/list_changed")
+        self.send("tools/list", 5)
+        listed = {tool["name"]: tool for tool in self.receive(5)["result"]["tools"]}
+        self.assertEqual(set(listed), {"fixture", "added", "changed"})
+        self.assertEqual(listed["fixture"]["description"], "Updated description")
+        self.assertIn("optional", listed["fixture"]["inputSchema"]["properties"])
+        self.send("tools/call", 6, {"name": "withdrawn"})
+        self.assertEqual(self.receive(6)["error"]["code"], -32602)
+        self.send("tools/call", 7, {"name": "changed", "arguments": {"action": "read"}})
+        self.assertEqual(self.receive(7)["error"]["code"], -32602)
+        self.send("tools/call", 8, {"name": "changed", "arguments": {"action": "read", "optional": True}})
+        self.assertEqual(self.receive(8)["result"]["worker"], "B")
+        self.send("tools/call", 9, {"name": "disabled_by_binding"})
+        self.assertEqual(self.receive(9)["error"]["code"], -32602)
+        self.assertIsNone(self.broker.poll())
+
+    def test_parked_connection_wakes_with_the_new_catalog(self):
+        self.await_marker("retired-A")
+        self.assertIsNone(self.broker.poll())
+        self.activate("B")
+        time.sleep(0.15)
+        self.assertFalse((self.root / "spawn-B").exists())
+        self.call(3, "read")
+        self.assertEqual(self.receive(3)["result"]["worker"], "B")
+        self.assertEqual(self.notifications.get(timeout=8)["method"], "notifications/tools/list_changed")
+        self.assertIsNone(self.broker.poll())
 
 
 @unittest.skipUnless(sys.platform == "darwin", "Uses the native arm64 enrollment fixture")
@@ -490,12 +562,49 @@ class PublishedMacMigration(unittest.TestCase):
         self.assertEqual(registry.read_bytes(), registry_bytes)
         self.assertEqual((native / "config.toml").read_bytes(), native_bytes)
 
+        # The new supervisor is already running. Update an authorized tool
+        # addition through the public registration transaction.
+        tools_source = "src/agent_brain_client/application/tools/catalog.py"
+        additive = dict(next_payload)
+        additive[tools_source] = additive[tools_source].replace(
+            b"    return tools\n",
+            b'    tools.append({"name": "fixture_added", "inputSchema": {"type": "object"}})\n'
+            b"    return tools\n",
+            1,
+        )
+        self.assertNotEqual(additive[tools_source], next_payload[tools_source])
+        report, fifth = update("0.8.32", "e" * 40, additive)
+        self.assertTrue(report["mcp_registration_changed"], report)
+        self.assertEqual(
+            Path(private_files.private_json(registry)["package"]), Path(fifth["package"]),
+        )
+        self.assertEqual(exchange("ping"), {"fixture_release": "B"})
+        def current_tools():
+            listed = exchange("tools/list")["tools"]
+            return {row["name"] for row in listed} - {row["name"] for row in catalog["tools"]}
+
+        try:
+            wait_until(lambda: current_tools() == {"fixture_added"}, timeout=12)
+        except AssertionError:
+            self.fail(diagnostic.read_text(encoding="utf-8"))
+        self.assertTrue((self.home / "catalog-notified").exists())
+        wait_until(lambda: worker_pid(fifth) is None, timeout=40)
+        self.assertIsNone(child.poll())
+        self.assertEqual(exchange("ping"), {"fixture_release": "B"})
+        self.assertIsNotNone(worker_pid(fifth))
         child.stdin.close()
         self.assertEqual(child.wait(timeout=12), 0)
         with self.assertRaises(ProcessLookupError):
             os.kill(fallback_pid, 0)
         with cache_locked(lease, timeout=0):
             pass
+
+        # A host still holding the earlier command also gets the fresh catalog.
+        stale, reconnect = ManualUpdateTests.start_registered(self, command)
+        reconnect("initialize", INIT)
+        reconnect("notifications/initialized", notification=True)
+        self.assertIn("fixture_added", {row["name"] for row in reconnect("tools/list")["tools"]})
+        self.assertIsNone(stale.poll())
 
 
 if __name__ == "__main__":

@@ -67,7 +67,8 @@ class ClientUpdate:
                 )
                 + "Call an already available Agent Brain MCP tool and inspect its fresh client_runtime. "
                 "If client_runtime.reload_required is false, no MCP worker reload is needed. A compatible worker can take over the same connection after in-flight work completes. "
-                "Check the actual session tools against offered_tools. When the host supports an in-session refresh, use it after in-flight work finishes and verify the worker and tools in the same session. "
+                "Check the actual session tools against offered_tools. When native registration changed, host tool visibility is pending until verified in the same session. "
+                "Use the host's supported MCP refresh after in-flight work finishes if the tools remain stale. If the supervisor itself changed, reconnect once using the new registration. "
                 "Report same-session use as incomplete if the host cannot refresh or the next tool call fails. If the worker, commit or session tools are unobservable, report them as unknown. "
                 "Hook configuration/trust and mapped Rules/Skills have separate host loading states; review them only when changed. "
                 "Do not infer model context loading from a package or worker version."

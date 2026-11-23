@@ -580,7 +580,7 @@ version = sys.argv[sys.argv.index("--client-version") + 1]
 harness = sys.argv[sys.argv.index("--harness") + 1]
 seed = sys.argv[sys.argv.index("--managed-stdio") + 1]
 protocol = "2025-11-25"
-tools = [{"name": "fixture", "inputSchema": {"type": "object"}}]
+tools = [{"name": "content_catalog", "inputSchema": {"type": "object"}}]
 
 class Worker:
     ready = seed == protocol
@@ -661,7 +661,11 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
 
         def receive():
             for raw in child.stdout:
-                replies.put(json.loads(raw))
+                response = json.loads(raw)
+                if response.get("method") == "notifications/tools/list_changed":
+                    (self.home / "catalog-notified").touch()
+                    continue
+                replies.put(response)
             replies.put(None)
 
         reader = threading.Thread(target=receive, daemon=True)
@@ -731,7 +735,7 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
         exchange("initialize", INIT)
         exchange("notifications/initialized", notification=True)
         tools = exchange("tools/list")
-        args = {"name": "fixture"}
+        args = {"name": "content_catalog"}
         self.assertEqual(exchange("tools/call", args)["worker_version"], old_active["version"])
 
         # Hook maintenance has separate coverage. The real public update, release
@@ -882,7 +886,7 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
         exchange("initialize", INIT)
         exchange("notifications/initialized", notification=True)
         tools = exchange("tools/list")
-        args = {"name": "fixture"}
+        args = {"name": "content_catalog"}
         old_worker = exchange("tools/call", args)
         self.assertEqual(old_worker["worker_version"], "0.8.25")
         self.assertEqual(old_worker["harness"], "codebuddy")
