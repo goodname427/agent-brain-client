@@ -165,7 +165,14 @@ class NativeMemoryCapture(unittest.TestCase):
                 if task.get("approval_id") == approval_id:
                     matching.append(task)
             self.assertEqual(len(matching), 1)
-            pending, _ = onboarding.deliver_approved_batch(home, matching[0], collection.native_services())
+            load = ContentSession._load
+
+            def load_without_review(session, name, *args, **kwargs):
+                self.assertNotEqual(name, "memory-reviews.json", "Onboarding must not read old reviews")
+                return load(session, name, *args, **kwargs)
+
+            with patch.object(ContentSession, "_load", new=load_without_review):
+                pending, _ = onboarding.deliver_approved_batch(home, matching[0], collection.native_services())
             return pending
 
         def tool(worker, name, arguments, *, run_delivery=True):
@@ -219,25 +226,28 @@ class NativeMemoryCapture(unittest.TestCase):
             source_file.parent.mkdir(parents=True)
             source_file.write_bytes(original.encode())
             os.utime(source_file, ns=(source_epoch, source_epoch))
-            protected = {
+            explicit_markers = {
                 "private.md": "[LocalOnly] fictional protected material",
-                "credential.md": "password: synthetic-password-12345",
-                "variables.md": 'EXAMPLE_SECRET_ACCESS_KEY="synthetic-credential-fixture"',
-                "confidential.md": "confidential: fictional unavailable material",
-                "invalid.md": " \r\n\t ",
+                "no-share.md": "Do not share this fictional protected material.",
             }
-            for filename, raw in protected.items():
+            accepted_by_capture = {
+                "credential-example.md": "password: fictional-placeholder",
+                "confidential-example.md": "confidential: fictional heading",
+                "unverified-example.md": "sharing: unverified\nA fictional preference.",
+            }
+            invalid_original = " \r\n\t "
+            originals = {**explicit_markers, **accepted_by_capture, "invalid.md": invalid_original}
+            for filename, raw in originals.items():
                 source_file.with_name(filename).write_bytes(raw.encode())
-            source_file.with_name("unapproved.md").write_bytes(b"sharing: unverified\nAn unapproved synthetic preference.")
             if windows_layout and harness == "codebuddy":
                 project = native / "projects/unverified/memory/topic.md"
                 project.parent.mkdir(parents=True)
                 project.write_bytes(b"An isolated Windows CodeBuddy project synthetic preference.")
 
             sources = worker.adapter.sources
-            legacy_excluded = "Fictional original with a retained explicit exclusion."
-            restricted_source = source_file.with_name("explicitly-excluded.md")
-            restricted_source.write_bytes(legacy_excluded.encode())
+            legacy_excluded = "Fictional original previously excluded by a historical review."
+            legacy_source = source_file.with_name("legacy-excluded.md")
+            legacy_source.write_bytes(legacy_excluded.encode())
             old_skipped = "Fictional raw original rejected by a historical value judgement."
             source_file.with_name("old-skipped.md").write_bytes(old_skipped.encode())
             rows = {
@@ -257,8 +267,14 @@ class NativeMemoryCapture(unittest.TestCase):
             if windows_layout:
                 old_skipped += " The revised raw original should still be eligible."
                 source_file.with_name("old-skipped.md").write_bytes(old_skipped.encode())
-            protected_edit = legacy_excluded + " This edited revision must remain local."
-            restricted_source.write_bytes(protected_edit.encode())
+            legacy_original = legacy_excluded
+            if windows_layout:
+                legacy_original += " This revision is also shareable."
+                legacy_source.write_bytes(legacy_original.encode())
+            allowed_originals = {
+                original, old_skipped, legacy_original, *explicit_markers.values(), *accepted_by_capture.values(),
+            }
+            allowed_count = len(allowed_originals)
             if windows_layout:
                 key = seed_legacy_native_plan(worker.adapter, original_row, MEMORY)
                 request = {
@@ -308,20 +324,21 @@ class NativeMemoryCapture(unittest.TestCase):
                 self.assertEqual(peer.requests, [])
             peer.admitted = False
             denied = tool(worker, "memory_onboard", args)
-            self.assertEqual(denied["reasons"].get("server-source-paused-or-denied"), 2, denied)
+            self.assertEqual(denied["reasons"].get("server-source-paused-or-denied"), allowed_count, denied)
             self.assertEqual([r["method"] for r in peer.requests], ["memory_global_status"])
             peer.requests.clear()
             peer.admitted = True
 
             queued = tool(worker, "memory_onboard", args)
-            self.assertGreaterEqual(queued["counts"]["pending"], 2, queued)
+            self.assertGreaterEqual(queued["counts"]["pending"], allowed_count, queued)
+            self.assertEqual(queued["reasons"]["delivery-unconfirmed"], 1)
             encoded = json.dumps(queued, ensure_ascii=False)
-            for raw in [original, legacy_excluded, *protected.values(), str(workspace)]:
+            for raw in [*allowed_originals, str(workspace)]:
                 self.assertNotIn(raw, encoded)
             self.assertEqual(len(peer.receipts), 1)
             admission, initial_wire = peer.requests
             self.assertEqual(admission["method"], "memory_global_status")
-            self.assertIn(initial_wire["params"]["event"]["content"], (original, old_skipped))
+            self.assertIn(initial_wire["params"]["event"]["content"], allowed_originals)
             original_origin = initial_wire["params"]["origin"]
             _, imported_queue = collection.build_delivery_queue(value, original_origin, harness)
             # Ordinary Hook drains cannot send an explicit historical request.
@@ -334,13 +351,18 @@ class NativeMemoryCapture(unittest.TestCase):
             other_workspace.mkdir()
             other_origin = collection.eligible(value, str(other_workspace))
             hook_client, hook_queue = collection.build_delivery_queue(value, other_origin, harness)
-            hook = stage_messages(
-                hook_queue, project_id=namespace(
-                    hook_client.actor, source_id(value["scope"], other_origin, "personal"),
-                ),
-                session_id="synthetic-hook-session", operation_id="synthetic-hook-operation",
-                phase="prompt", messages=[{"role": "user", "content": "Fictional Hook capture."}],
-            )
+            hook_context = {
+                "project_id": namespace(hook_client.actor, source_id(value["scope"], other_origin, "personal")),
+                "session_id": "synthetic-hook-session",
+                "operation_id": "synthetic-hook-operation",
+                "phase": "prompt",
+            }
+            for raw in explicit_markers.values():
+                declined = stage_messages(hook_queue, **hook_context, messages=[{"role": "user", "content": raw}])
+                self.assertEqual(declined["status"], "excluded-local-only-or-sensitive")
+            hook = stage_messages(hook_queue, **hook_context, messages=[
+                {"role": "user", "content": "\n".join(accepted_by_capture.values())},
+            ])
             hook_rid = hook["request_ids"][0]
             self.assertEqual(hook_queue.queue_status()["pending"], 1)
             private_directory(hook_queue.cache.parent / ("f" * 64))
@@ -359,53 +381,85 @@ class NativeMemoryCapture(unittest.TestCase):
             done = tool(worker, "memory_onboard", resume)
             self.assertEqual(done["approval_id"], queued["approval_id"])
             self.assertEqual(done["counts"]["already_exists"], 1, done)
-            self.assertEqual(done["counts"]["received"], 1, done)
-            self.assertEqual(done["extraction"], {"no-facts": 2})
+            self.assertEqual(done["counts"]["received"], allowed_count - 1, done)
+            self.assertEqual(done["extraction"], {"no-facts": allowed_count})
             self.assertIn(initial_wire, peer.receipts.values())
-            self.assertEqual(peer.requests[-2], initial_wire)
+            self.assertEqual(peer.requests[calls + 1], initial_wire)
             memory_events = [row["params"]["event"] for row in peer.receipts.values()
                              if row["params"]["event"]["contract"] == "agentbrain.native-memory.v1"]
-            self.assertEqual({row["content"] for row in memory_events}, {original, old_skipped})
+            self.assertEqual({row["content"] for row in memory_events}, allowed_originals)
             preserved = next(row for row in memory_events if row["content"] == original)
             self.assertEqual(preserved["occurred_at"], "2009-02-13T23:31:30.123Z")
-            self.assertEqual(done["counts"]["excluded"], len(protected) + 1 + (windows_layout and harness == "codebuddy"))
+            self.assertEqual(done["counts"]["excluded"], int(windows_layout and harness == "codebuddy"))
             self.assertEqual(done["counts"]["failed"], 1)
             self.assertEqual(done["reasons"]["original-outside-bound"], 1)
             self.assertFalse(any(
-                row["request"]["params"]["event"].get("content") == protected["invalid.md"]
+                row["request"]["params"]["event"].get("content") == invalid_original
                 for row in imported_queue._queued()
             ))
-            self.assertEqual(done["reasons"]["private-or-sensitive"], 4)
-            self.assertEqual(done["reasons"]["shareability-unconfirmed"], 1)
-            self.assertEqual(done["reasons"]["retained-exclusion"], 1)
             if windows_layout and harness == "codebuddy":
                 self.assertEqual(done["reasons"]["project-origin-unverified"], 1)
-            self.assertEqual(len(peer.requests), calls + 3)
-            self.assertEqual(len(peer.receipts), 3)
+            self.assertEqual(len(peer.requests), calls + allowed_count + 1)
+            self.assertEqual(len(peer.receipts), allowed_count + 1)
             alternate = dict(args["destination"], origin=str(other_workspace))
             wrong_resume = tool(worker, "memory_onboard", dict(resume, destination=alternate,
                                 approval_id=queued["approval_id"]))
             self.assertEqual(wrong_resume["error"]["code"], "onboarding-approval-unavailable")
             source_file.with_name("after-approval.md").unlink()
             existing = tool(worker, "memory_onboard", dict(args, destination=alternate))
-            self.assertEqual(existing["counts"]["already_exists"], 2)
-            self.assertEqual(len(peer.requests), calls + 3)  # no rebind or disclosure
+            self.assertEqual(existing["counts"]["already_exists"], allowed_count)
+            self.assertEqual(len(peer.requests), calls + allowed_count + 1)
             repeated = tool(worker, "memory_onboard", resume)
             self.assertEqual(repeated, done)
-            self.assertEqual(len(peer.requests), calls + 3)  # progress reads do not call the Server
-            self.assertEqual(len(peer.receipts), 3)
+            self.assertEqual(len(peer.requests), calls + allowed_count + 1)
+            self.assertEqual(len(peer.receipts), allowed_count + 1)
             self.assertEqual(cloud.calls, [])
             for filename, expected in legacy_ledgers.items():
                 self.assertEqual(worker.adapter._load(filename), expected)
-            self.assertNotIn(legacy_excluded, json.dumps(peer.requests))
-            self.assertNotIn(protected_edit, json.dumps(peer.requests))
             if harness == "codex" and not windows_layout:
-                for filename in (*protected, "unapproved.md", "explicitly-excluded.md"):
+                formerly_excluded = source_file.with_name("former-rule.md")
+                former_body = "confidential: another fictional heading"
+                formerly_excluded.write_text(former_body, encoding="utf-8")
+                # Simulate a terminal approval and summary saved by Client 0.8.39.
+                previous = imported_queue._load(f"onboarding/{queued['approval_id']}.json")
+                inventory = worker.adapter.sources.provider.inventory(onboarding=True)
+                historical = {
+                    "binding": dict(previous["binding"], schema=1),
+                    "inventory": {field: inventory[field] for field in ("status", "sources")},
+                }
+                prior_id = digest(historical)
+                imported_queue._save(f"onboarding/{prior_id}.json", historical)
+                prior_summary = {key: value for key, value in done.items() if key != "approval_id"}
+                prior_summary.update(
+                    counts={"received": 0, "already_exists": 2, "excluded": 7, "failed": 1, "pending": 0},
+                    reasons={"retained-exclusion": 1, "private-or-sensitive": 5,
+                             "shareability-unconfirmed": 1, "original-outside-bound": 1},
+                )
+                imported_queue._save(onboarding.progress_name(prior_id),
+                                     {"started": 0, "summary": prior_summary})
+                before_reapproval = len(peer.requests)
+                prior_resume = dict(resume, approval_id=prior_id)
+                self.assertEqual(tool(server(), "memory_onboard", prior_resume),
+                                 dict(prior_summary, approval_id=prior_id))
+                self.assertEqual(len(peer.requests), before_reapproval)
+                accepted = tool(worker, "memory_onboard", args)
+                self.assertNotEqual(accepted["approval_id"], prior_id)
+                self.assertEqual(accepted["counts"]["already_exists"], allowed_count)
+                self.assertEqual(accepted["counts"]["received"], 1)
+                self.assertEqual(accepted["counts"]["excluded"], 0)
+                resent = peer.requests[before_reapproval:]
+                self.assertEqual([row["method"] for row in resent],
+                                 ["memory_global_status", "memory_global_event_submit"])
+                self.assertEqual(resent[1]["params"]["event"]["content"], former_body)
+                self.assertEqual(tool(server(), "memory_onboard", args), accepted)
+                self.assertEqual(len(peer.requests), before_reapproval + 2)
+                for filename in (*originals, formerly_excluded.name, legacy_source.name):
                     source_file.with_name(filename).unlink()
                 for index in range(213):
                     raw = f"Fictional onboard batch item {index}".encode()
                     source_file.with_name(f"batch-{index}.md").write_bytes(raw)
                 before_large = len(peer.requests)
+                before_large_receipts = len(peer.receipts)
                 batch = tool(worker, "memory_onboard", args, run_delivery=False)
                 batch_id = batch["approval_id"]
                 self.assertEqual(batch["status"], "onboarding-queued")
@@ -450,7 +504,7 @@ class NativeMemoryCapture(unittest.TestCase):
                 submitted = [row for row in new_calls if row["method"] == "memory_global_event_submit"]
                 self.assertEqual(len(submitted), 213)
                 self.assertEqual(len({row["request_id"] for row in submitted}), 213)
-                self.assertEqual(len(peer.receipts), 216)
+                self.assertEqual(len(peer.receipts), before_large_receipts + 213)
                 self.assertLess(len(json.dumps(batch)), 1024)
 
                 final_original = ("Fictional 原文 🌿 e\u0301 \t \0\r\n" * 1400).encode()
@@ -483,7 +537,7 @@ class NativeMemoryCapture(unittest.TestCase):
                 self.assertEqual(len(sent), 2)
                 self.assertEqual(sent[0], sent[1])
                 self.assertEqual(sent[0]["params"]["event"]["content"].encode(), final_original)
-                self.assertEqual(len(peer.receipts), 217)
+                self.assertEqual(len(peer.receipts), before_large_receipts + 214)
                 self.assertFalse(any(
                     metadata.private_json(path, cache=True).get("harness") == "onboarding"
                     for path in delivery.directory(home).glob("*.json")
@@ -562,7 +616,7 @@ class HarnessParity(unittest.TestCase):
                     session.sources.read_onboarding_original(*selected)
                 self.assertEqual(cloud.calls, [])
 
-    def test_onboarding_exclusions_leave_legacy_cas_and_its_recovery_untouched(self):
+    def test_onboarding_source_read_leaves_legacy_cas_and_its_recovery_untouched(self):
         for acknowledgement_lost in (False, True):
             with self.subTest(acknowledgement_lost=acknowledgement_lost), tempfile.TemporaryDirectory() as tmp:
                 home = Path(tmp).resolve()
@@ -590,7 +644,8 @@ class HarnessParity(unittest.TestCase):
                 session.invoke(request, reconciles=reconciles)
                 calls = len(cloud.calls)
                 with patch.object(session, "_queued", side_effect=AssertionError("Legacy CAS read")):
-                    self.assertEqual(session.sources.onboarding_exclusions(), set())
+                    body, _ = session.sources.read_onboarding_original(*selected)
+                    self.assertEqual(body, "Synthetic durable source")
                 self.assertEqual(len(cloud.calls), calls)
                 if acknowledgement_lost:
                     replay = session.invoke(request, reconciles=reconciles)

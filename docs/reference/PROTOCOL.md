@@ -183,10 +183,11 @@ MCP `memory_onboard` accepts the bound `harness`, an exact
 and `source_scope: "shareable-personal-native-memory"`. Set `approved: true`
 after the user confirms this host's supported personal native-memory scope is
 shareable and approves that exact destination. The Client calculates source
-fingerprints locally. It skips Windows CodeBuddy project memories with no
-verified origin, files with uncertain sharing, and content excluded by local
-privacy, sensitivity and size checks. The wire bound is 8192 UTF-16 units per
-original. Native transcripts and databases stay outside the authorized readers.
+fingerprints locally. It skips Windows CodeBuddy project memories because the
+reader cannot verify their origin. An explicitly approved original is submitted
+without classifying its text. Native transcripts and databases stay outside the
+authorized readers. Original text is limited to 128 KiB of UTF-8 and must fit
+the native HTTPS request envelope after JSON encoding.
 Installation and future capture approval do not authorize historical transfer.
 
 The Client retains a path-free snapshot of the approved source scope, bound to
@@ -195,15 +196,16 @@ same tool with `resume: true`, the same scope and destination, and optionally
 the returned `approval_id`. Without an ID, the tool resumes the latest saved
 batch at that exact destination. It uses the original snapshot and skips
 files added after approval. Source and pause gates are rechecked on resume.
-A changed file does not inherit approval for its new fingerprint.
+A changed file requires approval for its new fingerprint. To reconsider files
+skipped by an older Client's disclosure rules after a batch ended, explicitly
+approve the current scope and destination again to start a fresh batch. The
+Client reuses exact L0 receipts across batches.
 
 Replies contain the approval reference and aggregate received, already present,
 excluded, pending and failed counts without source bodies, paths or credentials.
 A verified L0 receipt confirms original acceptance. Extraction is reported
-separately. Legacy CAS and summary evidence stays in the existing ledgers and is
-reported as exclusion evidence. The existing authenticated L0 protocol and
-durable outbox handle transfer. Capture settings and Server authorization are
-unchanged.
+separately. The existing authenticated L0 protocol and durable outbox handle
+transfer. Legacy CAS, summary and review entries stay in their existing ledgers.
 
 Other explicit imports accept a reviewed private normalized source plan selected
 with --import-plan and --import-plan-sha256. Inventory is persisted
