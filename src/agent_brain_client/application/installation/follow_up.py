@@ -1,9 +1,10 @@
 """application / installation / follow_up: one owner for each contract and rule."""
 
-from agent_brain_client.application.memory.guidance import ONBOARDING_URL
+from agent_brain_client.application.memory.guidance import ONBOARDING_GUIDANCE, ONBOARDING_URL
 
 ONBOARD_COVERAGE_GUIDANCE = (
-    f"Once host MCP tools are available, follow the public Onboarding guide at {ONBOARDING_URL} for read-only connection verification and separately authorized source import and receipt checks. "
+    ONBOARDING_GUIDANCE
+    + f"See the public Onboarding guide at {ONBOARDING_URL} for details. "
     "The guide can be used with an empty Agent Brain account and without preloaded Skills. This handoff records that no source scan or data transfer has occurred. "
 )
 

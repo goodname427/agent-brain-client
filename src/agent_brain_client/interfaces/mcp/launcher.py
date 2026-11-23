@@ -6,7 +6,7 @@ from pathlib import Path
 import argparse
 import json
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 from queue import Empty, Queue
 import subprocess
@@ -211,9 +211,11 @@ def isolated_stdio(args):
             raise ValueError("Bounded private MCP response required")
         return json.loads(result.stdout)
 
-    def worker(plan):
+    def worker(plan, snapshot=None):
         ticket = json.dumps(plan["ticket"], separators=(",", ":"), sort_keys=True)
-        return WorkerSpec((ticket,), plan["fingerprint"], plan["cache_abi"])
+        tools = plan["enabled_tools"]
+        return WorkerSpec((ticket,), plan["fingerprint"], plan["cache_abi"],
+                          None if tools is None else frozenset(tools), snapshot)
 
     retained = None
 
@@ -251,6 +253,7 @@ def isolated_stdio(args):
         watch_paths = tuple(map(Path, first["watch"]))
         stamp = first["ticket"]["registration"]
         stamp_ticket = json.dumps({"registration": stamp})
+        background_ticket = json.dumps({"registration": first["ticket"]["native_registration"]})
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
         print(json.dumps({"stage": "mcp-supervisor", "status": "verified-startup-unavailable"}),
               file=sys.stderr)
@@ -267,10 +270,11 @@ def isolated_stdio(args):
         return tuple(state)
 
     last = None
+    initial = replace(initial, binding_token=token())
     active_commit = first["ticket"]["active"]["commit"]
 
     def observe():
-        nonlocal last, active_commit
+        nonlocal last, active_commit, background_ticket
         # An unchanged local snapshot avoids process boots/hash checks at idle.
         before = token()
         if before == last:
@@ -281,7 +285,8 @@ def isolated_stdio(args):
         if plan["ticket"]["registration"] != stamp:
             last = before
             return False
-        result = worker(plan)
+        result = worker(plan, before)
+        background_ticket = json.dumps({"registration": plan["ticket"]["native_registration"]})
         commit = plan["ticket"]["active"]["commit"]
         if commit != active_commit:
             active_commit = commit
@@ -292,9 +297,15 @@ def isolated_stdio(args):
     def registration_current():
         return probe("check", stamp_ticket).get("current") is True
 
+    def binding_observed(spec):
+        try:
+            return token() == spec.binding_token
+        except OSError:
+            return False
+
     def background(task):
         try:
-            return probe(task, stamp_ticket, timeout=55 if task == "background-content" else 120)
+            return probe(task, background_ticket, timeout=55 if task == "background-content" else 120)
         except (OSError, ValueError, subprocess.SubprocessError):
             return None  # Background work never owns the MCP streams.
 
@@ -302,7 +313,8 @@ def isolated_stdio(args):
     return supervise_stdio(initial, observe, sys.stdin.buffer, sys.stdout, {},
                            idle_timeout=30, can_switch=registration_current,
                            prepare_worker=prepare_worker, remember_worker=remember_worker,
-                           background_tick=tasks.tick)
+                           background_tick=tasks.tick,
+                           binding_observed=binding_observed)
 
 
 # The fixed launcher owns the host stream. The worker's startup record and drain
@@ -322,6 +334,8 @@ class WorkerSpec:
     command: tuple
     fingerprint: str
     cache_abi: str
+    enabled_tools: frozenset[str] | None = None
+    binding_token: tuple | None = None
 
 
 def runtime_files(manifest):
@@ -432,17 +446,23 @@ def _read_contract(record):
     if not isinstance(record["versions"], list) or not isinstance(record["tools"], list):
         raise ValueError("Invalid MCP protocol or tool catalog")
     tool_contract(record["tools"])
+    for tool in record["tools"]:
+        schema = tool.get("inputSchema")
+        if not isinstance(schema, dict) or schema.get("type") != "object":
+            raise ValueError("Worker tool object input schema required")
+        required = schema.get("required", [])
+        if not isinstance(required, list) or not all(isinstance(name, str) for name in required):
+            raise ValueError("Invalid required tool arguments")
     return record
 
 
-def _compatible_catalog(first, second, protocol):
+def _compatible_session(first, second, protocol):
     return (
         protocol in second["versions"]
         and first["capabilities"] == second["capabilities"]
         and first["toolContract"] == second["toolContract"]
         and first["cacheIdentity"] == second["cacheIdentity"]
         and first["cacheAbi"] == second["cacheAbi"]
-        and tool_contract(first["tools"]) == tool_contract(second["tools"])
     )
 
 
@@ -450,6 +470,7 @@ def supervise_stdio(
     initial, observe, source, output, options, *,
     poll_interval=2, probe_timeout=20, request_timeout=90, drain_timeout=90, max_pending=255,
     can_switch=None, idle_timeout=None, prepare_worker=None, remember_worker=None, background_tick=None,
+    binding_observed=None,
 ):
     """Keep one host session while locally verified workers change.
 
@@ -463,6 +484,7 @@ def supervise_stdio(
     halt = threading.Event()
     active = candidate = None
     catalog = protocol = None
+    published_tools = {}
     initialized = restart_attempted = input_closed = oversized = False
     drain_id = None
     drain_deadline = None
@@ -502,6 +524,35 @@ def supervise_stdio(
 
     def report(code):
         print(json.dumps({"stage": "mcp-handoff", "error_code": code}), file=sys.stderr)
+
+    def publish(worker):
+        nonlocal published_tools
+        allowed = latest.enabled_tools if latest else frozenset()
+        tools = {tool["name"]: tool for tool in worker.contract["tools"]
+                 if allowed is None or tool["name"] in allowed}
+        if tools != published_tools:
+            published_tools = tools
+            if initialized and protocol is not None:
+                write_response(output, {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+
+    def binding_ready():
+        return not latest or binding_observed is None or binding_observed(latest)
+
+    def tool_error(line):
+        request = json.loads(line)
+        params = request.get("params")
+        if request.get("jsonrpc") != "2.0" or not isinstance(params, dict) or not isinstance(params.get("name"), str):
+            return None  # The worker validates malformed requests.
+        name = params["name"]
+        # A retained worker cannot restore a name removed from the new registration.
+        tool = published_tools.get(name)
+        if tool is None:
+            return {"code": -32602, "message": "Tool is unavailable in the current authorization."}
+        arguments = params.get("arguments", {})
+        required = tool.get("inputSchema", {}).get("required", [])
+        if isinstance(arguments, dict) and any(key not in arguments for key in required):
+            return {"code": -32602, "message": "Required tool arguments changed; refresh the tool list."}
+        return None
 
     def begin_drain(now):
         nonlocal drain_sequence, drain_id, drain_deadline, drain_acked
@@ -555,6 +606,12 @@ def supervise_stdio(
                 pending.pop(rid, None)
                 write_response(output, _response(rid, QUEUE_DEADLINE_ERROR))
                 return
+            if method == "tools/call":
+                error = tool_error(line)
+                if error is not None:
+                    pending.pop(rid, None)
+                    write_response(output, _response(rid, error))
+                    return
             pending[rid] = (method, active)
             # The managed worker uses the same monotonic clock. Keep the host's
             # original JSON bytes and its original deadline on either worker.
@@ -580,7 +637,7 @@ def supervise_stdio(
         waiting = remaining
 
     def flush_waiting():
-        while waiting and active is not None and active.contract is not None and drain_id is None:
+        while waiting and active is not None and active.contract is not None and drain_id is None and binding_ready():
             dispatch(*waiting.popleft())
 
     def receive(line, received):
@@ -635,7 +692,7 @@ def supervise_stdio(
             if rid is not None and deadline <= time.monotonic():
                 write_response(output, _response(rid, QUEUE_DEADLINE_ERROR))
                 return
-            if active is None or active.contract is None or drain_id is not None:
+            if active is None or active.contract is None or drain_id is not None or not binding_ready():
                 if len(waiting) >= max_pending:
                     if rid is None:
                         return
@@ -680,7 +737,7 @@ def supervise_stdio(
             if candidate is not None and candidate.contract is None and now >= candidate.deadline:
                 close_candidate("worker-readiness-timeout")
                 flush_waiting()
-            if parked and waiting:
+            if parked and waiting and binding_ready():
                 # The earlier worker has already exited. On wake, a newly
                 # verified compatible worker may use the existing host session.
                 target = latest if latest == last_good or registration_current() else last_good
@@ -726,6 +783,7 @@ def supervise_stdio(
                 elif not any(owner is active for _, owner in pending.values()):
                     if registration_current():
                         previous, active, candidate = active, candidate, None
+                        publish(active)
                         last_good = previous.spec
                         restart_attempted = False
                         drain_id = None
@@ -769,6 +827,8 @@ def supervise_stdio(
                     except (OSError, RuntimeError):
                         rejected = latest.fingerprint
                         report("worker-start-failed")
+            if binding_observed is not None:
+                flush_waiting()
             try:
                 owner, line, received = events.get(timeout=0.1)
             except Empty:
@@ -790,6 +850,8 @@ def supervise_stdio(
                         active.close_input()
             elif owner is release:
                 latest = line
+                if active is not None and active.contract is not None:
+                    publish(active)
                 if serial_target is not None and serial_target != latest:
                     drain_id = None
                     serial_target = None
@@ -810,8 +872,8 @@ def supervise_stdio(
                         owner.contract = _read_contract(json.loads(line, object_pairs_hook=pairs))
                         if owner.contract["cacheAbi"] != owner.spec.cache_abi:
                             raise ValueError("MCP worker cache ABI changed")
-                        if catalog is not None and not _compatible_catalog(
-                            catalog, owner.contract, protocol
+                        if catalog is not None and not _compatible_session(
+                            catalog, owner.contract, protocol,
                         ):
                             raise ValueError("MCP catalog changed")
                         if (
@@ -831,6 +893,7 @@ def supervise_stdio(
                     if owner is active or active is None:
                         active, candidate = owner, None
                         catalog = owner.contract if catalog is None else catalog
+                        publish(owner)
                         if remember_worker is not None:
                             last_good = owner.spec
                             remember_worker(owner.spec, owner.command)
@@ -874,11 +937,19 @@ def supervise_stdio(
                 method, _ = pending.pop(rid, (None, None))
                 result = response.get("result")
                 if method == "initialize" and isinstance(result, dict):
+                    capabilities = result["capabilities"]
+                    caps = dict(capabilities.get("tools", {}), listChanged=True)
+                    response["result"] = dict(result, capabilities=dict(capabilities, tools=caps))
                     negotiated = result.get("protocolVersion")
                     if negotiated in catalog["versions"]:
                         protocol = negotiated
                 if method == "tools/list" and isinstance(result, dict) and "tools" in result:
-                    response["result"] = dict(result, tools=catalog["tools"])
+                    if not binding_ready():
+                        write_response(output, _response(rid, {
+                            "code": -32003, "message": "MCP registration or release changed; retry after verification."
+                        }))
+                        continue
+                    response["result"] = dict(result, tools=list(published_tools.values()))
                 write_response(output, response)
     finally:
         halt.set()
