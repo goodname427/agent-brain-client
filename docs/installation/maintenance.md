@@ -10,3 +10,19 @@
 4. **检查自动采集与召回。** 使用已登记环境的[项目记忆](../reference/automatic-memory.md)或[全局记忆](../reference/global-memory.md)状态入口，分别核对本地启停、实际事件接收、待传队列、提取和召回。保留现有排除目录与项目隔离；用户明确要求时才执行相应的暂停或恢复。只重放已授权队列中的原请求，核对远端是否确认。
 
 收到 `review-required`、所有权冲突或中断状态时，保留原文件、回执和队列，按平台说明使用原命令续接或执行适用的 `repair`。仅在已知布局不兼容或发布说明明确要求时按[重装流程](reinstall.md)处理。交接记录实际观察到的状态和未完成项，正文、凭据和私密路径留在设备内。
+
+## 自动检查和升级
+
+从支持本功能的版本起，已验证的 HTTPS 安装默认启用设备级自动更新，包括用原 `update` 入口首次升级到该版本的设备。已有任何一个受管 MCP 连接时，通过原 stable 渠道约每小时检查一次。兼容候选通过现有校验后在同一连接交接，原有显式 `check-update` 和 `update` 始终可用。
+
+| 操作 | macOS | Windows |
+| --- | --- | --- |
+| 查看 | `sh bootstrap/macos/install.sh --action auto-update` | `./bootstrap/windows/install.ps1 -Action auto-update` |
+| 开启 | 加 `--update-policy enable` | 加 `-UpdatePolicy enable` |
+| 永久关闭 | 加 `--update-policy disable` | 加 `-UpdatePolicy disable` |
+| 暂停一天 | 加 `--update-policy pause-day` | 加 `-UpdatePolicy pause-day` |
+| 暂停到指定时刻 | 加 `--update-policy pause --pause-until <带时区的时间>` | 加 `-UpdatePolicy pause -PauseUntil <带时区的时间>` |
+
+指定时刻使用带明确时区偏移的 ISO 8601 格式，例如 `2026-12-01T09:00:00+08:00`。查看结果列出当前策略、活动包版本和最近一次后台尝试。实际 worker 版本仍由新鲜 MCP 响应确认。需要重连、重新授权或迁移的候选走原手动流程。
+
+只要对应宿主的受管 MCP 连接仍在，已授权 Content 约每分钟对账一次，无需工具调用。软件升级关闭或暂停时对账照常进行。重连后，后台会用原请求重试尚未确认的 Content 写入，手动恢复入口仍可处理冲突。

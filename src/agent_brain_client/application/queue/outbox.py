@@ -341,6 +341,7 @@ class DurableOutbox:
     ):
         resolved = False
         for row in self._queued():
+            check_request()
             request = row["request"]
             if (
                 exact_request_id is not None

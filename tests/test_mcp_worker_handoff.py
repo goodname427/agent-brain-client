@@ -564,6 +564,14 @@ if sys.argv[1:] == ["--self-check"]:
     raise SystemExit(0)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "src"))
+if "--background-content" in sys.argv:
+    home = Path(sys.argv[sys.argv.index("--device-home") + 1])
+    commit = sys.argv[sys.argv.index("--background-commit") + 1]
+    probe = home / ("synthetic-background-" + commit)
+    probe.touch()
+    print(json.dumps({"status": "content-current"}))
+    raise SystemExit(0)
+
 from agent_brain_client.adapters.storage.content import CONTENT_CACHE_ABI
 from agent_brain_client.interfaces.mcp.framing import write_response
 from agent_brain_client.interfaces.mcp.server import DRAIN_METHOD, HANDOFF_VERSION, serve
@@ -759,6 +767,30 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
         self.assertEqual(Path(observed["worker_source"]).parents[4], Path(active["package"]))
         self.assertIsNone(child.poll())
         self.assertEqual(exchange("tools/list"), tools)
+
+    def test_fixed_connection_dispatches_content_without_a_request_and_after_release_change(self):
+        from agent_brain_client.adapters.installation import installation
+        from agent_brain_client.adapters.packages.client import ClientReleases
+        from agent_brain_client.adapters.storage.background import manage_policy
+        from agent_brain_client.adapters.storage.private_files import private_json
+
+        metadata = private_json(self.home / ".config/agent-brain-client/codex-mcp.json")
+        _, registered, _, _ = installation.registered_context(self.home, metadata)
+        channel = ClientReleases(metadata["release_policy"], metadata["release_policy_sha256"])
+        old = self.packages(channel, Path(metadata["package"]))
+        manage_policy(self.home, "disable")
+        child, _ = self.start_registered(registered)
+        # The registered fixed launcher starts parked, before any MCP request.
+        wait_until(lambda: (self.home / ("synthetic-background-" + old["commit"])).exists())
+        self.assertEqual(channel.verified_active(), old)
+
+        installed = channel.update()
+        self.assertEqual(installed["status"], "updated", installed)
+        commit = installed["active"]["commit"]
+        # The original idle connection sees the verified pointer and does not
+        # wait for the next periodic tick or require an initialize request.
+        wait_until(lambda: (self.home / ("synthetic-background-" + commit)).exists())
+        self.assertIsNone(child.poll())
 
     def codebuddy_registration(self):
         from agent_brain_client.adapters.harnesses.codebuddy import configuration as host

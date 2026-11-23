@@ -8,6 +8,8 @@ param(
     [string]$AccessKeyFile,
     [string]$Connection,
     [string]$ExpectedConnectionSha256,
+    [string]$UpdatePolicy,
+    [string]$PauseUntil,
     [switch]$Help
 )
 $ErrorActionPreference = 'Stop'
@@ -57,6 +59,8 @@ try {
     if ($AccessKeyFile) { $arguments += @('--access-key-file', $AccessKeyFile) }
     if ($Connection) { $arguments += @('--connection', $Connection) }
     if ($ExpectedConnectionSha256) { $arguments += @('--expected-connection-sha256', $ExpectedConnectionSha256) }
+    if ($UpdatePolicy) { $arguments += @('--update-policy', $UpdatePolicy.ToLowerInvariant()) }
+    if ($PauseUntil) { $arguments += @('--pause-until', $PauseUntil) }
     & $python -X utf8 -I -B (Join-Path $root 'bootstrap/source_checkout.py') --request-route @arguments
     $route = $LASTEXITCODE
     if ($route -eq 11) { exit 0 }
@@ -75,7 +79,7 @@ try {
     exit $LASTEXITCODE
 } catch {
     if ($stage -eq 'dependencies' -and $Action -eq 'status' -and
-        -not ($Help -or $Surface -or $Server -or $AccessKeyFile -or $Connection -or $ExpectedConnectionSha256) -and
+        -not ($Help -or $Surface -or $Server -or $AccessKeyFile -or $Connection -or $ExpectedConnectionSha256 -or $UpdatePolicy -or $PauseUntil) -and
         (-not $Harness -or $Harness -in @('codex', 'codebuddy')) -and (Test-ClientStateAbsent)) {
         [ordered]@{
             operation = 'status'; outcome = 'completed'; status = 'client-not-installed'

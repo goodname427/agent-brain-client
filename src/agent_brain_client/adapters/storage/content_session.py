@@ -15,6 +15,7 @@ from agent_brain_client.adapters.storage.content_limits import (
     sha,
     cache_bytes,
 )
+from functools import partial
 import os
 from pathlib import Path
 import re
@@ -119,8 +120,13 @@ class ContentSession(FileContentOutbox):
         self._require_storage()
         require_memory_verified(self.home, getattr(self.client, "profile_sha", None))
 
-    def refresh_transaction(self):
+    def refresh_transaction(self, *, background=False):
+        if background:
+            return self._outbox_locked(self.cache / "content.lock", timeout=0)
         return self._outbox_locked(self.cache / "content.lock")
+
+    def refresh_baseline(self):
+        return self._load("active.json"), self._load("offline-snapshot.json"), self.offline_denial_epoch()
 
     def replay_writes(self):
         self._drain()
@@ -182,14 +188,19 @@ class ContentSession(FileContentOutbox):
         ):
             raise CacheBlocked()
 
-    def fetch_snapshot(self):
+    def fetch_snapshot(self, *, background_baseline=None, catalog_probe=None):
         kinds = self.policy["kinds"]
-        catalog = self._catalog(kinds)
+        scan = partial(self._catalog, kinds)
+        active, pin, denial = self.refresh_baseline() if background_baseline is None else background_baseline
+        denied = (isinstance(pin, dict) and pin.get("read_denied") is True) or (
+            denial is not None and (not isinstance(pin, dict) or pin.get("denial_epoch") != denial)
+        )
+        # A shared catalog can predate a refusal. Reauthorization needs a live scan.
+        catalog = catalog_probe(scan) if catalog_probe is not None and not denied else scan()
         # Reuse only a fully verified snapshot bound to this service and policy.
         # The live catalog revision, not the previous commit, determines reuse.
         cached = {}
-        active = self._load("active.json")
-        pin = self._load("offline-snapshot.json")
+        reusable = None
         if (
             isinstance(active, dict)
             and set(active) == {"commit", "snapshot_sha"}
@@ -200,7 +211,7 @@ class ContentSession(FileContentOutbox):
             and pin.get("policy_sha") == self.policy_sha
             and pin.get("service_sha") == self.queue_sha
             and pin.get("active") == active
-            and not pin.get("read_denied")
+            and not denied
         ):
             previous = self._load("snapshots/" + active["commit"] + ".json")
             if (
@@ -223,6 +234,7 @@ class ContentSession(FileContentOutbox):
                     ):
                         raise CacheBlocked()
                     cached[kind, identity] = value
+                reusable = previous
         records = []
         seen = set()
         for item in catalog["artifacts"]:
@@ -252,7 +264,13 @@ class ContentSession(FileContentOutbox):
                 raise CacheBlocked()
             contract.record(kind, value["record"], identity)
             records.append(value)
-        if self._catalog(kinds) != catalog:
+        if background_baseline is not None and reusable is not None and len(cached) == len(records) and all(
+            cached.get((value["kind"], value["id"])) is value for value in records
+        ):
+            # An authenticated catalog with identical authorized revisions needs
+            # neither a second scan nor a new snapshot, even if its commit moved.
+            return reusable
+        if scan() != catalog:
             raise CacheBlocked()
         snapshot = {
             "content_api_version": 1,
@@ -302,34 +320,44 @@ class ContentSession(FileContentOutbox):
             cursor = next_cursor
 
     def _deny_offline_snapshot(self):
-        # Preserve downloaded content, but do not mask a known service refusal
-        # with a later transport timeout, including after process restart.
+        # Refusal is independent of mapping. Each pin records the denial epoch
+        # seen before its live scan, so an older scan cannot overwrite a refusal.
         self.offline_denied = True
         try:
-            pin = self._load("offline-snapshot.json")
-            if (
-                isinstance(pin, dict)
-                and pin.get("policy_sha") == self.policy_sha
-                and pin.get("service_sha") == self.queue_sha
-                and pin.get("read_denied") is not True
-            ):
-                self._save("offline-snapshot.json", dict(pin, read_denied=True))
+            self._save("offline-denial.json", {"epoch": uuid.uuid4().hex})
         except Exception:
-            pass  # The current call still refuses cached results.
+            pass  # Storage failure still leaves this session fail-closed.
 
-    def _pin_offline_snapshot(self, snapshot):
-        # A policy alone does not bind cached records to a service/principal.
-        # Pin only after an authenticated remote fetch and owned-file checks.
-        active = {
-            "commit": snapshot["commit"],
-            "snapshot_sha": sha(contract.encode(snapshot)),
-        }
+    def offline_denial_epoch(self):
+        missing = object()
+        marker = self._load("offline-denial.json", missing)
+        if marker is missing:
+            return None
+        if (
+            not isinstance(marker, dict) or set(marker) != {"epoch"}
+            or not isinstance(marker["epoch"], str) or not re.fullmatch("[a-f0-9]{32}", marker["epoch"])
+        ):
+            raise CacheBlocked()
+        return marker["epoch"]
+
+    def _offline_identity(self, active, denial):
         identity = {
             "schema": 1,
             "policy_sha": self.policy_sha,
             "service_sha": self.queue_sha,
             "active": active,
         }
+        if denial is not None:
+            identity["denial_epoch"] = denial
+        return identity
+
+    def _pin_offline_snapshot(self, snapshot, denial):
+        if self.offline_denial_epoch() != denial:
+            raise CacheBlocked()
+        identity = self._offline_identity({
+            "commit": snapshot["commit"],
+            "snapshot_sha": sha(contract.encode(snapshot)),
+        }, denial)
         previous = self._load("offline-snapshot.json")
         if (
             isinstance(previous, dict)
@@ -372,12 +400,8 @@ class ContentSession(FileContentOutbox):
                 ):
                     raise CacheBlocked()
                 pin = self._load("offline-snapshot.json")
-                identity = {
-                    "schema": 1,
-                    "policy_sha": self.policy_sha,
-                    "service_sha": self.queue_sha,
-                    "active": active,
-                }
+                denial = self.offline_denial_epoch()
+                identity = self._offline_identity(active, denial)
                 if (
                     not isinstance(pin, dict)
                     or set(pin) != set(identity) | {"verified_at"}
@@ -444,6 +468,8 @@ class ContentSession(FileContentOutbox):
                     )
                     if result is None:
                         return unavailable("content_offline_cache_miss", True)
+                if self.offline_denied or self.offline_denial_epoch() != denial:
+                    raise CacheBlocked()
                 return {
                     "request_id": request["request_id"],
                     "result": result,
@@ -471,7 +497,6 @@ class ContentSession(FileContentOutbox):
                 "error": {"code": "transport_unconfirmed", "retryable": True},
                 "persistence": {"durable": False},
             }
-        check_request()
         lifecycle = request["params"].get("include_archived") is True
         # Authentication, scope, credential/identity failures and invalid responses
         # must remain errors even if an old local snapshot exists.
@@ -484,6 +509,7 @@ class ContentSession(FileContentOutbox):
             and error.get("code") in OFFLINE_TRANSPORT_ERRORS
         ):
             # An active snapshot cannot supply a lifecycle revision or archived state.
+            check_request()
             return result if lifecycle else self._offline_read(request)
         if (
             request["method"] == "content_catalog"
@@ -492,18 +518,13 @@ class ContentSession(FileContentOutbox):
             and isinstance(result, dict)
             and result.get("request_id") == request["request_id"]
         ):
+            check_request()
             return result
         if isinstance(result, dict) and "error" in result and not (
             lifecycle and isinstance(error, dict) and error.get("code") == "invalid_request"
         ):
-            self.offline_denied = True
-            try:
-                with locked(self.cache / "content.lock", cancel_check=check_request):
-                    self._deny_offline_snapshot()
-            except RequestStopped:
-                raise
-            except Exception:
-                pass
+            self._deny_offline_snapshot()
+        check_request()
         return result
 
     def refresh(self, *, replay=True):

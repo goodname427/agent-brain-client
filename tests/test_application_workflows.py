@@ -51,6 +51,9 @@ class RefreshPorts:
         self.calls.append("fetch")
         return {"records": []}
 
+    def offline_denial_epoch(self):
+        return None
+
     def apply_snapshot(self, snapshot, owned, progress):
         self.calls.append("apply")
         return {"status": "content-current"}
