@@ -15,6 +15,7 @@ from agent_brain_client.adapters.storage.content_limits import (
     sha,
     cache_bytes,
 )
+from functools import partial
 import os
 from pathlib import Path
 import re
@@ -119,13 +120,18 @@ class ContentSession(FileContentOutbox):
         self._require_storage()
         require_memory_verified(self.home, getattr(self.client, "profile_sha", None))
 
-    def refresh_transaction(self):
+    def refresh_transaction(self, *, background=False):
+        if background:
+            return self._outbox_locked(self.cache / "content.lock", timeout=0)
         return self._outbox_locked(self.cache / "content.lock")
+
+    def refresh_baseline(self):
+        return self._load("active.json"), self._load("offline-snapshot.json")
 
     def replay_writes(self):
         self._drain()
 
-    def _request(self, method, params):
+    def _request(self, method, params, *, deny_offline=None):
         response = self.client.request(
             {"request_id": uuid.uuid4().hex, "method": method, "params": params}
         )
@@ -146,7 +152,7 @@ class ContentSession(FileContentOutbox):
                 or error.get("retryable") is not True
                 or error.get("code") not in OFFLINE_TRANSPORT_ERRORS
             ):
-                self._deny_offline_snapshot()
+                (deny_offline or self._deny_offline_snapshot)()
             raise CacheBlocked()
         if not isinstance(response.get("result"), dict):
             raise CacheBlocked()
@@ -182,14 +188,22 @@ class ContentSession(FileContentOutbox):
         ):
             raise CacheBlocked()
 
-    def fetch_snapshot(self):
+    def fetch_snapshot(self, *, background_baseline=None, catalog_probe=None):
         kinds = self.policy["kinds"]
-        catalog = self._catalog(kinds)
+        request = self._request
+        if background_baseline is not None:
+            def deny_offline():
+                with self.refresh_transaction(background=True):
+                    if self.refresh_baseline() == background_baseline:
+                        self._deny_offline_snapshot()
+            request = partial(request, deny_offline=deny_offline)
+        scan = partial(self._catalog, kinds, request=request)
+        catalog = catalog_probe(scan) if catalog_probe is not None else scan()
         # Reuse only a fully verified snapshot bound to this service and policy.
         # The live catalog revision, not the previous commit, determines reuse.
         cached = {}
-        active = self._load("active.json")
-        pin = self._load("offline-snapshot.json")
+        reusable = None
+        active, pin = self.refresh_baseline() if background_baseline is None else background_baseline
         if (
             isinstance(active, dict)
             and set(active) == {"commit", "snapshot_sha"}
@@ -223,6 +237,7 @@ class ContentSession(FileContentOutbox):
                     ):
                         raise CacheBlocked()
                     cached[kind, identity] = value
+                reusable = previous
         records = []
         seen = set()
         for item in catalog["artifacts"]:
@@ -239,7 +254,7 @@ class ContentSession(FileContentOutbox):
                 continue
             value = cached.get((kind, identity))
             if value is None or value["revision"] != item["revision"]:
-                value = self._request("content_read", {"kind": kind, "id": identity})
+                value = request("content_read", {"kind": kind, "id": identity})
             if (
                 set(value)
                 != {"content_api_version", "kind", "id", "revision", "record"}
@@ -252,7 +267,13 @@ class ContentSession(FileContentOutbox):
                 raise CacheBlocked()
             contract.record(kind, value["record"], identity)
             records.append(value)
-        if self._catalog(kinds) != catalog:
+        if background_baseline is not None and reusable is not None and len(cached) == len(records) and all(
+            cached.get((value["kind"], value["id"])) is value for value in records
+        ):
+            # An authenticated catalog with identical authorized revisions needs
+            # neither a second scan nor a new snapshot, even if its commit moved.
+            return reusable
+        if scan() != catalog:
             raise CacheBlocked()
         snapshot = {
             "content_api_version": 1,
@@ -263,14 +284,15 @@ class ContentSession(FileContentOutbox):
             raise CollectionCapacityExceeded()
         return snapshot
 
-    def _catalog(self, kinds):
+    def _catalog(self, kinds, *, request=None):
+        request = request or self._request
         cursor = None
         commit = None
         artifacts = []
         seen = set()
         size = 0
         while True:
-            page = self._request(
+            page = request(
                 "content_catalog",
                 dict(kinds=kinds, **({"cursor": cursor} if cursor else {})),
             )

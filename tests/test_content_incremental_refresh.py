@@ -129,7 +129,7 @@ class IncrementalRefresh(unittest.TestCase):
 
 
 class BackgroundContentRefreshPort(unittest.TestCase):
-    """Exercise the existing no-replay pull used by a background invocation."""
+    """Drive background pull using two real mapping ports and a fake server."""
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -142,6 +142,9 @@ class BackgroundContentRefreshPort(unittest.TestCase):
             self.home, self.home / (host.name + "-cache"), fixture.POLICY,
             self.cloud, host=host, native_home=self.home / ("." + host.name),
         )
+
+    def refresh(self, host, *, still_current=lambda: True):
+        return self.session(host).synchronization.background_pull(still_current=still_current)
 
     def test_remote_content_changes_reach_both_projections_on_an_existing_connection(self):
         codex = self.session(CodexContentPorts)
@@ -172,7 +175,7 @@ class BackgroundContentRefreshPort(unittest.TestCase):
             ("skill", "synthetic-skill"): skill,
         })
         for host in hosts:
-            self.assertEqual(self.session(host).refresh(replay=False)["status"], "content-refreshed")
+            self.assertEqual(self.refresh(host)["status"], "content-refreshed")
         for path in memory_paths:
             self.assertEqual(path.read_text(), fixture.MEMORY["body"])
         for path in rule_paths:
@@ -183,9 +186,8 @@ class BackgroundContentRefreshPort(unittest.TestCase):
         self.assertIn(rule["body"], (ordinary.parent / "agent-brain-synthetic-rule.md").read_text())
         self.cloud.calls.clear()
         for host in hosts:
-            self.assertEqual(self.session(host).refresh(replay=False)["status"], "content-current")
-        self.assertTrue(self.cloud.calls)
-        self.assertTrue(all(row["method"] == "content_catalog" for row in self.cloud.calls))
+            self.assertEqual(self.refresh(host)["status"], "content-current")
+        self.assertEqual([row["method"] for row in self.cloud.calls], ["content_catalog"] * 2)
         before = {path: path.read_bytes() for path in (*memory_paths, *rule_paths, *skill_paths)}
 
         revised_skill = skill["files"]["SKILL.md"] + "\nSynthetic changed skill"
@@ -196,12 +198,12 @@ class BackgroundContentRefreshPort(unittest.TestCase):
         self.cloud.puts += 1
         self.cloud.offline = True
         for host in hosts:
-            self.assertEqual(self.session(host).refresh(replay=False)["status"], "content-refresh-blocked")
+            self.assertEqual(self.refresh(host)["status"], "content-refresh-blocked")
         self.assertEqual({path: path.read_bytes() for path in before}, before)
 
         self.cloud.offline = False
         for host in hosts:
-            self.assertEqual(self.session(host).refresh(replay=False)["status"], "content-refreshed")
+            self.assertEqual(self.refresh(host)["status"], "content-refreshed")
         for path in memory_paths:
             self.assertEqual(path.read_text(), "Synthetic changed memory")
         for path in rule_paths:
@@ -214,7 +216,7 @@ class BackgroundContentRefreshPort(unittest.TestCase):
         del self.cloud.records["skill", "synthetic-skill"]
         self.cloud.puts += 1
         for host in hosts:
-            self.assertEqual(self.session(host).refresh(replay=False)["status"], "content-refreshed")
+            self.assertEqual(self.refresh(host)["status"], "content-refreshed")
         for path in (*rule_paths, *skill_paths):
             self.assertFalse(path.exists(), path)
         self.assertNotIn(revised_rule["body"], codex_instructions.read_text())
@@ -243,11 +245,92 @@ class BackgroundContentRefreshPort(unittest.TestCase):
                 saved = pending.read_bytes()
                 self.cloud.offline = False
                 self.cloud.calls.clear()
-                result = self.session(host).refresh(replay=False)
+                result = self.refresh(host)
                 self.assertEqual(result["status"], "content-local-changes-retained")
                 self.assertEqual(pending.read_bytes(), saved)
                 self.assertEqual((session.cache / "active.json").read_bytes(), active)
                 self.assertEqual(self.cloud.calls, [])
+
+    def test_network_work_leaves_the_existing_offline_snapshot_accessible(self):
+        session = self.session(CodexContentPorts)
+        self.cloud.records["memory", "synthetic-topic"] = fixture.MEMORY
+        self.assertEqual(session.refresh()["status"], "content-refreshed")
+        original = self.cloud.request
+        read = {"request_id": "synthetic_reader", "method": "content_read",
+                "params": {"kind": "memory", "id": "synthetic-topic"}}
+
+        def blocked_catalog(request):
+            self.cloud.request = original
+            offline = self.session(CodexContentPorts)._offline_read(read)
+            self.assertTrue(offline["local_cache"]["available"], offline)
+            self.assertEqual(offline["result"]["record"], fixture.MEMORY)
+            return original(request)
+
+        from agent_brain_client.adapters.platforms.filesystem import cache_locked
+
+        def verify_available(request):
+            with cache_locked(session.cache / "content.lock", timeout=0):
+                pass
+            return blocked_catalog(request)
+
+        self.cloud.request = verify_available
+        self.assertEqual(self.refresh(CodexContentPorts)["status"], "content-current")
+
+    def test_background_snapshot_cannot_overwrite_a_newer_foreground_mapping(self):
+        host = CodexContentPorts
+        self.cloud.records["memory", "synthetic-topic"] = fixture.MEMORY
+        self.assertEqual(self.refresh(host)["status"], "content-refreshed")
+        self.cloud.puts += 1
+        self.cloud.records["memory", "synthetic-topic"] = dict(fixture.MEMORY, body="Synthetic background")
+
+        def foreground_commits():
+            self.cloud.puts += 1
+            self.cloud.records["memory", "synthetic-topic"] = dict(fixture.MEMORY, body="Synthetic foreground")
+            self.assertEqual(self.session(host).refresh()["status"], "content-refreshed")
+            return True
+
+        self.assertEqual(self.refresh(host, still_current=foreground_commits)["status"], "content-refresh-deferred")
+        path = self.home / ".config/agent-brain-client/content/memory/synthetic-topic.md"
+        self.assertEqual(path.read_text(), "Synthetic foreground")
+
+    def test_same_device_authorization_shares_unchanged_version_scan_between_hosts(self):
+        from agent_brain_client.runtime.background import content_refresh
+
+        now = 1000
+        hosts = (CodexContentPorts, CodeBuddyContentPorts)
+        self.cloud.records["memory", "synthetic-topic"] = fixture.MEMORY
+
+        def attempt(host, commit):
+            return content_refresh(
+                self.session(host), commit, host.name,
+                still_current=lambda: True, clock=lambda: now,
+            )["status"]
+
+        for host in hosts:
+            self.assertEqual(attempt(host, "a" * 40), "content-refreshed")
+        self.cloud.calls.clear()
+        now += 60
+        for host in hosts:
+            self.assertEqual(attempt(host, "a" * 40), "content-current")
+        self.assertEqual([row["method"] for row in self.cloud.calls], ["content_catalog"])
+
+        self.cloud.calls.clear()
+        for host in hosts:
+            self.assertEqual(attempt(host, "b" * 40), "content-current")
+        self.assertEqual([row["method"] for row in self.cloud.calls], ["content_catalog"])
+
+    def test_managed_initialize_schedules_without_running_a_foreground_pull(self):
+        session = self.session(CodexContentPorts)
+        server = ManagedContentServer(session, "0.8.35", "initial")
+        reply = server.handle({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": {"name": "synthetic", "version": "1"},
+            },
+        })
+        self.assertEqual(reply["content_mapping"]["status"], "content-refresh-scheduled")
+        self.assertEqual(self.cloud.calls, [])
 
 
 if __name__=='__main__':unittest.main()

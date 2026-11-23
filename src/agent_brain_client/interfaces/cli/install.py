@@ -70,6 +70,8 @@ def lifecycle_exit(action, value):
         and value.get("channel_checked") is True
     ):
         return 0
+    if action == "auto-update" and status == "client-auto-update-policy":
+        return 0
     if action in ("status", "repair", "uninstall") and status in (
         "client-uninstalled",
         "client-not-installed",
@@ -166,6 +168,7 @@ def parse_arguments(argv=None):
             "uninstall",
             "check-update",
             "update",
+            "auto-update",
         ),
         default="install",
     )
@@ -177,7 +180,13 @@ def parse_arguments(argv=None):
     parser.add_argument("--connection", type=Path)
     parser.add_argument("--expected-connection-sha256")
     parser.add_argument("--surface", choices=("ide", "cli", "both"))
+    parser.add_argument("--update-policy", choices=("enable", "disable", "pause", "pause-day"))
+    parser.add_argument("--pause-until", help="Future ISO 8601 time with a UTC offset.")
     args = parser.parse_args(argv)
+    if (args.update_policy or args.pause_until) and args.action != "auto-update":
+        parser.error("Update policy options require --action auto-update")
+    if bool(args.pause_until) != (args.update_policy == "pause"):
+        parser.error("Use --pause-until with --update-policy pause")
     if args.action in ("install", "reinstall"):
         args.harness = args.harness or "codex"
     if args.surface is not None and (
@@ -317,6 +326,17 @@ def main(argv=None):
             from agent_brain_client.adapters.storage.registration import registry_home
 
             value = retained_installation(home, registry_home(home, retained=True)).runtime_status()
+            return report(operation, value)
+        if args.action == "auto-update":
+            from agent_brain_client.runtime.updates import manage_auto_update
+
+            try:
+                value = manage_auto_update(home, args.update_policy, args.pause_until)
+            except (OSError, ValueError, RuntimeError):
+                value = {
+                    "status": "client-auto-update-policy-review-required",
+                    "next_action": "Verify the installed Client and use a future time with an explicit UTC offset when pausing.",
+                }
             return report(operation, value)
         if args.action in ("check-update", "update"):
             try:

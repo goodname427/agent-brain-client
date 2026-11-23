@@ -44,13 +44,13 @@ MCP 与正式 Hook 启动器现在都先选取完整校验的稳定不可变包�
 
 ### #261 客户端自动升级
 
-- 将现有后台发布检查接入共用调度，保留 60 秒启动去重窗口，软件升级持续检查采用自己的低频节奏。复用已登记 stable 策略、`ClientReleases.update(lock_timeout=0, can_activate=…)`、`update.lock`／`python-write.lock`、健康检查、回滚及同连接交接。显式 `check-update`／`update` 继续走原入口，不读自动策略来决定是否执行。后台路径避开显式维护的 Hook 注册和采集设置工作。断线或锁忙保留当前可用版本，下一轮再试。
+- 将现有后台发布检查接入共用调度，在每台设备上将同策略的渠道检查合并到约一小时一轮。持有连接的启动器约每分钟核对任务是否到期或策略已恢复。复用已登记 stable 策略、`ClientReleases.update(lock_timeout=0, can_activate=…)`、`update.lock`／`python-write.lock`、健康检查、回滚及同连接交接。显式 `check-update`／`update` 继续走原入口，不读自动策略来决定是否执行。后台路径避开显式维护的 Hook 注册和采集设置工作。断线或锁忙保留当前可用版本，下一轮再试。
 - `can_activate_at_startup` 已核对已登记的启动器、缓存 ABI 和工具契约。用相同入口确认各已安装宿主的有效契约。需要改登记、重新授权、重连或迁移的候选留给显式升级。保留在途请求，候选无法启动时沿用已获准的旧 worker，状态分别给出活动包、已观测运行版本以及未确认或待手动的原因。若首次功能版的固定启动器字节发生变化，0.8.34 原启动检查会拒绝这类候选的自动切换，由既有手动维护事务完成首次升级，缺省策略随新版本生效。
 - 合成验收覆盖首次安装及旧版迁移、关闭跨升级不丢失、重启后暂停按绝对时刻到期、自动和手动竞争、离线下轮恢复、候选失败保留旧包及在途请求结束后交接。用 Content 仍对账且手动维护仍可用的证据核对升级关闭／暂停的影响。
 
 ### 合成测试与原型对照
 
-现有复用边界及新增合成案例见 `tests/test_content_incremental_refresh.py`、`tests/test_catalog_pagination.py`、`tests/test_background_delivery.py`、`tests/test_startup_concurrency.py`、`tests/test_public_update.py` 和 `tests/test_mcp_worker_handoff.py`。新增测试从已存在的拉取或更新入口驱动。实际定时触发、策略设置和 Mac、Windows 两宿主的原生矩阵需用功能候选执行。
+新增合成案例见 `tests/test_background_maintenance.py` 和 `tests/test_content_incremental_refresh.py`。复用边界同时由 `tests/test_catalog_pagination.py`、`tests/test_background_delivery.py`、`tests/test_startup_concurrency.py`、`tests/test_public_update.py` 和 `tests/test_mcp_worker_handoff.py` 验证。Mac、Windows 两宿主的生产安装、许可或实际模型使用状态需单独取证。
 
 Mac 独立 checkout 尚无可核对的 Windows 22 文件原型副本。取得原型后比对触发是否仍覆盖停驻连接、目录去重键与应用回执、暂停及永久关闭的持久格式、自动候选使用的兼容门槛、手动入口与锁、以及固定启动器首次升级路径。按已验证入口保留一份实现，再在 Windows 执行原生验证。
 
