@@ -971,7 +971,7 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
             group.rename(root/'released-group')
             root.rename(Path(tmp)/'released-root')
 
-    def test_unicode_codex_home_full_review_and_offline_restart_use_existing_outbox(self):
+    def test_unicode_codex_home_legacy_pending_write_recovers_on_restart(self):
         from agent_brain_client.adapters.storage.content_session import ContentSession
         from agent_brain_client.interfaces.mcp.content import ContentServer
         helper=memory_inventory.base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
@@ -985,13 +985,13 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
         body=server.invoke('content_sources_read',params)['structuredContent']
         self.assertEqual(body['text'],'合成事实：本周更正了指示牌。')
         self.assertFalse(body['data_transferred']);self.assertEqual(helper.cloud.calls,[])
-        server.invoke('content_sources_review',dict(params,decision='shareable',reason_code='safe-cross-project-personal-summary'))
         record={'title':'Synthetic progress','description':'Synthetic Windows fixture','body':'Synthetic normalized experience','type':'feedback'}
-        staged=server.invoke('content_sources_stage',dict(params,id='synthetic-topic',record=record))['structuredContent']
-        self.assertFalse(staged['data_transferred']);self.assertEqual(helper.cloud.calls,[])
+        key=memory_inventory.base.seed_legacy_native_plan(adapter,row,record)
+        request=helper.request('synthetic_windows_memory_001')
+        request['params']['record']=record
+        reconciles=memory_inventory.base.seed_legacy_native_write(adapter,key,request)
         helper.cloud.offline=True
-        saved=server.invoke('content_put',{'kind':'memory','id':'synthetic-topic','record':record,'expected_revision':'missing',
-            'request_id':'synthetic_windows_memory_001','reconciles':{'request_ids':[],'source_keys':[staged['source_key']]}})
+        saved=server.invoke('content_put',dict(request['params'],request_id=request['request_id'],reconciles=reconciles))
         self.assertEqual(saved['structuredContent']['local_queue']['state'],'pending')
         self.assertFalse(saved['structuredContent']['persistence']['durable'])
         helper.cloud.offline=False;restored=restart();restored.refresh()
