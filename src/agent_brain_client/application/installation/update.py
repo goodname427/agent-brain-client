@@ -40,6 +40,7 @@ class ClientUpdate:
         # A changed package can already be loaded by a new worker by this point.
         result["reload_required"] = None
         result["reload_reason"] = "running-worker-unobserved"
+        tool_list_changed = result.get("registered_tool_list_changed")
         result["reload_check"] = {
             "active_package_changed": result.get("active_package_changed"),
             "mcp_registration_changed": result.get(
@@ -50,6 +51,10 @@ class ClientUpdate:
                 result.get("global_hook", {}).get("hook_configuration_changed"),
             ),
             "host_tool_visibility": "unknown",
+            "host_tool_list_refresh": (
+                "pending-verification" if tool_list_changed else
+                "not-needed-for-this-update" if tool_list_changed is False else "unknown"
+            ),
             "model_loaded": "unknown",
         }
         if result.get("status") in (
@@ -67,8 +72,14 @@ class ClientUpdate:
                 )
                 + "Call an already available Agent Brain MCP tool and inspect its fresh client_runtime. "
                 "If client_runtime.reload_required is false, no MCP worker reload is needed. A compatible worker can take over the same connection after in-flight work completes. "
-                "Check the actual session tools against offered_tools. When native registration changed, host tool visibility is pending until verified in the same session. "
-                "Use the host's supported MCP refresh after in-flight work finishes if the tools remain stale. If the supervisor itself changed, reconnect once using the new registration. "
+                + (
+                    "The registered MCP tool list changed. Host tool refresh is not yet verified, even if the new worker is already running. "
+                    "Compare the tools visible in this session with offered_tools. If they still differ, wait for in-flight calls and use the host's MCP refresh "
+                    "(in Codex desktop: Settings → MCP servers → Restart), then verify the list again in the same session. Do not run update again. "
+                    if tool_list_changed else
+                    "Check actual session tools against offered_tools if availability is unclear. "
+                )
+                + "If the supervisor itself changed, reconnect once using the new registration. "
                 "Report same-session use as incomplete if the host cannot refresh or the next tool call fails. If the worker, commit or session tools are unobservable, report them as unknown. "
                 "Hook configuration/trust and mapped Rules/Skills have separate host loading states; review them only when changed. "
                 "Do not infer model context loading from a package or worker version."
@@ -174,6 +185,7 @@ class ClientUpdate:
                     active_package_commit=before.get("commit"),
                 )
                 result["tool_discovery"] = self.installation.tool_discovery(before)
+                registered_before = set(result["tool_discovery"]["registered_enabled_tools"])
                 if action == "check-update":
                     discovered = channel.discover(
                         registration.transport_adapter, registration.platform, before["version"]
@@ -299,9 +311,9 @@ class ClientUpdate:
                         tool_discovery=None,
                         next_action="The verified package is active. The owned MCP registration could not be confirmed; preserve it and inspect the registration state.",
                     )
-                result["registered_tool_count"] = len(
-                    result["tool_discovery"]["registered_enabled_tools"]
-                )
+                registered_after = result["tool_discovery"]["registered_enabled_tools"]
+                result["registered_tool_count"] = len(registered_after)
+                result["registered_tool_list_changed"] = registered_before != set(registered_after)
                 if result["tool_discovery"]["registration_update_required"]:
                     return dict(
                         result,

@@ -38,6 +38,8 @@ class RuntimeReload(TestCase):
                     active.return_value = {'version':version, 'commit':commit}
                     result = server.invoke('content_catalog', {'kinds':['memory']})['structuredContent']['client_runtime']
                     self.assertIs(result['reload_required'], required)
+                    self.assertEqual(result['reload_required_scope'], 'mcp-worker')
+                    self.assertEqual(result['host_tool_visibility'], 'unknown')
                     self.assertEqual(result['reload_reason'], reason)
                     self.assertEqual(result['active_package_version'], version)
                     self.assertEqual(result['running_worker_commit'], 'a'*40)
