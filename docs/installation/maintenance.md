@@ -29,4 +29,4 @@
 
 只要对应宿主的受管 MCP 连接仍在，已授权 Content 约每分钟对账一次，无需工具调用。软件升级关闭或暂停时对账照常进行。重连后，后台会用原请求重试尚未确认的 Content 写入，手动恢复入口仍可处理冲突。
 
-明确授权当前宿主的可共享个人原生记忆和既有接收目标后，请宿主运行 Agent Brain Onboarding（`agent_brain_server.memory_onboard`）。
+明确授权当前宿主的可共享个人原生记忆和既有接收目标后，请宿主运行 Agent Brain Onboarding（`agent_brain_server.memory_onboard`）。工具返回批次 `approval_id` 后继续后台导入；用相同宿主、来源范围及接收目标，传入此 ID 和 `resume=true` 查询同批进度，无需再次批准或提交。接收计数来自 L0 回执，不代表提炼已完成。

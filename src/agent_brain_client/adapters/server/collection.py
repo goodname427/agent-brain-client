@@ -9,7 +9,8 @@ from urllib.request import Request
 from agent_brain_client.adapters.storage import metadata as metadata
 from agent_brain_client.adapters.storage import registration as registration_store
 from agent_brain_client.domain import privacy as privacy
-from agent_brain_client.domain.events import NATIVE_MEMORY_CONTRACT
+from agent_brain_client.domain.errors import GlobalRequestTooLarge
+from agent_brain_client.domain.events import MAX_NATIVE_MEMORY_BYTES, NATIVE_MEMORY_CONTRACT
 from agent_brain_client.domain.scopes import (
     digest,
     select,
@@ -18,6 +19,11 @@ from agent_brain_client.domain.scopes import (
     restricted,
 )
 from agent_brain_client.adapters.storage.collection import approved
+
+MAX_GLOBAL_REQUEST_BYTES = 128 * 1024
+# A control byte can expand to six JSON bytes. Preserve the old envelope for
+# everything but the explicitly scoped native original's encoded body.
+MAX_NATIVE_REQUEST_BYTES = 6 * MAX_NATIVE_MEMORY_BYTES + MAX_GLOBAL_REQUEST_BYTES
 
 
 class CollectionClient:
@@ -61,10 +67,7 @@ class CollectionClient:
         if method not in allowed:
             raise ValueError("Global memory operation required")
         rid = rid or "global_" + os.urandom(16).hex()
-        request = {"request_id": rid, "method": method, "params": params}
-        raw = json.dumps(request, ensure_ascii=False).encode()
-        if len(raw) > 131072:
-            raise ValueError("Bounded global request required")
+        raw = self._wire_body(method, params, rid)
         from agent_brain_client.application.control import (
             check_request,
             recall_timing_stage,
@@ -86,6 +89,9 @@ class CollectionClient:
                 "X-Agent-Brain-Protocol": "1",
                 "X-Agent-Brain-State-Schema": "1",
                 "X-Agent-Brain-Data-Mode": "personal",
+                # The bounded body check already restricted this opt-in to
+                # the native-memory event. The receiver authenticates first.
+                **({"X-Agent-Brain-Native-Memory": "1"} if len(raw) > MAX_GLOBAL_REQUEST_BYTES else {}),
             },
         )
 
@@ -180,17 +186,34 @@ class CollectionClient:
             raise ValueError("Global source approval changed")
         return state
 
-    def request(self, request):
-        if request.get("method") != "memory_event_submit":
-            return {
-                "request_id": request.get("request_id"),
-                "error": {"code": "global_method_denied", "retryable": False},
-                "persistence": {"durable": False},
-            }
-        from agent_brain_client.domain.contract import (
-            validate as contract_validate,
-            core_receipt,
+    @staticmethod
+    def _wire_body(method, params, rid):
+        request = {"request_id": rid, "method": method, "params": params}
+        raw = json.dumps(request, ensure_ascii=False).encode("utf-8")
+        if len(raw) <= MAX_GLOBAL_REQUEST_BYTES:
+            return raw
+        event = params.get("event") if isinstance(params, dict) else None
+        if (
+            len(raw) <= MAX_NATIVE_REQUEST_BYTES
+            and method == "memory_global_event_submit"
+            and isinstance(event, dict)
+            and event.get("contract") == NATIVE_MEMORY_CONTRACT
+            and isinstance(event.get("content"), str)
+            and len(event["content"].encode("utf-8")) <= MAX_NATIVE_MEMORY_BYTES
+        ):
+            envelope = dict(request, params=dict(params, event=dict(event, content="")))
+            if len(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= MAX_GLOBAL_REQUEST_BYTES:
+                return raw
+        raise GlobalRequestTooLarge("Bounded global request required")
+
+    def check_event_frame(self, request):
+        """Check the actual encoding before an unsendable original enters the outbox."""
+        self._wire_body(
+            "memory_global_event_submit", self._event_params(request), request["request_id"],
         )
+
+    def _event_params(self, request):
+        from agent_brain_client.domain.contract import validate as contract_validate
 
         params = request["params"]
         contract_validate("memory_event_submit", params)
@@ -213,10 +236,19 @@ class CollectionClient:
                    for m in event["messages"]):
                 raise ValueError("Global event outside source policy")
             wire_event = event
+        return dict(self.params(event["session_id"]), event=wire_event)
+
+    def request(self, request):
+        if request.get("method") != "memory_event_submit":
+            return {
+                "request_id": request.get("request_id"),
+                "error": {"code": "global_method_denied", "retryable": False},
+                "persistence": {"durable": False},
+            }
+        from agent_brain_client.domain.contract import core_receipt
+
         result = self.wire(
-            "memory_global_event_submit",
-            dict(self.params(event["session_id"]), event=wire_event),
-            request["request_id"],
+            "memory_global_event_submit", self._event_params(request), request["request_id"],
         )
         if "error" not in result and not core_receipt(result, request):
             raise ValueError("Unconfirmed global Core receipt")
