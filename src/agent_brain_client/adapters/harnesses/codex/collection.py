@@ -4,13 +4,11 @@ import sys
 import json
 import os
 from pathlib import Path
-from agent_brain_client.domain import privacy
 from agent_brain_client.domain.scopes import (
     select,
     source_id,
     namespace,
     digest,
-    restricted,
     ordinary_drive_path,
 )
 from agent_brain_client.adapters.storage import (
@@ -18,7 +16,6 @@ from agent_brain_client.adapters.storage import (
     metadata as metadata_io,
 )
 from agent_brain_client.adapters.harnesses.hook_output import hook_context
-from agent_brain_client.adapters.platforms.filesystem import cache_directory
 
 ROOT = Path(__file__).resolve().parents[5]
 
@@ -61,36 +58,12 @@ def submit_hook(value, local, payload, *, services):
     if blocked.exists():
         return {"status": "excluded-turn", "data_transferred": False}
 
-    def exclude():
-        cache_directory(directory)
-        try:
-            metadata_io.write(
-                blocked,
-                {"schema": 1, "reason": "local-only-or-sensitive"},
-                exclusive=True,
-                cache=True,
-            )
-        except FileExistsError:
-            pass
-        return {"status": "excluded-local-only-or-sensitive", "data_transferred": False}
-
-    file = directory / "hook-turns" / (key + ".json")
-    staged = metadata_io.private_json(file, cache=True) if file.exists() else None
-    if (
-        (privacy.private_content(text) or restricted(text))
-        or isinstance(staged, dict)
-        and (
-            privacy.private_content(staged.get("prompt", ""))
-            or restricted(staged.get("prompt", ""))
-        )
-    ):
-        return exclude()
     _, queue = services.adapter(value, local)
     previous = queue._load("outbox/agentbrain_event_" + key + ".json")
     if previous is not None:
         return dict(queue._queue_result(previous), status="retained-paired-event")
     return stage_hook_messages(
-        queue, scope, turn, kind, text, payload, exclude=exclude, excluded=blocked.exists,
+        queue, scope, turn, kind, text, payload, excluded=blocked.exists,
         native_home=lambda: registration_store.content_location(value["device_home"], r, "codex")[0],
     )
 

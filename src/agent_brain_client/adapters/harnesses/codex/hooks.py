@@ -13,7 +13,7 @@ def native_hook_fields(policy, payload):
     return normalized_hook_fields(policy, payload)
 
 
-def stage_hook_messages(queue, scope, turn, kind, text, payload, *, native_home, exclude, excluded):
+def stage_hook_messages(queue, scope, turn, kind, text, payload, *, native_home, excluded):
     """Keep the first prompt's request and stage later native IDs at either Hook."""
     from agent_brain_client.domain.scopes import digest
 
@@ -28,14 +28,10 @@ def stage_hook_messages(queue, scope, turn, kind, text, payload, *, native_home,
         blocked = queue._load(review)
         if blocked is not None:
             return _review_result(blocked["diagnostic"])
-        result = _stage_hook_messages(
+        return _stage_hook_messages(
             queue, name, completion, review, scope, source, turn, kind, text, payload,
-            native_home=native_home, exclude=exclude,
+            native_home=native_home,
         )
-        if (result["status"] in ("excluded-turn", "excluded-local-only-or-sensitive")
-                and queue._load(completion) is not None):
-            queue._discard_staging(completion)
-        return result
 
 
 def resume_completions(queue, submit, *, allowed):
@@ -65,8 +61,7 @@ def resume_completions(queue, submit, *, allowed):
             if not allowed(scope):
                 continue
             result = submit(payload)
-            if result["status"] in ("excluded-turn", "excluded-local-only-or-sensitive",
-                                    "retained-paired-event", "capture-review-required"):
+            if result["status"] in ("excluded-turn", "retained-paired-event", "capture-review-required"):
                 with queue._outbox_lock(queue.cache / "codex-rollouts" / (key + ".lock"), "codex-rollout"):
                     if queue._load(name) is not None:
                         queue._discard_staging(name)
@@ -102,7 +97,7 @@ def _review_result(diagnostic):
 
 
 def _stage_hook_messages(queue, name, completion, review, scope, source, turn, kind, text, payload, *,
-                         native_home, exclude):
+                         native_home):
     from agent_brain_client.adapters.harnesses.codex import transcript
     from agent_brain_client.application.memory.observations import (
         prompt_fingerprint,
@@ -141,14 +136,11 @@ def _stage_hook_messages(queue, name, completion, review, scope, source, turn, k
 
     if is_form:
         try:
-            answers, _ = transcript.form_answers(text)
+            transcript.form_answers(text)
         except (ValueError, TypeError, KeyError, RecursionError):
-            # A known form with uncertain privacy must survive a later read failure.
+            # Preserve the unresolved form even if a later rollout read fails.
             state["unknown_form"] = True
             queue._save(name, state)
-        else:
-            if transcript.private(answers):
-                return exclude()
 
     if pending is not None:
         if not is_stop:
@@ -192,8 +184,6 @@ def _stage_hook_messages(queue, name, completion, review, scope, source, turn, k
             queue._discard_staging(completion)
         return _review_result(snap.review)
     if observed is not None:
-        if observed.private:
-            return exclude()
         if observed.unknown_form:
             state["unknown_form"] = True
             queue._save(name, state)
@@ -220,23 +210,23 @@ def _stage_hook_messages(queue, name, completion, review, scope, source, turn, k
             job = dict(job, scan=snap.end, forms=forms)
             if not snap.more and not form_wait:
                 # Replay from the uncommitted cursor only after the whole
-                # bounded sequence is cleared for sharing.
+                # bounded sequence and its form calls are verified.
                 job["until"] = snap.end
         if job != pending:
             queue._save(completion, job)
         return {"status": "capture-unconfirmed", "data_transferred": False,
-                "same_turn_capture": "form-privacy-unverified" if form_wait else "bounded-pending"}
+                "same_turn_capture": "form-call-unverified" if form_wait else "bounded-pending"}
     if form_wait or (replaying and observed is None):
         if (is_form and not bound and observed is not None and not state["unknown_form"]
                 and not any(item[4] and item[2] == text for item in observed.messages)):
-            # The first Hook can carry a public form envelope before the host
+            # The first Hook can carry a form envelope before the host
             # writes the identifying user row. Keep the verified pre-submit boundary.
             queue._save(name, dict(state, binding=snap.binding, cursor=snap.end, forms=forms))
             return {"status": "awaiting-native-identity", "data_transferred": False}
         if forms != state["forms"]:
             queue._save(name, dict(state, forms=forms))
         return {"status": "capture-unconfirmed", "data_transferred": False,
-                "same_turn_capture": "form-privacy-unverified" if form_wait else "unavailable"}
+                "same_turn_capture": "form-call-unverified" if form_wait else "unavailable"}
 
     result = {"status": "awaiting-native-identity", "data_transferred": False}
     if first_prompt:

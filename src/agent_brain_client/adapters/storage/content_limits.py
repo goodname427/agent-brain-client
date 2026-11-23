@@ -27,12 +27,6 @@ REVIEW_DECISIONS = {
     "deferred": {"project-scope-unavailable", "uncertain-content"},
 }
 
-RETAINED_REVIEW_DECISIONS = dict(
-    REVIEW_DECISIONS,
-    shareable={APPROVED_NATIVE_ORIGINAL, LEGACY_NATIVE_SUMMARY},
-    skipped={"no-durable-user-fact"},
-)
-
 
 def sha(raw):
     return hashlib.sha256(raw).hexdigest()

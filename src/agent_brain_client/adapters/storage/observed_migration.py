@@ -35,6 +35,8 @@ def migrate_staged_turns(queue, *, origin, project_id=None, project_ids=None, ex
                         or excluded_directory is not None
                         and (excluded_directory / ('excluded-' + key + '.json')).exists()):
                     continue
+                # Legacy rows have no current capture decision. Never resurrect
+                # an old pair excluded by the policy in force when it was observed.
                 texts = [row['prompt']] + ([row['final']] if row['final'] is not None else [])
                 if any(privacy.private_content(text) or restricted(text) for text in texts):
                     continue

@@ -6,7 +6,6 @@ HistoryStorage/ConversationManager. Unsupported native formats remain visible.
 """
 
 import agent_brain_client.adapters.storage.metadata as metadata_io
-import agent_brain_client.domain.privacy as privacy
 import json
 import os
 from pathlib import Path
@@ -86,7 +85,6 @@ def observe(home, payload, core):
         cache_directory,
         cache_locked as locked,
     )
-    from agent_brain_client.domain.scopes import restricted
 
     try:
         path = native_path(home, payload)
@@ -108,6 +106,8 @@ def observe(home, payload, core):
         if existing and payload.get("generation_id"):
             if existing["binding"] != binding:
                 raise ValueError("Native turn binding changed")
+            if existing["excluded"]:
+                return "excluded-turn"
             return "current-turn-observed" if path else "transcript-unavailable-direct-stop-only"
         try:
             if path is None:
@@ -126,7 +126,6 @@ def observe(home, payload, core):
                 for r in index.get("requests", [])
                 if isinstance(r, dict)
             )
-        text = payload["prompt"]
         row = {
             "schema": 1,
             "binding": binding,
@@ -134,8 +133,6 @@ def observe(home, payload, core):
             "offset": offset,
             "excluded": bool(
                 historical
-                or privacy.private_content(text)
-                or restricted(text)
                 or existing
                 and not existing["complete"]
                 and not payload.get("generation_id")

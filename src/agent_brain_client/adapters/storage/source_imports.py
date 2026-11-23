@@ -12,7 +12,6 @@ from agent_brain_client.adapters.platforms.filesystem import (
 )
 from agent_brain_client.adapters.storage.content_limits import (
     LEGACY_NATIVE_SUMMARY,
-    RETAINED_REVIEW_DECISIONS,
     sha,
 )
 
@@ -204,42 +203,6 @@ class SourceImports:
             "data_transferred": False,
             "native_changed": False,
         }
-
-    def onboarding_exclusions(self):
-        """Retain prior non-shareable decisions for the original's source ID."""
-        require_platform("cache-storage", self.session.platform)
-        with locked(self.session.cache / "content.lock"):
-            reviews = self.session._load(
-                "memory-reviews.json",
-                {"schema": 1, "binding": self.session.binding, "items": {}},
-            )
-            if (
-                not isinstance(reviews, dict)
-                or set(reviews) != {"schema", "binding", "items"}
-                or reviews["schema"] != 1
-                or reviews["binding"] != self.session.binding
-                or not isinstance(reviews["items"], dict)
-                or len(reviews["items"]) > 1024
-            ):
-                raise CacheBlocked()
-            excluded = set()
-            for key, review in reviews["items"].items():
-                if not isinstance(review, dict) or set(review) != {
-                    "source_id", "source_fingerprint", "decision", "reason_code",
-                }:
-                    raise CacheBlocked()
-                source_id = review["source_id"]
-                fingerprint = review["source_fingerprint"]
-                native_source_identity(source_id, fingerprint)
-                if (
-                    not self.is_native(source_id)
-                    or key != sha(contract.encode([source_id, fingerprint]))
-                    or review["reason_code"] not in RETAINED_REVIEW_DECISIONS.get(review["decision"], ())
-                ):
-                    raise CacheBlocked()
-                if review["decision"] == "excluded":
-                    excluded.add(source_id)
-            return excluded
 
     def read_onboarding_original(self, source_id, fingerprint):
         require_platform("cache-storage", self.session.platform)
