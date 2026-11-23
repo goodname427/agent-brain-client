@@ -11,7 +11,6 @@ from agent_brain_client.adapters.platforms.filesystem import (
     require_platform,
 )
 from agent_brain_client.adapters.storage.content_limits import (
-    APPROVED_NATIVE_ORIGINAL,
     LEGACY_NATIVE_SUMMARY,
     RETAINED_REVIEW_DECISIONS,
     sha,
@@ -206,11 +205,10 @@ class SourceImports:
             "native_changed": False,
         }
 
-    def onboarding_evidence(self):
-        """Load retained decisions and CAS evidence without rewriting any ledger."""
+    def onboarding_exclusions(self):
+        """Retain prior non-shareable decisions for the original's source ID."""
         require_platform("cache-storage", self.session.platform)
         with locked(self.session.cache / "content.lock"):
-            imports = self._imports()["items"]
             reviews = self.session._load(
                 "memory-reviews.json",
                 {"schema": 1, "binding": self.session.binding, "items": {}},
@@ -224,23 +222,6 @@ class SourceImports:
                 or len(reviews["items"]) > 1024
             ):
                 raise CacheBlocked()
-            submitted = {}
-            for row in self.session._queued():
-                for key in row["reconciles"]["source_keys"]:
-                    confirmed = row["state"] == "confirmed" and self.session._server_saved(
-                        row["response"], row["request"],
-                    )
-                    submitted[key] = confirmed or submitted.get(key, False)
-            legacy = {}
-            for key, item in imports.items():
-                if not self.is_native(item["source"]["source_id"]):
-                    continue
-                if submitted.get(key):
-                    legacy[key] = "legacy-cas-record-retained"
-                elif key in submitted or item["request_id"] is not None or item["status"] in (
-                    "imported", "duplicate", "pending", "conflict", "reconciled",
-                ):
-                    legacy[key] = "legacy-receipt-unconfirmed"
             excluded = set()
             for key, review in reviews["items"].items():
                 if not isinstance(review, dict) or set(review) != {
@@ -258,9 +239,7 @@ class SourceImports:
                     raise CacheBlocked()
                 if review["decision"] != "shareable":
                     excluded.add(source_id)
-                elif review["reason_code"] != APPROVED_NATIVE_ORIGINAL:
-                    legacy.setdefault(key, "legacy-summary-retained")
-            return excluded, legacy
+            return excluded
 
     def read_onboarding_original(self, source_id, fingerprint):
         require_platform("cache-storage", self.session.platform)
