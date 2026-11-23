@@ -65,6 +65,33 @@ class LocalChecks(unittest.TestCase):
             self.assertFalse((output / 'checks.json').exists())
             self.assertEqual(run.call_count, 1)
 
+    def test_only_recorded_macos_full_suite_has_a_longer_timeout(self):
+        from agent_brain_client.adapters.platforms import filesystem
+
+        for scope, record, expected in (
+            ('macos', True, [3600, 1800, 1800, 1800, 1800, 1800]),
+            ('macos', False, [1800] * len(cc.COMMANDS['macos'])),
+            ('windows', True, [1800] * len(cc.COMMANDS['windows'])),
+        ):
+            with self.subTest(scope=scope, record=record), tempfile.TemporaryDirectory() as tmp, \
+                    patch.object(cc, 'check_host'), patch.object(cc, 'identity', return_value={'source_tree': TREE}), \
+                    patch.object(filesystem, 'native_platform', return_value='synthetic'), \
+                    patch.object(cc.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+                cc.run_checks(scope, Path(tmp) / 'checks', record=record)
+                self.assertEqual([call.kwargs['timeout'] for call in run.call_args_list], expected)
+
+    def test_macos_full_suite_timeout_keeps_log_without_a_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / 'checks'
+            with patch.object(cc, 'check_host'), patch.object(cc, 'identity', return_value={'source_tree': TREE}), \
+                    patch.object(cc.subprocess, 'run', side_effect=subprocess.TimeoutExpired('unittest', 3600)) as run:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    cc.run_checks('macos', output, record=True)
+            self.assertTrue((output / '0.log').exists())
+            self.assertFalse((output / 'checks.json').exists())
+            run.assert_called_once()
+            self.assertEqual(run.call_args.kwargs['timeout'], 3600)
+
     def test_run_isolates_homes_strips_token_and_checks_source_afterward(self):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / 'checks'
@@ -248,6 +275,7 @@ class LocalChecks(unittest.TestCase):
                 patch.object(cc.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
             cc.run_checks('macos', Path(tmp) / 'checks', ci=True)
         commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual([call.kwargs['timeout'] for call in run.call_args_list], [1800] * len(commands))
         self.assertIn('dev/checks/tests.py', commands[0])
         self.assertFalse(any('dev/build/credentials.py' in command for command in commands))
         self.assertIn(['sh', '-n', 'bootstrap/macos/install.sh'], commands)
