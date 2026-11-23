@@ -58,27 +58,6 @@ GROUPS = {
     },
 }
 API = "https://api.github.com/repos/" + REPOSITORY
-FULL_CI_JOBS = frozenset(
-    {
-        "changes",
-        "documentation",
-        "source-checks",
-        "isolated-client",
-        "windows-contracts (3.11)",
-        "windows-contracts (3.13)",
-        "Client checks required",
-        "Client full validation",
-    }
-)
-HYBRID_CI_JOBS = frozenset(
-    {
-        "changes",
-        "documentation",
-        "source-checks",
-        "windows-contracts (3.11)",
-        "windows-contracts (3.13)",
-    }
-)
 
 
 def sha(raw):
@@ -465,39 +444,6 @@ def build(source, baseline, selected):
     return plan, artifacts
 
 
-def validate(output):
-    with tempfile.TemporaryDirectory(prefix="client-release-tests-") as tmp:
-        home, codex = Path(tmp) / "home", Path(tmp) / "codex"
-        home.mkdir()
-        codex.mkdir()
-        env = dict(
-            os.environ,
-            HOME=str(home),
-            USERPROFILE=str(home),
-            CODEX_HOME=str(codex),
-            PYTHONPATH=os.pathsep.join(str(ROOT / p) for p in ("src", ".", "tests")),
-        )
-        commands = (
-            [sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests"],
-            [sys.executable, "-B", "dev/checks/source.py"],
-            ["git", "diff", "--check"],
-        )
-        for index, command in enumerate(commands):
-            with (output / f"check-{index}.log").open("wb") as log:
-                result = subprocess.run(
-                    command,
-                    env=env,
-                    cwd=ROOT,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    timeout=1800,
-                )
-            if result.returncode:
-                raise ValueError(
-                    f"Local check {index} failed; inspect check-{index}.log"
-                )
-
-
 def prepare(output, source, selected):
     existing = output / "plan.json"
     if existing.exists():
@@ -528,7 +474,6 @@ def prepare(output, source, selected):
     )
     immutable(output / "release-notes.md", notes.encode())
     report(output, "validating", source=source, version=selected)
-    validate(output)
     source_payload(source)
     report(
         output,
@@ -576,11 +521,12 @@ def build_platforms(
         raise ValueError("Reinstallation release requires all four platforms")
     payload, modes = source_payload(source)
     executor, executor_tree = executor_identity()
-    highest = max(
-        version(json.loads(git("show", parent + ":releases/manifest.json"))["version"])
-        for parent in baselines.values()
-    )
-    if version(selected) < highest:
+    frozen_versions = {
+        ref: version(json.loads(git("show", parent + ":releases/manifest.json"))["version"])
+        for ref, parent in baselines.items()
+    }
+    requested = version(selected)
+    if requested < max(frozen_versions.values()):
         raise ValueError(
             "Shared installer version must not be below the highest frozen platform version"
         )
@@ -601,6 +547,13 @@ def build_platforms(
         raise ValueError("Current Windows source provenance required")
     if not groups or len(set(groups)) != len(groups) or set(groups) - set(GROUPS):
         raise ValueError("Explicit supported platform groups required")
+    if any(
+        frozen_versions[ref] != requested
+        for group, definition in GROUPS.items()
+        if group not in groups
+        for ref in definition["channels"]
+    ):
+        raise ValueError("New Client versions require both macOS and Windows")
     artifacts, channels, runtimes, manifests, checks, release_assets, tags = (
         {},
         {},
@@ -676,6 +629,10 @@ def build_platforms(
             raise ValueError(
                 "Existing installer version has another source; never replace it"
             )
+    if len(groups) == 1 and (
+        not git_tag_exists(installer_tag) or commit("refs/tags/" + installer_tag) != source
+    ):
+        raise ValueError("Historical platform completion requires the original installer")
     tags["installer"] = installer_tag
     plan = {
         "schema": 2,
@@ -726,7 +683,6 @@ def prepare_platforms(
     selected,
     target,
     *,
-    validate_source=True,
     installation_mode="upgrade",
     release_notes=None,
 ):
@@ -768,6 +724,7 @@ def prepare_platforms(
             selected = f"{major}.{minor}.{patch + 1}"
         installer_tag = None
     report(output, "building", source=source, version=selected, groups=groups)
+    started_build = time.monotonic()
     options = (
         {"installation_mode": installation_mode}
         if installation_mode != "upgrade"
@@ -806,9 +763,6 @@ def prepare_platforms(
     for name, raw in artifacts.items():
         immutable(output / "assets" / name, raw)
     immutable(output / "release-notes.md", notes.encode())
-    report(output, "validating", source=source, version=selected, groups=groups)
-    if validate_source:
-        validate(output)
     source_payload(source)
     report(
         output,
@@ -816,6 +770,7 @@ def prepare_platforms(
         source=source,
         version=selected,
         runtimes=plan["runtimes"],
+        build_seconds=round(time.monotonic() - started_build, 3),
         published=False,
         production_catalog="not-checked",
     )
@@ -824,16 +779,6 @@ def prepare_platforms(
 def prepare_local(
     output, source, selected, target, *, installation_mode="upgrade", release_notes=None
 ):
-    from dev.checks.client import run_checks
-
-    if sys.platform != "darwin" or sys.version_info[:2] != (3, 12):
-        raise ValueError(
-            "Local release preparation requires macOS / Python 3.12, as on Actions"
-        )
-    if ROOT != TOOL_ROOT:
-        raise ValueError(
-            "Local preparation requires source and executor in the same checkout"
-        )
     source_payload(source)
     git("fetch", "--no-tags", "origin", "main")
     git("merge-base", "--is-ancestor", source, "FETCH_HEAD")
@@ -845,35 +790,13 @@ def prepare_local(
                 "origin",
                 ref + ":" + ref.replace("refs/heads/", "refs/remotes/origin/", 1),
             )
-    # Keep all logs on failure; a partial local run is never publishable evidence.
-    receipts = []
-    for scope in ("documentation", "source", "macos"):
-        directory = output / "local-checks" / scope
-        run_checks(scope, directory, record=True)
-        receipts.append(str(directory / "checks.json"))
     prepare_platforms(
         output,
         source,
         selected,
         target,
-        validate_source=False,
         installation_mode=installation_mode,
         release_notes=release_notes,
-    )
-    immutable(
-        output / "local-preparation.json",
-        encoded(
-            {
-                "mode": "local",
-                "github_actions": "not-used",
-                "source": source,
-                "receipts": receipts,
-                "windows_3_11": "not-run",
-                "windows_3_13": "not-run",
-                "plan_sha256": sha((output / "plan.json").read_bytes()),
-                "native_acceptance": "not-checked",
-            }
-        ),
     )
 
 
@@ -882,26 +805,10 @@ class NoRedirect(HTTPRedirectHandler):
         raise ValueError("Authenticated API redirect rejected")
 
 
-class ChecksPending(ValueError):
-    """An official same-tree full validation is still running."""
-
-    def __init__(self, head):
-        super().__init__("Official full Client checks for this exact tree are still running")
-        self.head = head
-
-
 def _github_http_diagnostic(path, error, *, upload):
     route = path.partition("?")[0]
     if upload:
         endpoint = "release asset upload"
-    elif route.startswith("/actions/workflows/"):
-        endpoint = "workflow run list"
-    elif route.startswith("/actions/runs/") and route.endswith("/jobs"):
-        endpoint = "workflow attempt jobs"
-    elif route.startswith("/git/commits/"):
-        endpoint = "Git commit tree"
-    elif route.startswith("/compare/"):
-        endpoint = "commit comparison"
     elif route.startswith("/releases"):
         endpoint = "release metadata"
     else:
@@ -963,198 +870,6 @@ class GitHub:
             if len(rows) < 100:
                 return None
         raise ValueError("Release pagination limit reached")
-
-    def ci(self, plan, *, pending_head=None):
-        source_tree = plan["source_tree"]
-        trees = {}
-        # A known commit usually has a full main run. A same-tree PR or a
-        # different main commit can still supply compatible evidence.
-        for head in dict.fromkeys((plan.get("source"), pending_head)):
-            if head is not None:
-                evidence = self._ci_evidence(source_tree, trees, head_sha=head)
-                if evidence:
-                    return evidence
-        evidence = self._ci_evidence(source_tree, trees)
-        if evidence:
-            return evidence
-        raise ValueError(
-            "Successful full Client checks for the exact source tree required (PR, main or manual main run)"
-        )
-
-    def _ci_evidence(self, source_tree, trees, *, head_sha=None):
-        pending = None
-        head_filter = "&branch=main&head_sha=" + quote(head_sha, safe="") if head_sha else ""
-        for page in range(1, 11):
-            result = self.request(
-                f"/actions/workflows/client-checks.yml/runs?per_page=100&page={page}"
-                + head_filter
-            )
-            for row in result["workflow_runs"]:
-                head = row["head_sha"]
-                if head_sha is not None and (
-                    head != head_sha or row.get("head_branch") != "main"
-                ):
-                    continue
-                if (row.get("head_repository") or {}).get("full_name") != REPOSITORY:
-                    continue
-                waiting = (
-                    row.get("status")
-                    in ("queued", "in_progress", "waiting", "pending", "requested")
-                    and row.get("event") == "workflow_dispatch"
-                    and row.get("head_branch") == "main"
-                )
-                if not waiting and row["conclusion"] != "success":
-                    continue
-                if head not in trees:
-                    candidate = self.request("/git/commits/" + head)
-                    trees[head] = candidate["tree"]["sha"] if candidate else None
-                if trees[head] != source_tree:
-                    continue
-                if waiting:
-                    pending = pending or head
-                    continue
-                if row["event"] == "pull_request":
-                    prs = row.get("pull_requests", [])
-                    if len(prs) != 1 or prs[0]["base"]["ref"] != "main":
-                        continue
-                    comparison = self.request(
-                        "/compare/" + prs[0]["base"]["sha"] + "..." + head
-                    )
-                    # PR checkout tests a synthetic merge. Only reuse it when
-                    # the base contributes no bytes beyond the recorded head.
-                    if not comparison or comparison["status"] not in (
-                        "ahead",
-                        "identical",
-                    ):
-                        continue
-                elif (
-                    row["event"] not in ("push", "workflow_dispatch")
-                    or row["head_branch"] != "main"
-                ):
-                    continue
-                # A green scoped workflow may have skipped both platforms. Read
-                # this exact attempt's jobs, not statuses from a different run.
-                if not self.full_ci_jobs(row):
-                    continue
-                return {
-                    "run_id": row["id"],
-                    "run_attempt": row["run_attempt"],
-                    "url": row["html_url"],
-                    "head": head,
-                    "source_tree": source_tree,
-                    "conclusion": "success",
-                }
-            if len(result["workflow_runs"]) < 100:
-                break
-        if pending:
-            raise ChecksPending(pending)
-        return None
-
-    def wait_ci(self, plan, seconds):
-        deadline = time.monotonic() + seconds
-        pending_head = None
-        while True:
-            try:
-                return self.ci(plan, pending_head=pending_head)
-            except ChecksPending as error:
-                pending_head = error.head
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise
-                print(
-                    "Waiting for existing same-tree full validation; no new run triggered",
-                    flush=True,
-                )
-                time.sleep(min(15, remaining))
-
-    def full_ci_jobs(self, row):
-        jobs = self.attempt_jobs(row)
-        return jobs is not None and self.successful_jobs(jobs, FULL_CI_JOBS)
-
-    def attempt_jobs(self, row):
-        jobs = []
-        for page in range(1, 11):
-            result = self.request(
-                f"/actions/runs/{row['id']}/attempts/{row['run_attempt']}/jobs?per_page=100&page={page}"
-            )
-            if not result:
-                return None
-            jobs.extend(result["jobs"])
-            if len(result["jobs"]) < 100:
-                break
-        else:
-            return None
-        return jobs
-
-    @staticmethod
-    def successful_jobs(jobs, required):
-        for name in required:
-            matches = [job for job in jobs if job["name"] == name]
-            if len(matches) != 1 or matches[0]["conclusion"] != "success":
-                return False
-        return True
-
-    def windows_ci(self, plan):
-        """Read genuine Windows jobs; never certify the overall workflow."""
-        for page in range(1, 11):
-            result = self.request(
-                f"/actions/workflows/client-checks.yml/runs?per_page=100&page={page}"
-            )
-            for row in result["workflow_runs"]:
-                if (row.get("head_repository") or {}).get("full_name") != REPOSITORY:
-                    continue
-                head = row["head_sha"]
-                candidate = self.request("/git/commits/" + head)
-                if candidate["tree"]["sha"] != plan["source_tree"]:
-                    continue
-                if row["event"] == "pull_request":
-                    prs = row.get("pull_requests", [])
-                    if len(prs) != 1 or prs[0]["base"]["ref"] != "main":
-                        continue
-                    comparison = self.request(
-                        "/compare/" + prs[0]["base"]["sha"] + "..." + head
-                    )
-                    if not comparison or comparison["status"] not in (
-                        "ahead",
-                        "identical",
-                    ):
-                        continue
-                elif (
-                    row["event"] not in ("push", "workflow_dispatch")
-                    or row["head_branch"] != "main"
-                ):
-                    continue
-                jobs = self.attempt_jobs(row)
-                if jobs is None or not self.successful_jobs(jobs, HYBRID_CI_JOBS):
-                    continue
-                selected = [job for job in jobs if job["name"] in HYBRID_CI_JOBS]
-                if any(
-                    job.get("status") != "completed" or type(job.get("id")) is not int
-                    for job in selected
-                ):
-                    continue
-                return {
-                    "run_id": row["id"],
-                    "run_attempt": row["run_attempt"],
-                    "url": row["html_url"],
-                    "head": head,
-                    "source_tree": plan["source_tree"],
-                    "workflow_status": row["status"],
-                    "workflow_conclusion": row["conclusion"],
-                    "scope": "windows-jobs-only",
-                    "jobs": [
-                        {
-                            key: job[key]
-                            for key in ("id", "name", "status", "conclusion")
-                        }
-                        for job in sorted(selected, key=lambda job: job["name"])
-                    ],
-                }
-            if len(result["workflow_runs"]) < 100:
-                break
-        raise ValueError(
-            "Successful official Windows 3.11/3.13 checks for the exact source tree required"
-        )
 
 
 def assets_for(plan, kind):
@@ -1250,6 +965,13 @@ def preflight_remote(plan):
             )
     for kind, target in targets(plan).items():
         actual = remote_ref("refs/tags/" + plan["tags"][kind])
+        if (
+            actual is None
+            and kind == "installer"
+            and plan.get("schema") == 2
+            and len(plan["groups"]) == 1
+        ):
+            raise ValueError("Historical platform completion requires the original remote installer tag")
         if actual not in (None, target):
             raise ValueError("Existing tag differs; never move: " + plan["tags"][kind])
 
@@ -1278,7 +1000,7 @@ def check_release_notes(plan, row, kind):
             raise ValueError("Published release notes differ from prepared bundle")
 
 
-def verify(output, api, plan):
+def verify(output, api, plan, *, upload_seconds=None, download_seconds=0):
     for kind, target in targets(plan).items():
         if remote_ref("refs/tags/" + plan["tags"][kind]) != target:
             raise ValueError("Published tag target unconfirmed")
@@ -1286,7 +1008,9 @@ def verify(output, api, plan):
         if row is None:
             raise ValueError("Published release not found")
         check_release_notes(plan, row, kind)
+        started_download = time.monotonic()
         download_assets(plan, row, kind)
+        download_seconds += time.monotonic() - started_download
     for ref, row in channel_targets(plan).items():
         if remote_ref(ref) != row["runtime"]:
             raise ValueError("Published channel target unconfirmed")
@@ -1304,6 +1028,8 @@ def verify(output, api, plan):
             else {"runtime": plan["runtime"]}
         ),
         public_assets_verified=len(plan["assets"]),
+        upload_seconds=None if upload_seconds is None else round(upload_seconds, 3),
+        download_seconds=round(download_seconds, 3),
         releases={
             kind: f"https://github.com/{REPOSITORY}/releases/tag/{tag}"
             for kind, tag in plan["tags"].items()
@@ -1313,34 +1039,65 @@ def verify(output, api, plan):
     )
 
 
-def publish(output, api, plan, *, local_checks=(), hybrid_checks=False, wait_for_ci=0):
+def publication_preflight(output, plan, *, result_path=None, skip=False):
+    from dev.checks.client import load_receipt, run_checks
+
+    attempts = output / "preflight"
+    attempts.mkdir(mode=0o700, exist_ok=True)
+    previous = sorted(attempts.iterdir())
+    if skip and previous:
+        status = previous[-1] / "result.json"
+        if not status.is_file() or json.loads(status.read_bytes())["result"] == "failed":
+            raise ValueError("Previous release preflight failed or was interrupted; rerun it")
+    attempt = attempts / f"{len(previous) + 1:06d}"
+    attempt.mkdir(mode=0o700)
+    started = time.monotonic()
+    result = {"source_tree": plan["source_tree"], "result": "not-run"}
+    try:
+        if not skip:
+            if result_path is None:
+                if git("rev-parse", "HEAD^{tree}") != plan["source_tree"]:
+                    raise ValueError("Preflight checkout is not the candidate source tree")
+                run_checks("release", attempt / "checks", record=True, root=ROOT)
+                result_path = attempt / "checks" / "checks.json"
+            (scope, _), result = load_receipt(result_path, plan["source_tree"])
+            if scope != "release":
+                raise ValueError("A single macOS or Windows release preflight result is required")
+    except Exception:
+        immutable(
+            attempt / "result.json",
+            encoded({
+                **result,
+                "result": "failed",
+                "seconds": round(time.monotonic() - started, 3),
+            }),
+        )
+        raise
+    immutable(attempt / "result.json", encoded(result))
+    print(json.dumps({
+        "preflight": result["result"],
+        "system": result.get("system"),
+        "seconds": result.get("seconds"),
+    }), flush=True)
+    return result
+
+
+def publish(output, api, plan, *, preflight_result=None, skip_preflight_tests=False):
+    if skip_preflight_tests and preflight_result is not None:
+        raise ValueError("Choose a release preflight result or explicitly skip tests")
     git("fetch", "--no-tags", "origin", "main")
     git("merge-base", "--is-ancestor", plan["source"], "FETCH_HEAD")
     if plan.get("schema") == 2:
         git("merge-base", "--is-ancestor", plan["executor_source"], "FETCH_HEAD")
     preflight_remote(plan)
-    if hybrid_checks:
-        from dev.checks.client import hybrid_evidence
-
-        ci = hybrid_evidence(local_checks, plan, api)
-    elif local_checks:
-        from dev.checks.client import release_evidence
-
-        ci = release_evidence(local_checks, plan)
-    else:
-        check_ci = (
-            (lambda value: api.wait_ci(value, wait_for_ci)) if wait_for_ci else api.ci
-        )
-        ci = check_ci(plan)
-        if plan.get("schema") == 2 and plan["executor_tree"] != plan["source_tree"]:
-            ci["executor"] = check_ci(
-                {"source": plan["executor_source"], "source_tree": plan["executor_tree"]}
-            )
-    (output / "ci.json").write_bytes(encoded(ci))
+    publication_preflight(
+        output, plan, result_path=preflight_result, skip=skip_preflight_tests
+    )
     notes = (output / "release-notes.md").read_bytes()
     require_publishable({"release-notes.md": notes})
     # Validate all existing releases before making any remote change.
     releases = {}
+    upload_seconds = download_seconds = 0.0
     for kind in targets(plan):
         row = api.find_release(plan["tags"][kind])
         if row:
@@ -1379,12 +1136,14 @@ def publish(output, api, plan, *, local_checks=(), hybrid_checks=False, wait_for
             names = {item["name"] for item in row["assets"]}
             for name in assets_for(plan, kind):
                 if name not in names:
+                    started_upload = time.monotonic()
                     api.request(
                         f"/releases/{row['id']}/assets?name=" + quote(name, safe=""),
                         "POST",
                         raw=(output / "assets" / name).read_bytes(),
                         upload=True,
                     )
+                    upload_seconds += time.monotonic() - started_upload
             row = api.request(f"/releases/{row['id']}")
             check_assets(row, assets_for(plan, kind), complete=True)
             row = api.request(
@@ -1393,7 +1152,9 @@ def publish(output, api, plan, *, local_checks=(), hybrid_checks=False, wait_for
                 {"draft": False, "make_latest": "false"},
             )
         check_release_notes(plan, row, kind)
+        started_download = time.monotonic()
         download_assets(plan, row, kind)
+        download_seconds += time.monotonic() - started_download
         releases[kind] = row
     report(output, "promoting-channel", version=plan["version"])
     preflight_remote(plan)
@@ -1428,7 +1189,7 @@ def publish(output, api, plan, *, local_checks=(), hybrid_checks=False, wait_for
     api.request(
         f"/releases/{releases['installer']['id']}", "PATCH", {"make_latest": "true"}
     )
-    verify(output, api, plan)
+    verify(output, api, plan, upload_seconds=upload_seconds, download_seconds=download_seconds)
 
 
 def main():
@@ -1468,30 +1229,22 @@ def main():
         help="Required for prepare: UTF-8 public Markdown changelog, frozen with the bundle",
     )
     parser.add_argument("--allow-publish", action="store_true")
-    parser.add_argument(
-        "--wait-for-ci",
-        type=int,
-        default=0,
-        help="Publish only: bounded wait for an existing exact-tree full run; never dispatch checks",
+    # Keep the checked-in Client release workflow callable while its command is
+    # updated separately. This option never queries or waits for Actions.
+    parser.add_argument("--wait-for-ci", type=int, choices=(1800,), help=argparse.SUPPRESS)
+    test_options = parser.add_mutually_exclusive_group()
+    test_options.add_argument(
+        "--preflight-result", type=Path,
+        help="Publish only: use one exact-tree macOS or Windows release preflight result",
     )
-    parser.add_argument(
-        "--local-check",
-        type=Path,
-        action="append",
-        default=[],
-        help="Operator-retained checks.json plus sibling logs; repeat for every native check",
-    )
-    parser.add_argument(
-        "--hybrid-checks",
-        action="store_true",
-        help="Explicitly combine local documentation/source/macOS receipts with official same-tree Windows CI jobs",
+    test_options.add_argument(
+        "--skip-preflight-tests", action="store_true",
+        help="Publish only: explicitly record the release tests as not-run",
     )
     args = parser.parse_args()
     prepare_actions = ("prepare", "prepare-artifacts", "prepare-local")
-    if args.wait_for_ci < 0 or (
-        args.wait_for_ci and (args.action != "publish" or args.local_check)
-    ):
-        parser.error("--wait-for-ci requires CI publication and a nonnegative timeout")
+    if (args.preflight_result or args.skip_preflight_tests or args.wait_for_ci) and args.action != "publish":
+        parser.error("Preflight options are only used by publish")
     if args.installation_mode != "upgrade" and args.action not in prepare_actions:
         parser.error("installation mode is frozen in the prepared bundle")
     if args.action in prepare_actions:
@@ -1516,14 +1269,6 @@ def main():
         parser.error(
             "publish requires GH_TOKEN from existing authorized authentication"
         )
-    if args.local_check and args.action != "publish":
-        parser.error(
-            "--local-check is only used for explicit local-evidence publication"
-        )
-    if args.hybrid_checks and (args.action != "publish" or not args.local_check):
-        parser.error(
-            "--hybrid-checks requires publish and local documentation/source/macOS receipts"
-        )
     if args.action in prepare_actions and not re.fullmatch(
         r"[a-f0-9]{40}", args.source or ""
     ):
@@ -1543,11 +1288,6 @@ def main():
                     args.targets,
                     installation_mode=args.installation_mode,
                     release_notes=release_notes,
-                    **(
-                        {"validate_source": False}
-                        if args.action == "prepare-artifacts"
-                        else {}
-                    ),
                 )
             else:
                 plan = load_bundle(output)
@@ -1556,9 +1296,8 @@ def main():
                         output,
                         GitHub(),
                         plan,
-                        local_checks=args.local_check,
-                        hybrid_checks=args.hybrid_checks,
-                        wait_for_ci=args.wait_for_ci,
+                        preflight_result=args.preflight_result,
+                        skip_preflight_tests=args.skip_preflight_tests,
                     )
                 else:
                     verify(output, GitHub(), plan)

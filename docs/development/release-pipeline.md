@@ -8,31 +8,29 @@
 
 Windows 保留 `refs/heads/releases/personal-https-windows-stable`。Mac 保留生产登记的 `refs/heads/releases/personal-https-stable`，以及已有设备实际固定的 `refs/heads/releases/personal-https-candidate-0.4.0-install-fix-ce9f72b`；不根据名字把设备切换到别的 ref。Mac 两个既有 ref 消费同一 Mac 运行树，新提交将两个旧 tip 分别保留为直接父节点。既有锚点、政策、权限、凭据 helper 和服务器配置不变。
 
-`auto` 从所有冻结渠道的最高版本取下一补丁。正常发布包含两个平台组；`targets:macos` 或 `windows` 仅用于补齐部分交付，仍同时构建和校验两端 manifest。显式版本必须高于所有要提升的渠道版本，且不得低于任何未选平台的冻结版本；补齐旧平台不能降低共用 installer latest。安装器版本已存在时只能复用完全相同的源码、tag 和资产，不得以新 tag 为同一安装器版本换源码。
+`auto` 从所有冻结渠道的最高版本取下一补丁。新版本总是发布两个平台组。单平台目标仅用于补齐已发生的历史部分交付，要求另一组所有冻结渠道已是同一版本且存在对应的原始安装器。补齐时仍构建并校验两端 manifest。安装器版本已存在时只能复用完全相同的源码、tag 和资产，不得以新 tag 为同一安装器版本换源码。
 
 运行包 tag 分别为 `client-VERSION-windows` 和 `client-VERSION-macos`；每个平台组各有两架构归档及 SHA256SUMS。新共用安装器使用 `installer-VERSION-setup`。补齐已有 Windows 版本时复用原 `installer-VERSION-windows-setup` 及其原始资产，不重新上传 Windows 运行包或已公开的安装器。旧 tag、Release、附件和 schema-1 Windows bundle 保持可核验及可恢复。
 
 ## 正常操作
 
-功能源码合入后，先对最终 main 手动运行完整 **Client checks**；PR 与普通 main push 的快速绿色不能作为发布证据。完整检查启动后，可同时在 main 的 **Client release** 工作流填精确源码 SHA，版本默认 `auto`、targets 默认 `all`。默认只准备；选择 `publish` 才进入独立写权限 job。局部绿色检查不能证明可发布，必要时先对最终 main 手动运行完整检查。Actions 准备使用 `prepare-artifacts`，保留四架构打包、公开扫描、manifest／源码字节核验与包 self-check，复用同树完整检查，不再第二次运行整套单元测试。发布仍在写入任何 tag／Release／渠道前核验源码和执行工具的完整 CI；只对已存在、官方 main 手动触发、精确同树且仍在排队／执行的检查最多等待 30 分钟，成功即继续，失败、取消、缺失或错树即拒绝，不再触发另一轮。准备 job 不持有发布凭据；发布 job 使用既有 GitHub Actions 临时身份，只申请 contents:write/actions:read，不创建 token 或环境。
+源码通过正常 PR 审阅合入后，在 Mac 或 Windows 上运行正式入口。默认 `publish` 直接执行一次正式快检，校验绑定最终候选源码树的结果，然后使用既有授权执行发布。四架构打包、公开扫描、manifest／源码字节核验与包 self-check 属于产物准备；上传和公开下载读回也单独计时。
 
-工作流分别固定产品源码和执行工具的提交。工具来自本次工作流的 main SHA；产品源码可为已合入、已通过完整 CI 的历史精确 SHA，以便补齐已发布版本的另一平台。两份 checkout 均要求官方 origin、干净工作区和 Git blob 原始字节；发布前分别核验源码与执行工具的完整 CI、main 祖先关系。它不会从新工具目录把额外文件带入旧产品包。
+产品源码和执行工具分别固定精确提交，均来自官方仓库、已合入 main、工作区干净且字节等于 Git blob。若两份 checkout 不同，正式测试在产品 checkout 上运行。执行工具按其原有身份校验，不向旧产品包额外打入文件。官方 `Client release` 手动入口保留独立的只读准备 job 与 `contents:write` 发布 job。现有工作流的发布命令兼容旧参数 `--wait-for-ci 1800`，按默认入口运行本次快检，旧参数不查询或等待 GitHub CI。
 
 HTTPS 构建从精确产品提交的 Git 树选取 Python 模块。已核验的安装器源码归档使用归档内的源码树。两种入口共用平台文件范围和 Python 布局校验。合法范围内普通模块的新增、移动和删除随提交进入清单。已有注册策略的摘要、固定入口、凭据源码 pin 和包成员仍按各自的信任来源验证。
 
 本次从 0.8.29 升级的候选保留现有 Python 文件路径。使用正式 0.8.29 Mac 包的隔离登记验证，路径集合相同的候选能在原 MCP 连接上读取。移动普通模块的试验中，活动包切换后，0.8.29 登记路径的校验器仍拒绝新包。原连接继续从上一版读取，普通重连仍使用同一校验器。
 
-完整 CI 核验先按产品和工具各自的提交 SHA 查官方 main 工作流。有符合条件的检查仍在运行时，后续轮询继续限定提交，避免重复扫描历史记录。精确提交没有可用证据时仍可查找符合原条件的同树记录。API 失败日志包括端点类别、HTTP 状态及可用的数字限流响应头。
-
-本地等价入口（两个路径均为干净的独立官方 checkout，Python 3.11+；同一提交时可使用同一路径）：
+本地入口使用 Python 3.11+，并以既有 Git 推送权限和获授权的 `GH_TOKEN` 发布。使用 Git 外的输出目录。
 
 ```sh
-python3 -B "$RELEASE_TOOLS/dev/release/client.py" prepare --release-notes-file "$RELEASE_NOTES_FILE" --source-root "$SOURCE_CHECKOUT" --source "$SOURCE_SHA" --targets all --output "$RELEASE_OUTPUT"
+python3 -B "$RELEASE_TOOLS/dev/release/client.py" prepare-local --release-notes-file "$RELEASE_NOTES_FILE" --source-root "$SOURCE_CHECKOUT" --source "$SOURCE_SHA" --targets all --output "$RELEASE_OUTPUT"
 python3 -B "$RELEASE_TOOLS/dev/release/client.py" publish --source-root "$SOURCE_CHECKOUT" --output "$RELEASE_OUTPUT" --allow-publish
 python3 -B "$RELEASE_TOOLS/dev/release/client.py" verify --source-root "$SOURCE_CHECKOUT" --output "$RELEASE_OUTPUT"
 ```
 
-prepare 不访问网络、凭据或设备，不推送、不安装；先正常 fetch 渠道快照。它冻结源码树、执行工具、各渠道前像、版本、平台、安装器 tag 和确定性资产，运行完整隔离测试、源码／公开扫描及 diff 检查。`prepare-artifacts` 仅准备资产，不产生全量成功声明；默认本地 `prepare` 和 `prepare-local` 继续完整检查。审阅输出的 plan.json、release-notes.md 和检查日志后再发布。本地 publish 仅消费已有授权会话的 GH_TOKEN 和原 Git 推送身份；没有授权时停止，不另建凭据。
+`prepare-local` 读取官方 main 与三个渠道前像，冻结源码、版本、渠道、包和更新日志。`prepare` 和 `prepare-artifacts` 使用本机已同步的渠道前像准备相同产物。发布前会重建并核对原包。旧 bundle 固定原执行工具身份。若新工具无法加载仍未发布的旧 bundle，保留原目录，用合入后的执行工具和原产品提交在新目录重新准备并逐件核对资产。部分上传后按原身份恢复同一 bundle。
 
 ## 每版更新日志
 
@@ -40,67 +38,28 @@ prepare 不访问网络、凭据或设备，不推送、不安装；先正常 fe
 
 prepare 将这份日志放在 Release 正文顶部，保留后面的源码、运行包、manifest 摘要和验收边界，并在 plan 中固定完整正文摘要。同一 bundle 的重试不得换日志；publish 不再接收另一份文本，自动将准备好的正文用于本轮新建的安装器和平台 Release。补齐平台时已有安装器 Release 不改写。检查 `release-notes.md` 后再发布；流程不会自动改写历史版本，也不会仅因日志功能自动增加产品版本。
 
-## Actions 额度耗尽时
+## 正式预发快检
 
-实际工作流只有 `client-checks.yml` 与 `client-release.yml`。检查工作流的文档、源码扫描、固定版本 lint/type check、Mac 全量测试／Swift helper self-check、Windows 原生矩阵在 [client_checks.py](../../dev/checks/client.py) 有完整本地对应命令，回归测试逐项核对工作流中的命令未被遗漏；日常 Actions 只运行快速阻塞检查，手动发布前运行完整清单。发布工作流的 prepare、publish、verify 仍使用同一个 [release_client.py](../../dev/release/client.py)。分类及汇总是 Actions 调度逻辑，本地正式发布总是要求全部检查，不把文档或单平台绿色当全量。GitHub 仓库、refs、Release 和既有授权仍须可访问；这不是全站离线模式。
-
-在独立、干净、官方 origin 的已提交 Client checkout 中操作。用隔离 Python 环境安装 `ruff==0.14.0 mypy==1.18.2`，Mac 准备使用 Python 3.12 和现有 Swift 工具链。输出保存在 Git 外私有目录；日志可能含本机路径，不上传为公开附件。所有检查子进程隔离 HOME、USERPROFILE、CODEX_HOME，移除发布 token，不安装／升级真实设备、不访问 Keychain 密钥或执行模型调用。
+Mac 或 Windows 任一实际通过的同树快检可交付全部四架构及统一安装器。默认由发布器运行并直接消费实际结果。需要提前跑一次或从另一平台复用时，使用执行工具 checkout 的 `dev/checks/client.py`，将 `--source-root` 指向干净的候选产品 checkout：
 
 ```sh
-python3.12 -B dev/release/client.py prepare-local \
-  --source "$SOURCE_SHA" --targets all --output "$RELEASE_OUTPUT" \
-  --release-notes-file "$RELEASE_NOTES_FILE"
+python3 -B "$RELEASE_TOOLS/dev/checks/client.py" release --record --source-root "$SOURCE_CHECKOUT" --output "$CHECK_OUTPUT"
+python3 -B "$RELEASE_TOOLS/dev/release/client.py" publish --source-root "$SOURCE_CHECKOUT" --output "$RELEASE_OUTPUT" --allow-publish --preflight-result "$CHECK_OUTPUT/checks.json"
 ```
 
-`prepare-local` 要求产品与执行工具为同一 checkout；重新读取官方 main 并验证源码已合入，刷新三个既有渠道前像，执行 documentation、source、macos 全部对应检查，然后使用原构建器生成确定性双平台／四架构运行包及共用安装器。检查前后核对精确提交、干净状态和 Git blob 字节；任何检查失败不写成功回执，也不开始构建。不提供跳过检查开关。原 `prepare` 继续提供不联网打包路径，默认 publish 仍核验 Actions；不能因 bundle 可构建就声称可发布。
+仅接受受信操作员真实执行的快检结果、同目录日志和摘要。结果绑定候选 Git 树、执行平台、命令、退出码和总墙钟。每次追加正式用例都要在参考 Mac 重跑整套，在 PR 记录测试选项与总墙钟，超过五分钟先优化或拆出长回归。实测让全部测试自然退出，失败保留日志并阻断。
 
-输出 `local-checks/{documentation,source,macos}/checks.json` 及同目录逐命令日志；`local-preparation.json` 明确标记 `github_actions: not-used`、Windows 两版本 `not-run`。本机 Mac 结果不能替代 Windows 检查。需在**独立的原生 Windows checkout** 切到相同源码树，使用现有 Git、PowerShell 7（`pwsh`）与 Python 3.11、3.13 分别执行（PowerShell）：
+显式 `--skip-preflight-tests` 只跳过当次测试，写入 `not-run`。同一 bundle 上一次失败或中断时需重跑。各次尝试都保存在 `preflight` 子目录。发布权限、main 祖先、版本、包摘要、不可变 tag、读回和渠道 lease 在两种选项下照常执行。
 
-```powershell
-py -3.11 -B dev/checks/client.py windows --record --output C:\private\checks-3.11
-py -3.13 -B dev/checks/client.py windows --record --output C:\private\checks-3.13
-```
+#262 的参考 Mac 使用 arm64 和 Python 3.12.16。旧串行发现的 1,305 项耗时 1,974.58 秒，64 项按条件跳过，沿用 [#265](https://github.com/goodname427/agent-brain-client/pull/265) 的实测。新版默认快检覆盖文档链接、源码边界、安装与授权、版本和摘要失败、双平台渠道事务。在参考 Mac 上通过三个步骤和 10 项测试，改造分支总墙钟 15.86 秒，0.8.34 锁定产品树总墙钟 16.19 秒。另一次隔离打包演练的产物阶段用时 35.26 秒，八件资产与原候选逐件相同。远端上传和公开下载读回在实际发布时单独记录。
 
-Actions Windows 两个 Python 版本各使用两个独立 HOME／USERPROFILE／CODEX_HOME 的测试进程，并行执行原清单的全部测试 selector；公开／架构扫描和 PowerShell 解析仍执行。本地回执入口保留原命令与串行语义。Actions 日志输出每条命令及每个模块耗时，供后续定位。
-
-Windows 命令复用原生凭据／DACL、生命周期、安装／离线恢复、路径、MCP、队列、写失败、召回／重载回归与两个 PowerShell 脚本解析检查。仅在 Windows 对应 Python 版本生成回执；不能在 Mac 用被跳过的 Windows 测试补造证据。既有测试对当前 token 无权核验的个别 Windows 安全描述符仍可能跳过，应检查原始日志；不通过提升 token 权限消除跳过。架构包是源码归档，四架构构建和 self-check 不代表四架构硬件、真实凭据 UI 或用户验收。
-
-将两个 Windows 证据目录（含全部日志）保留到操作者的私有证据目录，在 Mac 显式选择本地证据发布：
-
-```sh
-python3.12 -B dev/release/client.py publish --output "$RELEASE_OUTPUT" --allow-publish \
-  --local-check "$RELEASE_OUTPUT/local-checks/documentation/checks.json" \
-  --local-check "$RELEASE_OUTPUT/local-checks/source/checks.json" \
-  --local-check "$RELEASE_OUTPUT/local-checks/macos/checks.json" \
-  --local-check "$WINDOWS_311/checks.json" --local-check "$WINDOWS_313/checks.json"
-python3.12 -B dev/release/client.py verify --output "$RELEASE_OUTPUT"
-```
-
-发布前逐项核验源码树与执行工具树的完整五份回执、原生 OS／Python 版本、当前本地命令清单、每条命令退出码和日志摘要；不完整、重复、错树、日志被改或检查命令过期均在任何远端写入前拒绝。没有 Windows 主机时可以完成 Mac 检查和包准备，正式本地发布保持阻塞，不能宣称全量通过。单独开发验证可使用 `client_checks.py <scope> --output <新目录>`；只有 `--record` 对干净已提交源码记录可供发布的证据。
-
-本地证据是操作者保管的回执和日志，**没有签名，也不是 GitHub CI 证明**；仅应从实际运行命令的受信操作者接收。`ci.json` 明确保存本地模式和两份树的原始证据，不写 GitHub 成功状态，不修改分支保护、审批或仓库权限。正常 Actions 路径的全部 jobs 门禁保持。两种证据路径共用后续不可变 tag／资产核对、原包下载验证、渠道前像 lease 原子提升及 latest 读回。
-
-### 本地 Mac 与官方 Windows CI 混合验证
-
-GitHub 的 Mac runner 排队或不可用，但同一源码树的官方 Windows 作业已经完成时，可以显式选择 `--hybrid-checks`。它要求产品源码树与发布执行工具树各自具备三份完整本地 `documentation`、`source`、`macos` 回执及原日志；两份树相同时复用同一证据。Windows 必须来自官方 `client-checks.yml` 的同一次 run attempt，`changes`、`documentation`、`source-checks`、`windows-contracts (3.11)`、`windows-contracts (3.13)` 均须实际完成且成功。发布时在线重新读取 GitHub API，核对官方仓库、精确源码树、main push/manual main 或 main 已为 head 祖先的 PR、完整分页及每项唯一 job；缺失、跳过、失败、重复、其他树或 fork 均拒绝。不能把不同 attempt 的两个 Windows 作业拼成成功。
-
-```sh
-python3.12 -B dev/release/client.py publish --output "$RELEASE_OUTPUT" --allow-publish \
-  --hybrid-checks \
-  --local-check "$RELEASE_OUTPUT/local-checks/documentation/checks.json" \
-  --local-check "$RELEASE_OUTPUT/local-checks/source/checks.json" \
-  --local-check "$RELEASE_OUTPUT/local-checks/macos/checks.json"
-```
-
-`ci.json` 记录 `mode: hybrid`，分别保存真实本地回执、官方 Windows 的 run/attempt/job ID、实际 workflow 状态与结论。整体 workflow 可以仍在排队或因 Mac 作业未完成而失败；这里仅确认列出的官方 Windows 等作业通过，Mac 由完整本地检查覆盖，不宣称 GitHub 全量成功。三个本地 scope 或两个 Windows 版本任一缺证据均在推 tag、上传附件或提升渠道之前停止。不生成或改写 Windows 本地回执，不写 GitHub 成功状态，不修改 workflow、权限或分支保护。默认全 CI 和五份纯本地回执路径保留原门禁，只有明确传入此开关才使用混合验证。版本、包字节、信任锚、凭据 pin、main 祖先核对、原子渠道 lease 与资产读回仍沿用原流程。
-
-本地检查输出禁止覆盖。失败保留日志，在新输出目录重跑；已有正式／部分发布的原 bundle 不删除，恢复时用原 `publish` 加完整证据继续，不重新 `prepare-local` 替换既有身份。已有 Actions 成功记录也可继续用原 publish。跨版本补齐时默认仍用分离源码／工具的 Actions 路径；本地新入口专用于同 checkout 的后续版本，不放宽旧版本 pin。
+全量发现、lint/type 检查、Swift helper 和 Windows 原生矩阵可按需执行，见[检查分层](ci-scopes.md)。未执行的原生长回归按未运行记录。包解包 self-check 证明的是包字节，实机和真实凭据 UI 由独立验收覆盖。
 
 ## 发布顺序与恢复
 
-发布重新构建并逐字节比对 bundle，校验两份完整 CI 与 main 祖先关系；读取所有渠道和既有 tag／资产，原子创建不可变 tag，创建或续传 draft，核验服务端摘要／大小，公开 Release，并实际下载全部计划资产比对。之后用每个 ref 自己的前像 lease **原子提升所有选中渠道**，读回再提升共用 installer latest。未选平台的冻结渠道也须保持不变，避免部分交付把新的 installer latest 降回旧版。
+发布重新构建并逐字节比对 bundle，校验预发结果与 main 祖先关系；读取所有渠道和既有 tag／资产，原子创建不可变 tag，创建或续传 draft，核验服务端摘要／大小，公开 Release，并实际下载全部计划资产比对。之后用每个 ref 自己的前像 lease **原子提升所有选中渠道**，读回再提升共用 installer latest。未选平台的冻结渠道也须保持不变，避免部分交付把新的 installer latest 降回旧版。
 
-完整 CI 要求同一 attempt 的分类、文档、源码、Mac、Windows 两版本、汇总和完整验证标记 jobs 全部实际成功。允许复用相同源码树的成功 PR，但仅当其 main 基线已是 head 祖先；不能把含额外基线修改的合并树结果冒充独立 head。源码须包含先前运行包记录的 Source-Commit；历史 Mac 包没有该字段时仍保留原渠道祖先，并以当前 Windows 共享源码为前进下界。
+源码须包含先前运行包记录的 Source-Commit。历史 Mac 包没有该字段时仍保留原渠道祖先，并以当前 Windows 共享源码为前进下界。
 
 任意失败保留整个输出目录和 progress.json，重试相同 bundle；既有且一致的资产只核验，缺少的 draft 附件续传。丢失回复后先读实际状态，不删除、覆盖冲突 tag／资产，不回退其他发布。GitHub Release 与 Git refs 不是同一远端事务，中途公开资产而渠道未提升时据实报告并恢复同一 bundle。所有平台发布共用一个 concurrency 组。
 
