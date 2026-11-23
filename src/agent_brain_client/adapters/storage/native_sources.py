@@ -23,6 +23,7 @@ def inventory_tree(
     max_depth=16,
     select=None,
     optional=False,
+    excluded_reason=None,
 ):
     """Fingerprint only the selected persistent memory tree; never inspect sessions.
 
@@ -163,6 +164,14 @@ def inventory_tree(
                                 "reason": "non-regular source excluded",
                             }
                         )
+                        continue
+                    if excluded_reason is not None:
+                        rows.append({
+                            "source_id": source_id(relative),
+                            "source_fingerprint": None,
+                            "status": "excluded",
+                            "reason": excluded_reason,
+                        })
                         continue
                     walked += 1
                     if walked > max_files:

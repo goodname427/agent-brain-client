@@ -4,12 +4,12 @@
 
 ## 日常记忆
 
-使用已接入的 `agent_brain_server`。第一次使用或导入已有原生记忆时按 [Onboarding](../../BOOTSTRAP.md#onboarding)核对范围和覆盖。日常保存、检索和维护可直接使用现有工具。
+使用已接入的 `agent_brain_server`。明确授权当前宿主的可共享个人原生记忆和既有接收目标后，请宿主运行 Agent Brain Onboarding（`agent_brain_server.memory_onboard`）。日常保存、检索和维护可直接使用现有工具。
 
-- **查找和使用。** 用 `memory_query` 按当前任务和来源范围查找，必要时用 `content_read` 读取选中主题的正文与 revision。核对来源和适用范围；其他项目的经验只作为相关参考。离线缓存或找不到合适结果时如实说明。列出完整目标清单才用 `content_catalog` 并遍历全部页面，召回预算不限制 Onboarding 的来源审阅。
+- **查找和使用。** 用 `memory_query` 按当前任务和来源范围查找，必要时用 `content_read` 读取选中主题的正文与 revision。核对来源和适用范围；其他项目的经验只作为相关参考。离线缓存或找不到合适结果时如实说明。列出完整目标清单才用 `content_catalog` 并遍历全部页面。
 - **选择要保存的内容。** 在现有授权内保存用户明确要求记住的合适内容、用户陈述的事实／偏好／纠正、已核实的成果和可复用的经验。普通事实、短期进度有后续用途就可保留；不要把推测、一次性闲聊或整段会话写成记忆。按原范围处理项目专属内容；只把能安全泛化的部分写入个人共享池。秘密、LocalOnly、客户或雇主机密留在原处。
 - **新建或更新。** 先找相关主题，用新鲜的 `content_read` 确认记录和当前 revision。相同事实无需重写；纠正对应旧事实，更新保留仍适用的内容与来源。用 `content_put` 提交 `title`、`description`、`body`、`type`（`user`／`feedback`／`reference`）、读回的 `expected_revision` 及稳定 `request_id`。首次新建使用读回的 `missing`。如果宿主已有本轮摘要哈希，可以用 `content_request_id` 按操作与目标生成原请求 ID。用实际回执核对 Server 保存和备份状态，必要时读回当前版本。
-- **自动记忆。** 已登记并授权的 Hook 处理今后的实际对话，遵循现有范围、暂停与来源约束。分别核对实际 Hook 投递、Server 事件接收、派生记忆及召回；其中一个成功不证明其他步骤已完成。按[项目记忆](automatic-memory.md)或[已配置的全局记忆](global-memory.md)查看原入口。历史导入仍由独立的 [Onboarding](../../BOOTSTRAP.md#onboarding)处理。
+- **自动记忆。** 已登记并授权的 Hook 处理今后的实际对话，遵循现有范围、暂停与来源约束。分别核对实际 Hook 投递、Server 事件接收、派生记忆及召回；其中一个成功不证明其他步骤已完成。按[项目记忆](automatic-memory.md)或[已配置的全局记忆](global-memory.md)查看原入口。
 
 本仓库的 `src/agent_brain_client/interfaces/cli/sources.py` 可审阅调用者明确提供的非正文候选元数据。它仅处理所给数据；实际来源盘点、授权和保存证据来自正式工具及回执。
 
@@ -33,29 +33,13 @@
 
 正式 MCP 的 `memory_query` 只需 `query`。当前目录来源在安装包内读取。普通目录可按 `non-project` 查询，项目来源省略 `repository_root` 时复用 `project_root`。L1 默认每 namespace 5 条，原生查询按相关性和字符预算装配上下文，L2／L3 另行组装。安装刷新保留两平台的召回设置。详见[共享 Hook 合同](../development/layered-recall.md)。
 
-`content_catalog` 负责目标目录。先传 `kinds`，再按同一 `kinds` 传回 `structuredContent.result.next_cursor`；末页省略该字段。每页最多 256 条，工具没有 `limit` 参数。原生持久记忆使用下文的来源盘点。旧 `memory_recall` 和目录检索别名已移除。
-
-## Codex 原生持久记忆导入（Mac / Windows）
-
-`content_sources_inventory` 只盘点当前绑定的 `CODEX_HOME/memories` 树，返回既有 `codex-memory:<相对路径 SHA-256>` 来源 ID、文件内容 SHA-256 和状态，不返回正文或本地路径。中文目录和文件名使用 UTF-8 计算 ID，子目录分隔符统一为 `/`；两平台使用同一格式。默认限制为 1024 个目录条目、1024 个文件、16 层子目录、单文件 128 KiB、总正文 16 MiB。缺少原生目录返回 `unavailable`，遍历受限或文件不可读返回 `incomplete`，不冒称已完成账户覆盖。
-
-盘点与精确读取都会在访问条目前跳过名为 `.git` 的 Git 管理目录和 worktree 标记文件，大小写变体同样跳过。`.git-notes` 等其他名称仍按普通记忆来源处理。旧盘点里的 Git 元数据来源 ID 也无法读取。
-
-Windows 使用 `CreateFileW` 的 `OPEN_EXISTING`、`FILE_FLAG_OPEN_REPARSE_POINT` 和 `FILE_FLAG_BACKUP_SEMANTICS`，检查实际句柄类型和 reparse 属性；Windows 记忆入口保留配置路径，避免绑定路径规范化掩盖 `CODEX_HOME` junction；从路径锚点到原生目录的各级目录在整个操作期间保持打开，仅共享读取。junction、符号链接、挂载点和其他 reparse 来源不跟随；正文句柄同样排斥写入和删除。目录或文件正忙、枚举后对象被替换或无法验证时返回不可用，不降级为普通路径读取。句柄会在成功、失败或触及遍历限制后释放。此实现不修改原生文件、DACL、设备来源授权或安装信任。
-
-调用者明确选择一条来源后，`content_sources_read` 重新进行有界遍历，核对打开对象与枚举对象身份，再核对读取前后元数据、大小和内容指纹，严格按 UTF-8 解码。正文只返回本地 MCP 调用者；盘点和审阅账本不保留原文。文件替换或内容变化后，旧指纹不能读取新正文；重新盘点得到新指纹后重新读取与审阅。
-
-Codex 和 CodeBuddy 共用 Client 随 MCP 提供的 [Onboarding](../../BOOTSTRAP.md#onboarding) 指引，收到请求后先盘点当前已获准的原生来源，确认确切原文及目标的写入授权后再提交。导入以文件修改时间标记原文，在当前已授权来源下提交。用相同参数显式续跑，或用 `status_only:true` 分别核对 L0 接收与后台提炼。已有同机旧 CAS 凭据可核验时跳过相同指纹。已提交的旧请求按原有队列规则恢复。旧凭据丢失的历史来源仍需确认其迁移状态。活动会话如仍看到旧工具，按正常流程重载 Agent Brain MCP 后再开始。
-
-`memories_v2`、原生记忆 SQLite 和聊天 `sessions` 不属于此导入契约，不自动回退或扩大扫描范围。若某个 Codex 版本只写 `memories_v2`，需先另行确认其原生持久记忆契约；本实现仍只报告 `memories` 的实际可用状态。原生历史导入与未来 Hook 自动采集是两个独立状态；支持导入不会开启 Hook。
-
-按[开发说明](../development/README.md#隔离检查)隔离环境后回归 `test_codex_memory_inventory`。Windows 原生检查使用 `test_windows_native`，包括 junction、竞争写入、目录固定及中文原生路径离线重启。
+`content_catalog` 负责目标目录。先传 `kinds`，再按同一 `kinds` 传回 `structuredContent.result.next_cursor`；末页省略该字段。每页最多 256 条，工具没有 `limit` 参数。旧 `memory_recall` 和目录检索别名已移除。
 
 ## 内容及映射边界
 
 新增短记或纠正复用 `content_put`。如用户明确要求遗忘，仅在已授权并且宿主公开相应移除工具时按该工具处理，避免自动恢复已移除的条目。Rule／Skill 的明确用户启停由独立 `content_set_enabled` 处理，普通正文编辑保留 `enabled`。参见[启停与同步](rule-skill-management.md)。
 
-安装交接随安装入口源码交付。运行期 MCP 指引随受信活动包及实际 worker 生效；旧 worker 可直接从公开 README 与 [Onboarding](../../BOOTSTRAP.md#onboarding)继续。源码、映射文件或 `model_loaded:"unknown"` 均不能证明当前模型加载了内容。设备维护见[日常维护](../installation/maintenance.md)。
+安装交接随安装入口源码交付。运行期 MCP 指引随受信活动包及实际 worker 生效。源码、映射文件或 `model_loaded:"unknown"` 均不能证明当前模型加载了内容。设备维护见[日常维护](../installation/maintenance.md)。
 
 ## 手动记忆的来源
 

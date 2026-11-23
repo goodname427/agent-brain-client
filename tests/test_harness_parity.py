@@ -29,7 +29,7 @@ from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.interfaces.mcp.content import ContentServer, ManagedContentServer
 from agent_brain_client.interfaces.mcp.framing import ContentParameterError, ProtocolError
 from test_content_outbox import (
-    Cloud, POLICY, MEMORY, RULE, SKILL, seed_legacy_native_plan, seed_legacy_native_write,
+    Cloud, POLICY, MEMORY, RULE, SKILL, seed_legacy_native_plan, seed_legacy_native_review, seed_legacy_native_write,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +40,7 @@ class SyntheticCaptureServer:
         self.requests = []
         self.receipts = {}
         self.lose_ack = True
+        self.admitted = True
         self.extraction = "staged"
 
     def open(self, request, **_):
@@ -54,7 +55,7 @@ class SyntheticCaptureServer:
                     "l0_accepted": accepted, "state": self.extraction if accepted else "unknown",
                 }}
             else:
-                result = {"source_admitted": True, "global_profile_id": "a" * 32,
+                result = {"source_admitted": self.admitted, "global_profile_id": "a" * 32,
                           "scope_sha256": self.scope_sha}
             persistence = {"state": "read-only", "durable": False}
         else:
@@ -67,7 +68,8 @@ class SyntheticCaptureServer:
                 assert event["contract"] == "agentbrain.event.v1"
                 count = len(event["messages"])
             key = (*key, event["event_id"])
-            if key in self.receipts:
+            replayed = key in self.receipts
+            if replayed:
                 assert self.receipts[key] == body
             self.receipts[key] = body
             if self.lose_ack:
@@ -78,7 +80,7 @@ class SyntheticCaptureServer:
                 "message_ids": [f"synthetic-l0-{n}" for n in range(count)], "ledger_sync": "sqlite-wal-full",
                 "core_acceptance": "acknowledged-not-durability-proof",
                 "pipeline_state": "unverified", "model_extraction_verified": False,
-                "capture_extraction": {"state": self.extraction},
+                "capture_extraction": {"state": self.extraction}, "replayed": replayed,
             }
             persistence = {
                 "state": "core-accepted", "durable": False, "github_confirmed": False,
@@ -90,7 +92,7 @@ class SyntheticCaptureServer:
 
 
 class NativeMemoryCapture(unittest.TestCase):
-    def exercise(self, home, harness):
+    def exercise(self, home, harness, windows_layout):
         home.mkdir()
         workspace = home / "synthetic-workspace"
         workspace.mkdir()
@@ -127,15 +129,16 @@ class NativeMemoryCapture(unittest.TestCase):
                 profile={"endpoint": "https://synthetic.invalid"},
                 transport=SimpleNamespace(opener=peer),
             )
-            client.grant, client.queue_identity = cloud.grant, dict(cloud.queue_identity, origin=digest(origin))
+            client.grant, client.queue_identity = cloud.grant, dict(cloud.queue_identity, origin_sha=digest(origin))
             client.scope_sha = peer.scope_sha
             return client
 
         def server():
-            return ManagedContentServer(ContentSession(
-                home, home / "content", POLICY, cloud,
-                host=content_host(harness), native_home=native,
-            ), "0.0.0", "initial")
+            session = ContentSession(home, home / "content", POLICY, cloud,
+                                     host=content_host(harness), native_home=native)
+            with patch.object(session, "platform", "win32-x64" if windows_layout else "darwin-arm64"):
+                session.sources.provider = session.host.sources(session)
+            return ManagedContentServer(session, "0.0.0", "initial")
 
         def tool(worker, name, arguments):
             return worker.invoke(name, arguments)["structuredContent"]
@@ -146,7 +149,7 @@ class NativeMemoryCapture(unittest.TestCase):
             patch("agent_brain_client.adapters.server.collection.approved", return_value=True),
             patch.object(collection, "CollectionClient", side_effect=transport),
             patch.object(registration, "registration", return_value=({}, enrolled)),
-            patch("os.getcwd", return_value=str(workspace)),
+            patch("os.getcwd", return_value=str(home)),
         ):
             worker = server()
             initialized = worker.handle({
@@ -155,80 +158,95 @@ class NativeMemoryCapture(unittest.TestCase):
                            "clientInfo": {"name": "synthetic", "version": "1"}},
             })
             self.assertIn(ONBOARDING_GUIDANCE, initialized["instructions"])
-            self.assertIn("call content_sources_inventory", ONBOARDING_GUIDANCE)
-            self.assertIn("before recording shareable / approved-native-original", ONBOARDING_GUIDANCE)
+            self.assertIn("call memory_onboard once", ONBOARDING_GUIDANCE)
             worker.handle({"jsonrpc": "2.0", "method": "notifications/initialized"})
             tools = {item["name"]: item for item in worker.handle({
                 "jsonrpc": "2.0", "id": 2, "method": "tools/list",
             })["tools"]}
-            self.assertIn("content_sources_import", tools)
-            self.assertTrue(tools["content_sources_inventory"]["annotations"]["readOnlyHint"])
+            self.assertIn("memory_onboard", tools)
             self.assertFalse(tools.keys() & {
-                "content_sources_stage", "memory_global_event_submit",
+                "content_sources_inventory", "content_sources_read", "content_sources_review",
+                "content_sources_import", "content_sources_stage", "memory_global_event_submit",
                 "memory_event_submit", "memory_global_status",
             })
-            with self.assertRaises(ProtocolError):
-                tool(worker, "content_sources_stage", {})
-            missing = tool(worker, "content_sources_inventory", {})
-            self.assertEqual(missing["status"], "unavailable")
-            self.assertEqual(missing["sources"], [])
+            args = {
+                "harness": harness,
+                "destination": {"endpoint": "https://synthetic.invalid", "actor": "synthetic-owner",
+                                "origin": str(workspace)},
+                "approved": True,
+                "source_fingerprints": [sha256(original.encode()).hexdigest()],
+            }
+            missing = tool(worker, "memory_onboard", args)
+            self.assertEqual(missing["inventory"], "unavailable")
             source_file.parent.mkdir(parents=True)
             source_file.write_bytes(original.encode())
             os.utime(source_file, ns=(source_epoch, source_epoch))
+            protected = {
+                "private.md": "[LocalOnly] fictional protected material",
+                "credential.md": "password: synthetic-password-12345",
+                "confidential.md": "confidential: fictional unavailable material",
+                "oversized.md": "合" * 8193,
+            }
+            for filename, raw in protected.items():
+                source_file.with_name(filename).write_bytes(raw.encode())
+                args["source_fingerprints"].append(sha256(raw.encode()).hexdigest())
+            source_file.with_name("unapproved.md").write_bytes(b"An unapproved synthetic preference.")
+            if windows_layout and harness == "codebuddy":
+                project = native / "projects/unverified/memory/topic.md"
+                project.parent.mkdir(parents=True)
+                project.write_bytes(b"An isolated Windows CodeBuddy project synthetic preference.")
+                args["source_fingerprints"].append(sha256(project.read_bytes()).hexdigest())
 
             scopes = cloud.grant["scopes"]
             cloud.grant["scopes"] = ["read"]
-            self.assertNotIn("content_sources_import", {item["name"] for item in worker.catalog()})
+            self.assertNotIn("memory_onboard", {item["name"] for item in worker.catalog()})
             with patch.object(worker.adapter.sources.provider, "inventory",
                               side_effect=AssertionError("Grants must gate source enumeration")):
-                kinds = cloud.grant["artifact_types"]
-                cloud.grant["artifact_types"] = ["rule"]
                 with self.assertRaises(ContentParameterError):
-                    tool(worker, "content_sources_inventory", {})
-                cloud.grant["artifact_types"] = kinds
-            inventory = tool(worker, "content_sources_inventory", {})
-            self.assertFalse(inventory["data_transferred"])
-            self.assertNotIn(original, json.dumps(inventory, ensure_ascii=False))
-            row, = inventory["sources"]
+                    tool(worker, "memory_onboard", args)
             cloud.grant["scopes"] = scopes
-            source = {key: row[key] for key in ("source_id", "source_fingerprint")}
             with self.assertRaises(ContentParameterError):
-                tool(worker, "content_sources_import", dict(source, content="caller-supplied text"))
-            with self.assertRaises(ProtocolError):
-                tool(worker, "content_sources_import", source)
+                tool(worker, "memory_onboard", dict(args, approved=False))
+            wrong_destination = dict(args["destination"], actor="other-owner")
+            self.assertEqual(tool(worker, "memory_onboard", dict(args, destination=wrong_destination)),
+                             {"error": {"code": "onboarding-destination-changed"}})
+            with patch("agent_brain_client.runtime.onboarding.source_active", return_value=False):
+                self.assertEqual(tool(worker, "memory_onboard", args)["error"]["code"],
+                                 "onboarding-personal-origin-required")
             self.assertEqual(peer.requests, [])
-            tool(worker, "content_sources_read", source)
-            with self.assertRaises(ProtocolError):
-                tool(worker, "content_sources_review", dict(
-                    source, decision="shareable", reason_code="safe-cross-project-personal-summary",
-                ))
+            original_row = next(row for row in worker.adapter.sources.provider.inventory()["sources"]
+                                if row["source_fingerprint"] == args["source_fingerprints"][0])
+            seed_legacy_native_review(worker.adapter, original_row, "shareable", "approved-native-original")
+            unbound = tool(worker, "memory_onboard", dict(args, source_fingerprints=[]))
+            self.assertEqual(unbound["counts"]["received"], 0)
             self.assertEqual(peer.requests, [])
-            large_file = source_file.with_name("synthetic-large.md")
-            large_file.write_text("合" * 8193, encoding="utf-8")
-            oversized = next(item for item in tool(worker, "content_sources_inventory", {})["sources"]
-                             if item["source_id"] != source["source_id"])
-            oversized = {key: oversized[key] for key in source}
-            self.assertEqual(len(tool(worker, "content_sources_read", oversized)["text"]), 8193)
-            tool(worker, "content_sources_review", dict(
-                oversized, decision="shareable", reason_code="approved-native-original",
-            ))
-            self.assertEqual(tool(worker, "content_sources_import", oversized)["error"]["code"],
-                             "native_import_content_outside_bound")
-            self.assertEqual(peer.requests, [])
-            tool(worker, "content_sources_review", dict(
-                source, decision="shareable", reason_code="approved-native-original",
-            ))
-            queued = tool(worker, "content_sources_import", source)
-            self.assertEqual(queued["local_queue"]["state"], "pending")
+            peer.admitted = False
+            denied = tool(worker, "memory_onboard", args)
+            self.assertEqual(denied["reasons"]["server-source-paused-or-denied"], 1)
+            self.assertEqual([r["method"] for r in peer.requests], ["memory_global_status"])
+            peer.requests.clear()
+            peer.admitted = True
+
+            queued = tool(worker, "memory_onboard", args)
+            self.assertEqual(queued["counts"]["pending"], 1, queued)
+            self.assertEqual(queued["counts"]["excluded"], len(protected) + 1 + (windows_layout and harness == "codebuddy"))
+            self.assertEqual(queued["reasons"]["private-or-sensitive"], 3)
+            self.assertEqual(queued["reasons"]["shareability-unconfirmed"], 1)
+            if windows_layout and harness == "codebuddy":
+                self.assertEqual(queued["reasons"]["project-origin-unverified"], 1)
+            encoded = json.dumps(queued, ensure_ascii=False)
+            for raw in [original, *protected.values(), str(workspace)]:
+                self.assertNotIn(raw, encoded)
             self.assertEqual(len(peer.receipts), 1)
-            self.assertEqual(peer.requests[0]["params"]["event"]["content"], original)
-            self.assertEqual(peer.requests[0]["params"]["event"]["occurred_at"], "2009-02-13T23:31:30.123Z")
-            initial_wire = peer.requests[0]
+            admission, initial_wire = peer.requests
+            self.assertEqual(admission["method"], "memory_global_status")
+            self.assertEqual(initial_wire["params"]["event"]["content"], original)
+            self.assertEqual(initial_wire["params"]["event"]["occurred_at"], "2009-02-13T23:31:30.123Z")
             original_origin = initial_wire["params"]["origin"]
             _, imported_queue = collection.build_delivery_queue(value, original_origin, harness)
             # Ordinary Hook drains cannot send an explicit historical request.
             self.assertFalse(deliver_pending(imported_queue, allowed=lambda _: True))
-            self.assertEqual(len(peer.requests), 1)
+            self.assertEqual(len(peer.requests), 2)
 
             # First use of this origin was Onboarding. Flush must also reach a
             # pending Hook capture from a different origin of the same Harness.
@@ -253,37 +271,42 @@ class NativeMemoryCapture(unittest.TestCase):
             self.assertEqual(metadata.private_json(imported_queue.cache / "origin.json", cache=True), original_origin)
 
             worker = server()
-            received = tool(worker, "content_sources_import", dict(source, status_only=True))
-            self.assertEqual(received["local_queue"]["state"], "pending")
-            self.assertEqual(received["result"]["capture_extraction"], {"l0_accepted": True, "state": "staged"})
             calls = len(peer.requests)
-            tool(worker, "content_sources_review", dict(
-                source, decision="excluded", reason_code="secret-localonly-or-confidential",
-            ))
-            blocked = tool(worker, "content_sources_import", source)
-            self.assertEqual(blocked["error"]["code"], "native_import_not_approved")
-            self.assertEqual(len(peer.requests), calls)
-            tool(worker, "content_sources_review", dict(
-                source, decision="shareable", reason_code="approved-native-original",
-            ))
-            source_file.unlink()
-            replay = tool(worker, "content_sources_import", source)
-            self.assertEqual(replay["local_queue"]["state"], "confirmed")
-            self.assertEqual(replay["request_id"], queued["request_id"])
-            self.assertEqual(peer.requests[-1], initial_wire)
-            self.assertEqual(len(peer.receipts), 2)
-            tool(worker, "content_sources_import", source)
-            self.assertEqual(len(peer.requests), calls + 1)
             peer.extraction = "succeeded"
-            done = tool(worker, "content_sources_import", dict(source, status_only=True))
-            self.assertTrue(done["result"]["capture_extraction"]["l0_accepted"])
-            self.assertEqual(done["result"]["capture_extraction"]["state"], "succeeded")
+            done = tool(worker, "memory_onboard", args)
+            self.assertEqual(done["counts"]["already_exists"], 1, done)
+            self.assertEqual(done["extraction"], {"succeeded": 1})
+            self.assertEqual(peer.requests[-1], initial_wire)
+            self.assertEqual(len(peer.requests), calls + 2)
+            self.assertEqual(len(peer.receipts), 2)
+            alternate = dict(args["destination"], origin=str(other_workspace))
+            existing = tool(worker, "memory_onboard", dict(args, destination=alternate))
+            self.assertEqual(existing["counts"]["already_exists"], 1)
+            self.assertEqual(len(peer.requests), calls + 2)  # no rebind or disclosure
+            repeated = tool(worker, "memory_onboard", args)
+            self.assertEqual(repeated["counts"]["already_exists"], 1)
+            self.assertEqual(peer.requests[-1]["method"], "memory_global_status")
+            self.assertEqual(len(peer.receipts), 2)
             self.assertEqual(cloud.calls, [])
+            if harness == "codex" and not windows_layout:
+                for index in range(70):
+                    raw = f"Fictional onboard batch item {index}".encode()
+                    source_file.with_name(f"batch-{index}.md").write_bytes(raw)
+                    args["source_fingerprints"].append(sha256(raw).hexdigest())
+                batch = tool(worker, "memory_onboard", args)
+                self.assertEqual(batch["counts"]["received"], 70, batch)
+                self.assertEqual(batch["counts"]["already_exists"], 1)
+                submitted = [row for row in peer.requests if row["method"] == "memory_global_event_submit"]
+                self.assertEqual(len(submitted), 73)
+                self.assertEqual(len(peer.receipts), 72)
+                self.assertLess(len(json.dumps(batch)), 1024)
 
     def test_first_origin_import_preserves_other_pending_capture_and_exact_replay(self):
         for harness in ("codex", "codebuddy"):
-            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as tmp:
-                self.exercise(Path(tmp).resolve() / "home", harness)
+            for windows_layout in (False, True):
+                with self.subTest(harness=harness, windows_layout=windows_layout), tempfile.TemporaryDirectory() as tmp:
+                    self.exercise(Path(tmp).resolve() / "home", harness, windows_layout)
+
 
 class HarnessParity(unittest.TestCase):
     def test_both_harnesses_read_exact_approved_original_and_file_time(self):
@@ -301,34 +324,13 @@ class HarnessParity(unittest.TestCase):
                     home, home / "cache", POLICY, cloud,
                     host=content_host(harness), native_home=native,
                 )
-                row = session.sources.inventory_memory_sources()["sources"][0]
+                row = session.sources.provider.inventory()["sources"][0]
                 selected = (row["source_id"], row["source_fingerprint"])
-                session.sources.read_memory_source(*selected)
-                with self.assertRaises(CacheBlocked):
-                    session.sources.review_memory_source(
-                        *selected, "shareable", "safe-cross-project-personal-summary",
-                    )
-                with self.assertRaises(CacheBlocked):
-                    session.sources.capture_native_original(*selected)
-                session.sources.review_memory_source(
-                    *selected, "shareable", "approved-native-original",
-                )
-                self.assertEqual(session.sources.capture_native_original(*selected), {
-                    "status": "approved", "text": original,
-                    "mtime_ns": source.stat().st_mtime_ns,
-                })
+                self.assertEqual(session.sources.read_onboarding_original(*selected),
+                                 (original, source.stat().st_mtime_ns))
                 source.write_bytes(b"Synthetic changed source")
                 with self.assertRaises(CacheBlocked):
-                    session.sources.capture_native_original(*selected)
-                source.write_bytes(b"[LocalOnly]\nSynthetic private source")
-                row = session.sources.inventory_memory_sources()["sources"][0]
-                private = (row["source_id"], row["source_fingerprint"])
-                session.sources.read_memory_source(*private)
-                session.sources.review_memory_source(
-                    *private, "shareable", "approved-native-original",
-                )
-                with self.assertRaises(CacheBlocked):
-                    session.sources.capture_native_original(*private)
+                    session.sources.read_onboarding_original(*selected)
                 self.assertEqual(cloud.calls, [])
 
     def test_original_capture_preserves_legacy_receipt_and_uncertain_write(self):
@@ -344,9 +346,9 @@ class HarnessParity(unittest.TestCase):
                     home, home / "cache", POLICY, cloud,
                     host=content_host("codex"), native_home=native,
                 )
-                row = session.sources.inventory_memory_sources()["sources"][0]
+                row = session.sources.provider.inventory()["sources"][0]
                 selected = (row["source_id"], row["source_fingerprint"])
-                session.sources.read_memory_source(*selected)
+                session.sources.read_onboarding_original(*selected)
                 key = seed_legacy_native_plan(session, row, MEMORY)
                 cloud.lose_ack = acknowledgement_lost
                 request = {
@@ -358,13 +360,12 @@ class HarnessParity(unittest.TestCase):
                 reconciles = seed_legacy_native_write(session, key, request)
                 session.invoke(request, reconciles=reconciles)
                 calls = len(cloud.calls)
-                status = "legacy-receipt-unconfirmed" if acknowledgement_lost else "already-migrated"
+                status = "legacy-receipt-unconfirmed" if acknowledgement_lost else "legacy-cas-record-retained"
                 original_review = session._load("memory-reviews.json")
                 with patch.object(session.sources.provider, "read", side_effect=AssertionError("Legacy source read")):
-                    self.assertEqual(session.sources.review_memory_source(
-                        *selected, "shareable", "approved-native-original",
-                    )["status"], status)
-                    self.assertEqual(session.sources.capture_native_original(*selected), {"status": status})
+                    reviewed, excluded, legacy = session.sources.onboarding_evidence()
+                    self.assertEqual(legacy, {key: status})
+                    self.assertEqual((reviewed, excluded), (set(), set()))
                 self.assertEqual(session._load("memory-reviews.json"), original_review)
                 self.assertEqual(len(cloud.calls), calls)
                 if acknowledgement_lost:
@@ -414,8 +415,8 @@ class HarnessParity(unittest.TestCase):
             source = adapter.sources.provider.ide / "synthetic.mdc"
             source.parent.mkdir(parents=True)
             source.write_text("---\ntitle: Synthetic IDE memory\n---\nA synthetic preference")
-            row = adapter.sources.inventory_memory_sources()["sources"][0]
-            self.assertEqual(adapter.sources.read_memory_source(row["source_id"], row["source_fingerprint"])["text"], source.read_bytes().decode())
+            row = adapter.sources.provider.inventory()["sources"][0]
+            self.assertEqual(adapter.sources.read_onboarding_original(row["source_id"], row["source_fingerprint"])[0], source.read_bytes().decode())
             self.assertFalse((home / ".codex").exists())
 
     def test_shared_session_requires_explicit_host(self):
@@ -447,7 +448,7 @@ class HarnessParity(unittest.TestCase):
                     with self.subTest(current=block == configuration.GUIDANCE, newline=newline):
                         managed = block.encode().replace(b"\n", newline)
                         instructions.write_bytes(managed + newline)
-                        rows = adapter.sources.inventory_memory_sources()["sources"]
+                        rows = adapter.sources.provider.inventory()["sources"]
                         self.assertEqual(len(rows), 1)
                         self.assertNotEqual(rows[0]["source_id"], user_id)
 
@@ -455,31 +456,25 @@ class HarnessParity(unittest.TestCase):
                         suffix = newline + b"Synthetic personal note.  " + newline
                         data = prefix + managed + suffix
                         instructions.write_bytes(data)
-                        rows = adapter.sources.inventory_memory_sources()["sources"]
+                        rows = adapter.sources.provider.inventory()["sources"]
                         user = next(row for row in rows if row["source_id"] == user_id)
                         self.assertEqual(user["source_fingerprint"], sha256(prefix + suffix).hexdigest())
-                        read = adapter.sources.read_memory_source(user_id, user["source_fingerprint"])
-                        self.assertEqual(read["text"].encode(), prefix + suffix)
+                        read = adapter.sources.read_onboarding_original(user_id, user["source_fingerprint"])
+                        self.assertEqual(read[0].encode(), prefix + suffix)
                         self.assertEqual(instructions.read_bytes(), data)
 
                         edited = managed.replace(configuration.END.encode(), b"User note. " + configuration.END.encode())
                         instructions.write_bytes(edited)
-                        rows = adapter.sources.inventory_memory_sources()["sources"]
+                        rows = adapter.sources.provider.inventory()["sources"]
                         user = next(row for row in rows if row["source_id"] == user_id)
                         self.assertEqual(user["source_fingerprint"], sha256(edited).hexdigest())
             instructions.write_bytes(configuration.GUIDANCE.encode() + b"\n")
-            inventory = adapter.sources.inventory_memory_sources()
+            inventory = adapter.sources.provider.inventory()
             row = inventory["sources"][0]
             self.assertTrue(row["source_id"].startswith("codebuddy-memory:"))
-            self.assertEqual(adapter.sources.read_memory_source(row["source_id"], row["source_fingerprint"])["text"], source.read_bytes().decode())
-            selected = row["source_id"], row["source_fingerprint"]
+            self.assertEqual(adapter.sources.read_onboarding_original(row["source_id"], row["source_fingerprint"])[0], source.read_bytes().decode())
             with self.assertRaises(CacheBlocked):
-                adapter.sources.capture_native_original(*selected)
-            adapter.sources.review_memory_source(*selected, "shareable", "approved-native-original")
-            self.assertEqual(adapter.sources.capture_native_original(*selected)["text"],
-                             "Synthetic preference only")
-            with self.assertRaises(CacheBlocked):
-                adapter.sources.read_memory_source("codex-memory:" + "a" * 64, "a" * 64)
+                adapter.sources.read_onboarding_original("codex-memory:" + "a" * 64, "a" * 64)
 
     def test_codebuddy_only_import_and_real_mcp_refresh_without_codex(self):
         code = '''
@@ -542,13 +537,13 @@ class WindowsCodeBuddySources(unittest.TestCase):
     def source_id(self, relative):
         return "codebuddy-memory:" + sha256(relative.encode()).hexdigest()
 
-    def invoke(self, name, arguments):
-        result = self.server.invoke(name, arguments)
-        self.assertFalse(result["isError"], result)
-        return result["structuredContent"]
+    def inventory(self):
+        return self.adapter.sources.provider.inventory()
 
-    def inventory(self, **arguments):
-        return self.invoke("content_sources_inventory", arguments)
+    def read_original(self, row):
+        return self.adapter.sources.read_onboarding_original(
+            row["source_id"], row["source_fingerprint"],
+        )[0]
 
     def link_directory(self, link, target):
         if os.name == "nt":
@@ -580,8 +575,6 @@ class WindowsCodeBuddySources(unittest.TestCase):
 
         first = self.inventory()
         self.assertEqual(first["status"], "complete")
-        self.assertFalse(first["account_complete"])
-        self.assertFalse(first["data_transferred"])
         self.assertEqual(first, self.inventory())
         self.assertEqual(first["counts"], {"not-checked": 3})
         expected = {self.source_id(path): file.read_bytes() for path, file in sources.items()}
@@ -589,9 +582,7 @@ class WindowsCodeBuddySources(unittest.TestCase):
         for row in first["sources"]:
             raw = expected[row["source_id"]]
             self.assertEqual(row["source_fingerprint"], sha256(raw).hexdigest())
-            self.assertEqual(self.invoke("content_sources_read", {
-                "source_id": row["source_id"], "source_fingerprint": row["source_fingerprint"],
-            })["text"], raw.decode())
+            self.assertEqual(self.read_original(row), raw.decode())
         self.assertFalse(self.cloud.calls)
 
     def test_old_layouts_can_coexist_and_keep_existing_ids(self):
@@ -612,9 +603,7 @@ class WindowsCodeBuddySources(unittest.TestCase):
         for path, file in paths.items():
             source_id = self.source_id(path)
             self.assertEqual(before[source_id], after[source_id])
-            self.assertEqual(self.invoke("content_sources_read", {
-                "source_id": source_id, "source_fingerprint": after[source_id]["source_fingerprint"],
-            })["text"], file.read_bytes().decode())
+            self.assertEqual(self.read_original(after[source_id]), file.read_bytes().decode())
 
     def test_linked_project_memory_is_not_read_and_linked_root_is_incomplete(self):
         self.write_source("memery/global_memery.md")
@@ -625,10 +614,8 @@ class WindowsCodeBuddySources(unittest.TestCase):
         outside = self.home / "outside"
         project.parent.rename(outside)
         self.link_directory(project.parent, outside)
-        with self.assertRaises(ProtocolError):
-            self.invoke("content_sources_read", {
-                "source_id": selected["source_id"], "source_fingerprint": selected["source_fingerprint"],
-            })
+        with self.assertRaises(CacheBlocked):
+            self.read_original(selected)
         self.assertEqual(self.inventory()["status"], "complete")
         self.link_directory(self.native / "memories", outside)
         result = self.inventory()
@@ -637,34 +624,17 @@ class WindowsCodeBuddySources(unittest.TestCase):
         self.assertEqual({row["source_id"] for row in result["sources"] if row["source_fingerprint"]},
                          {self.source_id("memery/global_memery.md")})
 
-    def test_paged_inventory_fingerprint_review_and_exact_original(self):
-        selected = "projects/example/memory/selected.md"
-        local = self.write_source(selected)
-        for index in range(64):
-            self.write_source(f"memery/fixture_{index}_memery.md")
-        first = self.inventory()
-        second = self.inventory(cursor=first["next_cursor"])
-        self.assertEqual(len(first["sources"]), 64)
-        self.assertEqual(len(second["sources"]), 1)
-        self.assertIsNone(second["next_cursor"])
-        rows = first["sources"] + second["sources"]
-        self.assertEqual(len({row["source_id"] for row in rows}), 65)
-        row = next(row for row in rows if row["source_id"] == self.source_id(selected))
-        source = {key: row[key] for key in ("source_id", "source_fingerprint")}
-
-        local.write_bytes(b"Synthetic changed project memory")
-        with self.assertRaises(ProtocolError):
-            self.invoke("content_sources_read", source)
-        with self.assertRaises(ContentParameterError):
-            self.inventory(cursor=first["next_cursor"])
-        source["source_fingerprint"] = sha256(local.read_bytes()).hexdigest()
-        self.assertEqual(self.invoke("content_sources_read", source)["text"], local.read_bytes().decode())
-        self.invoke("content_sources_review", dict(source, decision="shareable",
-                    reason_code="approved-native-original"))
-        captured = self.adapter.sources.capture_native_original(
-            source["source_id"], source["source_fingerprint"],
-        )
-        self.assertEqual(captured["text"], "Synthetic changed project memory")
+    def test_onboarding_excludes_unverified_project_origin_without_reading_originals(self):
+        local = self.write_source("projects/example/memory/private.md")
+        personal = self.write_source("memery/fixture_memery.md")
+        result = self.adapter.sources.provider.inventory(onboarding=True)
+        rows = {row["source_id"]: row for row in result["sources"]}
+        project = rows[self.source_id("projects/example/memory/private.md")]
+        self.assertEqual(project["reason"], "project-origin-unverified")
+        self.assertIsNone(project["source_fingerprint"])
+        self.assertNotIn(local.read_bytes().decode(), json.dumps(result))
+        personal_row = rows[self.source_id("memery/fixture_memery.md")]
+        self.assertEqual(self.read_original(personal_row), personal.read_bytes().decode())
         self.assertEqual(self.cloud.calls, [])
 
 

@@ -118,7 +118,8 @@ class CatalogPages(unittest.TestCase):
         self.assertEqual(catalog["required"], ["kinds"])
         self.assertEqual(set(catalog["properties"]), {"kinds", "cursor"})
         self.assertFalse(catalog["additionalProperties"])
-        self.assertEqual(set(by_name["content_sources_inventory"]["properties"]), {"cursor"})
+        self.assertEqual(set(by_name["memory_onboard"]["properties"]),
+                         {"harness", "destination", "approved", "source_fingerprints"})
         self.assertNotIn("memory_recall", by_name)
 
         def call(arguments, request_id):

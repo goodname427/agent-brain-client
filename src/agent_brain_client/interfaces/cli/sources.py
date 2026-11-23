@@ -1,8 +1,7 @@
 """Review explicit source/candidate metadata offline; no collection or upload.
 
 Classifications are supplied evidence, not permission grants or NLP verdicts.
-Onboard preserves every authorized existing memory except sensitive/scope gaps;
-daily evaluates useful future context without demanding major/permanent value.
+Daily review evaluates useful future context without demanding major/permanent value.
 """
 
 import sys
@@ -30,21 +29,9 @@ def main():
             "candidates",
         }:
             raise ValueError("Explicit review required")
-        result = review_memory_sources(
-            value["sources"], value["candidates"], value["mode"]
-        )
-        if value["mode"] == "onboard":
-            result["onboard_check"] = {
-                "status": "coverage-incomplete"
-                if result["coverage_gaps"]
-                else "provided-sources-reviewed",
-                "scope": "explicit-source-metadata-only",
-                "account_complete": False,
-                "source_discovery_performed": False,
-                "incremental_candidates": result["counts"]["candidate"],
-                "equivalent_records": result["counts"]["duplicate"],
-                "data_transferred": False,
-            }
+        if value["mode"] != "daily":
+            raise ValueError("Explicit daily review required")
+        result = review_memory_sources(value["sources"], value["candidates"])
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except (ValueError, TypeError, KeyError):
