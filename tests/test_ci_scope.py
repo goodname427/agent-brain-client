@@ -1,5 +1,4 @@
 """Real Git histories and fault injection for scoped CI; no network or device state."""
-import ast
 import copy
 import json
 import os
@@ -280,12 +279,11 @@ class Results(unittest.TestCase):
 
 
 class WorkflowContract(unittest.TestCase):
-    def test_workflow_selection_required_gate_and_release_jobs_stay_aligned(self):
+    def test_workflow_keeps_optional_full_regression_path(self):
         source = (ci.ROOT / '.github/workflows/client-checks.yml').read_text()
         triggers, source_jobs = source.split('\njobs:\n', 1)
         self.assertNotRegex(triggers, r'\bpaths(?:-ignore)?:')
         self.assertIn('  workflow_dispatch:', triggers)
-        self.assertIn('  merge_group:', triggers)
         parts = re.split(r'^  ([a-z-]+):\n', source_jobs, flags=re.M)
         jobs = dict(zip(parts[1::2], parts[2::2]))
         for flag, job in (('code', 'source-checks'), ('mac', 'isolated-client'),
@@ -302,20 +300,6 @@ class WorkflowContract(unittest.TestCase):
         self.assertIn('fetch-depth: 0', jobs['changes'])
         # Every checkout must test the immutable event tree, including PR merges.
         self.assertEqual(source.count('uses: actions/checkout@'), source.count('ref: ${{ github.sha }}'))
-        names = set()
-        for job, body in jobs.items():
-            label = re.search(r'^    name: (.+)$', body, re.M)
-            name = label[1] if label else job
-            versions = re.search(r'^        python: (.+)$', body, re.M)
-            if versions:
-                names.update(name + ' (' + version + ')' for version in ast.literal_eval(versions[1]))
-            else:
-                names.add(name)
-        release = ast.parse((ci.ROOT / 'dev/release/client.py').read_text())
-        contract = next(node.value for node in release.body if isinstance(node, ast.Assign)
-                        and any(isinstance(target, ast.Name) and target.id == 'FULL_CI_JOBS'
-                                for target in node.targets))
-        self.assertEqual(names, ast.literal_eval(contract.args[0]))
 
 
 if __name__ == '__main__':

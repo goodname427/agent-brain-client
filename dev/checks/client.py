@@ -24,6 +24,20 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 ORIGIN = "https://github.com/goodname427/agent-brain-client"
 COMMANDS = {
+    "release": [
+        ["python", "-B", "dev/checks/docs.py"],
+        ["python", "-B", "dev/checks/source.py"],
+        [
+            "python", "-B", "-m", "unittest",
+            "test_install_contracts.PlatformMainContracts.test_shared_release_validation_preserves_permission_and_rollback_constraints",
+            "test_install_contracts.InstallationArchitectureContracts",
+            "test_install_contracts.Bootstrap.test_bad_digest_and_download_failure_never_execute_or_activate",
+            "test_access_install.AccessTransport",
+            "test_access_install.AccessTransaction",
+            "test_release_pipeline.PlatformRelease.test_both_platforms_publish_before_atomic_channel_promotion",
+            "test_release_pipeline.ReleasePipeline.test_public_download_corruption_is_rejected_without_auth_header",
+        ],
+    ],
     "documentation": [
         ["python", "-B", "dev/checks/docs.py"],
         ["python", "-B", "-m", "unittest", "test_check_docs", "test_ci_scope"],
@@ -208,28 +222,29 @@ def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def git(*args):
-    return subprocess.check_output(["git", *args], cwd=ROOT).decode().strip()
+def git(*args, root=ROOT):
+    return subprocess.check_output(["git", *args], cwd=root).decode().strip()
 
 
-def identity():
-    if git("status", "--porcelain", "--untracked-files=all"):
+def identity(root=ROOT):
+    if git("status", "--porcelain", "--untracked-files=all", root=root):
         raise ValueError("Recording checks requires a clean committed checkout")
-    if git("remote", "get-url", "origin") not in (ORIGIN, ORIGIN + ".git"):
+    if git("remote", "get-url", "origin", root=root) not in (ORIGIN, ORIGIN + ".git"):
         raise ValueError("Official credential-free Client origin required")
-    # Check all public bytes and reject tracked/ignored checkout substitutions.
-    import dev.release.client as release_client
+    from dev.release import client as release_client
 
-    with release_client.source_root(ROOT):
-        release_client.source_payload(git("rev-parse", "HEAD"))
-    return {
-        "source": git("rev-parse", "HEAD"),
-        "source_tree": git("rev-parse", "HEAD^{tree}"),
-    }
+    source = git("rev-parse", "HEAD", root=root)
+    with release_client.source_root(root):
+        release_client.source_payload(source)
+    return {"source": source, "source_tree": git("rev-parse", "HEAD^{tree}", root=root)}
 
 
 def check_host(scope):
     python = sys.version_info[:2]
+    if scope == "release":
+        if sys.platform not in ("darwin", "win32") or python < (3, 11):
+            raise ValueError("Native macOS or Windows with Python 3.11+ required")
+        return
     if scope == "windows":
         if sys.platform != "win32" or python not in ((3, 11), (3, 13)):
             raise ValueError("Native Windows with Python 3.11 or 3.13 required")
@@ -245,13 +260,16 @@ def check_host(scope):
                 )
 
 
-def run_checks(scope, output, record=False, *, ci=False):
+def run_checks(scope, output, record=False, *, ci=False, root=ROOT):
+    started_checks = time.monotonic() if scope == "release" else None
+    if scope == "release" and not record:
+        raise ValueError("Release preflight requires source-bound results")
     if ci and record:
         raise ValueError(
             "Focused CI runs cannot produce complete local release evidence"
         )
     check_host(scope)
-    before = identity() if record else None
+    before = identity(root) if record else None
     output = Path(output).resolve()
     # Never overwrite evidence from a previous successful or failed run.
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
@@ -268,7 +286,7 @@ def run_checks(scope, output, record=False, *, ci=False):
             PYTHONDONTWRITEBYTECODE="1",
             MYPY_CACHE_DIR=str(temp / "mypy"),
             PYTHONPATH=os.pathsep.join(
-                str(ROOT / name)
+                str(root / name)
                 for name in (
                     ".",
                     "src",
@@ -334,11 +352,15 @@ def run_checks(scope, output, record=False, *, ci=False):
                 started = time.monotonic()
                 result = subprocess.run(
                     actual,
-                    cwd=ROOT,
+                    cwd=root,
                     env=env,
                     stdout=log,
                     stderr=subprocess.STDOUT,
-                    timeout=3600 if scope == "macos" and record and index == 0 else 1800,
+                    timeout=(
+                        None
+                        if scope == "release"
+                        else 3600 if scope == "macos" and record and index == 0 else 1800
+                    ),
                 )
             seconds = round(time.monotonic() - started, 3)
             print(
@@ -366,9 +388,9 @@ def run_checks(scope, output, record=False, *, ci=False):
                 print(log_path.read_text(errors="replace"), file=sys.stderr)
                 raise ValueError(f"{scope} check failed; inspect {log_path.name}")
     if record:
-        if identity() != before:
+        if identity(root) != before:
             raise ValueError("Source changed while checks ran")
-        sys.path.insert(0, str(ROOT / "src"))
+        sys.path.insert(0, str(root / "src"))
         from agent_brain_client.adapters.platforms.filesystem import native_platform
 
         receipt = dict(
@@ -384,6 +406,11 @@ def run_checks(scope, output, record=False, *, ci=False):
             checks=results,
             native_acceptance="not-checked",
         )
+        if started_checks is not None:
+            elapsed = time.monotonic() - started_checks
+            if elapsed > 300:
+                raise ValueError(f"Release preflight took {elapsed:.3f}s and exceeded the 5-minute budget")
+            receipt["seconds"] = round(elapsed, 3)
         (output / "checks.json").write_bytes(encoded(receipt))
         return receipt
     return {"scope": scope, "result": "passed", "recorded": False}
@@ -403,7 +430,13 @@ def load_receipt(path, tree):
     ):
         raise ValueError("Local check receipt does not match the release tree")
     python = tuple(map(int, row["python"].split(".")[:2]))
-    if scope == "windows":
+    if scope == "release":
+        if row["system"] not in ("darwin", "win32") or python < (3, 11):
+            raise ValueError("Native macOS or Windows release result required")
+        elapsed = row.get("seconds")
+        if type(elapsed) not in (int, float) or not 0 <= elapsed <= 300:
+            raise ValueError("Release preflight exceeded the 5-minute budget")
+    elif scope == "windows":
         if row["system"] != "win32" or python not in ((3, 11), (3, 13)):
             raise ValueError("Native Windows matrix evidence required")
     elif python != (3, 12) or (scope == "macos" and row["system"] != "darwin"):
@@ -419,87 +452,13 @@ def load_receipt(path, tree):
     return (scope, python), row
 
 
-def release_evidence(paths, plan):
-    evidence = {}
-    for label, tree in (
-        ("source", plan["source_tree"]),
-        ("executor", plan.get("executor_tree", plan["source_tree"])),
-    ):
-        rows = {}
-        for path in paths:
-            raw = json.loads(Path(path).read_bytes())
-            if raw.get("source_tree") != tree:
-                continue
-            key, row = load_receipt(path, tree)
-            if key in rows:
-                raise ValueError("Duplicate local check evidence")
-            rows[key] = row
-        required = {
-            ("documentation", (3, 12)),
-            ("source", (3, 12)),
-            ("macos", (3, 12)),
-            ("windows", (3, 11)),
-            ("windows", (3, 13)),
-        }
-        if set(rows) != required:
-            raise ValueError(
-                "Complete local documentation/source/macOS and Windows 3.11/3.13 evidence required: "
-                + label
-            )
-        evidence[label] = [rows[key] for key in sorted(rows)]
-    return {
-        "mode": "local",
-        "github_actions": "not-used",
-        "trees": evidence,
-        "trust": "operator-retained receipts and logs; not signed CI attestations",
-    }
-
-
-def hybrid_evidence(paths, plan, api):
-    """Local Mac scopes and live official Windows job identities stay separate."""
-    evidence, checked = {}, {}
-    required = {("documentation", (3, 12)), ("source", (3, 12)), ("macos", (3, 12))}
-    trees = {plan["source_tree"], plan.get("executor_tree", plan["source_tree"])}
-    if any(
-        json.loads(Path(path).read_bytes()).get("source_tree") not in trees
-        for path in paths
-    ):
-        raise ValueError("Unexpected local evidence tree")
-    for label, tree in (
-        ("source", plan["source_tree"]),
-        ("executor", plan.get("executor_tree", plan["source_tree"])),
-    ):
-        if tree not in checked:
-            rows = {}
-            for path in paths:
-                if json.loads(Path(path).read_bytes()).get("source_tree") != tree:
-                    continue
-                key, row = load_receipt(path, tree)
-                if key in rows:
-                    raise ValueError("Duplicate local check evidence")
-                rows[key] = row
-            if set(rows) != required:
-                raise ValueError(
-                    "Complete local documentation/source/macOS evidence required: "
-                    + label
-                )
-            checked[tree] = {
-                "local": [rows[key] for key in sorted(rows)],
-                "github_windows": api.windows_ci({"source_tree": tree}),
-            }
-        evidence[label] = checked[tree]
-    return {
-        "mode": "hybrid",
-        "github_actions": "windows-jobs-only",
-        "trees": evidence,
-        "trust": "local receipts and logs plus live official GitHub job records; no overall CI success claimed",
-    }
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scope", choices=COMMANDS)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--source-root", type=Path, help="Candidate product checkout for release preflight"
+    )
     parser.add_argument(
         "--record",
         action="store_true",
@@ -511,7 +470,10 @@ def main():
         help="Use focused test selection without complete local evidence",
     )
     args = parser.parse_args()
-    result = run_checks(args.scope, args.output, args.record, ci=args.ci)
+    if args.source_root and args.scope != "release":
+        parser.error("--source-root is only used for release preflight")
+    root = args.source_root.resolve() if args.source_root else ROOT
+    result = run_checks(args.scope, args.output, args.record, ci=args.ci, root=root)
     print(
         json.dumps(
             {key: value for key, value in result.items() if key != "checks"},

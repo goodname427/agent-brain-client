@@ -16,7 +16,7 @@ import test_release_pipeline as fixtures
 TREE = '2' * 40
 
 
-def receipt(root, scope, python='3.12.15', tree=TREE):
+def receipt(root, scope, python='3.12.15', tree=TREE, system=None):
     directory = root / (scope + '-' + python + '-' + tree[:5])
     directory.mkdir()
     checks = []
@@ -27,17 +27,13 @@ def receipt(root, scope, python='3.12.15', tree=TREE):
         checks.append({'command': command, 'exit_code': 0, 'log': name, 'sha256': cc.sha(raw)})
     row = {'schema': 1, 'mode': 'local', 'github_actions': 'not-used',
            'source': '1' * 40, 'source_tree': tree, 'scope': scope,
-           'python': python, 'system': 'win32' if scope == 'windows' else 'darwin',
+           'python': python, 'system': system or ('win32' if scope == 'windows' else 'darwin'),
            'machine': 'synthetic', 'result': 'passed', 'checks': checks}
+    if scope == 'release':
+        row['seconds'] = 35.12
     path = directory / 'checks.json'
     path.write_bytes(cc.encoded(row))
     return path
-
-
-def complete(root, tree=TREE):
-    return [receipt(root, scope, python, tree) for scope, python in
-            (('documentation', '3.12.15'), ('source', '3.12.15'), ('macos', '3.12.15'),
-             ('windows', '3.11.15'), ('windows', '3.13.10'))]
 
 
 class LocalChecks(unittest.TestCase):
@@ -111,23 +107,6 @@ class LocalChecks(unittest.TestCase):
                 with self.assertRaises(FileExistsError):
                     cc.run_checks('documentation', output)
 
-    def test_complete_evidence_checks_both_source_and_executor_trees(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            paths = complete(root)
-            plan = {'source_tree': TREE, 'executor_tree': '3' * 40}
-            with self.assertRaisesRegex(ValueError, 'executor'):
-                cc.release_evidence(paths, plan)
-            paths += complete(root, '3' * 40)
-            result = cc.release_evidence(paths, plan)
-            self.assertEqual(result['github_actions'], 'not-used')
-            self.assertEqual(len(result['trees']['source']), 5)
-            for index in range(len(paths)):
-                with self.assertRaises(ValueError):
-                    cc.release_evidence(paths[:index] + paths[index + 1:], plan)
-            with self.assertRaisesRegex(ValueError, 'Duplicate'):
-                cc.release_evidence(paths + [paths[0]], plan)
-
     def test_tampered_logs_missing_commands_wrong_host_and_failed_results_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = receipt(Path(tmp), 'windows', '3.11.15')
@@ -149,86 +128,72 @@ class LocalChecks(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'log changed'):
                 cc.load_receipt(path, TREE)
 
-    def test_local_publication_reuses_release_checks_without_calling_actions(self):
+    def test_publication_consumes_one_same_tree_result_from_either_platform(self):
+        for system in ('darwin', 'win32'):
+            plan, assets = fixtures.platform_fixture()
+            remote = fixtures.PlatformRemote(plan, assets)
+            with self.subTest(system=system), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                path = receipt(root, 'release', tree=plan['source_tree'], system=system)
+                fixtures.ReleasePipeline.setup_output(self, root, assets)
+                with patch.object(rc, 'git', side_effect=remote.git), \
+                        patch.object(rc, 'remote_ref', side_effect=remote.ref), \
+                        patch.object(rc, 'download_assets'), patch.object(cc, 'run_checks') as run:
+                    rc.publish(root, remote, plan, preflight_result=path)
+                run.assert_not_called()
+                self.assertEqual(remote.latest, plan['tags']['installer'])
+                self.assertEqual(remote.ci_sources, [])
+                self.assertEqual(json.loads((root / 'preflight/000001/result.json').read_bytes())['system'], system)
+
+    def test_default_preflight_runs_the_product_tree_and_rejects_wrong_tree(self):
+        plan, _ = fixtures.platform_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            expected = {'result': 'passed'}
+            product = output / 'product'
+            with patch.object(rc, 'ROOT', product), patch.object(rc, 'git') as git, \
+                    patch.object(cc, 'run_checks') as run, \
+                    patch.object(cc, 'load_receipt', return_value=(('release', (3, 12)), expected)) as load:
+                git.return_value = plan['executor_tree']
+                with self.assertRaisesRegex(ValueError, 'candidate source tree'):
+                    rc.publication_preflight(output, plan)
+                run.assert_not_called()
+                git.return_value = plan['source_tree']
+                result = rc.publication_preflight(output, plan)
+                checks = output / 'preflight/000002/checks'
+                run.assert_called_once_with('release', checks, record=True, root=product)
+                load.assert_called_once_with(checks / 'checks.json', plan['source_tree'])
+                self.assertEqual(result, expected)
+
+    def test_explicit_skip_reports_not_run_and_preserves_failed_attempts(self):
         plan, assets = fixtures.platform_fixture()
-        plan['executor_tree'] = plan['source_tree']
         remote = fixtures.PlatformRemote(plan, assets)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            paths = complete(root, plan['source_tree'])
+            fixtures.ReleasePipeline.setup_output(self, root, assets)
             with patch.object(rc, 'git', side_effect=remote.git), \
                     patch.object(rc, 'remote_ref', side_effect=remote.ref), \
-                    patch.object(rc, 'download_assets'), \
-                    patch.object(remote, 'ci', side_effect=AssertionError('Actions must not be queried')):
-                for missing in range(5):
-                    with self.assertRaises(ValueError):
-                        rc.publish(root, remote, plan, local_checks=paths[:missing] + paths[missing + 1:])
-                    self.assertEqual(remote.events, [])
-                fixtures.ReleasePipeline.setup_output(self, root, assets)
-                rc.publish(root, remote, plan, local_checks=paths)
-            self.assertEqual(remote.latest, plan['tags']['installer'])
-            self.assertEqual(json.loads((root / 'ci.json').read_bytes())['mode'], 'local')
+                    patch.object(rc, 'download_assets'), patch.object(cc, 'run_checks') as run:
+                rc.publish(root, remote, plan, skip_preflight_tests=True)
+                run.assert_not_called()
+                self.assertEqual(remote.ci_sources, [])
+                journal = root / 'preflight/000001/result.json'
+                self.assertEqual(json.loads(journal.read_bytes())['result'], 'not-run')
+                (root / 'preflight/000002').mkdir()
+                with self.assertRaisesRegex(ValueError, 'failed or was interrupted'):
+                    rc.publish(root, remote, plan, skip_preflight_tests=True)
+                self.assertFalse((root / 'preflight/000002/result.json').exists())
 
-    def test_prepare_local_checks_fail_before_build_and_windows_cannot_prepare(self):
-        with tempfile.TemporaryDirectory() as tmp, \
-                patch.object(rc.sys, 'platform', 'darwin'), patch.object(rc.sys, 'version_info', (3, 12)), \
-                patch.object(rc, 'source_payload'), patch.object(rc, 'git'), \
-                patch.object(cc, 'run_checks', side_effect=ValueError('synthetic failure')), \
-                patch.object(rc, 'prepare_platforms') as build:
-            with self.assertRaisesRegex(ValueError, 'synthetic failure'):
-                rc.prepare_local(Path(tmp), '1' * 40, 'auto', 'all')
-            build.assert_not_called()
-        with patch.object(rc.sys, 'platform', 'win32'):
-            with self.assertRaisesRegex(ValueError, 'macOS'):
-                rc.prepare_local(Path('unused'), '1' * 40, 'auto', 'all')
-
-    def test_hybrid_requires_all_local_mac_scopes_and_keeps_official_windows_separate(self):
+    def test_release_result_rejects_over_budget_and_wrong_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            paths = complete(root)[:3]
-            plan = {'source_tree': TREE, 'executor_tree': '3' * 40}
-            api = unittest.mock.Mock()
-            api.windows_ci.return_value = {'scope': 'windows-jobs-only', 'run_id': 12}
-            with self.assertRaisesRegex(ValueError, 'executor'):
-                cc.hybrid_evidence(paths, plan, api)
-            paths += complete(root, '3' * 40)[:3]
-            result = cc.hybrid_evidence(paths, plan, api)
-            self.assertEqual(result['mode'], 'hybrid')
-            for label in ('source', 'executor'):
-                self.assertEqual(len(result['trees'][label]['local']), 3)
-                self.assertEqual(result['trees'][label]['github_windows']['scope'], 'windows-jobs-only')
-            for index in range(len(paths)):
-                with self.assertRaises(ValueError):
-                    cc.hybrid_evidence(paths[:index] + paths[index + 1:], plan, api)
-            with self.assertRaisesRegex(ValueError, 'Duplicate'):
-                cc.hybrid_evidence(paths + [paths[0]], plan, api)
-            with self.assertRaisesRegex(ValueError, 'Unexpected'):
-                cc.hybrid_evidence(paths + [receipt(root, 'source', tree='9' * 40)], plan, api)
-            with self.assertRaises(ValueError):
-                cc.hybrid_evidence(paths + [root / ('windows-3.11.15-' + TREE[:5]) / 'checks.json'], plan, api)
-
-    def test_hybrid_rejects_missing_windows_before_any_remote_write_and_reuses_publication(self):
-        plan, assets = fixtures.platform_fixture()
-        plan['executor_tree'] = plan['source_tree']
-        remote = fixtures.PlatformRemote(plan, assets)
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            paths = complete(root, plan['source_tree'])[:3]
-            with patch.object(rc, 'git', side_effect=remote.git), \
-                    patch.object(rc, 'remote_ref', side_effect=remote.ref), \
-                    patch.object(rc, 'download_assets'), \
-                    patch.object(remote, 'windows_ci', create=True, side_effect=ValueError('Windows missing')) as windows:
-                with self.assertRaisesRegex(ValueError, 'Windows missing'):
-                    rc.publish(root, remote, plan, local_checks=paths, hybrid_checks=True)
-                self.assertEqual(remote.events, [])
-                windows.side_effect = None
-                windows.return_value = {'scope': 'windows-jobs-only', 'run_id': 12}
-                fixtures.ReleasePipeline.setup_output(self, root, assets)
-                windows.reset_mock()
-                rc.publish(root, remote, plan, local_checks=paths, hybrid_checks=True)
-                windows.assert_called_once_with({'source_tree': plan['source_tree']})
-            self.assertEqual(remote.latest, plan['tags']['installer'])
-            self.assertEqual(json.loads((root / 'ci.json').read_bytes())['mode'], 'hybrid')
+            path = receipt(Path(tmp), 'release')
+            with self.assertRaisesRegex(ValueError, 'does not match'):
+                cc.load_receipt(path, '9' * 40)
+            row = json.loads(path.read_bytes())
+            row['seconds'] = 300.001
+            path.write_bytes(cc.encoded(row))
+            with self.assertRaisesRegex(ValueError, '5-minute budget'):
+                cc.load_receipt(path, TREE)
 
     def test_ci_invokes_the_same_inventory_and_keeps_native_matrix(self):
         workflow = (cc.ROOT / '.github/workflows/client-checks.yml').read_text()
