@@ -9,6 +9,20 @@ from agent_brain_client.adapters.installation.updates import RegisteredClientIns
 from agent_brain_client.adapters.installation import update_interpreter
 
 
+def manage_auto_update(home, action=None, until=None):
+    from agent_brain_client.adapters.installation.installation import inspect
+    from agent_brain_client.adapters.storage.background import manage_policy
+
+    installation = inspect(home)
+    if installation.get("registration_verified") is not True:
+        raise ValueError("Verified Client installation required")
+    return dict(
+        manage_policy(home, action, until),
+        active_package_version=installation.get("installed_version"),
+        running_worker_version=None,
+    )
+
+
 def manage_update(home, action, *, channel_factory=None):
     from agent_brain_client.runtime.installation_completion import source_setup
 

@@ -5,7 +5,6 @@ the policy digest through the forced SSH command. No daemon or native rewriting.
 """
 
 import sys
-from functools import partial
 from pathlib import Path
 
 import hashlib
@@ -281,13 +280,31 @@ def isolated_stdio_operation(policy_path, policy_sha256, harness, mode, ticket, 
     request = json.loads(ticket, object_pairs_hook=private_files.pairs) if ticket is not None else None
     if mode == "check":
         return {"current": request == {"registration": stamp}}
-    if mode == "discover":
-        if request is not None or protocol is not None:
-            raise UpdateBlocked("Distinct background discovery required")
-        from agent_brain_client.adapters.installation.launcher_update import can_activate_at_startup
+    if mode in ("discover", "background-content", "background-update"):
+        expected = None if mode == "discover" else {"registration": stamp}
+        if request != expected or protocol is not None:
+            raise UpdateBlocked("Exact background binding required")
+        if mode != "background-content":
+            from agent_brain_client.runtime.background import software_update
 
-        releases.startup_check(can_activate=partial(can_activate_at_startup, Path(runtime["device_home"])))
-        return {}
+            return software_update(
+                Path(runtime["device_home"]), releases, policy_sha256,
+                still_current=lambda: registration_stamp(runtime, harness) == registered,
+            )
+        active = releases.verified_active(serving=True)
+        if active is None or content_runtime_blocker(active, releases.policy):
+            raise UpdateBlocked("Verified Content runtime required")
+        fixed = launcher_package_files(registered[0]).get(MCP_LAUNCHER_ENTRY)
+        if fixed is None or launcher_package_files(active["package"]).get(MCP_LAUNCHER_ENTRY) != fixed:
+            raise UpdateBlocked("Reconnect to the changed MCP supervisor")
+        result = subprocess.run(
+            [*content_command(active, runtime, harness), "--background-content", "--own-runtime-lease",
+             "--background-registration", stamp, "--background-commit", active["commit"]],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, timeout=48, check=True,
+        )
+        if len(result.stdout) > 1024:
+            raise UpdateBlocked("Bounded Content background status required")
+        return json.loads(result.stdout)
     if mode == "plan":
         if request is not None or protocol is not None:
             raise UpdateBlocked("Read-only worker plan required")

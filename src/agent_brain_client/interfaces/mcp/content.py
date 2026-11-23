@@ -664,6 +664,9 @@ class ContentServer(Server):
             lifecycle=self._lifecycle_enabled(),
         )
 
+    def initial_mapping(self):
+        return self.adapter.refresh()
+
     def handle(self, request):
         if (
             isinstance(request, dict)
@@ -692,7 +695,7 @@ class ContentServer(Server):
             and request.get("method") == "initialize"
             and isinstance(result, dict)
         ):
-            mapping = self.adapter.refresh()
+            mapping = self.initial_mapping()
             result["content_mapping"] = mapping
             result["serverInfo"]["name"] = "agent-brain-content"
             result["instructions"] = (
@@ -725,6 +728,9 @@ class ManagedContentServer(ContentServer):
         super().__init__(adapter, client_version)
         if protocol != "initial":
             self.state = "ready"
+
+    def initial_mapping(self):
+        return {"status": "content-refresh-scheduled", "native_changed": None, "model_loaded": "unknown"}
 
     def handle(self, request):
         if (
@@ -1049,10 +1055,13 @@ def main():
     )
     parser.add_argument("--managed-stdio", choices=("initial", *VERSIONS), help=argparse.SUPPRESS)
     parser.add_argument("--own-runtime-lease", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--background-content", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--background-registration", help=argparse.SUPPRESS)
+    parser.add_argument("--background-commit", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.managed_stdio and (
         not args.https_profile or args.installation_check or args.event_hook
-        or args.mapping_refresh or args.import_plan
+        or args.mapping_refresh or args.import_plan or args.background_content
     ):
         raise ValueError("Managed stdio requires ordinary HTTPS MCP serving")
     _STARTUP_STAGE = "component-source-check"
@@ -1068,9 +1077,29 @@ def main():
     ):
         raise ValueError("Native source review required")
     if args.mapping_refresh and (
-        args.installation_check or args.event_hook or args.import_plan
+        args.installation_check or args.event_hook or args.import_plan or args.background_content
     ):
         raise ValueError("Distinct mapping mode required")
+    if args.background_content:
+        if (
+            not args.https_profile or args.installation_check or args.event_hook or args.import_plan
+            or not args.background_registration or not args.background_commit
+            or worker_commit(args.client_version) != args.background_commit
+        ):
+            raise ValueError("Verified background content runtime required")
+        from agent_brain_client.runtime.launcher import registration_stamp
+        from agent_brain_client.interfaces.mcp.launcher import runtime_fingerprint
+
+        def still_current():
+            registration = registration_stamp(
+                {"device_home": args.device_home, "codex_home": args.codex_home}, args.harness
+            )
+            return registration is not None and runtime_fingerprint(registration) == args.background_registration
+
+        if not still_current():
+            raise ValueError("Background content binding changed")
+    elif args.background_registration or args.background_commit:
+        raise ValueError("Distinct background content mode required")
     _STARTUP_STAGE = "content-policy-validation"
     policy = pinned(args.content_policy, args.content_policy_sha256)
     if not args.installation_check:
@@ -1194,6 +1223,13 @@ def main():
         args.device_home, cache, policy, client, host=host, native_home=native,
         existing_cache=args.managed_stdio not in (None, "initial"),
     )
+    if args.background_content:
+        from agent_brain_client.runtime.background import content_refresh
+
+        print(json.dumps(content_refresh(
+            adapter, args.background_commit, args.background_registration, still_current=still_current,
+        )))
+        return
     if args.mapping_refresh:
         result = adapter.refresh()
         print(json.dumps(result))
@@ -1243,8 +1279,10 @@ def cli():
         # owns its cache lease for precisely its lifetime, including at abort.
         # The preexisting Windows fallback also uses a worker-owned lease.
         own_lease = "--own-runtime-lease" in sys.argv
-        if own_lease and ("--cache" not in sys.argv or "--managed-stdio" not in sys.argv):
-            raise ValueError("Managed worker cache lease required")
+        if own_lease and ("--cache" not in sys.argv or not (
+            "--managed-stdio" in sys.argv or "--background-content" in sys.argv
+        )):
+            raise ValueError("Managed content cache lease required")
         if (
             (os.name == "nt" or own_lease)
             and "--cache" in sys.argv
