@@ -132,6 +132,9 @@ class ContentServer(Server):
             "active_package_version": None,
             "active_package_commit": None,
             "reload_required": None,
+            # This worker cannot see the host's session tool cache. A current
+            # worker is not proof that the host has adopted its tool list.
+            "reload_required_scope": "mcp-worker",
             "reload_reason": "active-package-unobserved",
         }
         if not isinstance(getattr(self.adapter, "home", None), Path):
