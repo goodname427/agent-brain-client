@@ -982,9 +982,9 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
         adapter=restart();server=ContentServer(adapter)
         row=server.adapter.sources.provider.inventory()['sources'][0]
         params={'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint']}
-        body={'text': server.adapter.sources.read_onboarding_original(*params.values())[0]}
-        self.assertEqual(body['text'],'合成事实：本周更正了指示牌。')
-        self.assertFalse(body['data_transferred']);self.assertEqual(helper.cloud.calls,[])
+        body, _ = adapter.sources.read_onboarding_original(*params.values())
+        self.assertEqual(body, '合成事实：本周更正了指示牌。')
+        self.assertEqual(helper.cloud.calls, [])
         record={'title':'Synthetic progress','description':'Synthetic Windows fixture','body':'Synthetic normalized experience','type':'feedback'}
         key=memory_inventory.base.seed_legacy_native_plan(adapter,row,record)
         request=helper.request('synthetic_windows_memory_001')
@@ -999,7 +999,8 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
         self.assertEqual(helper.cloud.records[('memory','synthetic-topic')],record)
         self.assertEqual(restored.sources.import_status()['counts'],{'reconciled':1})
         self.assertEqual(restored.queue_status()['confirmed'],1)
-        self.assertNotIn(body['text'],(helper.cache/'memory-inventory.json').read_text(encoding='utf-8'))
+        self.assertFalse((helper.cache / 'memory-inventory.json').exists())
+        self.assertNotIn(body, (helper.cache / 'memory-reviews.json').read_text(encoding='utf-8'))
 
 
 if __name__ == '__main__': unittest.main()
