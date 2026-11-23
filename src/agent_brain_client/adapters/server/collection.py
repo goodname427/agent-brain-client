@@ -89,6 +89,9 @@ class CollectionClient:
                 "X-Agent-Brain-Protocol": "1",
                 "X-Agent-Brain-State-Schema": "1",
                 "X-Agent-Brain-Data-Mode": "personal",
+                # The bounded body check already restricted this opt-in to
+                # the native-memory event. The receiver authenticates first.
+                **({"X-Agent-Brain-Native-Memory": "1"} if len(raw) > MAX_GLOBAL_REQUEST_BYTES else {}),
             },
         )
 

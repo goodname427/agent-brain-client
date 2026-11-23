@@ -70,6 +70,16 @@ def native_source_identity(source_id, fingerprint):
         raise ValueError("Exact native source identity required")
 
 
+def native_memory_content(body):
+    """Original UTF-8 text, with no rewriting before its source fingerprint."""
+    if not isinstance(body, str) or not body.strip():
+        raise ValueError("Nonempty native source text required")
+    data = body.encode("utf-8")
+    if len(data) > MAX_NATIVE_MEMORY_BYTES:
+        raise ValueError("Native source content exceeds bound")
+    return data
+
+
 def native_memory_event(value):
     # The queue pins the route and source coordinates locally. The global wire
     # removes them from the event and lets the Server bind the approved route.
@@ -87,7 +97,6 @@ def native_memory_event(value):
     ):
         raise ValueError("UTC source time required")
     query_time(stamp)
-    body = value["content"]
-    text(body, MAX_NATIVE_MEMORY_BYTES)
-    if hashlib.sha256(body.encode()).hexdigest() != value["source_fingerprint"]:
+    data = native_memory_content(value["content"])
+    if hashlib.sha256(data).hexdigest() != value["source_fingerprint"]:
         raise ValueError("Native source content changed")

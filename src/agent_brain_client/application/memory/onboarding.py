@@ -3,7 +3,7 @@
 import re
 from collections import Counter
 
-from agent_brain_client.domain.events import MAX_NATIVE_MEMORY_BYTES
+from agent_brain_client.domain.events import native_memory_content
 from agent_brain_client.domain.privacy import private_recall_text
 from agent_brain_client.domain.service import endpoint_check
 
@@ -108,7 +108,9 @@ def excluded_original(body):
         return "private-or-sensitive"
     if _UNVERIFIED_SCOPE.search(body):
         return "shareability-unconfirmed"
-    if not body.strip() or "\0" in body or len(body.encode("utf-8")) > MAX_NATIVE_MEMORY_BYTES:
+    try:
+        native_memory_content(body)
+    except ValueError:
         return "original-outside-bound"
     return None
 

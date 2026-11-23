@@ -41,6 +41,7 @@ class SyntheticCaptureServer:
     def __init__(self):
         self.requests = []
         self.request_sizes = {}
+        self.request_native_header = {}
         self.receipts = {}
         self.lose_ack = True
         self.admitted = True
@@ -50,6 +51,9 @@ class SyntheticCaptureServer:
         body = json.loads(request.data)
         self.requests.append(body)
         self.request_sizes[body["request_id"]] = len(request.data)
+        self.request_native_header[body["request_id"]] = {
+            key.casefold(): value for key, value in request.header_items()
+        }.get("x-agent-brain-native-memory")
         params = body["params"]
         key = (digest(params["origin"]), params["session_id"])
         if body["method"] == "memory_global_status":
@@ -220,7 +224,7 @@ class NativeMemoryCapture(unittest.TestCase):
                 "credential.md": "password: synthetic-password-12345",
                 "variables.md": 'EXAMPLE_SECRET_ACCESS_KEY="synthetic-credential-fixture"',
                 "confidential.md": "confidential: fictional unavailable material",
-                "invalid.md": "A fictional invalid original without transport.\0",
+                "invalid.md": " \r\n\t ",
             }
             for filename, raw in protected.items():
                 source_file.with_name(filename).write_bytes(raw.encode())
@@ -449,7 +453,7 @@ class NativeMemoryCapture(unittest.TestCase):
                 self.assertEqual(len(peer.receipts), 216)
                 self.assertLess(len(json.dumps(batch)), 1024)
 
-                final_original = ("Fictional 原文 🌿 e\u0301 \t \r\n" * 1400).encode()
+                final_original = ("Fictional 原文 🌿 e\u0301 \t \0\r\n" * 1400).encode()
                 self.assertGreater(len(final_original.decode().encode("utf-16-le")) // 2, 8192)
                 source_file.with_name("managed-worker.md").write_bytes(final_original)
                 with patch.object(delivery, "wake", side_effect=OSError("synthetic interrupted spawn")):
@@ -490,7 +494,7 @@ class NativeMemoryCapture(unittest.TestCase):
                 blank = copy.deepcopy(sent[0])
                 blank["params"]["event"]["content"] = ""
                 overhead = len(json.dumps(blank, ensure_ascii=False).encode())
-                mixed = ('"\\合🌿e\u0301\t\r\n' * 4000)
+                mixed = ('"\\合🌿e\u0301\t\0\r\n' * 4000)
                 encoded_mixed = len(json.dumps(mixed, ensure_ascii=False).encode()) - 2
                 near = mixed + "x" * (131072 - overhead - encoded_mixed)
                 raw_max = mixed + "x" * (131072 - len(mixed.encode()))
@@ -515,6 +519,9 @@ class NativeMemoryCapture(unittest.TestCase):
                 self.assertEqual(peer.request_sizes[by_body[near]["request_id"]], 131072)
                 self.assertGreater(peer.request_sizes[by_body[raw_max]["request_id"]], 131072)
                 self.assertGreater(peer.request_sizes[by_body[worst]["request_id"]], 780000)
+                self.assertIsNone(peer.request_native_header[by_body[near]["request_id"]])
+                for large in (raw_max, worst):
+                    self.assertEqual(peer.request_native_header[by_body[large]["request_id"]], "1")
                 self.assertEqual(source_file.with_name("past-readable-limit.md").read_bytes(), excessive.encode())
                 non_native = {"contract": "agentbrain.event.v1", "messages": [{"role": "user", "content": worst}]}
                 with self.assertRaises(GlobalRequestTooLarge):
