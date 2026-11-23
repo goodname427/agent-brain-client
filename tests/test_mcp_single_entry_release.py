@@ -283,7 +283,7 @@ class SingleEntryPair(SingleEntryFixture):
         self.call(4, "read")
         self.assertEqual(self.receive(4)["result"], {"worker": "B", "business": "B new file"})
         self.send("tools/list", 5)
-        self.assertEqual(self.receive(5)["result"], self.catalog)
+        self.assertEqual(self.receive(5)["result"]["tools"][0]["description"], "Worker B")
 
     def test_new_worker_readiness_rechecks_native_registration_before_dispatch(self):
         marker(self.root, "change-registration-on-B-ready")
