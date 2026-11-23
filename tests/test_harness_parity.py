@@ -21,11 +21,11 @@ from agent_brain_client.application.queue.delivery import deliver_pending
 from agent_brain_client.application.memory.guidance import HOST_GUIDANCE, MAPPING_GUIDANCE, ONBOARDING_GUIDANCE
 from agent_brain_client.application.memory.observations import stage_messages
 from agent_brain_client.application.memory.onboarding import SOURCE_SCOPE
-from agent_brain_client.runtime import collection, collection_management
+from agent_brain_client.runtime import collection, collection_management, delivery, onboarding
 from agent_brain_client.runtime.harness_content import content_host
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.scopes import digest, namespace, source_id
-from agent_brain_client.adapters.platforms.filesystem import private_directory
+from agent_brain_client.adapters.platforms.filesystem import native_platform, private_directory
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.interfaces.mcp.content import ContentServer, ManagedContentServer
 from agent_brain_client.interfaces.mcp.framing import ContentParameterError, ProtocolError
@@ -105,6 +105,7 @@ class NativeMemoryCapture(unittest.TestCase):
         peer = SyntheticCaptureServer()
         cloud = Cloud()
         cloud.queue_identity = {"device_id": "synthetic"}
+        cloud.grant["platform"] = native_platform()
         value = {
             "device_home": str(home), "legacy_projects": [],
             "scope": {
@@ -126,7 +127,7 @@ class NativeMemoryCapture(unittest.TestCase):
             client = object.__new__(CollectionClient)
             client.value, client.local, client.actor = value, origin, "synthetic-owner"
             client.base = SimpleNamespace(
-                queue_identity=cloud.queue_identity,
+                queue_identity=cloud.queue_identity, grant=cloud.grant,
                 _credential=lambda: "synthetic-credential",
                 profile={"endpoint": "https://synthetic.invalid"},
                 transport=SimpleNamespace(opener=peer),
@@ -142,8 +143,34 @@ class NativeMemoryCapture(unittest.TestCase):
                 session.sources.provider = session.host.sources(session)
             return ManagedContentServer(session, "0.0.0", "initial")
 
-        def tool(worker, name, arguments):
-            return worker.invoke(name, arguments)["structuredContent"]
+        base_metadata_view = ContentSession.metadata_view
+
+        def metadata_view(*args, **kwargs):
+            session = base_metadata_view(*args, **kwargs)
+            if windows_layout:
+                with patch.object(session, "platform", "win32-x64"):
+                    session.sources.provider = session.host.sources(session)
+            return session
+
+        def worker_pass(approval_id):
+            matching = []
+            for file in delivery.directory(home).glob("*.json"):
+                task = metadata.private_json(file, cache=True)
+                if task.get("approval_id") == approval_id:
+                    matching.append(task)
+            self.assertEqual(len(matching), 1)
+            pending, _ = onboarding.deliver_approved_batch(home, matching[0], collection.native_services())
+            return pending
+
+        def tool(worker, name, arguments, *, run_delivery=True):
+            result = worker.invoke(name, arguments)["structuredContent"]
+            if name == "memory_onboard" and result.get("approval_id") and run_delivery:
+                if result["status"] == "onboarding-queued" or result["counts"]["pending"]:
+                    worker_pass(result["approval_id"])
+                    progress_args = {k: v for k, v in arguments.items() if k != "approved"}
+                    progress_args.update(resume=True, approval_id=result["approval_id"])
+                    result = worker.invoke(name, progress_args)["structuredContent"]
+            return result
 
         with (
             patch.object(collection, "load", return_value=value),
@@ -151,6 +178,9 @@ class NativeMemoryCapture(unittest.TestCase):
             patch("agent_brain_client.adapters.server.collection.approved", return_value=True),
             patch.object(collection, "CollectionClient", side_effect=transport),
             patch.object(registration, "registration", return_value=({}, enrolled)),
+            patch.object(content_host(harness), "location", return_value=(native, home / "content")),
+            patch.object(delivery, "wake"),
+            patch.object(ContentSession, "metadata_view", side_effect=metadata_view),
             patch("os.getcwd", return_value=str(home)),
         ):
             worker = server()
@@ -200,7 +230,10 @@ class NativeMemoryCapture(unittest.TestCase):
 
             sources = worker.adapter.sources
             legacy_excluded = "Fictional original with a retained explicit exclusion."
-            source_file.with_name("explicitly-excluded.md").write_bytes(legacy_excluded.encode())
+            restricted_source = source_file.with_name("explicitly-excluded.md")
+            restricted_source.write_bytes(legacy_excluded.encode())
+            old_skipped = "Fictional raw original rejected by a historical value judgement."
+            source_file.with_name("old-skipped.md").write_bytes(old_skipped.encode())
             rows = {
                 item["source_fingerprint"]: item
                 for item in sources.provider.inventory(onboarding=True)["sources"]
@@ -211,6 +244,15 @@ class NativeMemoryCapture(unittest.TestCase):
                 worker.adapter, excluded_row, "excluded", "secret-localonly-or-confidential",
             )
             original_row = rows[sha256(original.encode()).hexdigest()]
+            seed_legacy_native_review(
+                worker.adapter, rows[sha256(old_skipped.encode()).hexdigest()],
+                "skipped", "no-durable-user-fact",
+            )
+            if windows_layout:
+                old_skipped += " The revised raw original should still be eligible."
+                source_file.with_name("old-skipped.md").write_bytes(old_skipped.encode())
+            protected_edit = legacy_excluded + " This edited revision must remain local."
+            restricted_source.write_bytes(protected_edit.encode())
             if windows_layout:
                 key = seed_legacy_native_plan(worker.adapter, original_row, MEMORY)
                 request = {
@@ -250,29 +292,30 @@ class NativeMemoryCapture(unittest.TestCase):
                 self.assertEqual(tool(worker, "memory_onboard", args)["error"]["code"],
                                  "onboarding-personal-origin-required")
             self.assertEqual(peer.requests, [])
+            queued = tool(worker, "memory_onboard", args, run_delivery=False)
+            self.assertEqual(queued["status"], "onboarding-queued")
+            self.assertEqual(peer.requests, [])
+            self.assertEqual(tool(worker, "memory_onboard", args, run_delivery=False), queued)
+
+            with patch("agent_brain_client.runtime.onboarding.source_active", return_value=False):
+                self.assertTrue(worker_pass(queued["approval_id"]))
+                self.assertEqual(peer.requests, [])
             peer.admitted = False
             denied = tool(worker, "memory_onboard", args)
-            self.assertEqual(denied["reasons"].get("server-source-paused-or-denied"), 1, denied)
+            self.assertEqual(denied["reasons"].get("server-source-paused-or-denied"), 2, denied)
             self.assertEqual([r["method"] for r in peer.requests], ["memory_global_status"])
             peer.requests.clear()
             peer.admitted = True
 
             queued = tool(worker, "memory_onboard", args)
-            self.assertEqual(queued["counts"]["pending"], 1, queued)
-            self.assertEqual(queued["counts"]["excluded"], len(protected) + 2 + (windows_layout and harness == "codebuddy"))
-            self.assertEqual(queued["reasons"]["private-or-sensitive"], 4)
-            self.assertEqual(queued["reasons"]["shareability-unconfirmed"], 1)
-            self.assertEqual(queued["reasons"]["retained-exclusion"], 1)
-            if windows_layout and harness == "codebuddy":
-                self.assertEqual(queued["reasons"]["project-origin-unverified"], 1)
+            self.assertGreaterEqual(queued["counts"]["pending"], 2, queued)
             encoded = json.dumps(queued, ensure_ascii=False)
             for raw in [original, legacy_excluded, *protected.values(), str(workspace)]:
                 self.assertNotIn(raw, encoded)
             self.assertEqual(len(peer.receipts), 1)
             admission, initial_wire = peer.requests
             self.assertEqual(admission["method"], "memory_global_status")
-            self.assertEqual(initial_wire["params"]["event"]["content"], original)
-            self.assertEqual(initial_wire["params"]["event"]["occurred_at"], "2009-02-13T23:31:30.123Z")
+            self.assertIn(initial_wire["params"]["event"]["content"], (original, old_skipped))
             original_origin = initial_wire["params"]["origin"]
             _, imported_queue = collection.build_delivery_queue(value, original_origin, harness)
             # Ordinary Hook drains cannot send an explicit historical request.
@@ -310,38 +353,116 @@ class NativeMemoryCapture(unittest.TestCase):
             done = tool(worker, "memory_onboard", resume)
             self.assertEqual(done["approval_id"], queued["approval_id"])
             self.assertEqual(done["counts"]["already_exists"], 1, done)
-            self.assertEqual(done["extraction"], {"no-facts": 1})
+            self.assertEqual(done["counts"]["received"], 1, done)
+            self.assertEqual(done["extraction"], {"no-facts": 2})
             self.assertIn(initial_wire, peer.receipts.values())
-            self.assertEqual(peer.requests[-1], initial_wire)
-            self.assertEqual(len(peer.requests), calls + 2)
-            self.assertEqual(len(peer.receipts), 2)
+            self.assertEqual(peer.requests[-2], initial_wire)
+            memory_events = [row["params"]["event"] for row in peer.receipts.values()
+                             if row["params"]["event"]["contract"] == "agentbrain.native-memory.v1"]
+            self.assertEqual({row["content"] for row in memory_events}, {original, old_skipped})
+            preserved = next(row for row in memory_events if row["content"] == original)
+            self.assertEqual(preserved["occurred_at"], "2009-02-13T23:31:30.123Z")
+            self.assertEqual(done["counts"]["excluded"], len(protected) + 1 + (windows_layout and harness == "codebuddy"))
+            self.assertEqual(done["counts"]["failed"], 1)
+            self.assertEqual(done["reasons"]["original-outside-bound"], 1)
+            self.assertEqual(done["reasons"]["private-or-sensitive"], 4)
+            self.assertEqual(done["reasons"]["shareability-unconfirmed"], 1)
+            self.assertEqual(done["reasons"]["retained-exclusion"], 1)
+            if windows_layout and harness == "codebuddy":
+                self.assertEqual(done["reasons"]["project-origin-unverified"], 1)
+            self.assertEqual(len(peer.requests), calls + 3)
+            self.assertEqual(len(peer.receipts), 3)
             alternate = dict(args["destination"], origin=str(other_workspace))
             wrong_resume = tool(worker, "memory_onboard", dict(resume, destination=alternate,
                                 approval_id=queued["approval_id"]))
             self.assertEqual(wrong_resume["error"]["code"], "onboarding-approval-unavailable")
             source_file.with_name("after-approval.md").unlink()
             existing = tool(worker, "memory_onboard", dict(args, destination=alternate))
-            self.assertEqual(existing["counts"]["already_exists"], 1)
-            self.assertEqual(len(peer.requests), calls + 2)  # no rebind or disclosure
+            self.assertEqual(existing["counts"]["already_exists"], 2)
+            self.assertEqual(len(peer.requests), calls + 3)  # no rebind or disclosure
             repeated = tool(worker, "memory_onboard", resume)
-            self.assertEqual(repeated["counts"]["already_exists"], 1)
-            self.assertEqual(peer.requests[-1]["method"], "memory_global_status")
-            self.assertEqual(len(peer.receipts), 2)
+            self.assertEqual(repeated, done)
+            self.assertEqual(len(peer.requests), calls + 3)  # progress reads do not call the Server
+            self.assertEqual(len(peer.receipts), 3)
             self.assertEqual(cloud.calls, [])
             for filename, expected in legacy_ledgers.items():
                 self.assertEqual(worker.adapter._load(filename), expected)
             self.assertNotIn(legacy_excluded, json.dumps(peer.requests))
+            self.assertNotIn(protected_edit, json.dumps(peer.requests))
             if harness == "codex" and not windows_layout:
-                for index in range(70):
+                for filename in (*protected, "unapproved.md", "explicitly-excluded.md"):
+                    source_file.with_name(filename).unlink()
+                for index in range(213):
                     raw = f"Fictional onboard batch item {index}".encode()
                     source_file.with_name(f"batch-{index}.md").write_bytes(raw)
-                batch = tool(worker, "memory_onboard", args)
-                self.assertEqual(batch["counts"]["received"], 70, batch)
-                self.assertEqual(batch["counts"]["already_exists"], 1)
-                submitted = [row for row in peer.requests if row["method"] == "memory_global_event_submit"]
-                self.assertEqual(len(submitted), 73)
-                self.assertEqual(len(peer.receipts), 72)
+                before_large = len(peer.requests)
+                batch = tool(worker, "memory_onboard", args, run_delivery=False)
+                batch_id = batch["approval_id"]
+                self.assertEqual(batch["status"], "onboarding-queued")
+                self.assertEqual(batch["counts"]["pending"], 215)
+                self.assertEqual(len(peer.requests), before_large)
+                large_resume = dict(resume, approval_id=batch_id)
+
+                # Persist 168 confirmed records, then resume the 47-item tail
+                # under multiple deadlines and a freshly opened MCP worker.
+                with patch.object(onboarding, "request_timeout", side_effect=lambda _: (
+                    3 if len(peer.requests) - before_large >= 167 else 25
+                )):
+                    self.assertTrue(worker_pass(batch_id))
+                before_resume = len(peer.requests)
+                batch = tool(server(), "memory_onboard", large_resume, run_delivery=False)
+                self.assertEqual(batch["counts"]["received"], 166)
+                self.assertEqual(batch["counts"]["already_exists"], 2)
+                self.assertEqual(batch["counts"]["pending"], 47)
+                self.assertEqual(len(peer.requests), before_resume)
+                prev_received = 166
+                for _ in range(10):
+                    begin = len(peer.requests)
+
+                    def remaining(_):
+                        return 3 if len(peer.requests) - begin >= 15 else 25
+
+                    with patch.object(onboarding, "request_timeout", side_effect=remaining):
+                        worker_pass(batch_id)
+                    worker = server()  # No in-memory progress retained.
+                    batch = tool(worker, "memory_onboard", large_resume, run_delivery=False)
+                    self.assertGreater(batch["counts"]["received"], prev_received)
+                    self.assertEqual(batch["approval_id"], batch_id)
+                    prev_received = batch["counts"]["received"]
+                    if batch["counts"]["pending"] == 0:
+                        break
+                self.assertGreater((len(peer.requests) - before_large) * 2, 120)
+                self.assertEqual(batch["counts"]["received"], 213, batch)
+                self.assertEqual(batch["counts"]["pending"], 0)
+                self.assertEqual(batch["counts"]["already_exists"], 2)
+                new_calls = peer.requests[before_large:]
+                self.assertFalse(any(row["params"].get("event_only") for row in new_calls))
+                submitted = [row for row in new_calls if row["method"] == "memory_global_event_submit"]
+                self.assertEqual(len(submitted), 213)
+                self.assertEqual(len({row["request_id"] for row in submitted}), 213)
+                self.assertEqual(len(peer.receipts), 216)
                 self.assertLess(len(json.dumps(batch)), 1024)
+
+                final_original = b"Fictional message recovered by the ordinary delivery worker."
+                source_file.with_name("managed-worker.md").write_bytes(final_original)
+                with patch.object(delivery, "wake", side_effect=OSError("synthetic interrupted spawn")):
+                    fresh = tool(worker, "memory_onboard", args, run_delivery=False)
+                self.assertEqual(fresh["status"], "onboarding-queued")
+                before = len(peer.requests)
+                with patch("agent_brain_client.runtime.host_binding.load_delivery_core",
+                           return_value=collection.native_services()):
+                    delivery.run(home, max_seconds=12, pause=lambda _: None)
+                result = tool(worker, "memory_onboard", dict(resume, approval_id=fresh["approval_id"]),
+                              run_delivery=False)
+                self.assertEqual(result["counts"]["received"], 1)
+                self.assertEqual(result["counts"]["pending"], 0)
+                sent = [row for row in peer.requests[before:] if row["method"] == "memory_global_event_submit"]
+                self.assertEqual(len(sent), 1)
+                self.assertEqual(sent[0]["params"]["event"]["content"].encode(), final_original)
+                self.assertFalse(any(
+                    metadata.private_json(path, cache=True).get("harness") == "onboarding"
+                    for path in delivery.directory(home).glob("*.json")
+                ))
 
     def test_first_origin_import_preserves_other_pending_capture_and_exact_replay(self):
         for harness in ("codex", "codebuddy"):

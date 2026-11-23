@@ -35,7 +35,7 @@ INPUT_SCHEMA = {
         },
         "resume": {
             "type": "boolean",
-            "description": "Continue only an already approved batch at this destination, using its retained source snapshot.",
+            "description": "Return progress and resume only an already approved batch at this destination, using its retained source snapshot.",
         },
         "approval_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     },
