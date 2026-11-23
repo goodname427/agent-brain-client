@@ -338,7 +338,7 @@ def run_checks(scope, output, record=False, *, ci=False):
                     env=env,
                     stdout=log,
                     stderr=subprocess.STDOUT,
-                    timeout=1800,
+                    timeout=3600 if scope == "macos" and record and index == 0 else 1800,
                 )
             seconds = round(time.monotonic() - started, 3)
             print(
