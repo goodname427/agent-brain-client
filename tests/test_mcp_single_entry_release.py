@@ -491,7 +491,12 @@ class PublishedMacMigration(unittest.TestCase):
         self.assertNotEqual(first_pid, second_pid)
         with self.assertRaises(ProcessLookupError):
             os.kill(first_pid, 0)
-        self.assertEqual(exchange("tools/list"), catalog)
+        updated_catalog = exchange("tools/list")
+        self.assertEqual(
+            launcher.tool_contract(updated_catalog["tools"]), launcher.tool_contract(catalog["tools"]),
+        )
+        self.assertNotEqual(updated_catalog, catalog)
+        catalog = updated_catalog
 
         def authority(mode, ticket=None):
             argv = [command["command"], *command["args"], "--private-stdio", mode]
@@ -588,6 +593,7 @@ class PublishedMacMigration(unittest.TestCase):
         except AssertionError:
             self.fail(diagnostic.read_text(encoding="utf-8"))
         self.assertTrue((self.home / "catalog-notified").exists())
+        self.assertIsNotNone(worker_pid(fifth))
         wait_until(lambda: worker_pid(fifth) is None, timeout=40)
         self.assertIsNone(child.poll())
         self.assertEqual(exchange("ping"), {"fixture_release": "B"})
