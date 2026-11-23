@@ -87,13 +87,15 @@ class CodeBuddyMemorySources:
                         user = user.replace(form.encode(), b"")
         return (user, info.st_mtime_ns) if with_mtime else user
 
-    def inventory(self):
+    def inventory(self, *, onboarding=False):
         rows = []
         statuses = set()
         for root, namespace, select in self._trees:
             tree = inventory_tree(
                 root, prefix=self.prefix, identity_namespace=namespace,
                 select=select, optional=True,
+                excluded_reason="project-origin-unverified"
+                if onboarding and namespace == "projects/" else None,
             )
             if tree is not None:
                 rows.extend(tree["sources"])

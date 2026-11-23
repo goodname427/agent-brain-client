@@ -27,7 +27,7 @@ def seed_legacy_native_plan(adapter, source, record):
     """Load synthetic private state shaped like a plan written before #270."""
     exact = {key: source[key] for key in ("source_id", "source_fingerprint")}
     key = sha256(contract.encode(list(exact.values()))).hexdigest()
-    reviews = adapter._load("memory-reviews.json")
+    reviews = adapter._load("memory-reviews.json", {"schema": 1, "binding": adapter.binding, "items": {}})
     reviews["items"][key] = dict(
         exact, decision="shareable", reason_code="safe-cross-project-personal-summary",
     )
@@ -38,6 +38,17 @@ def seed_legacy_native_plan(adapter, source, record):
         status="inventoried", request_id=None, remote=None,
     )
     adapter._save("imports.json", imports)
+    return key
+
+
+def seed_legacy_native_review(adapter, source, decision, reason):
+    key = sha256(contract.encode([source["source_id"], source["source_fingerprint"]])).hexdigest()
+    state = adapter._load("memory-reviews.json", {"schema": 1, "binding": adapter.binding, "items": {}})
+    state["items"][key] = {
+        "source_id": source["source_id"], "source_fingerprint": source["source_fingerprint"],
+        "decision": decision, "reason_code": reason,
+    }
+    adapter._save("memory-reviews.json", state)
     return key
 
 

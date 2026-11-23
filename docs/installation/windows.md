@@ -24,7 +24,9 @@ Set-Location $checkout
 
 已在 0.5.0 运行包完成设备登记、但安装检查失败且尚未生成原生安装回执时，取得新的官方 main 后正常重跑安装入口即可复用原接入密钥与设备身份。入口只从原受信渠道获取兼容包，保存旧 bootstrap 与计划，按精确原生前像刷新未执行计划，再运行原安装事务。已开始或已完成的原生事务走原恢复，不能套用此迁移。预登记 CRLF 元数据仅在无设备身份、无原生事务且精确匹配已知换行差异时自动迁移，原始摘要保存在恢复记录中。不要移动目录、重写摘要或重新生成密钥。
 
-安装成功后正常重载 Codex 的 `agent_brain_server` MCP，并按 [Onboarding](../../BOOTSTRAP.md#onboarding)核对连接及获准的来源。空记忆库或未加载 Skill 时也从这个入口继续。模型加载不可观测时仍报告 unknown。信任与恢复见[地址与密钥安装](address-key-install.md)和[日常维护](maintenance.md)。
+安装成功后正常重载 Codex 的 `agent_brain_server` MCP。模型加载不可观测时报告 unknown。信任与恢复见[地址与密钥安装](address-key-install.md)和[日常维护](maintenance.md)。
+
+明确授权当前宿主的可共享个人原生记忆和既有接收目标后，请宿主运行 Agent Brain Onboarding（`agent_brain_server.memory_onboard`）。
 
 首次设备初始化默认开启本设备项目和普通目录的今后会话采集与个人记忆召回，使用已登记的 HTTPS 设备身份。Client 核对服务个人池后登记来源，无需重复批准摘要、手填 profile ID 或使用 SSH。普通更新保留本地及服务端的采集停止状态、明确选择的范围、排除目录、项目隔离、数据和原队列。历史会话不参与初始化。
 

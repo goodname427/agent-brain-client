@@ -21,7 +21,7 @@ sh bootstrap/macos/install.sh --harness codebuddy --server 'https://your-server.
 
 已有 Client 时，安装核验共享登记并配置所选宿主。需要更新时使用共享入口的 `check-update` 和 `update`。终态 JSON 中的 `installation_stages.native_mcp` 报告 CodeBuddy 绑定，每个未完成阶段保留具体状态。`source_enabled` 表示当前采集授权，`model_loaded: "unknown"` 表示当前模型加载未被观察。
 
-宿主可调用 `agent_brain_server` 后，按 [Onboarding](../../BOOTSTRAP.md#onboarding)核对首次接入及获准的来源。空记忆库或未加载 Skill 的会话也使用此入口；来源范围以实际宿主工具回执为准。日常更新和同步恢复见[日常维护](maintenance.md)。
+明确授权当前宿主的可共享个人原生记忆和既有接收目标后，请宿主运行 Agent Brain Onboarding（`agent_brain_server.memory_onboard`）。日常更新和同步恢复见[日常维护](maintenance.md)。
 
 首次安装默认配置 IDE 和 CLI。只绑定一种时传 `--surface ide|cli` 或 Windows `-Surface ide|cli`。重复安装沿用已登记范围。切换范围前先执行下面的宿主解绑，再以所需范围重新安装。
 

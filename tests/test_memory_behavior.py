@@ -12,12 +12,12 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from agent_brain_client.application.memory.guidance import MEMORY_GUIDANCE
-from agent_brain_client.application.installation.follow_up import ONBOARD_COVERAGE_GUIDANCE, installation_follow_up
+from agent_brain_client.application.memory.guidance import MEMORY_GUIDANCE, ONBOARDING_GUIDANCE
+from agent_brain_client.application.installation.follow_up import installation_follow_up
 from agent_brain_client.domain.sources import review_memory_sources
 import agent_brain_client.interfaces.mcp.content as content_mcp
 
-ONBOARD_PATH = "BOOTSTRAP.md#onboarding"
+ONBOARD_PATH = "memory_onboard"
 MEMORY_PATH = "docs/reference/memory-behavior.md"
 MAINTENANCE_PATH = "docs/installation/maintenance.md"
 OLD_SKILLS = ("agent-brain-onboard", "agent-brain-memory", "agent-brain-maintain")
@@ -54,13 +54,6 @@ class MemoryBehavior(unittest.TestCase):
         self.assertIn('SKILL.md', record_schema['oneOf'][2]['properties']['files']['required'])
 
 
-    def review_cli(self, sources, rows):
-        result = subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'src/agent_brain_client/interfaces/cli/sources.py')],
-                                input=json.dumps({'mode': 'onboard', 'sources': sources, 'candidates': rows}),
-                                capture_output=True, text=True, check=False)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return json.loads(result.stdout)
-
     def test_install_handoff_is_platform_independent_and_old_markers_do_not_prove_coverage(self):
         original = {'installed': True, 'model_loaded': False,
                     'installation_complete': True, 'prior_import_complete': True,
@@ -72,11 +65,9 @@ class MemoryBehavior(unittest.TestCase):
             self.assertEqual(result['model_loaded'], 'unknown')
             self.assertEqual(result['onboard_check']['coverage'], 'unknown')
             self.assertEqual(result['onboard_check']['status'], 'coverage-check-required')
-            self.assertEqual(result['onboard_check']['next_action'], ONBOARD_COVERAGE_GUIDANCE)
+            self.assertEqual(result['onboard_check']['next_action'], ONBOARDING_GUIDANCE)
             self.assertFalse(result['onboard_check']['data_transferred'])
             self.assertFalse(result['onboard_check']['source_scan_performed'])
-            self.assertTrue(result['onboard_check']['harness_source_inventory_required'])
-            self.assertFalse(result['onboard_check']['agentbrain_catalog_is_source_inventory'])
             self.assertIn(ONBOARD_PATH, result['onboard_check']['next_action'])
             for name in OLD_SKILLS:
                 self.assertNotIn(name, result['onboard_check']['next_action'])
@@ -84,50 +75,6 @@ class MemoryBehavior(unittest.TestCase):
             self.assertFalse(result['onboard_check']['data_transferred'])
         self.assertEqual(original, before)
         self.assertNotIn('onboard_check', installation_follow_up({'installed': False}))
-
-    def test_partial_first_import_and_unchecked_new_harness_remain_coverage_gaps(self):
-        sources, rows = self.material()
-        partial = self.review_cli(sources, rows[:3])
-        self.assertEqual(partial['onboard_check']['status'], 'coverage-incomplete')
-        self.assertFalse(partial['accessible_review_complete'])
-        sources = sources[:1] + [{'source_id': 'approved-new-harness', 'status': 'not-checked',
-                                  'authorized': True, 'expected_candidates': 1,
-                                  'reason': 'New authorized synthetic memory source'}]
-        missing = self.review_cli(sources, rows)
-        self.assertEqual(missing['onboard_check']['status'], 'coverage-incomplete')
-        sources[1]['status'] = 'read'
-        new = dict(rows[0], id='new-small-fact', source_id='approved-new-harness', utility='none')
-        checked = self.review_cli(sources, rows + [new])
-        self.assertEqual(checked['onboard_check']['status'], 'provided-sources-reviewed')
-        self.assertFalse(checked['onboard_check']['source_discovery_performed'])
-        self.assertEqual(checked['onboard_check']['scope'], 'explicit-source-metadata-only')
-        self.assertEqual(next(r['decision'] for r in checked['candidates'] if r['id'] == 'new-small-fact'), 'candidate')
-        self.assertFalse(checked['account_complete'])
-        self.assertFalse(checked['data_transferred'])
-
-    def test_provided_target_list_never_proves_harness_or_account_coverage(self):
-        sources, rows = self.material()
-        sources = sources[:1]
-        report = self.review_cli(sources, rows)
-        self.assertEqual(report['onboard_check']['status'], 'provided-sources-reviewed')
-        self.assertFalse(report['onboard_check']['account_complete'])
-        self.assertFalse(report['onboard_check']['source_discovery_performed'])
-        self.assertEqual(report['onboard_check']['scope'], 'explicit-source-metadata-only')
-
-    def test_repeated_equivalent_source_review_requires_no_full_reupload(self):
-        sources, rows = self.material()
-        sources = sources[:1]
-        for row in rows:
-            if not row['sensitive'] and not row['raw_history'] and row['scope'] == 'personal-shared':
-                row['duplicate'] = True
-        first = self.review_cli(sources, rows)
-        second = self.review_cli(sources, rows)
-        self.assertEqual(first, second)
-        self.assertEqual(first['onboard_check']['incremental_candidates'], 0)
-        self.assertEqual(first['onboard_check']['equivalent_records'], 6)
-        self.assertEqual(first['onboard_check']['status'], 'provided-sources-reviewed')
-        self.assertFalse(first['data_transferred'])
-        self.assertFalse(first['permissions_granted'])
 
     def material(self):
         # Same source material: a coffee preference, a small task result, a
@@ -351,18 +298,18 @@ class MemoryBehavior(unittest.TestCase):
             fixtures.SKILL["files"]["SKILL.md"],
         )
 
-    def test_tool_only_reports_metadata_and_guidance_has_no_three_item_import_cap(self):
+    def test_daily_cli_only_reports_metadata(self):
         sources, rows = self.material()
         result = subprocess.run(
             [sys.executable, "-I", "-B", str(ROOT / "src/agent_brain_client/interfaces/cli/sources.py")],
             input=json.dumps(
-                {"mode": "onboard", "sources": sources, "candidates": rows}
+                {"mode": "daily", "sources": sources, "candidates": rows}
             ),
             capture_output=True,
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(json.loads(result.stdout)["counts"]["candidate"], 5)
+        self.assertFalse(json.loads(result.stdout)["data_transferred"])
         self.assertNotIn("migrate all existing memories", MEMORY_GUIDANCE)
 
 

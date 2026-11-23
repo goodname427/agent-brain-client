@@ -44,6 +44,7 @@ from agent_brain_client.adapters.storage.origins import discover as discover_ori
 
 
 from agent_brain_client.application.memory.guidance import MEMORY_GUIDANCE
+from agent_brain_client.application.memory.onboarding import TOOL_NAME
 
 import argparse
 import hashlib
@@ -375,119 +376,14 @@ class ContentServer(Server):
                         {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
                     ],
                 }
-            if name == "content_sources_inventory":
-                if not isinstance(arguments, dict) or set(arguments) - {"cursor"}:
-                    raise ContentParameterError(
-                        "Inventory accepts only an optional cursor."
-                    )
-                inventory = self.adapter.sources.inventory_memory_sources()
-                cursor = arguments.get("cursor")
-                offset = 0
-                if cursor is not None:
-                    if (
-                        not isinstance(cursor, str)
-                        or len(cursor) > 96
-                        or ":" not in cursor
-                    ):
-                        raise ContentParameterError(
-                            "Invalid inventory cursor; restart enumeration."
-                        )
-                    snapshot, raw_offset = cursor.split(":", 1)
-                    if (
-                        len(snapshot) != 64
-                        or any(char not in "0123456789abcdef" for char in snapshot)
-                        or not raw_offset.isdecimal()
-                        or len(raw_offset) > 6
-                    ):
-                        raise ContentParameterError(
-                            "Invalid inventory cursor; restart enumeration."
-                        )
-                    if snapshot != inventory["cursor"]:
-                        raise ContentParameterError(
-                            "Inventory changed; restart enumeration from the first page."
-                        )
-                    offset = int(raw_offset)
-                sources = inventory["sources"]
-                page = sources[offset : offset + 64]
-                next_offset = offset + len(page)
-                result = {
-                    "status": inventory["status"],
-                    "counts": inventory["counts"],
-                    "cursor": inventory["cursor"],
-                    "sources": page,
-                    "next_cursor": f"{inventory['cursor']}:{next_offset}"
-                    if next_offset < len(sources)
-                    else None,
-                    "reason": inventory["reason"],
-                    "data_transferred": False,
-                    "account_complete": False,
-                }
-                return {
-                    "isError": False,
-                    "structuredContent": result,
-                    "content": [
-                        {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
-                    ],
-                }
-            if name == "content_sources_read":
-                if not isinstance(arguments, dict) or set(arguments) != {
-                    "source_id",
-                    "source_fingerprint",
-                }:
-                    raise ContentParameterError(
-                        "Read exactly one inventoried source by ID and fingerprint."
-                    )
-                result = self.adapter.sources.read_memory_source(
-                    arguments["source_id"], arguments["source_fingerprint"]
-                )
-                return {
-                    "isError": False,
-                    "structuredContent": result,
-                    "content": [
-                        {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
-                    ],
-                }
-            if name == "content_sources_review":
-                if not isinstance(arguments, dict) or set(arguments) != {
-                    "source_id",
-                    "source_fingerprint",
-                    "decision",
-                    "reason_code",
-                }:
-                    raise ContentParameterError(
-                        "Review requires one exact source fingerprint, a decision, and a fixed reason code."
-                    )
-                result = self.adapter.sources.review_memory_source(
-                    arguments["source_id"],
-                    arguments["source_fingerprint"],
-                    arguments["decision"],
-                    arguments["reason_code"],
-                )
-                return {
-                    "isError": False,
-                    "structuredContent": result,
-                    "content": [
-                        {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
-                    ],
-                }
-            if name == "content_sources_import":
-                if "content_put" not in self.adapter.methods():
-                    raise ContentToolUnavailable("Native Memory import requires a Memory write grant.")
-                required = {"source_id", "source_fingerprint"}
-                if (
-                    not isinstance(arguments, dict)
-                    or required - set(arguments)
-                    or set(arguments) - required - {"status_only"}
-                    or type(arguments.get("status_only", False)) is not bool
+            if name == TOOL_NAME:
+                if name not in tool_names(
+                    self.adapter.methods(), self._memory_source_tools_authorized()
                 ):
-                    raise ContentParameterError("Import one approved source by ID and fingerprint.")
-                from agent_brain_client.runtime.collection import import_native_source
+                    raise ContentToolUnavailable("Onboarding requires an existing Memory write grant.")
+                from agent_brain_client.runtime.onboarding import onboard_native_memory
 
-                result = import_native_source(
-                    self.adapter,
-                    arguments["source_id"], arguments["source_fingerprint"],
-                    status_only=arguments.get("status_only", False),
-                )
+                result = onboard_native_memory(self.adapter, arguments)
                 return {
                     "isError": "error" in result,
                     "structuredContent": result,
@@ -543,7 +439,7 @@ class ContentServer(Server):
                 ) from None
             raise ProtocolError(
                 -32010,
-                "Native Memory source changed or is unavailable; refresh inventory before retrying.",
+                "Onboarding or local source state is unavailable. Restore the approved Client binding before retrying.",
             ) from None
         except (ValueError, TypeError):
             if name == "content_queue_inspect":

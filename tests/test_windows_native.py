@@ -901,7 +901,7 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
         adapter=ContentSession(helper.home,helper.cache,memory_inventory.base.POLICY,helper.cloud,host=CodexContentPorts, native_home=alias)
         self.assertEqual(adapter.native_home,physical.resolve())
         self.assertEqual(adapter.binding['codex_home'],str(physical.resolve()))
-        self.assertEqual(adapter.sources.inventory_memory_sources()['status'],'unavailable')
+        self.assertEqual(adapter.sources.provider.inventory()['status'],'unavailable')
         row=inventory_codex_memories(physical)['sources'][0]
         # Even an existing ledger bound to the same canonical path must not
         # bypass the original configured-path reparse check on body reads.
@@ -909,7 +909,7 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
         from agent_brain_client.adapters.storage.content_session import sha
         adapter._save('memory-inventory.json',{'schema':1,'binding':adapter.binding,'cursor':'synthetic',
             'status':'complete','sources':{sha(key):row}})
-        with self.assertRaises(CacheBlocked):adapter.sources.read_memory_source(row['source_id'],row['source_fingerprint'])
+        with self.assertRaises(CacheBlocked):adapter.sources.read_onboarding_original(row['source_id'],row['source_fingerprint'])
         self.assertEqual(helper.cloud.calls,[])
 
     def test_directory_swap_attempt_fails_closed_and_later_junction_read_is_blocked(self):
@@ -919,7 +919,7 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
         helper.setUp();self.addCleanup(helper.doCleanups)
         root=helper.home/'.codex/memories';group=root/'group';group.mkdir(parents=True)
         (group/'one.md').write_bytes(b'synthetic approved tree')
-        row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
+        row=helper.adapter.sources.provider.inventory()['sources'][0]
         outside=helper.home/'outside';outside.mkdir();(outside/'one.md').write_bytes(b'synthetic outside tree')
         original=WindowsTree.open_directory
         def replace(tree,directory,entry,info):
@@ -938,7 +938,7 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
                 group.rename(root/'retained')
                 self.junction(group,outside)
             self.assertTrue(is_link(group.lstat()))
-            with self.assertRaises(cache.CacheBlocked):helper.adapter.sources.read_memory_source(row['source_id'],row['source_fingerprint'])
+            with self.assertRaises(cache.CacheBlocked):helper.adapter.sources.read_onboarding_original(row['source_id'],row['source_fingerprint'])
         finally:
             if group.exists() and is_link(group.lstat()):group.rmdir()
 
@@ -980,11 +980,11 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
         (root/'经历.md').write_bytes('合成事实：本周更正了指示牌。'.encode('utf-8'))
         def restart():return ContentSession(helper.home,helper.cache,memory_inventory.base.POLICY,helper.cloud,host=CodexContentPorts, native_home=native)
         adapter=restart();server=ContentServer(adapter)
-        row=server.invoke('content_sources_inventory',{})['structuredContent']['sources'][0]
+        row=server.adapter.sources.provider.inventory()['sources'][0]
         params={'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint']}
-        body=server.invoke('content_sources_read',params)['structuredContent']
-        self.assertEqual(body['text'],'合成事实：本周更正了指示牌。')
-        self.assertFalse(body['data_transferred']);self.assertEqual(helper.cloud.calls,[])
+        body, _ = adapter.sources.read_onboarding_original(*params.values())
+        self.assertEqual(body, '合成事实：本周更正了指示牌。')
+        self.assertEqual(helper.cloud.calls, [])
         record={'title':'Synthetic progress','description':'Synthetic Windows fixture','body':'Synthetic normalized experience','type':'feedback'}
         key=memory_inventory.base.seed_legacy_native_plan(adapter,row,record)
         request=helper.request('synthetic_windows_memory_001')
@@ -999,7 +999,8 @@ class WindowsCodexMemoryImport(memory_inventory.CodexMemoryInventory):
         self.assertEqual(helper.cloud.records[('memory','synthetic-topic')],record)
         self.assertEqual(restored.sources.import_status()['counts'],{'reconciled':1})
         self.assertEqual(restored.queue_status()['confirmed'],1)
-        self.assertNotIn(body['text'],(helper.cache/'memory-inventory.json').read_text(encoding='utf-8'))
+        self.assertFalse((helper.cache / 'memory-inventory.json').exists())
+        self.assertNotIn(body, (helper.cache / 'memory-reviews.json').read_text(encoding='utf-8'))
 
 
 if __name__ == '__main__': unittest.main()

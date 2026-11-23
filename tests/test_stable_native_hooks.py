@@ -519,7 +519,9 @@ class StableHooks(unittest.TestCase):
         engine = self.channel.engine
 
         _, manifest, _ = engine_inputs["0.8.30"]
-        self.assertEqual(set(manifest["files"]), set(self.files))
+        # Preserve the historical package and exercise the installed policy
+        # against the candidate member list, including new ordinary modules.
+        self.assertLessEqual(set(manifest["files"]), set(self.files))
         engine_inputs["0.8.31"] = ("4" * 40, dict(manifest, version="0.8.31", files=self.files),
                                    lambda name: (self.bundle / name).read_bytes())
 

@@ -24,7 +24,7 @@ class CodexMemorySources:
     def __init__(self, session):
         self.root = session.native_memory_home / "memories"
 
-    def inventory(self):
+    def inventory(self, *, onboarding=False):
         return inventory_tree(self.root, prefix=self.prefix, select=_memory_source)
 
     def read(self, source_id, *, with_mtime=False):

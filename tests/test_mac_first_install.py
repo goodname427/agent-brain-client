@@ -432,7 +432,7 @@ class FirstInstall(unittest.TestCase):
         self.assertTrue(result['installed'])
         self.assertEqual(result['model_loaded'], 'unknown')
         self.assertEqual(result['onboard_check']['status'], 'coverage-check-required')
-        self.assertIn('BOOTSTRAP.md#onboarding', result['onboard_check']['next_action'])
+        self.assertIn('memory_onboard', result['onboard_check']['next_action'])
         self.assertFalse(result['onboard_check']['source_scan_performed'])
         self.assertFalse(result['onboard_check']['data_transferred'])
 

@@ -97,7 +97,7 @@ typed records, revisions and scope checks remain required. Mapping refresh and
 outbox/import recovery still run at MCP startup and after confirmed writes.
 Read responses report `local_refresh.status:read-only` and do not claim model reload.
 
-Full destination inventory starts with `content_catalog` and `kinds`. In the MCP response the Server page is under `structuredContent.result`. Pass its `next_cursor`, when present, as `cursor` with the same `kinds`, even if the current page has no visible artifacts. The last page omits `next_cursor`. The tool accepts no `limit`; the separate local `content_sources_inventory` returns its own cursor directly under `structuredContent`. Destination cursors pin the collection revision and authorization scope. A changed snapshot requires restarting without a cursor. Use `memory_query` for bounded retrieval and Onboarding for source coverage. Invalid parameters are local JSON-RPC `-32602`, with
+Full destination inventory starts with `content_catalog` and `kinds`. In the MCP response the Server page is under `structuredContent.result`. Pass its `next_cursor`, when present, as `cursor` with the same `kinds`, even if the current page has no visible artifacts. The last page omits `next_cursor`. The tool accepts no `limit`. Destination cursors pin the collection revision and authorization scope. A changed snapshot requires restarting without a cursor. Use `memory_query` for bounded retrieval and Onboarding for source coverage. Invalid parameters are local JSON-RPC `-32602`, with
 `data.stage:parameters`; no adapter or HTTP request is made. Read parameter
 errors do not request write-only CAS fields.
 
@@ -178,12 +178,32 @@ mapping refresh does not resend it. Pending outcomes cannot be reconciled as
 conflicts: recover the exact original request and ID first. Restart/reconnect
 retains the existing exact-request recovery protocol.
 
-Onboarding for host-native Memory starts with an authorized inventory and submits
-each explicitly approved original through the capture outbox. Source status
-reports L0 acceptance and extraction separately. New native Memory entries cannot
-use normalized plans or source-linked CAS. The Client may match verified retained
-native receipts or recover already submitted requests under the existing CAS
-rules. A staged native plan without a submitted request cannot start a CAS write.
+MCP `memory_onboard` accepts the bound `harness`, an exact
+`destination` (enrolled HTTPS endpoint, actor, and canonical approved origin),
+and `source_scope: "shareable-personal-native-memory"`. Set `approved: true`
+after the user confirms this host's supported personal native-memory scope is
+shareable and approves that exact destination. The Client calculates source
+fingerprints locally. It skips Windows CodeBuddy project memories with no
+verified origin, files with uncertain sharing, and content excluded by local
+privacy, sensitivity and size checks. The wire bound is 8192 UTF-16 units per
+original. Native transcripts and databases stay outside the authorized readers.
+Installation and future capture approval do not authorize historical transfer.
+
+The Client retains a path-free snapshot of the approved source scope, bound to
+the device, host, destination and existing route policy. To resume, call the
+same tool with `resume: true`, the same scope and destination, and optionally
+the returned `approval_id`. Without an ID, the tool resumes the latest saved
+batch at that exact destination. It uses the original snapshot and skips
+files added after approval. Source and pause gates are rechecked on resume.
+A changed file does not inherit approval for its new fingerprint.
+
+Replies contain the approval reference and aggregate received, already present,
+excluded, pending and failed counts without source bodies, paths or credentials.
+A verified L0 receipt confirms original acceptance. Extraction is reported
+separately. Legacy CAS and summary evidence stays in the existing ledgers and is
+reported as exclusion evidence. The existing authenticated L0 protocol and
+durable outbox handle transfer. Capture settings and Server authorization are
+unchanged.
 
 Other explicit imports accept a reviewed private normalized source plan selected
 with --import-plan and --import-plan-sha256. Inventory is persisted
@@ -256,7 +276,7 @@ report native_changed=false after successfully advancing the verified snapshot.
 Refresh failures include a nonsecret stage/reason and retain prior files and
 snapshots. A mapping failure does not invalidate an independent Server save receipt.
 
-For daily memory behavior, see the [memory guide](https://github.com/goodname427/agent-brain-client/blob/main/docs/reference/memory-behavior.md). For approved source import and coverage, follow [Onboarding](https://github.com/goodname427/agent-brain-client/blob/main/BOOTSTRAP.md#onboarding). For routine device and content maintenance, see the [maintenance guide](https://github.com/goodname427/agent-brain-client/blob/main/docs/installation/maintenance.md). Those guides use existing tools without preloaded Skills. This protocol defines method schemas, authorization, CAS and receipt semantics. `content_catalog` reports authorized AgentBrain destination contents. Supported Harness-native source inventory uses `content_sources_inventory`. `memory_query` accepts native per-namespace L1 count and recall options. L2/L3 are assembled independently. Source-review and import coverage use separate evidence.
+For daily memory and device maintenance, see the [memory guide](https://github.com/goodname427/agent-brain-client/blob/main/docs/reference/memory-behavior.md) and [maintenance guide](https://github.com/goodname427/agent-brain-client/blob/main/docs/installation/maintenance.md). This protocol defines method schemas, authorization, CAS and receipt semantics. `content_catalog` reports authorized Agent Brain destination contents. `memory_query` accepts native per-namespace L1 count and recall options. L2/L3 are assembled independently.
 
 The current MCP `memory_query` takes a nonempty `query` and optional `origin`, `session_id`, `limit`, and `recall`. Use the installed tool schema for the supported settings. Device and source authorization govern what can be recalled. This read path leaves unrelated blocked writes in the outbox.
 

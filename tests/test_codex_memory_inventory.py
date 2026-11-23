@@ -75,7 +75,7 @@ class CodexMemoryInventory(unittest.TestCase):
         provider = helper.adapter.sources.provider
         # Populate the private ledger as an older Client would.
         with patch.object(provider, 'inventory', return_value=inventory_tree(root, prefix=provider.prefix)):
-            previous = server.invoke('content_sources_inventory', {})['structuredContent']
+            previous = helper.adapter.sources.provider.inventory()
         self.assertEqual(len(previous['sources']), len(files))
         rows = {row['source_id']: row for row in previous['sources']}
 
@@ -95,18 +95,15 @@ class CodexMemoryInventory(unittest.TestCase):
                 self.assertEqual(row['source_fingerprint'], content_cache.sha(raw))
                 params = {key: row[key] for key in ('source_id', 'source_fingerprint')}
                 if relative == note:
-                    result = server.invoke('content_sources_read', params)['structuredContent']
-                    self.assertEqual(result['text'].encode('utf-8'), raw)
-                    self.assertFalse(result['data_transferred'])
-                    self.assertFalse(result['native_changed'])
+                    result = helper.adapter.sources.read_onboarding_original(*params.values())
+                    self.assertEqual(result[0].encode('utf-8'), raw)
                 else:
-                    with self.assertRaises(ProtocolError) as blocked:
-                        server.invoke('content_sources_read', params)
-                    self.assertEqual(blocked.exception.code, -32010)
+                    with self.assertRaises(CacheBlocked):
+                        helper.adapter.sources.read_onboarding_original(*params.values())
 
-            current = server.invoke('content_sources_inventory', {})['structuredContent']
+            current = helper.adapter.sources.provider.inventory()
             self.assertEqual(current['status'], 'complete')
-            self.assertEqual(current['counts'], {'read': 1})
+            self.assertEqual(current['counts'], {'not-checked': 1})
             self.assertEqual([row['source_id'] for row in current['sources']], [note_id])
             standalone = inventory_codex_memories(native_home)
             self.assertEqual(standalone['sources'], [rows[note_id]])
@@ -144,7 +141,7 @@ class CodexMemoryInventory(unittest.TestCase):
         helper.setUp();self.addCleanup(helper.doCleanups)
         root=helper.home/'.codex/memories';root.mkdir(parents=True)
         source=root/'one.md';source.write_bytes(b'synthetic source')
-        row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
+        row=helper.adapter.sources.provider.inventory()['sources'][0]
         replacement=helper.home/'replacement';replacement.write_bytes(b'synthetic replacement')
         backend=WindowsTree if os.name=='nt' else PosixTree
         original=backend.open_file
@@ -152,9 +149,8 @@ class CodexMemoryInventory(unittest.TestCase):
             os.replace(replacement,source)
             return original(tree,directory,entry,info)
         with patch.object(backend,'open_file',replace),self.assertRaises(CacheBlocked):
-            helper.adapter.sources.read_memory_source(row['source_id'],row['source_fingerprint'])
-        saved=helper.adapter._load('memory-inventory.json')
-        self.assertEqual(next(iter(saved['sources'].values()))['status'],'not-checked')
+            helper.adapter.sources.read_onboarding_original(row['source_id'],row['source_fingerprint'])
+        self.assertIsNone(helper.adapter._load('memory-inventory.json'))
         self.assertEqual(helper.cloud.calls,[])
 
     def test_selected_source_replaced_by_symlink_never_reads_target(self):
@@ -162,27 +158,27 @@ class CodexMemoryInventory(unittest.TestCase):
         helper.setUp();self.addCleanup(helper.doCleanups)
         root=helper.home/'.codex/memories';root.mkdir(parents=True)
         source=root/'one.md';source.write_bytes(b'synthetic source')
-        row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
+        row=helper.adapter.sources.provider.inventory()['sources'][0]
         outside=helper.home/'outside';outside.write_bytes(b'synthetic source')
         source.unlink();self.make_symlink(source,outside)
-        with self.assertRaises(CacheBlocked):helper.adapter.sources.read_memory_source(row['source_id'],row['source_fingerprint'])
-        self.assertEqual(helper.adapter.sources.inventory_memory_sources()['counts'],{'excluded':1})
+        with self.assertRaises(CacheBlocked):helper.adapter.sources.read_onboarding_original(row['source_id'],row['source_fingerprint'])
+        self.assertEqual(helper.adapter.sources.provider.inventory()['counts'],{'excluded':1})
 
     def test_replacement_and_content_change_require_new_fingerprint_before_read(self):
         helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
         helper.setUp();self.addCleanup(helper.doCleanups)
         memories=helper.home/'.codex/memories';memories.mkdir(parents=True)
         source=memories/'经历.md';source.write_bytes('合成原文'.encode('utf-8'))
-        row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
+        row=helper.adapter.sources.provider.inventory()['sources'][0]
         replacement=helper.home/'replacement';replacement.write_bytes('合成新文'.encode('utf-8'))
         os.replace(replacement,source)
-        with self.assertRaises(CacheBlocked):helper.adapter.sources.read_memory_source(row['source_id'],row['source_fingerprint'])
-        fresh=helper.adapter.sources.inventory_memory_sources()['sources'][0]
+        with self.assertRaises(CacheBlocked):helper.adapter.sources.read_onboarding_original(row['source_id'],row['source_fingerprint'])
+        fresh=helper.adapter.sources.provider.inventory()['sources'][0]
         self.assertEqual(fresh['source_id'],row['source_id'])
         self.assertNotEqual(fresh['source_fingerprint'],row['source_fingerprint'])
-        self.assertEqual(helper.adapter.sources.read_memory_source(fresh['source_id'],fresh['source_fingerprint'])['text'],'合成新文')
+        self.assertEqual(helper.adapter.sources.read_onboarding_original(fresh['source_id'],fresh['source_fingerprint'])[0],'合成新文')
         source.write_bytes(b'changed in place')
-        with self.assertRaises(CacheBlocked):helper.adapter.sources.read_memory_source(fresh['source_id'],fresh['source_fingerprint'])
+        with self.assertRaises(CacheBlocked):helper.adapter.sources.read_onboarding_original(fresh['source_id'],fresh['source_fingerprint'])
         self.assertEqual(helper.cloud.calls,[])
 
     def test_read_rejects_invalid_utf8_and_oversize_after_inventory(self):
@@ -190,11 +186,11 @@ class CodexMemoryInventory(unittest.TestCase):
         helper.setUp();self.addCleanup(helper.doCleanups)
         memories=helper.home/'.codex/memories';memories.mkdir(parents=True)
         source=memories/'one.md';source.write_bytes(b'\xff')
-        row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
-        with self.assertRaises(CacheBlocked):helper.adapter.sources.read_memory_source(row['source_id'],row['source_fingerprint'])
+        row=helper.adapter.sources.provider.inventory()['sources'][0]
+        with self.assertRaises(CacheBlocked):helper.adapter.sources.read_onboarding_original(row['source_id'],row['source_fingerprint'])
         source.write_bytes(b'x'*131073)
-        with self.assertRaises(CacheBlocked):helper.adapter.sources.read_memory_source(row['source_id'],row['source_fingerprint'])
-        self.assertEqual(helper.adapter.sources.inventory_memory_sources()['counts'],{'excluded':1})
+        with self.assertRaises(CacheBlocked):helper.adapter.sources.read_onboarding_original(row['source_id'],row['source_fingerprint'])
+        self.assertEqual(helper.adapter.sources.provider.inventory()['counts'],{'excluded':1})
 
     def test_fingerprints_only_memory_tree_and_produces_stable_change_cursor(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -232,40 +228,31 @@ class CodexMemoryInventory(unittest.TestCase):
             self.assertEqual(result['status'],'unavailable')
             self.assertEqual(result['sources'],[])
 
-    def test_private_cache_tracks_inventory_and_import_state_across_restart(self):
-        helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
-        helper.setUp();self.addCleanup(helper.doCleanups)
-        memory_root=helper.home/'.codex/memories';memory_root.mkdir(parents=True)
-        source_file=memory_root/'synthetic.md';source_file.write_text('synthetic durable fact')
-        inventory=helper.adapter.sources.inventory_memory_sources()
-        row=inventory['sources'][0]
-        self.assertEqual(inventory['counts'],{'not-checked':1})
-        self.assertFalse(inventory['account_complete'])
-        record={'title':'Synthetic fact','description':'Synthetic fixture','body':'Synthetic durable fact','type':'feedback'}
-        exact=helper.adapter.sources.read_memory_source(row['source_id'],row['source_fingerprint'])
-        self.assertEqual(exact['text'],'synthetic durable fact')
-        self.assertFalse(exact['data_transferred'])
-        base.seed_legacy_native_plan(helper.adapter,row,record)
-        self.assertEqual(helper.adapter.sources.import_status()['source_inventory']['counts'],{'inventoried':1})
-        helper.adapter.refresh()
-        self.assertEqual(helper.cloud.puts,0)
-        self.assertEqual(helper.adapter.sources.import_status()['source_inventory']['counts'],{'inventoried':1})
-        restarted=helper.restart();restarted.sources.inventory_memory_sources()
-        self.assertEqual(restarted.sources.import_status()['source_inventory']['counts'],{'inventoried':1})
-        source_file.write_text('synthetic corrected durable fact')
-        updated=restarted.sources.inventory_memory_sources()
-        self.assertNotEqual(inventory['cursor'],updated['cursor'])
-        self.assertEqual(restarted.sources.import_status()['source_inventory']['counts'],{'not-checked':1})
-        source_file.unlink();removed=restarted.sources.inventory_memory_sources()
-        self.assertEqual(removed['counts'],{})
-        self.assertEqual(restarted.sources.import_status()['source_inventory']['counts'],{})
+    def test_existing_ledger_survives_source_change_and_restart(self):
+        helper = base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        root = helper.home / '.codex/memories'
+        root.mkdir(parents=True)
+        source = root / 'synthetic.md'
+        source.write_text('synthetic durable fact')
+        row = helper.adapter.sources.provider.inventory()['sources'][0]
+        key = base.seed_legacy_native_review(helper.adapter, row, 'shareable', 'approved-native-original')
+        saved = helper.adapter._load('memory-reviews.json')
+        restarted = helper.restart()
+        source.write_text('synthetic corrected durable fact')
+        changed = restarted.sources.provider.inventory()['sources'][0]
+        self.assertNotEqual(row['source_fingerprint'], changed['source_fingerprint'])
+        self.assertEqual(restarted.sources.onboarding_evidence(), (set(), {}))
+        self.assertIn(key, saved["items"])
+        self.assertEqual(restarted._load('memory-reviews.json'), saved)
 
     def test_explicit_plan_rejects_native_sources_and_coverage(self):
         helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
         helper.setUp();self.addCleanup(helper.doCleanups)
         memory_root=helper.home/'.codex/memories';memory_root.mkdir(parents=True)
         source_file=memory_root/'experience.md';source_file.write_text('Synthetic user-owned project progress, generalized')
-        row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
+        row=helper.adapter.sources.provider.inventory()['sources'][0]
         fake_record={'title':'Synthetic progress','description':'Fixture','body':'Synthetic body','type':'feedback'}
         false_plan={'schema':1,'binding':helper.adapter.binding,
                     'sources':[{'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint'],'kind':'memory','id':'synthetic-topic','record':fake_record}],
@@ -276,13 +263,9 @@ class CodexMemoryInventory(unittest.TestCase):
                                              'status':status,'reason':'caller assertion only'}])
             with self.assertRaises(CacheBlocked):helper.adapter.sources.stage_import(forged)
         exact = row['source_id'], row['source_fingerprint']
-        self.assertEqual(helper.adapter.sources.read_memory_source(*exact)['text'],
+        self.assertEqual(helper.adapter.sources.read_onboarding_original(*exact)[0],
                          'Synthetic user-owned project progress, generalized')
-        with self.assertRaises(CacheBlocked):
-            helper.adapter.sources.review_memory_source(
-                *exact, decision='shareable', reason_code='safe-cross-project-personal-summary')
-        helper.adapter.sources.review_memory_source(
-            *exact, decision='shareable', reason_code='approved-native-original')
+        base.seed_legacy_native_review(helper.adapter, row, 'shareable', 'approved-native-original')
         with self.assertRaises(CacheBlocked):
             helper.adapter.sources.stage_import(dict(false_plan, coverage=[]))
         self.assertFalse((helper.cache/'imports.json').exists())
@@ -318,7 +301,7 @@ class CodexMemoryInventory(unittest.TestCase):
                 "clientInfo": {"name": "synthetic", "version": "1"},
             },
         })
-        self.assertIn("BOOTSTRAP.md#onboarding", initialized["instructions"])
+        self.assertIn("memory_onboard", initialized["instructions"])
         server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"})
         listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = {tool["name"] for tool in listed["tools"]}
@@ -334,21 +317,17 @@ class CodexMemoryInventory(unittest.TestCase):
 
         self.assertEqual(call("content_catalog", {"kinds": ["memory"]})["result"]["artifacts"], [])
         requests_before_inventory = len(helper.cloud.calls)
-        inventory = call("content_sources_inventory", {})
+        inventory = helper.adapter.sources.provider.inventory()
         self.assertEqual(inventory["status"], "incomplete")
         self.assertEqual(inventory["counts"]["unavailable"], 1)
-        self.assertFalse(inventory["account_complete"])
-        self.assertFalse(inventory["data_transferred"])
         self.assertNotIn(source_text, json.dumps(inventory))
         row, = (item for item in inventory["sources"] if item["status"] == "not-checked")
         self.assertEqual(row["source_id"], "codex-memory:" + content_cache.sha(b"progress.md"))
         self.assertEqual(row["source_fingerprint"], content_cache.sha(source_text.encode()))
         source = {field: row[field] for field in ("source_id", "source_fingerprint")}
-        self.assertEqual(call("content_sources_read", source)["text"], source_text)
-        review = call("content_sources_review", dict(
-            source, decision="shareable", reason_code="approved-native-original",
-        ))
-        self.assertFalse(review["data_transferred"])
+        self.assertEqual(
+            helper.adapter.sources.read_onboarding_original(*source.values())[0], source_text
+        )
         self.assertEqual(len(helper.cloud.calls), requests_before_inventory)
 
         target = {"kind": "memory", "id": "synthetic-topic"}
@@ -362,7 +341,7 @@ class CodexMemoryInventory(unittest.TestCase):
             "type": "feedback",
         }
         self.assertNotIn("content_sources_stage", tools)
-        self.assertIn("content_sources_import", tools)
+        self.assertIn("memory_onboard", tools)
         request_id = "synthetic_final_experience_save_01"
         saved = call("content_put", dict(
             target, record=record, expected_revision=baseline["revision"], request_id=request_id,
@@ -378,10 +357,9 @@ class CodexMemoryInventory(unittest.TestCase):
         self.assertEqual(helper.adapter.queue_status()["confirmed"], 1)
         self.assertEqual(helper.adapter.sources.import_status()["counts"], {})
 
-        remaining = call("content_sources_inventory", {})
+        remaining = helper.adapter.sources.provider.inventory()
         self.assertEqual(remaining["status"], "incomplete")
         self.assertEqual(remaining["counts"]["unavailable"], 1)
-        self.assertFalse(remaining["account_complete"])
         self.assertFalse((helper.home / ".agents/skills").exists())
 
     def test_legacy_stage_without_submitted_request_cannot_start_a_cas_write(self):
@@ -390,8 +368,8 @@ class CodexMemoryInventory(unittest.TestCase):
         memories=helper.home/'.codex/memories';memories.mkdir(parents=True)
         (memories/'experience.md').write_text('Synthetic experience evidence')
         server=ContentServer(helper.adapter)
-        row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
-        helper.adapter.sources.read_memory_source(row['source_id'],row['source_fingerprint'])
+        row=helper.adapter.sources.provider.inventory()['sources'][0]
+        helper.adapter.sources.read_onboarding_original(row['source_id'],row['source_fingerprint'])
         record={'title':'Synthetic experience','description':'Fixture','body':'Synthetic normalized experience','type':'feedback'}
         source_key=base.seed_legacy_native_plan(helper.adapter,row,record)
         self.assertEqual(helper.cloud.calls,[])
@@ -411,8 +389,8 @@ class CodexMemoryInventory(unittest.TestCase):
         helper.setUp();self.addCleanup(helper.doCleanups)
         memories=helper.home/'.codex/memories';memories.mkdir(parents=True)
         (memories/'experience.md').write_text('Synthetic confidential source fixture')
-        row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
-        helper.adapter.sources.read_memory_source(row['source_id'],row['source_fingerprint'])
+        row=helper.adapter.sources.provider.inventory()['sources'][0]
+        helper.adapter.sources.read_onboarding_original(row['source_id'],row['source_fingerprint'])
         record={'title':'Synthetic experience','description':'Fixture','body':'Synthetic normalized experience','type':'feedback'}
         source_key=base.seed_legacy_native_plan(helper.adapter,row,record)
 
@@ -421,7 +399,7 @@ class CodexMemoryInventory(unittest.TestCase):
             'params':{'kind':'memory','id':'synthetic-topic','record':record,'expected_revision':'missing'}}
         base.seed_legacy_native_write(helper.adapter,source_key,request)
         self.assertEqual(helper.adapter.queue_status()['pending'],1)
-        helper.adapter.sources.review_memory_source(row['source_id'],row['source_fingerprint'],'excluded','secret-localonly-or-confidential')
+        base.seed_legacy_native_review(helper.adapter, row, 'excluded', 'secret-localonly-or-confidential')
         helper.cloud.offline=False
         helper.adapter.refresh()
         self.assertEqual(helper.cloud.puts,0)
@@ -445,9 +423,9 @@ class CodexMemoryInventory(unittest.TestCase):
         server.handle({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'synthetic-test','version':'1'}}})
         server.handle({'jsonrpc':'2.0','method':'notifications/initialized'})
         names={tool['name'] for tool in server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})['tools']}
-        self.assertFalse(names & {'content_sources_inventory','content_sources_read','content_sources_review','content_sources_import'})
+        self.assertFalse('memory_onboard' in names)
         with self.assertRaises(ContentParameterError):
-            server.invoke('content_sources_inventory',{})
+            server.invoke('memory_onboard',{})
         self.assertFalse((helper.cache/'memory-inventory.json').exists())
 
     def test_native_memory_tools_require_memory_grant_even_when_policy_allows_it(self):
@@ -458,8 +436,8 @@ class CodexMemoryInventory(unittest.TestCase):
         server.handle({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'synthetic-test','version':'1'}}})
         server.handle({'jsonrpc':'2.0','method':'notifications/initialized'})
         names={tool['name'] for tool in server.handle({'jsonrpc':'2.0','id':2,'method':'tools/list'})['tools']}
-        self.assertFalse(names & {'content_sources_inventory','content_sources_read','content_sources_review','content_sources_import'})
-        with self.assertRaises(ContentParameterError):server.invoke('content_sources_inventory',{})
+        self.assertFalse('memory_onboard' in names)
+        with self.assertRaises(ContentParameterError):server.invoke('memory_onboard',{})
         self.assertFalse((helper.cache/'memory-inventory.json').exists())
 
     def test_native_offline_save_conflict_merge_and_durable_reconcile(self):
@@ -467,8 +445,8 @@ class CodexMemoryInventory(unittest.TestCase):
         helper.setUp();self.addCleanup(helper.doCleanups)
         memories=helper.home/'.codex/memories';memories.mkdir(parents=True)
         source_file=memories/'experience.md';source_file.write_text('Synthetic local experience version one')
-        row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
-        helper.adapter.sources.read_memory_source(row['source_id'],row['source_fingerprint'])
+        row=helper.adapter.sources.provider.inventory()['sources'][0]
+        helper.adapter.sources.read_onboarding_original(row['source_id'],row['source_fingerprint'])
         original={'title':'Synthetic experience','description':'Original normalized candidate',
                   'body':'A synthetic user experience was normalized locally.','type':'feedback'}
         source_key=base.seed_legacy_native_plan(helper.adapter,row,original)
@@ -480,7 +458,7 @@ class CodexMemoryInventory(unittest.TestCase):
         queued=helper.adapter.invoke(first_request,reconciles=reconciles)
         self.assertEqual(queued['local_queue']['state'],'pending')
         source_file.write_text('Synthetic local experience version two')
-        helper.adapter.sources.inventory_memory_sources()
+        helper.adapter.sources.provider.inventory()
         self.assertIn(source_key,helper.adapter._load('memory-reviews.json')['items'])
 
         remote={'title':'Synthetic concurrent edit','description':'Remote-only detail',
@@ -529,54 +507,17 @@ class CodexMemoryInventory(unittest.TestCase):
         self.assertEqual(helper.adapter.queue_status()['confirmed'],2)
         self.assertEqual(helper.adapter.queue_status()['reconciled'],1)
 
-    def test_superseded_fingerprints_are_pruned_from_inventory_and_reviews(self):
-        helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
-        helper.setUp();self.addCleanup(helper.doCleanups)
-        memories=helper.home/'.codex/memories';memories.mkdir(parents=True)
-        source=memories/'changing.md';source.write_text('Synthetic version 0')
-        # Exercise real native inventory/read/review transitions, then seed the
-        # historical ledger at its actual capacity. Repeating 1,030 full native
-        # transactions only reconstructs the same superseded-row condition.
-        for version in range(3):
-            inventory=helper.adapter.sources.inventory_memory_sources()
-            row=next(item for item in inventory['sources'] if item['status']=='not-checked')
-            helper.adapter.sources.read_memory_source(row['source_id'],row['source_fingerprint'])
-            helper.adapter.sources.review_memory_source(row['source_id'],row['source_fingerprint'],'shareable','approved-native-original')
-            source.write_text(f'Synthetic version {version+1}')
-        saved = helper.adapter._load('memory-inventory.json')
-        reviews = helper.adapter._load('memory-reviews.json')
-        prior = next(iter(saved['sources'].values()))
-        review = next(iter(reviews['items'].values()))
-        saved['sources'] = {}
-        reviews['items'] = {}
-        for version in range(1024):
-            fingerprint = content_cache.sha(f'Synthetic retired version {version}'.encode())
-            key = content_cache.sha(contract.encode([prior['source_id'], fingerprint]))
-            saved['sources'][key] = dict(prior, source_fingerprint=fingerprint)
-            reviews['items'][key] = dict(review, source_fingerprint=fingerprint)
-        saved['cursor'] = content_cache.sha(contract.encode(list(saved['sources'].values())))
-        helper.adapter._save('memory-inventory.json', saved)
-        helper.adapter._save('memory-reviews.json', reviews)
-        self.assertEqual(len(helper.adapter._load('memory-inventory.json')['sources']), 1024)
-        self.assertEqual(len(helper.adapter._load('memory-reviews.json')['items']), 1024)
-        inventory=helper.adapter.sources.inventory_memory_sources()
-        self.assertEqual(len(inventory['sources']),1)
-        saved=helper.adapter._load('memory-inventory.json')
-        self.assertEqual(len(saved['sources']),1)
-        reviews=helper.adapter._load('memory-reviews.json')
-        self.assertEqual(len(reviews['items']),0)
-
-    def test_stale_native_source_is_reported_as_tool_error_not_json_parse_error(self):
+    def test_invalid_onboarding_is_reported_as_tool_error_not_json_parse_error(self):
         helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
         helper.setUp();self.addCleanup(helper.doCleanups)
         memories=helper.home/'.codex/memories';memories.mkdir(parents=True)
         source=memories/'stale.md';source.write_text('Synthetic source before inventory')
-        row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
+        row=helper.adapter.sources.provider.inventory()['sources'][0]
         source.write_text('Synthetic changed source after inventory')
         incoming=[
             {'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'synthetic-test','version':'1'}}},
             {'jsonrpc':'2.0','method':'notifications/initialized'},
-            {'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'content_sources_read','arguments':{'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint']}}},
+            {'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'memory_onboard','arguments':{}}},
         ]
         output=io.StringIO()
         serve(ContentServer(helper.adapter),io.BytesIO(('\n'.join(json.dumps(item) for item in incoming)+'\n').encode()),output)
@@ -595,8 +536,8 @@ class CodexMemoryInventory(unittest.TestCase):
             server=ContentServer(helper.adapter)
             target=server.invoke('content_read',{'kind':'memory','id':'synthetic-topic'})
             revision=target['structuredContent']['result']['revision']
-            row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
-            server.invoke('content_sources_read',{'source_id':row['source_id'],'source_fingerprint':row['source_fingerprint']})
+            row=helper.adapter.sources.provider.inventory()['sources'][0]
+            helper.adapter.sources.read_onboarding_original(row['source_id'],row['source_fingerprint'])
             record={'title':'Synthetic recent progress','description':'Synthetic offline retry candidate',
                     'body':'Synthetic short-term progress','type':'feedback'}
             source_key=base.seed_legacy_native_plan(helper.adapter,row,record)
@@ -617,15 +558,6 @@ class CodexMemoryInventory(unittest.TestCase):
         finally:
             helper.doCleanups()
 
-    def test_inventory_alone_cannot_be_approved_for_original_submission(self):
-        helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
-        helper.setUp();self.addCleanup(helper.doCleanups)
-        memory_root=helper.home/'.codex/memories';memory_root.mkdir(parents=True)
-        (memory_root/'experience.md').write_text('Synthetic memory fixture')
-        row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
-        with self.assertRaises(CacheBlocked):
-            helper.adapter.sources.review_memory_source(row['source_id'],row['source_fingerprint'],'shareable','approved-native-original')
-
     def test_memory_tree_traversal_bounds_directory_fanout(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)/'memories';root.mkdir()
@@ -640,33 +572,8 @@ class CodexMemoryInventory(unittest.TestCase):
         memories=helper.home/'.codex/memories';memories.mkdir(parents=True)
         outside=helper.home/'outside';outside.write_text('synthetic')
         self.make_symlink(memories/'link',outside)
-        row=helper.adapter.sources.inventory_memory_sources()['sources'][0]
+        row=helper.adapter.sources.provider.inventory()['sources'][0]
         self.assertIsNone(row['source_fingerprint'])
         plan={'schema':1,'binding':helper.adapter.binding,'sources':[],
               'coverage':[{'source_id':row['source_id'],'source_fingerprint':None,'status':'excluded','reason':'inventory excluded symlink'}]}
         with self.assertRaises(CacheBlocked):helper.adapter.sources.stage_import(plan)
-
-    def test_local_inventory_tool_pages_statuses_and_invalidates_changed_cursor(self):
-        helper=base.Outbox('test_write_saved_and_fsynced_before_network_and_restart_reconnect')
-        helper.setUp();self.addCleanup(helper.doCleanups)
-        memory_root=helper.home/'.codex/memories';memory_root.mkdir(parents=True)
-        for index in range(70):(memory_root/f'synthetic-{index:03}.md').write_text(f'synthetic {index}')
-        server=ContentServer(helper.adapter)
-        first=server.invoke('content_sources_inventory',{})['structuredContent']
-        self.assertEqual(len(first['sources']),64);self.assertIsNotNone(first['next_cursor'])
-        self.assertNotIn('synthetic 0',json.dumps(first))
-        second=server.invoke('content_sources_inventory',{'cursor':first['next_cursor']})['structuredContent']
-        self.assertEqual(len(second['sources']),6);self.assertIsNone(second['next_cursor'])
-        self.assertEqual(first['cursor'],second['cursor'])
-        (memory_root/'synthetic-000.md').write_text('synthetic changed')
-        with self.assertRaises(ContentParameterError):
-            server.invoke('content_sources_inventory',{'cursor':first['next_cursor']})
-        selected=first['sources'][0]
-        body=server.invoke('content_sources_read',{'source_id':selected['source_id'],'source_fingerprint':selected['source_fingerprint']})['structuredContent']
-        self.assertIn('synthetic ',body['text'])
-        receipt=server.invoke('content_sources_review',{'source_id':selected['source_id'],'source_fingerprint':selected['source_fingerprint'],'decision':'shareable','reason_code':'approved-native-original'})
-        self.assertFalse(receipt['structuredContent']['data_transferred'])
-        self.assertEqual(helper.cloud.calls,[])
-
-
-if __name__=='__main__':unittest.main()
