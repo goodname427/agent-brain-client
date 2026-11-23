@@ -8,7 +8,6 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request
 from agent_brain_client.adapters.storage import metadata as metadata
 from agent_brain_client.adapters.storage import registration as registration_store
-from agent_brain_client.domain import privacy as privacy
 from agent_brain_client.domain.errors import GlobalRequestTooLarge
 from agent_brain_client.domain.events import MAX_NATIVE_MEMORY_BYTES, NATIVE_MEMORY_CONTRACT
 from agent_brain_client.domain.scopes import (
@@ -16,7 +15,6 @@ from agent_brain_client.domain.scopes import (
     select,
     source_id,
     namespace,
-    restricted,
 )
 from agent_brain_client.adapters.storage.collection import approved
 
@@ -230,9 +228,6 @@ class CollectionClient:
                 key: event[key] for key in ("contract", "event_id", "occurred_at", "content")
             }
         else:
-            if any(privacy.private_content(m["content"]) or restricted(m["content"])
-                   for m in event["messages"]):
-                raise ValueError("Global event outside source policy")
             wire_event = event
         return dict(self.params(event["session_id"]), event=wire_event)
 

@@ -236,16 +236,18 @@ class CaptureRecovery(unittest.TestCase):
         self.submit("Stop", "Synthetic final", str(path))
         self.assertEqual(self.queued_messages(), [("assistant", "Synthetic final"), ("user", prompt)])
 
-    def test_codex_rebind_preserves_local_only_after_initial_read_failure(self):
+    def test_codex_rebind_captures_marked_steer_after_initial_read_failure(self):
         prompt = "Synthetic first prompt"
+        steer = "LocalOnly: synthetic steer"
         path = self.rollout()
         with patch.object(transcript, "snapshot", side_effect=OSError):
             self.submit("UserPromptSubmit", prompt, path)
         self.append_rollout(path, self.native_user("msg-first", prompt),
-                            self.native_user("msg-private", "LocalOnly: synthetic private"))
-        self.assertEqual(self.submit("Stop", "Synthetic final", path)["status"],
-                         "excluded-local-only-or-sensitive")
-        self.assertEqual(self.queued_messages(), [("user", prompt)])
+                            self.native_user("msg-marked", steer))
+        self.assertEqual(self.submit("Stop", "Synthetic final", path)["status"], "staged")
+        self.assertEqual(self.queued_messages(), [
+            ("assistant", "Synthetic final"), ("user", steer), ("user", prompt),
+        ])
 
     @unittest.skipUnless(os.name == 'nt', 'Windows working directory forms')
     def test_codex_rollout_accepts_extended_spelling_of_bound_workspace(self):
@@ -450,15 +452,20 @@ class CaptureRecovery(unittest.TestCase):
             ("assistant", "Synthetic final"), ("user", "Synthetic form answer"), ("user", prompt),
         ])
 
-    def test_codex_form_privacy_is_applied_before_queuing_the_assistant(self):
+    def test_codex_verified_form_and_final_preserve_marked_text(self):
         prompt = "Synthetic initial prompt"
+        answer = "LocalOnly: Synthetic answer"
+        final = "[no-share] Synthetic final"
         path = self.rollout()
         self.submit("UserPromptSubmit", prompt, path)
-        self.append_rollout(path, self.native_user("msg-first", prompt), *self.form("LocalOnly: Synthetic private"))
-        result = self.submit("Stop", "Synthetic answer derived from private form", path)
-        self.assertEqual(result["status"], "excluded-local-only-or-sensitive")
-        self.assertEqual(self.submit("Stop", "Synthetic final", path)["status"], "excluded-turn")
-        self.assertEqual(self.queued_messages(), [("user", prompt)])
+        self.append_rollout(path, self.native_user("msg-first", prompt), *self.form(answer))
+        self.assertEqual(self.submit("Stop", final, path)["status"], "staged")
+        self.assertEqual(self.queued_messages(), [
+            ("assistant", final), ("user", answer), ("user", prompt),
+        ])
+        rows = self.queue._queued()
+        self.submit("Stop", final, path)
+        self.assertEqual(self.queue._queued(), rows)
 
     def test_codex_form_requires_a_matching_native_call(self):
         prompt = "Synthetic initial prompt"
@@ -535,7 +542,7 @@ class CaptureRecovery(unittest.TestCase):
         self.append_rollout(path, self.native_user("msg-first", prompt), form_call, acknowledgement)
         final = "Synthetic response"
         result = self.submit("Stop", final, path)
-        self.assertEqual(result["same_turn_capture"], "form-privacy-unverified")
+        self.assertEqual(result["same_turn_capture"], "form-call-unverified")
         self.assertEqual(self.queued_messages(), [("user", prompt)])
         self.assertTrue(delivery._has_work(self.queue.cache))
         self.queue = self.f.restart()
@@ -566,26 +573,32 @@ class CaptureRecovery(unittest.TestCase):
         self.assertFalse(list(self.queue.cache.glob("codex-completions/*.json")))
         self.assertEqual(self.queue.queue_status()["confirmed"], 3)
 
-    def test_codex_complete_scan_with_unanswered_form_never_releases_private_answer(self):
+    def test_codex_complete_scan_replays_marked_form_once_identity_is_verified(self):
         prompt = "Synthetic prompt"
         path = self.rollout()
         self.submit("UserPromptSubmit", prompt, path)
         form_call, reply = self.form("LocalOnly: Synthetic late private answer")
         self.append_rollout(path, self.native_user("msg-first", prompt), form_call)
         final = "Synthetic derived answer"
-        self.assertEqual(self.submit("Stop", final, path)["same_turn_capture"], "form-privacy-unverified")
+        self.assertEqual(self.submit("Stop", final, path)["same_turn_capture"], "form-call-unverified")
         self.assertEqual(self.queued_messages(), [("user", prompt)])
         unrelated = self.payload("Stop", "Synthetic independent final", "other-turn")
         result = collection.submit_hook(self.value, self.local, unrelated, services=self.services)
         self.assertEqual(result["status"], "staged")
         self.queue = self.f.restart()
         self.append_rollout(path, reply)
+        self.assertTrue(self.resume_codex_completions())
         self.assertFalse(self.resume_codex_completions())
         self.assertFalse(list(self.queue.cache.glob("codex-completions/*.json")))
-        self.assertEqual(self.submit("Stop", final, path)["status"], "excluded-turn")
-        self.assertEqual(self.queued_messages(), [("assistant", "Synthetic independent final"), ("user", prompt)])
+        before = self.queue._queued()
+        self.submit("Stop", final, path)
+        self.assertEqual(self.queue._queued(), before)
+        self.assertEqual(self.queued_messages(), [
+            ("assistant", final), ("assistant", "Synthetic independent final"),
+            ("user", "LocalOnly: Synthetic late private answer"), ("user", prompt),
+        ])
 
-    def test_codex_bounded_middle_private_form_never_releases_deferred_final(self):
+    def test_codex_bounded_middle_marked_form_and_final_resume_together(self):
         prompt = "Synthetic prompt"
         path = self.rollout()
         padding = ("response_item", {"type": "function_call_output", "output": "x" * 1400})
@@ -598,8 +611,15 @@ class CaptureRecovery(unittest.TestCase):
             self.assertEqual(self.submit("Stop", "Synthetic derived answer", path)["same_turn_capture"],
                              "bounded-pending")
             self.assertEqual(self.queued_messages(), [("user", prompt)])
-            self.assertFalse(self.resume_codex_completions())
-        self.assertEqual(self.queued_messages(), [("user", prompt)])
+            for _ in range(12):
+                if not self.resume_codex_completions():
+                    break
+            else:
+                self.fail("Bounded form completion did not settle")
+        self.assertEqual(self.queued_messages(), [
+            ("assistant", "Synthetic derived answer"),
+            ("user", "LocalOnly: Synthetic form in the middle"), ("user", prompt),
+        ])
         self.assertFalse(self.f.cloud.calls)
 
     def test_codex_seen_form_fences_final_on_rollout_failure(self):
@@ -615,11 +635,14 @@ class CaptureRecovery(unittest.TestCase):
         self.queue = self.f.restart()
         with patch.object(transcript, "snapshot", side_effect=OSError):
             result = self.submit("Stop", "Synthetic response using private answer", path)
-        self.assertEqual(result["same_turn_capture"], "form-privacy-unverified")
+        self.assertEqual(result["same_turn_capture"], "form-call-unverified")
         self.assertEqual(self.queued_messages(), [("user", prompt)])
-        self.assertEqual(self.submit("Stop", "Synthetic response using private answer", path)["status"],
-                         "excluded-local-only-or-sensitive")
-        self.assertEqual(self.queued_messages(), [("user", prompt)])
+        self.assertTrue(self.resume_codex_completions())
+        self.assertFalse(self.resume_codex_completions())
+        self.assertEqual(self.queued_messages(), [
+            ("assistant", "Synthetic response using private answer"),
+            ("user", "LocalOnly: Synthetic private form"), ("user", prompt),
+        ])
 
     def test_codex_prompt_native_observation_recovers_without_stop_after_enqueue_failure(self):
         prompt, addition = "Synthetic prompt", "Synthetic interrupted steer"
@@ -752,7 +775,7 @@ class CaptureRecovery(unittest.TestCase):
         ])
 
     def test_codex_and_project_long_prompt_and_final_use_shared_splitter(self):
-        text = '測試😀' * 5000
+        text = '[LocalOnly] synthetic\n' + '測試😀' * 5000
         policy = {'schema': 1, 'enabled': True, 'scopes': [{'cwd': str(self.home),
                   'project_id': 'synthetic-project', 'session_id': 'synthetic-session'}]}
         p = {'harness': 'codex', 'device_home': str(self.home), 'cache': str(self.queue.cache),
@@ -773,18 +796,23 @@ class CaptureRecovery(unittest.TestCase):
             self.assertEqual(self.captured(result['request_ids']), text)
         self.assertFalse(self.f.cloud.calls)
 
-    def test_long_local_only_excludes_entire_turn_and_never_opens_queue(self):
-        for index, text in enumerate(('LocalOnly: ' + 'x' * 9000, 'x' * 9000 + '\nLocalOnly: private')):
-            with self.subTest(text=text[:20]), patch.object(self.services, 'adapter') as opened:
-                result = collection.submit_hook(self.value, self.local,
-                    self.payload('UserPromptSubmit', text, 'turn-' + str(index)), services=self.services)
-                self.assertEqual(result['status'], 'excluded-local-only-or-sensitive')
-                result = collection.submit_hook(self.value, self.local,
-                    self.payload('Stop', 'Synthetic answer derived from private prompt', 'turn-' + str(index)), services=self.services)
-                self.assertEqual(result['status'], 'excluded-turn')
-                opened.assert_not_called()
+    def test_codex_retains_previous_exclusion_without_reopening_queue(self):
+        from agent_brain_client.domain.scopes import namespace, source_id
+        from agent_brain_client.domain.turns import turn_key
+
+        scope = {"cwd": str(self.home), "session_id": "synthetic-session",
+                 "project_id": namespace("synthetic-owner", source_id(self.value["scope"], self.local, "personal"))}
+        key = turn_key(scope, "synthetic-turn")
+        directory = self.home / "outboxes" / digest(self.local)
+        directory.mkdir(parents=True, mode=0o700)
+        metadata.write(directory / ("excluded-" + key + ".json"), {"schema": 1}, cache=True)
+        with patch.object(self.services, 'adapter') as opened:
+            for kind in ("UserPromptSubmit", "Stop"):
+                result = collection.submit_hook(self.value, self.local, self.payload(kind, "LocalOnly: synthetic"),
+                                                services=self.services)
+                self.assertEqual(result["status"], "excluded-turn")
+            opened.assert_not_called()
         self.assertEqual(self.queue._queued(), [])
-        self.assertFalse(list(self.queue.cache.glob('observed-staging/*.json')))
 
     def test_confirmed_receipts_do_not_consume_active_capacity_or_disappear(self):
         self.stage()
@@ -806,25 +834,27 @@ class CaptureRecovery(unittest.TestCase):
         self.assertEqual(counts['confirmed'], 2049)
         self.assertEqual(counts['pending'], 2)
 
-    def test_project_long_private_or_restricted_prompt_excludes_following_assistant(self):
+    def test_project_long_restricted_prompt_remains_exact(self):
         policy = {'schema': 2, 'scopes': [{'cwd': str(self.home),
                   'project_id': 'synthetic-project', 'session_id': 'synthetic-session'}]}
-        p = {'profile_sha256': 'a' * 64, 'content_policy_sha256': 'b' * 64,
+        p = {'harness': 'codebuddy', 'device_home': str(self.home), 'cache': str(self.queue.cache),
+             'profile': 'synthetic', 'profile_sha256': 'a' * 64,
+             'content_policy': 'synthetic', 'content_policy_sha256': 'b' * 64,
              'capture_policy': 'synthetic', 'capture_policy_sha256': 'c' * 64,
              'off_file': str(self.home / 'memory.off')}
-        for index, prefix in enumerate(('LocalOnly: ', 'do not share this: ') * 2):
-            policy['schema'] = 1 if index < 2 else 2
-            with patch('agent_brain_client.adapters.storage.pinned.pinned', return_value=policy), \
-                 patch.object(event_policy, 'validate_hook_policy', return_value=policy), \
-                 patch.object(event_policy, 'hook_enabled', return_value=True), \
-                 patch('agent_brain_client.adapters.server.https.HTTPSContentClient') as client:
-                for kind, text in [('UserPromptSubmit', prefix + 'x' * 9000),
-                                   ('Stop', 'Synthetic derived assistant reply')]:
-                    self.assertEqual(project_memory.capture(p, self.payload(kind, text, 'project-private-' + str(index)))['status'], 'excluded-turn')
-                client.assert_not_called()
+        with patch('agent_brain_client.adapters.storage.pinned.pinned', return_value=policy), \
+             patch.object(event_policy, 'validate_hook_policy', return_value=policy), \
+             patch.object(event_policy, 'hook_enabled', return_value=True), \
+             patch('agent_brain_client.adapters.server.https.HTTPSContentClient'), \
+             patch('agent_brain_client.domain.content_policy.validate_policy'), \
+             patch('agent_brain_client.adapters.storage.content_session.ContentSession', return_value=self.queue):
+            for kind, text in [('UserPromptSubmit', 'do not share this: ' + 'x' * 9000),
+                               ('Stop', '[no-memory] Synthetic final')]:
+                result = project_memory.capture(p, self.payload(kind, text, 'project-marked'))
+                self.assertEqual(self.captured(result['request_ids']), text)
 
     def test_every_multibatch_interruption_recovers_exact_tail_without_hook_replay(self):
-        text = 'Synthetic prompt ' * 8000 + 'SYNTHETIC_FINAL_TAIL'
+        text = '[LocalOnly] synthetic\n' + 'Synthetic prompt ' * 8000 + 'SYNTHETIC_FINAL_TAIL'
         for failure in (1, 2, 3):
             with self.subTest(failure=failure):
                 enqueue = self.queue._enqueue
@@ -916,7 +946,7 @@ class CaptureRecovery(unittest.TestCase):
             delivery.discover_existing(self.home)
         self.assertGreaterEqual(task.stat().st_mtime_ns, old_time)
 
-    def test_splitter_does_not_turn_inline_privacy_example_into_directive(self):
+    def test_splitter_and_delivery_preserve_bytes_at_marker_boundary(self):
         for marker in ('LocalOnly:', '[private]', 'do not share this:'):
             text = 'x' * 4096 + marker + ' synthetic inline example'
             result = self.stage(text=text, operation='inline-' + digest(marker))
@@ -924,6 +954,23 @@ class CaptureRecovery(unittest.TestCase):
         self.f.cloud.request = accepted
         self.assertFalse(deliver_pending(self.queue, allowed=lambda _: True))
         self.assertEqual(self.queue.queue_status()['pending'], 0)
+
+    def test_replay_keeps_legacy_shifted_chunk_and_request(self):
+        from agent_brain_client.application.memory.observations import _operation_key
+
+        body = "x" * 4096 + "LocalOnly: synthetic inline marker"
+        args = {"project_id": "synthetic-project", "session_id": "synthetic-session",
+                "operation_id": "old-split", "phase": "prompt"}
+        original = [{"role": "user", "content": body}]
+        # The older splitter backed up one character at a marker boundary.
+        shifted = [{"role": "user", "content": part} for part in (body[:4095], body[4095:])]
+        staged = stage_messages(self.queue, **args, messages=shifted)
+        key = _operation_key(*args.values())
+        self.queue._save("observed-operations/" + key + ".json",
+                         {"schema": 1, "content_sha256": digest(original)})
+        before = self.queue._queued()
+        self.assertEqual(stage_messages(self.queue, **args, messages=original), staged)
+        self.assertEqual(self.queue._queued(), before)
 
     def test_invalid_journal_is_retained_for_review_without_starving_valid_pending(self):
         for index, value in enumerate((None, [], {'schema': 1, 'requests': [], 'requests_sha256': 'changed'})):

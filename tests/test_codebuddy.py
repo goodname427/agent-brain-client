@@ -603,7 +603,10 @@ class Hooks(unittest.TestCase):
         self.value['enabled'] = True
         output, state = self.hook(prompt='LocalOnly: synthetic private content')
         self.assertEqual(output, {})
-        self.assertEqual(self.staged, [])
+        self.assertEqual(state['status'], 'staged')
+        self.core.recall_prompt.assert_not_called()
+        self.assertEqual(self.staged[0]['params']['event']['messages'],
+                         [{'role': 'user', 'content': 'LocalOnly: synthetic private content'}])
         with patch.object(cb, 'capture_messages', side_effect=PermissionError('SECRET')):
             output, state = self.hook()
         self.assertTrue(output)
@@ -1104,13 +1107,26 @@ class Transcript(Hooks):
         with self.assertRaises(ValueError):
             native_transcript.native_path(self.fixture.home, self.payload)
 
-    def test_explicit_private_prompt_excludes_both_sides_of_the_turn(self):
+    def test_marked_prompt_and_transcript_final_are_staged_exactly(self):
         path = self.native_file()
         path.write_text('')
-        self.payload['prompt'] = 'LocalOnly: synthetic private question'
+        prompt = '[LocalOnly] synthetic question'
+        answer = '[no-share] synthetic answer'
+        self.payload['prompt'] = prompt
         self.hook()
-        path.write_text('{"type":"assistant","message":{"content":"private answer"}}\n')
+        path.write_text(json.dumps({'type': 'assistant', 'message': {'content': answer}}) + '\n')
         self.stop()
+        self.assertEqual([request['params']['event']['messages'] for request in self.staged],
+                         [[{'role': 'user', 'content': prompt}], [{'role': 'assistant', 'content': answer}]])
+
+    def test_redelivery_does_not_capture_an_older_excluded_generation(self):
+        self.payload['prompt'] = 'LocalOnly: synthetic previous exclusion'
+        native_transcript.observe(self.fixture.home, self.payload, self.core)
+        file = native_transcript.marker(self.fixture.home, self.payload)
+        row = native_transcript.metadata_io.private_json(file, cache=True)
+        native_transcript.metadata_io.write(file, dict(row, excluded=True), cache=True)
+        _, result = self.hook()
+        self.assertEqual(result['status'], 'excluded-turn')
         self.assertEqual(self.staged, [])
 
     def test_sharing_question_keeps_both_sides_of_the_turn(self):
@@ -1128,7 +1144,7 @@ class Transcript(Hooks):
         self.assertEqual([request['params']['event']['messages'] for request in self.staged],
                          [[{'role': 'user', 'content': question}], [{'role': 'assistant', 'content': answer}]])
 
-    def test_explicit_sharing_request_keeps_both_sides_excluded_even_as_question(self):
+    def test_explicit_sharing_text_is_captured_without_recall(self):
         path = self.native_file()
         path.write_text('')
         self.payload['prompt'] = '请不要跨项目共享这条信息，可以吗？'
@@ -1137,7 +1153,10 @@ class Transcript(Hooks):
         self.assertFalse(result['data_transferred'])
         path.write_text('{"type":"assistant","message":{"content":"synthetic private answer"}}\n')
         self.stop()
-        self.assertEqual(self.staged, [])
+        self.assertEqual([request['params']['event']['messages'] for request in self.staged], [
+            [{'role': 'user', 'content': self.payload['prompt']}],
+            [{'role': 'assistant', 'content': 'synthetic private answer'}],
+        ])
 
     def test_body_shape_keeps_prompt_and_native_assistant_capture(self):
         path = self.native_file()
@@ -1154,12 +1173,13 @@ class Transcript(Hooks):
         self.assertEqual([request['params']['event']['messages'] for request in self.staged],
                          [[{'role': 'user', 'content': prompt}], [{'role': 'assistant', 'content': answer}]])
 
-    def test_explicit_private_assistant_still_stops_before_queueing(self):
+    def test_direct_stop_preserves_marked_assistant(self):
         self.hook()
         _, result = self.hook(hook_event_name='Stop', stop_hook_active=False,
                               last_assistant_message='[no-memory] synthetic private answer')
-        self.assertEqual(result['status'], 'excluded-local-only-or-sensitive')
-        self.assertEqual(len(self.staged), 1)
+        self.assertEqual(result['status'], 'staged')
+        self.assertEqual(self.staged[1]['params']['event']['messages'],
+                         [{'role': 'assistant', 'content': '[no-memory] synthetic private answer'}])
 
 
 if __name__ == '__main__':
