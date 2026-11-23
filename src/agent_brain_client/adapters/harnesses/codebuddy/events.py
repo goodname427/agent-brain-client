@@ -133,6 +133,8 @@ def hook(home, stream, *, core=None, defer=None, observe=None, verified_release=
             native_status = transcript.observe(home, payload, core)
         except Exception:
             pass
+        if native_status == "excluded-turn":
+            return {"status": native_status, "data_transferred": False}
         result = capture_messages(core, value, local, payload,
                                   [{"role": "user", "content": payload["prompt"]}], "prompt")
         return dict(result, assistant_capture=native_status)

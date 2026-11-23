@@ -13,8 +13,8 @@ from agent_brain_client.adapters.platforms.source_files import (
     open_native_source,
 )
 from agent_brain_client.adapters.storage.metadata import digest, unique
-from agent_brain_client.domain import contract, privacy
-from agent_brain_client.domain.scopes import ordinary_drive_path, restricted
+from agent_brain_client.domain import contract
+from agent_brain_client.domain.scopes import ordinary_drive_path
 
 
 # Bound the read independently of session length. Codex can also omit the path.
@@ -35,10 +35,6 @@ def form_reply(text):
     return text.startswith(_FORM_TAG)
 
 
-def private(text):
-    return privacy.private_content(text) or restricted(text)
-
-
 @dataclass
 class Snapshot:
     binding: dict
@@ -55,7 +51,6 @@ class Snapshot:
 class Observations:
     messages: list
     forms: dict
-    private: bool = False
     unknown_form: bool = False
     unmatched_form: bool = False
     incomplete: bool = False
@@ -186,7 +181,7 @@ def _verified_projection(projected, dropped):
                 contract.text(original, _TEXT_LIMIT)
         except (ValueError, TypeError, KeyError, AttributeError):
             # An attachment may be elided, but its user's text still has to
-            # fit the normal privacy check.
+            # satisfy the normal text bounds.
             raise OversizedRowUnverified("oversized-rollout-unverified-fields") from None
     return row
 
@@ -443,7 +438,7 @@ def form_answers(text):
 
 
 def user_messages(rows, turn_id, known_forms):
-    """Derive user messages, form privacy and form call evidence in host order."""
+    """Derive user messages, form call evidence in host order."""
     messages = {}
     conflicts = set()
     observed = Observations([], dict(known_forms))
@@ -483,15 +478,11 @@ def user_messages(rows, turn_id, known_forms):
             except (ValueError, TypeError, KeyError, RecursionError):
                 observed.unknown_form = True
                 continue
-            if private(content) or private(original):
-                observed.private = True
             if not refs <= observed.forms.keys():
                 observed.unmatched_form = True
                 continue
             for call in refs:
                 observed.forms[call] = False
-        elif private(original):
-            observed.private = True
         message_id = item.get("id")
         try:
             contract.event_identifier(message_id)

@@ -357,18 +357,16 @@ class NativeMemoryCapture(unittest.TestCase):
                 "operation_id": "synthetic-hook-operation",
                 "phase": "prompt",
             }
-            for raw in explicit_markers.values():
-                declined = stage_messages(hook_queue, **hook_context, messages=[{"role": "user", "content": raw}])
-                self.assertEqual(declined["status"], "excluded-local-only-or-sensitive")
-            hook = stage_messages(hook_queue, **hook_context, messages=[
-                {"role": "user", "content": "\n".join(accepted_by_capture.values())},
-            ])
+            hook_text = "\n".join([*explicit_markers.values(), *accepted_by_capture.values()])
+            hook = stage_messages(hook_queue, **hook_context, messages=[{"role": "user", "content": hook_text}])
             hook_rid = hook["request_ids"][0]
             self.assertEqual(hook_queue.queue_status()["pending"], 1)
             private_directory(hook_queue.cache.parent / ("f" * 64))
             flushed = collection_management.flush(value, services=collection.native_services())
             self.assertEqual(flushed["hosts"][harness]["status"], "global-original-queue-sync")
             self.assertEqual(hook_queue._load("outbox/" + hook_rid + ".json")["state"], "confirmed")
+            self.assertEqual(peer.requests[-1]["params"]["event"]["messages"],
+                             [{"role": "user", "content": hook_text}])
             self.assertEqual(imported_queue.queue_status()["pending"], 1)
             self.assertEqual(metadata.private_json(imported_queue.cache / "origin.json", cache=True), original_origin)
 

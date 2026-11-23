@@ -144,8 +144,8 @@ def normalized_hook_fields(policy, payload):
     )
     from agent_brain_client.domain.turns import turn_key
 
-    # Validate the full observed body before shared staging splits transport
-    # batches, preserving whole-turn privacy and the original turn identity.
+    # Validate the original observed body before shared staging splits it
+    # into transport batches under the same turn identity.
     contract.text(content, 1048576)
     key = turn_key(scope, turn)
     return scope, turn, kind, content, key

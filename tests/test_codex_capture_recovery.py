@@ -134,14 +134,12 @@ class CaptureRecovery(unittest.TestCase):
         self.assertEqual(self.sent, [])
         self.assertEqual(self.queue.queue_status()['pending'], 1)
 
-    def test_terminal_rows_and_privacy_marked_events_not_retried(self):
+    def test_terminal_rows_are_not_retried(self):
         self.stage('old')
         row = self.queue._queued()[0]
         for state in ('blocked', 'conflict', 'confirmed'):
             with patch.object(self.queue, '_queued', return_value=[dict(row, state=state)]):
                 self.recover()
-        with patch('agent_brain_client.application.queue.delivery.privacy.private_content', return_value=True):
-            self.recover()
         self.assertEqual(self.sent, [])
 
     def test_waiting_recovery_and_content_locks_obey_remaining_budget(self):

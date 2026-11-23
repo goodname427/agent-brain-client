@@ -76,7 +76,9 @@ def normalize(settings, payload):
         raise ValueError("Stable CodeBuddy generation required")
     result = dict(payload, session_id=session_id(payload.get("session_id")), turn_id="native_" + metadata.digest(generation.encode()))
     if kind == "UserPromptSubmit":
-        transcript.observe(settings["device_home"], payload, None)
+        result["_project_turn_skipped"] = (
+            transcript.observe(settings["device_home"], payload, None) == "excluded-turn"
+        )
     elif kind == "Stop":
         if payload.get("stop_hook_active") is not False:
             raise ValueError("Recursive CodeBuddy project Stop refused")

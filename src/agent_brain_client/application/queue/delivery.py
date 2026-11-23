@@ -1,9 +1,7 @@
 """Deliver native observations using their existing immutable outbox receipts."""
 
 
-from agent_brain_client.domain import privacy
 from agent_brain_client.domain.events import NATIVE_MEMORY_CONTRACT
-from agent_brain_client.domain.scopes import restricted
 
 
 def deliverable(row):
@@ -11,9 +9,7 @@ def deliverable(row):
     # approval ledger. Hook delivery has no authority to replay an original.
     return (row['state'] == 'pending'
             and row['request']['method'] == 'memory_event_submit'
-            and row['request']['params']['event'].get('contract') != NATIVE_MEMORY_CONTRACT
-            and not any(privacy.private_content(message['content']) or restricted(message['content'])
-                        for message in row['request']['params']['event'].get('messages', [])))
+            and row['request']['params']['event'].get('contract') != NATIVE_MEMORY_CONTRACT)
 
 
 def deliver_pending(queue, *, allowed, limit=16, after="", attempted=lambda key: None,
