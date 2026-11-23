@@ -46,6 +46,39 @@ def write_response(output, response):
     output.flush()
 
 
+class BackgroundTasks:
+    """Dispatch bounded work from the connection's existing release watcher."""
+
+    def __init__(self, run, *, clock=time.monotonic, thread=threading.Thread):
+        self.run, self.clock, self.thread = run, clock, thread
+        self.due = dict.fromkeys(("background-content", "background-update"), 0)
+        self.jobs = {}
+        self.retries = Queue()
+
+    def release_changed(self):
+        self.due["background-content"] = 0
+
+    def tick(self):
+        now = self.clock()
+        while not self.retries.empty():
+            task, delay = self.retries.get_nowait()
+            self.due[task] = min(self.due[task], now + delay)
+        for task, due in self.due.items():
+            worker = self.jobs.get(task)
+            if now < due or worker is not None and worker.is_alive():
+                continue
+            worker = self.thread(target=self._run, args=(task,), daemon=True, name="agentbrain-" + task)
+            worker.start()
+            self.jobs[task] = worker
+            self.due[task] = now + 60
+
+    def _run(self, task):
+        result = self.run(task)
+        if task == "background-content" and result:
+            retry = result.get("retry_after")
+            if type(retry) in (float, int) and 0 <= retry < 60:
+                self.retries.put((task, retry))
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -67,7 +100,8 @@ def main(argv=None):
     parser.add_argument("--event-hook-policy", type=Path)
     parser.add_argument("--event-hook-policy-sha256")
     parser.add_argument(
-        "--private-stdio", choices=("plan", "check", "discover", "resolve", "verify-retained", "worker"),
+        "--private-stdio", choices=("plan", "check", "discover", "resolve", "verify-retained", "worker",
+                                   "background-content", "background-update"),
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--private-ticket", help=argparse.SUPPRESS)
@@ -167,12 +201,12 @@ def isolated_stdio(args):
         "--policy-sha256", args.policy_sha256, "--harness", args.harness,
     )
 
-    def probe(mode, ticket=None):
+    def probe(mode, ticket=None, *, timeout=25):
         command = [*base, "--private-stdio", mode]
         if ticket is not None:
             command += ["--private-ticket", ticket]
         result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                timeout=25, check=True)
+                                timeout=timeout, check=True)
         if len(result.stdout) > 16384:
             raise ValueError("Bounded private MCP response required")
         return json.loads(result.stdout)
@@ -233,9 +267,10 @@ def isolated_stdio(args):
         return tuple(state)
 
     last = None
+    active_commit = first["ticket"]["active"]["commit"]
 
     def observe():
-        nonlocal last
+        nonlocal last, active_commit
         # An unchanged local snapshot avoids process boots/hash checks at idle.
         before = token()
         if before == last:
@@ -247,22 +282,27 @@ def isolated_stdio(args):
             last = before
             return False
         result = worker(plan)
+        commit = plan["ticket"]["active"]["commit"]
+        if commit != active_commit:
+            active_commit = commit
+            tasks.release_changed()
         last = before
         return result
 
     def registration_current():
         return probe("check", stamp_ticket).get("current") is True
 
-    def discover():
+    def background(task):
         try:
-            probe("discover")
+            return probe(task, stamp_ticket, timeout=55 if task == "background-content" else 120)
         except (OSError, ValueError, subprocess.SubprocessError):
-            pass  # Discovery is best-effort and never owns the MCP streams.
+            return None  # Background work never owns the MCP streams.
 
-    threading.Thread(target=discover, daemon=True, name="agentbrain-startup-check").start()
+    tasks = BackgroundTasks(background)
     return supervise_stdio(initial, observe, sys.stdin.buffer, sys.stdout, {},
                            idle_timeout=30, can_switch=registration_current,
-                           prepare_worker=prepare_worker, remember_worker=remember_worker)
+                           prepare_worker=prepare_worker, remember_worker=remember_worker,
+                           background_tick=tasks.tick)
 
 
 # The fixed launcher owns the host stream. The worker's startup record and drain
@@ -409,7 +449,7 @@ def _compatible_catalog(first, second, protocol):
 def supervise_stdio(
     initial, observe, source, output, options, *,
     poll_interval=2, probe_timeout=20, request_timeout=90, drain_timeout=90, max_pending=255,
-    can_switch=None, idle_timeout=None, prepare_worker=None, remember_worker=None,
+    can_switch=None, idle_timeout=None, prepare_worker=None, remember_worker=None, background_tick=None,
 ):
     """Keep one host session while locally verified workers change.
 
@@ -442,13 +482,17 @@ def supervise_stdio(
         return _Worker(spec, seed, options, events, probe_timeout, command)
 
     def watch():
+        if background_tick is not None and not halt.is_set():
+            background_tick()
         while not halt.wait(poll_interval):
             try:
                 spec = observe()
             except Exception:
-                continue  # A transaction in progress is retried on the next tick.
+                spec = None  # A transaction in progress is retried on the next tick.
             if spec is not None:
                 events.put((release, spec, None))
+            if background_tick is not None and not halt.is_set():
+                background_tick()
 
     def registration_current():
         try:
