@@ -138,7 +138,7 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
     if memory_sources:
         tools.append({
             "name": TOOL_NAME,
-            "description": "Run Agent Brain Onboarding once for the current host, after the user's explicit approval of its shareable personal native memory and the exact enrolled destination. The Client calculates source fingerprints, filters locally, uses the existing L0 queue, and returns counts without original text. Use resume=true with the same scope and destination to continue the retained batch.",
+            "description": "Run Agent Brain Onboarding once for the current host, after the user's explicit approval of its shareable personal native memory and the exact enrolled destination. The Client returns an approval_id and submits authorized originals through the existing L0 queue in the background. Use resume=true with that ID and the same scope and destination for progress without original text.",
             "inputSchema": INPUT_SCHEMA,
             "annotations": {
                 "readOnlyHint": False,

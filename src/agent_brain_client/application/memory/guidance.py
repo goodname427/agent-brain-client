@@ -4,8 +4,8 @@ ONBOARDING_GUIDANCE = (
     "For Agent Brain Onboarding, call memory_onboard once after the user's explicit approval "
     "of this host's shareable personal native memory and the exact enrolled Server, account "
     "and local origin. Set source_scope to shareable-personal-native-memory. The Client "
-    "handles the originals and computes fingerprints locally. Use resume=true with the same scope "
-    "and destination to continue the retained approval. "
+    "returns an approval_id and delivers the original text in the background. Use resume=true with that ID, the same scope "
+    "and destination to check the retained batch without starting another import. "
     "Report original acceptance and background extraction separately. "
 )
 

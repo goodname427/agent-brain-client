@@ -246,6 +246,17 @@ def run(home, *, max_seconds=600, pause=time.sleep):
                                         or task['schema'] != 1 or not re.fullmatch('[a-f0-9]{64}', task['turn_id'])):
                                     raise ValueError('Observed project completion task required')
                                 pending = finish_codebuddy_project(home, task, verified_release=project_release()) or pending
+                            elif task.get('harness') == 'onboarding':
+                                from agent_brain_client.runtime.onboarding import deliver_approved_batch
+
+                                batch_pending, advanced = deliver_approved_batch(home, task, shared_core())
+                                pending = pending or batch_pending
+                                if not batch_pending:
+                                    file.unlink(missing_ok=True)
+                                elif advanced:
+                                    # The deadline bounds idle/retrying workers, not real
+                                    # progress in a user's already-approved long batch.
+                                    end = max(end, time.monotonic() + max_seconds)
                             elif task.get('harness') == 'codex-project':
                                 from agent_brain_client.runtime.project_memory import capture, delivery_port, load
 
