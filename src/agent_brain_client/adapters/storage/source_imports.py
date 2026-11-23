@@ -2,10 +2,10 @@
 
 from agent_brain_client.domain.content import same_record
 from agent_brain_client.domain.errors import CacheBlocked
+from agent_brain_client.domain.events import native_source_identity
 import json
 import re
 from agent_brain_client.domain import contract
-from agent_brain_client.domain.privacy import private_recall_text
 from agent_brain_client.adapters.platforms.filesystem import (
     cache_locked as locked,
     require_platform,
@@ -14,7 +14,6 @@ from agent_brain_client.adapters.storage.content_limits import (
     APPROVED_NATIVE_ORIGINAL,
     LEGACY_NATIVE_SUMMARY,
     RETAINED_REVIEW_DECISIONS,
-    REVIEW_DECISIONS,
     sha,
 )
 
@@ -207,211 +206,69 @@ class SourceImports:
             "native_changed": False,
         }
 
-    def inventory_memory_sources(self):
-        """Persist a path-free memory inventory in the existing private cache.
-
-        This inventories only; it never creates an import plan or contacts the
-        Server. Unchanged fingerprints retain their review/import state.
-        """
+    def onboarding_evidence(self):
+        """Load retained decisions and CAS evidence without rewriting any ledger."""
         require_platform("cache-storage", self.session.platform)
         with locked(self.session.cache / "content.lock"):
-            fresh = self.provider.inventory()
-            previous = self.session._load("memory-inventory.json", None)
-            if previous is not None and (
-                not isinstance(previous, dict)
-                or set(previous) != {"schema", "binding", "cursor", "status", "sources"}
-                or previous["schema"] != 1
-                or previous["binding"] != self.session.binding
-                or not isinstance(previous["sources"], dict)
-                or len(previous["sources"]) > 1024
-            ):
-                raise CacheBlocked()
-            old = previous["sources"] if previous else {}
-            tracked = self._imports()
-            active_keys = {
-                key
-                for key, item in tracked["items"].items()
-                if item["status"] in ("pending", "conflict")
-            }
-            active_keys.update(
-                key
-                for row in self.session._queued()
-                if row["state"] in ("pending", "conflict")
-                for key in row["reconciles"]["source_keys"]
-            )
-            current = {}
-            seen_ids = set()
-            for row in fresh["sources"]:
-                source_id = row["source_id"]
-                fingerprint = row["source_fingerprint"]
-                seen_ids.add(source_id)
-                inventory_key = sha(contract.encode([source_id, fingerprint]))
-                prior = old.get(inventory_key)
-                if prior and prior.get("source_fingerprint") == fingerprint:
-                    row = dict(row, status=prior["status"], reason=prior["reason"])
-                current[inventory_key] = row
-            for inventory_key, prior in old.items():
-                if inventory_key in current:
-                    continue
-                if inventory_key in active_keys:
-                    current[inventory_key] = prior
-                elif (
-                    fresh["status"] != "complete" and prior["source_id"] not in seen_ids
-                ):
-                    current[inventory_key] = prior
-            if len(current) > 1024:
-                raise CacheBlocked()
-            fresh = dict(
-                fresh,
-                sources=sorted(current.values(), key=lambda item: item["source_id"]),
-            )
-            counts: dict[str, int] = {}
-            for item in fresh["sources"]:
-                counts[item["status"]] = counts.get(item["status"], 0) + 1
-            fresh["counts"] = counts
-            fresh["cursor"] = sha(contract.encode(fresh["sources"]))
-            ledger = {
-                "schema": 1,
-                "binding": self.session.binding,
-                "cursor": fresh["cursor"],
-                "status": fresh["status"],
-                "sources": current,
-            }
-            self.session._save("memory-inventory.json", ledger)
-            sources = []
-            review_ledger = self.session._load(
+            imports = self._imports()["items"]
+            reviews = self.session._load(
                 "memory-reviews.json",
                 {"schema": 1, "binding": self.session.binding, "items": {}},
             )
             if (
-                not isinstance(review_ledger, dict)
-                or set(review_ledger) != {"schema", "binding", "items"}
-                or review_ledger["schema"] != 1
-                or review_ledger["binding"] != self.session.binding
-                or not isinstance(review_ledger["items"], dict)
-                or len(review_ledger["items"]) > 1024
+                not isinstance(reviews, dict)
+                or set(reviews) != {"schema", "binding", "items"}
+                or reviews["schema"] != 1
+                or reviews["binding"] != self.session.binding
+                or not isinstance(reviews["items"], dict)
+                or len(reviews["items"]) > 1024
             ):
                 raise CacheBlocked()
-            live_review_keys = set(current) | active_keys
-            review_ledger["items"] = {
-                key: value
-                for key, value in review_ledger["items"].items()
-                if key in live_review_keys
-            }
-            self.session._save("memory-reviews.json", review_ledger)
-            for source_id, item in current.items():
-                value = dict(item)
-                fingerprint = value["source_fingerprint"]
-                if isinstance(fingerprint, str) and value["status"] not in (
-                    "excluded",
-                    "unavailable",
+            submitted = {}
+            for row in self.session._queued():
+                for key in row["reconciles"]["source_keys"]:
+                    confirmed = row["state"] == "confirmed" and self.session._server_saved(
+                        row["response"], row["request"],
+                    )
+                    submitted[key] = confirmed or submitted.get(key, False)
+            legacy = {}
+            for key, item in imports.items():
+                if not self.is_native(item["source"]["source_id"]):
+                    continue
+                if submitted.get(key):
+                    legacy[key] = "legacy-cas-record-retained"
+                elif key in submitted or item["request_id"] is not None or item["status"] in (
+                    "imported", "duplicate", "pending", "conflict", "reconciled",
                 ):
-                    imported = tracked["items"].get(
-                        sha(contract.encode([value["source_id"], fingerprint]))
-                    )
-                    if imported is not None:
-                        value.update(
-                            status=imported["status"],
-                            reason="linked to reviewed import ledger",
-                        )
-                    review = review_ledger["items"].get(
-                        sha(contract.encode([value["source_id"], fingerprint]))
-                    )
-                    if review is not None:
-                        if (
-                            not isinstance(review, dict)
-                            or set(review)
-                            != {
-                                "source_id",
-                                "source_fingerprint",
-                                "decision",
-                                "reason_code",
-                            }
-                            or review["source_id"] != value["source_id"]
-                            or review["source_fingerprint"] != fingerprint
-                            or review["decision"] not in RETAINED_REVIEW_DECISIONS
-                            or review["reason_code"]
-                            not in RETAINED_REVIEW_DECISIONS[review["decision"]]
-                        ):
-                            raise CacheBlocked()
-                        value.update(
-                            review_decision=review["decision"],
-                            review_reason_code=review["reason_code"],
-                        )
-                sources.append(value)
-            sources.sort(
-                key=lambda item: (item["source_id"], item["source_fingerprint"] or "")
-            )
-            cursor = sha(contract.encode(sources))
-            counts = {}
-            for item in sources:
-                counts[item["status"]] = counts.get(item["status"], 0) + 1
-            return {
-                "status": fresh["status"],
-                "counts": counts,
-                "cursor": cursor,
-                "sources": sources,
-                "reason": fresh.get(
-                    "reason", "metadata inventory only; no import coverage claimed"
-                ),
-                "data_transferred": False,
-                "account_complete": False,
-            }
+                    legacy[key] = "legacy-receipt-unconfirmed"
+            excluded = set()
+            for key, review in reviews["items"].items():
+                if not isinstance(review, dict) or set(review) != {
+                    "source_id", "source_fingerprint", "decision", "reason_code",
+                }:
+                    raise CacheBlocked()
+                source_id = review["source_id"]
+                fingerprint = review["source_fingerprint"]
+                native_source_identity(source_id, fingerprint)
+                if (
+                    not self.is_native(source_id)
+                    or key != sha(contract.encode([source_id, fingerprint]))
+                    or review["reason_code"] not in RETAINED_REVIEW_DECISIONS.get(review["decision"], ())
+                ):
+                    raise CacheBlocked()
+                if review["decision"] != "shareable":
+                    excluded.add(source_id)
+                elif review["reason_code"] != APPROVED_NATIVE_ORIGINAL:
+                    legacy.setdefault(key, "legacy-summary-retained")
+            return excluded, legacy
 
-    def read_memory_source(self, source_id, fingerprint):
-        """Read one explicitly selected, inventoried native Memory file.
-
-        The text is returned only to the local MCP caller and is never written
-        into the cache or sent to AgentBrain. A bounded no-follow open and a
-        post-read digest bind it to the inventory row reviewed by the caller.
-        """
+    def read_onboarding_original(self, source_id, fingerprint):
         require_platform("cache-storage", self.session.platform)
-        with locked(self.session.cache / "content.lock"):
-            key, inventory, row = self._inventoried_source(source_id, fingerprint)
-            body = self._checked_body(self.provider.read(source_id), fingerprint)
-            row = dict(
-                row,
-                status="read",
-                reason="selected body read locally; review and normalize before staging",
-            )
-            inventory["sources"][key] = row
-            self.session._save("memory-inventory.json", inventory)
-            return {
-                "source_id": source_id,
-                "source_fingerprint": fingerprint,
-                "text": body,
-                "data_transferred": False,
-                "native_changed": False,
-                "note": "Local-only bounded read. Review for sensitive or cross-project details before preparing an import.",
-            }
-
-    def _inventoried_source(self, source_id, fingerprint):
-        if (
-            not isinstance(source_id, str)
-            or not re.fullmatch(re.escape(self.provider.prefix) + r"[a-f0-9]{64}", source_id)
-            or not isinstance(fingerprint, str)
-            or not re.fullmatch(r"[a-f0-9]{64}", fingerprint)
-        ):
+        native_source_identity(source_id, fingerprint)
+        if not self.is_native(source_id):
             raise CacheBlocked()
-        key = sha(contract.encode([source_id, fingerprint]))
-        inventory = self.session._load("memory-inventory.json")
-        if (
-            not isinstance(inventory, dict)
-            or set(inventory) != {"schema", "binding", "cursor", "status", "sources"}
-            or inventory["schema"] != 1
-            or inventory["binding"] != self.session.binding
-            or not isinstance(inventory["sources"], dict)
-        ):
-            raise CacheBlocked()
-        row = inventory["sources"].get(key)
-        if (
-            row is None
-            or row.get("source_id") != source_id
-            or row.get("source_fingerprint") != fingerprint
-            or row.get("status") not in ("not-checked", "read")
-        ):
-            raise CacheBlocked()
-        return key, inventory, row
+        raw, mtime_ns = self.provider.read(source_id, with_mtime=True)
+        return self._checked_body(raw, fingerprint), mtime_ns
 
     @staticmethod
     def _checked_body(raw, fingerprint):
@@ -421,148 +278,6 @@ class SourceImports:
             return raw.decode("utf-8", "strict")
         except UnicodeDecodeError:
             raise CacheBlocked() from None
-
-    def native_original_approved(self, source_id, fingerprint):
-        reviews = self.session._load("memory-reviews.json")
-        key = sha(contract.encode([source_id, fingerprint]))
-        return (
-            isinstance(reviews, dict)
-            and reviews.get("schema") == 1
-            and reviews.get("binding") == self.session.binding
-            and isinstance(reviews.get("items"), dict)
-            and reviews["items"].get(key) == {
-                "source_id": source_id,
-                "source_fingerprint": fingerprint,
-                "decision": "shareable",
-                "reason_code": APPROVED_NATIVE_ORIGINAL,
-            }
-        )
-
-    def capture_native_original(self, source_id, fingerprint):
-        """Read back just the approved bytes and time. No network or queue writes."""
-        require_platform("cache-storage", self.session.platform)
-        with locked(self.session.cache / "content.lock"):
-            key, _, row = self._inventoried_source(source_id, fingerprint)
-            legacy_status = self._legacy_native_import_status(key, self._imports()["items"].get(key))
-            if legacy_status is not None:
-                return {"status": legacy_status}
-            if row["status"] != "read" or not self.native_original_approved(source_id, fingerprint):
-                raise CacheBlocked()
-            raw, mtime_ns = self.provider.read(source_id, with_mtime=True)
-            body = self._checked_body(raw, fingerprint)
-            if not body.strip() or private_recall_text(body):
-                raise CacheBlocked()
-            return {"status": "approved", "text": body, "mtime_ns": mtime_ns}
-
-    def _legacy_native_import_status(self, key, item):
-        if item is None:
-            return None
-        request_seen = item["request_id"] is not None
-        for queued in self.session._queued():
-            if key not in queued["reconciles"]["source_keys"]:
-                continue
-            request_seen = True
-            if queued["state"] == "confirmed" and self.session._server_saved(
-                queued["response"], queued["request"]
-            ):
-                return "already-migrated"
-        if request_seen or item["status"] in ("pending", "conflict", "reconciled"):
-            return "legacy-receipt-unconfirmed"
-        return None
-
-    def review_memory_source(self, source_id, fingerprint, decision, reason_code):
-        """Persist an explicit content review decision without retaining source text."""
-        decisions = REVIEW_DECISIONS
-        if (
-            not isinstance(source_id, str)
-            or not re.fullmatch(re.escape(self.provider.prefix) + r"[a-f0-9]{64}", source_id)
-            or not isinstance(fingerprint, str)
-            or not re.fullmatch(r"[a-f0-9]{64}", fingerprint)
-            or decision not in decisions
-            or reason_code not in decisions[decision]
-        ):
-            raise CacheBlocked()
-        require_platform("cache-storage", self.session.platform)
-        with locked(self.session.cache / "content.lock"):
-            inventory = self.session._load("memory-inventory.json")
-            key = sha(contract.encode([source_id, fingerprint]))
-            row = (
-                inventory.get("sources", {}).get(key)
-                if isinstance(inventory, dict)
-                else None
-            )
-            if (
-                row is None
-                or row.get("source_id") != source_id
-                or row.get("source_fingerprint") != fingerprint
-                or row.get("status") != "read"
-            ):
-                raise CacheBlocked()
-            state = self.session._load(
-                "memory-reviews.json",
-                {"schema": 1, "binding": self.session.binding, "items": {}},
-            )
-            if (
-                not isinstance(state, dict)
-                or set(state) != {"schema", "binding", "items"}
-                or state["schema"] != 1
-                or state["binding"] != self.session.binding
-                or not isinstance(state["items"], dict)
-                or len(state["items"]) > 1024
-            ):
-                raise CacheBlocked()
-            imports = self._imports()
-            item = imports["items"].get(key)
-            if reason_code == APPROVED_NATIVE_ORIGINAL:
-                legacy_status = self._legacy_native_import_status(key, item)
-                if legacy_status is not None:
-                    return {"status": legacy_status, "data_transferred": False}
-            state["items"][key] = {
-                "source_id": source_id,
-                "source_fingerprint": fingerprint,
-                "decision": decision,
-                "reason_code": reason_code,
-            }
-            if len(state["items"]) > 1024:
-                raise CacheBlocked()
-            self.session._save("memory-reviews.json", state)
-            if decision != "shareable":
-                if item is not None and item["status"] in ("inventoried", "pending"):
-                    item.update(
-                        status="blocked",
-                        request_id=None
-                        if item["status"] == "inventoried"
-                        else item["request_id"],
-                    )
-                    self.session._save("imports.json", imports)
-                for queued in self.session._queued():
-                    if (
-                        queued["state"] == "pending"
-                        and key in queued["reconciles"]["source_keys"]
-                    ):
-                        queued.update(
-                            state="blocked",
-                            response={
-                                "request_id": queued["request"]["request_id"],
-                                "error": {
-                                    "code": "native_source_review_revoked",
-                                    "retryable": False,
-                                },
-                                "persistence": {"durable": False},
-                            },
-                        )
-                        self.session._save(
-                            "outbox/" + queued["request"]["request_id"] + ".json",
-                            queued,
-                        )
-        return {
-            "status": "content-source-reviewed",
-            "source_id": source_id,
-            "decision": decision,
-            "reason_code": reason_code,
-            "text_persisted": False,
-            "data_transferred": False,
-        }
 
     def _check_source(self, item):
         if (

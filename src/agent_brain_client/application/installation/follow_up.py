@@ -1,12 +1,6 @@
 """application / installation / follow_up: one owner for each contract and rule."""
 
-from agent_brain_client.application.memory.guidance import ONBOARDING_GUIDANCE, ONBOARDING_URL
-
-ONBOARD_COVERAGE_GUIDANCE = (
-    ONBOARDING_GUIDANCE
-    + f"See the public Onboarding guide at {ONBOARDING_URL} for details. "
-    "The guide can be used with an empty Agent Brain account and without preloaded Skills. This handoff records that no source scan or data transfer has occurred. "
-)
+from agent_brain_client.application.memory.guidance import ONBOARDING_GUIDANCE
 
 
 def installation_follow_up(result):
@@ -24,9 +18,7 @@ def installation_follow_up(result):
             "coverage": "unknown",
             "account_complete": False,
             "source_scan_performed": False,
-            "harness_source_inventory_required": True,
-            "agentbrain_catalog_is_source_inventory": False,
             "data_transferred": False,
-            "next_action": ONBOARD_COVERAGE_GUIDANCE,
+            "next_action": ONBOARDING_GUIDANCE,
         }
     return value
