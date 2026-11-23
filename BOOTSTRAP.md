@@ -28,4 +28,4 @@ Windows 的正常安装入口还会继续受信 launcher 交接、有限 Rule/Sk
 失败重跑同一入口恢复，保留原配置、身份和队列；不扫描历史。正常重载和新会话加载由宿主完成。
 操作说明见 [Windows installation stages](https://github.com/goodname427/agent-brain-client/blob/main/docs/installation/windows-stages.md)。
 
-明确授权当前宿主的可共享个人原生记忆和既有接收目标后，请宿主运行 Agent Brain Onboarding（`agent_brain_server.memory_onboard`）。
+明确授权当前宿主的可共享个人原生记忆和既有接收目标后，请宿主运行 Agent Brain Onboarding（`agent_brain_server.memory_onboard`）。工具返回批次 `approval_id` 后继续后台导入；用相同宿主、来源范围及接收目标，传入此 ID 和 `resume=true` 查询同批进度，无需再次批准或提交。接收计数来自 L0 回执，不代表提炼已完成。

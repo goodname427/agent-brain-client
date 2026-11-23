@@ -7,7 +7,7 @@ from agent_brain_client.domain.validation import query_time
 from agent_brain_client.domain.validation import text
 
 NATIVE_MEMORY_CONTRACT = "agentbrain.native-memory.v1"
-MAX_NATIVE_MEMORY_UNITS = 8192
+MAX_NATIVE_MEMORY_BYTES = 131072
 
 
 def event_identifier(value):
@@ -70,6 +70,16 @@ def native_source_identity(source_id, fingerprint):
         raise ValueError("Exact native source identity required")
 
 
+def native_memory_content(body):
+    """Original UTF-8 text, with no rewriting before its source fingerprint."""
+    if not isinstance(body, str) or not body.strip():
+        raise ValueError("Nonempty native source text required")
+    data = body.encode("utf-8")
+    if len(data) > MAX_NATIVE_MEMORY_BYTES:
+        raise ValueError("Native source content exceeds bound")
+    return data
+
+
 def native_memory_event(value):
     # The queue pins the route and source coordinates locally. The global wire
     # removes them from the event and lets the Server bind the approved route.
@@ -87,10 +97,6 @@ def native_memory_event(value):
     ):
         raise ValueError("UTC source time required")
     query_time(stamp)
-    body = value["content"]
-    text(body, 32768)
-    if (
-        len(body.encode("utf-16-le")) // 2 > MAX_NATIVE_MEMORY_UNITS
-        or hashlib.sha256(body.encode()).hexdigest() != value["source_fingerprint"]
-    ):
-        raise ValueError("Native source content exceeds bound or changed")
+    data = native_memory_content(value["content"])
+    if hashlib.sha256(data).hexdigest() != value["source_fingerprint"]:
+        raise ValueError("Native source content changed")

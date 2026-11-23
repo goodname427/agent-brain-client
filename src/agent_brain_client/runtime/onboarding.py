@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import re
+import time
 
 from agent_brain_client.adapters.platforms.filesystem import cache_locked
 from agent_brain_client.adapters.storage import metadata
@@ -9,31 +11,46 @@ from agent_brain_client.adapters.storage.project_settings import source_active
 from agent_brain_client.application.control import check_request, request_timeout
 from agent_brain_client.application.memory.onboarding import SOURCE_SCOPE, Summary, authorization, excluded_original
 from agent_brain_client.domain import contract
-from agent_brain_client.domain.errors import CacheBlocked, EventDiagnosticsUnavailable
+from agent_brain_client.domain.errors import CacheBlocked, GlobalRequestTooLarge
 from agent_brain_client.domain.events import NATIVE_MEMORY_CONTRACT, native_memory_event
 from agent_brain_client.domain.receipts import core_receipt
 from agent_brain_client.domain.scopes import digest, namespace, ordinary_drive_path, origin, select
 from agent_brain_client.runtime import collection
 
 
+def enrolled_origin(home, path, core):
+    value = core.load(home)
+    local = core.eligible(value, path)
+    if (
+        local is None or local["cwd"] != ordinary_drive_path(path)
+        or core.legacy(value, local) is not None
+    ):
+        return None
+    return value, local
+
+
+def personal_origin(home, harness, value, local):
+    selected = select(value["scope"], local)
+    return selected is not None and selected["sharing"] == "personal" and source_active(
+        home, local["cwd"], harness,
+    )
+
+
 def onboard_native_memory(adapter, arguments):
-    """Stage only eligible host originals and send through the enrolled L0 route."""
+    """Accept a bounded local approval snapshot without waiting for any HTTP call."""
+    from agent_brain_client.runtime.delivery import register_task, wake
+
     harness, endpoint, actor, path, resume, approval_id = authorization(arguments)
     if harness != adapter.host.name or not Path(path).is_absolute():
         raise ValueError("Explicit bound host and destination directory required")
     try:
-        value = collection.load(adapter.home)
-        local = collection.eligible(value, path)
+        route = enrolled_origin(adapter.home, path, collection)
     except (OSError, ValueError):
+        route = None
+    if route is None:
         return {"error": {"code": "onboarding-origin-unavailable"}}
-    if (
-        local is None or local["cwd"] != ordinary_drive_path(path)
-        or collection.legacy(value, local) is not None
-    ):
-        return {"error": {"code": "onboarding-origin-unavailable"}}
-
-    scope = value["scope"]
-    if select(scope, local)["sharing"] != "personal" or not source_active(adapter.home, path, harness):
+    value, local = route
+    if not personal_origin(adapter.home, harness, value, local):
         return {"error": {"code": "onboarding-personal-origin-required"}}
 
     client, queue = collection.build_delivery_queue(value, local, harness)
@@ -43,31 +60,120 @@ def onboard_native_memory(adapter, arguments):
         or adapter.client.queue_identity != client.base.queue_identity
     ):
         return {"error": {"code": "onboarding-destination-changed"}}
-
-    # Preserve the event IDs and occurrence times used by the original importer.
-    project = namespace(client.actor, scope["profile_id"])
+    project = namespace(client.actor, value["scope"]["profile_id"])
     group = "native-source-" + digest(adapter.binding)
-
-    def allowed():
-        current = collection.load(adapter.home, verify_code=False)
-        return (
-            current["scope"] == scope
-            and collection.eligible(current, path) == local
-            and collection.legacy(current, local) is None
-            and source_active(adapter.home, path, harness)
-        )
-
-    # One host queue owner at a time, including when two requests choose
-    # different origins in the same personal namespace.
-    with cache_locked(queue.cache.parent / "onboarding.lock"):
-        if not allowed():
-            return {"error": {"code": "onboarding-origin-changed"}}
+    # The slow worker lease never covers acceptance/status.
+    with cache_locked(queue.cache / "onboarding-approval.lock"):
         batch = approval_snapshot(adapter.sources, queue, client.scope_sha, group, project, resume, approval_id)
         if batch is None:
             return {"error": {"code": "onboarding-approval-unavailable"}}
         approval_id, inventory = batch
-        summary = process_batch(adapter.sources, harness, client, queue, project, group, inventory, allowed)
-        return dict(summary, approval_id=approval_id)
+
+        progress = progress_name(approval_id)
+        state = queue._load(progress)
+        if state is None:
+            summary = Summary(harness)
+            summary.counts["pending"] = len(inventory["sources"])
+            state = {
+                "started": time.time_ns(),
+                "summary": dict(summary.result(inventory["status"]), status="onboarding-queued"),
+            }
+            queue._save(progress, state)
+    if state["summary"]["status"] == "onboarding-queued" or state["summary"]["counts"]["pending"]:
+        task = {
+            "schema": 1, "harness": "onboarding", "source_harness": harness,
+            "origin": local, "approval_id": approval_id,
+        }
+        register_task(adapter.home, digest(task), task, wake_worker=False)
+        try:
+            wake(adapter.home)
+        except OSError:
+            # The ordinary supervisor can discover the durable task after a
+            # spawn failure or client death; approval is already recorded.
+            pass
+    return dict(state["summary"], approval_id=approval_id)
+
+
+def progress_name(approval_id):
+    return "onboarding/" + approval_id + "-progress.json"
+
+
+def enrolled_sources(home, harness, client, queue):
+    """Reopen only the enrolled host's native source port, never a supplied path."""
+    from agent_brain_client.adapters.storage import registration
+    from agent_brain_client.adapters.storage.content_session import ContentSession
+    from agent_brain_client.application.tools.catalog import memory_sources_authorized
+    from agent_brain_client.domain.authorization import permits_scope
+    from agent_brain_client.runtime.harness_content import content_host
+
+    _, policy = registration.registration(home)
+    host = content_host(harness)
+    native, cache = host.location(home, policy["runtime"])
+    grant = client.base.grant
+    if not memory_sources_authorized(queue.policy, grant) or not permits_scope(
+        grant["scopes"], "memory_event_submit",
+    ):
+        raise CacheBlocked()
+    session = ContentSession.metadata_view(
+        home, native, cache, queue.policy, platform=grant["platform"], host=host,
+    )
+    return session.sources
+
+
+def deliver_approved_batch(home, task, core):
+    """Existing detached delivery worker, with a fresh route check before disclosure."""
+    if (
+        set(task) != {"schema", "harness", "source_harness", "origin", "approval_id"}
+        or task["schema"] != 1 or task["harness"] != "onboarding"
+        or task["source_harness"] not in ("codex", "codebuddy")
+        or not isinstance(task["approval_id"], str)
+        or not re.fullmatch("[a-f0-9]{64}", task["approval_id"])
+    ):
+        raise ValueError("Bound Onboarding delivery task required")
+    harness, local, approval_id = (task[k] for k in ("source_harness", "origin", "approval_id"))
+    path = local["cwd"]
+    route = enrolled_origin(home, path, core)
+    if route is None or route[1] != local or not personal_origin(home, harness, route[0], local):
+        return True, False
+    value = route[0]
+    client, queue = core.build_delivery_queue(value, local, harness)
+    sources = enrolled_sources(home, harness, client, queue)
+    group = "native-source-" + digest(sources.session.binding)
+    project = namespace(client.actor, value["scope"]["profile_id"])
+    progress = progress_name(approval_id)
+
+    def allowed():
+        current = collection.load(home, verify_code=False)
+        return (
+            current["scope"] == value["scope"]
+            and core.eligible(current, path) == local
+            and core.legacy(current, local) is None
+            and personal_origin(home, harness, current, local)
+        )
+
+    # Only a worker holds this long lock; one native queue owner covers all
+    # enrolled origins of this harness to retain cross-origin exact receipts.
+    with cache_locked(queue.cache.parent / "onboarding.lock"):
+        state = queue._load(progress)
+        if state is None:
+            raise CacheBlocked()
+        summary = state["summary"]
+        previous = summary["counts"]
+        if summary["status"] != "onboarding-queued" and not previous["pending"]:
+            return False, False
+        batch = approval_snapshot(sources, queue, client.scope_sha, group, project, True, approval_id)
+        if batch is None:
+            raise CacheBlocked()
+        _, inventory = batch
+        summary = process_batch(
+            sources, harness, client, queue, project, group, inventory, allowed, started=state["started"],
+        )
+        queue._save(progress, dict(state, summary=summary))
+        counts = summary["counts"]
+        advanced = sum(counts[k] for k in ("received", "already_exists")) > sum(
+            previous[k] for k in ("received", "already_exists")
+        )
+        return counts["pending"] > 0, advanced
 
 
 def approval_snapshot(sources, queue, route_scope_sha, group, project, resume, approval_id):
@@ -109,7 +215,7 @@ def approval_snapshot(sources, queue, route_scope_sha, group, project, resume, a
     return approval_id, snapshot
 
 
-def process_batch(sources, harness, client, queue, project, group, inventory, allowed):
+def process_batch(sources, harness, client, queue, project, group, inventory, allowed, *, started):
     summary = Summary(harness)
     excluded_sources = sources.onboarding_exclusions()
     wanted = {
@@ -119,7 +225,10 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
     existing, other_routes = retained_onboarding_events(queue, group, project, wanted)
     transport_unconfirmed = False
     source_admitted = None
-    for item in inventory["sources"]:
+    for index, item in enumerate(inventory["sources"]):
+        if request_timeout(90) <= 4:
+            summary.counts["pending"] += len(inventory["sources"]) - index
+            break
         check_request()
         source_id, fingerprint = item["source_id"], item["source_fingerprint"]
         if item["status"] != "not-checked":
@@ -132,13 +241,9 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
         other = other_routes.get(request_id)
         if retained and retained["state"] == "confirmed" and core_receipt(retained["response"], retained["request"]):
             response = retained["response"]
-            if not transport_unconfirmed and request_timeout(90) > 4 and allowed():
-                try:
-                    status = client.status(group, event_id=event_id, event_only=True)
-                    response = {"result": status} if status["capture_extraction"].get("l0_accepted") is True else response
-                except (EventDiagnosticsUnavailable, OSError, ValueError, KeyError):
-                    transport_unconfirmed = True
-            summary.add("already_exists", response=response)
+            recorded = response.get("result", {}).get("replayed") is not True
+            outcome = "received" if retained["created"] >= started and recorded else "already_exists"
+            summary.add(outcome, response=response)
             continue
         if other:
             if other["state"] == "confirmed":
@@ -153,7 +258,9 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
         try:
             if retained is not None:
                 request = retained["request"]
-                body = request["params"]["event"]["content"]
+                body, _ = sources.read_onboarding_original(source_id, fingerprint)
+                if body != request["params"]["event"]["content"]:
+                    raise CacheBlocked()
             else:
                 body, mtime_ns = sources.read_onboarding_original(source_id, fingerprint)
                 original_time = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(
@@ -175,24 +282,28 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
                 }
             exclusion = excluded_original(body)
             if exclusion:
-                summary.add("excluded", exclusion)
+                summary.add("failed" if exclusion == "original-outside-bound" else "excluded", exclusion)
                 continue
             if not allowed():
-                summary.add("failed", "onboarding-origin-changed")
+                summary.add("pending", "onboarding-origin-changed")
                 continue
+            client.check_event_frame(request)
             if source_admitted is None and not transport_unconfirmed and request_timeout(90) > 4:
                 try:
                     source_admitted = client.status(group).get("source_admitted") is True
                 except (OSError, ValueError):
                     transport_unconfirmed = True
             if source_admitted is False:
-                summary.add("failed", "server-source-paused-or-denied")
+                summary.add("pending", "server-source-paused-or-denied")
                 continue
             if transport_unconfirmed or request_timeout(90) <= 4:
-                queue._enqueue(request)
-                summary.add("pending", "delivery-deferred")
-                continue
+                summary.counts["pending"] += len(inventory["sources"]) - index
+                summary.reasons["delivery-deferred"] += 1
+                break
             response = queue.invoke(request, event_gate=allowed)
+        except GlobalRequestTooLarge:
+            summary.add("failed", "original-exceeds-transport-envelope")
+            continue
         except (CacheBlocked, OSError, ValueError, OverflowError):
             summary.add("failed", "source-or-queue-unavailable")
             continue
@@ -212,7 +323,9 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
                 "existing_project_capture_delegated", "global_scope_digest_mismatch",
             ):
                 source_admitted = False
-            summary.add("failed", "server-rejected-or-receipt-unavailable")
+                summary.add("pending", "server-source-paused-or-denied")
+            else:
+                summary.add("failed", "server-rejected-or-receipt-unavailable")
     return summary.result(inventory["status"])
 
 

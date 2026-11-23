@@ -237,7 +237,7 @@ class SourceImports:
                     or review["reason_code"] not in RETAINED_REVIEW_DECISIONS.get(review["decision"], ())
                 ):
                     raise CacheBlocked()
-                if review["decision"] != "shareable":
+                if review["decision"] == "excluded":
                     excluded.add(source_id)
             return excluded
 
