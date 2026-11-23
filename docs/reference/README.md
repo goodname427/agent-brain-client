@@ -10,7 +10,7 @@
 | [owner collection](personal-owner-scope.md) | 0.2.5 起的个人 read/put 范围，历史邀请细节仅供兼容 |
 | [Rule / Skill 启停](rule-skill-management.md) | 本机管理页、明确启停、跨端拉取与失败恢复 |
 | [Client 记忆使用](memory-behavior.md) | 日常保存、召回、原生来源和回执 |
-| [适配器历史参考](ADAPTERS.md) | 含旧签名组件、SSH、Notify 候选；不能整体视为当前合同 |
+| [宿主适配约束](ADAPTERS.md) | 当前 Codex／CodeBuddy 注册、平台边界与历史适配记录 |
 | [无凭据连接示例](../connection.example.json) | 合成旧格式，不是可用信任锚 |
 | [既有 0.4 阶段固定映射](../archive/0.4/FREEZE-4.0.json) | 不可变阶段／组件映射，不是 0.5 新冻结文件；[历史标识说明](../releases/0.5-status.md#历史标识) |
 
