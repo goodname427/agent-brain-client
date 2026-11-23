@@ -216,8 +216,15 @@ mapping refresh does not resend it. Pending outcomes cannot be reconciled as
 conflicts: recover the exact original request and ID first. Restart/reconnect
 retains the existing exact-request recovery protocol.
 
-First/import-again handling accepts an explicit reviewed private normalized source
-plan selected with --import-plan and --import-plan-sha256. Inventory is persisted
+Onboarding for host-native Memory starts with an authorized inventory and submits
+each explicitly approved original through the capture outbox. Source status
+reports L0 acceptance and extraction separately. New native Memory entries cannot
+use normalized plans or source-linked CAS. The Client may match verified retained
+native receipts or recover already submitted requests under the existing CAS
+rules. A staged native plan without a submitted request cannot start a CAS write.
+
+Other explicit imports accept a reviewed private normalized source plan selected
+with --import-plan and --import-plan-sha256. Inventory is persisted
 before upload/mapping; it does not scan any additional sources. Stable source IDs
 and fingerprints deduplicate repeated execution. Equal remote content is not
 uploaded again. Changed sources require a known previous imported base plus Server

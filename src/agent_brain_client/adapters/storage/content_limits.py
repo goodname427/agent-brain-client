@@ -18,14 +18,20 @@ TRANSACTION_BYTES = 8 * MAPPING_BYTES
 
 
 APPROVED_NATIVE_ORIGINAL = "approved-native-original"
+LEGACY_NATIVE_SUMMARY = "safe-cross-project-personal-summary"
 
 
 REVIEW_DECISIONS = {
-    "shareable": {"safe-cross-project-personal-summary", APPROVED_NATIVE_ORIGINAL},
+    "shareable": {APPROVED_NATIVE_ORIGINAL},
     "excluded": {"secret-localonly-or-confidential"},
     "deferred": {"project-scope-unavailable", "uncertain-content"},
-    "skipped": {"no-durable-user-fact"},
 }
+
+RETAINED_REVIEW_DECISIONS = dict(
+    REVIEW_DECISIONS,
+    shareable={APPROVED_NATIVE_ORIGINAL, LEGACY_NATIVE_SUMMARY},
+    skipped={"no-durable-user-fact"},
+)
 
 
 def sha(raw):

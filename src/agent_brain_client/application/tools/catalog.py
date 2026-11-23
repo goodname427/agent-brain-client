@@ -138,7 +138,7 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
         tools.append(
             {
                 "name": "content_sources_inventory",
-                "description": "Enumerate only the selected Harness persistent memories. Returns path-free IDs, file fingerprints and per-item processing status in pages of 64; never returns memory text or reads session/transcript files. Inventory is not semantic review or import coverage. Use the returned cursor for the next page; restart if it changes. Local-only read; no Server request or data transfer.",
+                "description": "Start Onboarding with this tool for the already authorized current Harness, without waiting for transfer approval. Enumerate only its selected persistent memories. Returns path-free IDs, file fingerprints and per-item processing status in pages of 64; never returns memory text or reads session/transcript files. Inventory is not semantic review or import coverage. Use the returned cursor for the next page; restart if it changes. Local-only read; no Server request or data transfer.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {"cursor": {"type": "string", "maxLength": 96}},
@@ -154,7 +154,7 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
         tools.append(
             {
                 "name": "content_sources_read",
-                "description": "Read the bounded body of exactly one previously inventoried selected Harness persistent Memory file, matching its ID and fingerprint. Local-only; never reads transcript/session paths and does not transfer data. Review the returned text for secrets, LocalOnly, customer/employer confidential data and cross-project scope before staging.",
+                "description": "Read the bounded body of exactly one previously inventoried selected Harness persistent Memory file, matching its ID and fingerprint. Local-only; never reads transcript/session paths and does not transfer data. Review the returned text for secrets, LocalOnly, customer/employer confidential data and the approved destination scope before requesting permission to submit the original.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -180,7 +180,7 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
         tools.append(
             {
                 "name": "content_sources_review",
-                "description": "Review a previously read exact source locally. Use approved-native-original only after the user authorizes the exact original for the approved memory scope. Use safe-cross-project-personal-summary for legacy CAS candidates. Exclude LocalOnly, secrets and confidential sources. Defer uncertain content or scope. The legacy no-durable-user-fact reason is not a durability or importance threshold. Review stores only a status marker and transfers no content.",
+                "description": "Review a previously read exact source locally. Use approved-native-original only after the user authorizes the exact original for the approved memory scope. Exclude LocalOnly, secrets and confidential sources. Defer uncertain content or scope. Review stores only a status marker and transfers no content.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -194,17 +194,15 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
                         },
                         "decision": {
                             "type": "string",
-                            "enum": ["shareable", "excluded", "deferred", "skipped"],
+                            "enum": ["shareable", "excluded", "deferred"],
                         },
                         "reason_code": {
                             "type": "string",
                             "enum": [
-                                "safe-cross-project-personal-summary",
                                 "approved-native-original",
                                 "secret-localonly-or-confidential",
                                 "project-scope-unavailable",
                                 "uncertain-content",
-                                "no-durable-user-fact",
                             ],
                         },
                     },
@@ -214,50 +212,6 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
                         "decision",
                         "reason_code",
                     ],
-                    "additionalProperties": False,
-                },
-                "annotations": {
-                    "readOnlyHint": False,
-                    "destructiveHint": False,
-                    "idempotentHint": True,
-                },
-            }
-        )
-        tools.append(
-            {
-                "name": "content_sources_stage",
-                "description": "Stage the final normalized AgentBrain Memory candidate for one exact source that was read locally and explicitly reviewed as shareable. Cover all authorized shareable sources; do not filter by importance or long-term durability. Include ordinary user experiences, events, decisions, corrections and short-term progress when they can be safely generalized to the shared personal scope. Before staging, call content_read for the target and finish deduplication, merging and corrections while preserving unique source and target information. The same source fingerprint is immutable once staged: repeat only the identical candidate; do not try to revise it in place. This call records a local import-plan entry only; it sends no Server write and is not a save. It returns source_key for local reconciliation. To persist this staged candidate, call content_put with the revision from content_read, a stable request_id and reconciles.source_keys containing that source_key. The reconciliation metadata stays local; content_put sends the record with its CAS revision through the existing outbox. Count it as saved only after the required Server persistence receipt; refresh is not required to perform the write. Never include secrets, LocalOnly, customer/employer confidential data or details unsafe to share across projects.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "source_id": {
-                            "type": "string",
-                            "pattern": "^(codex|codebuddy)-memory:[a-f0-9]{64}$",
-                        },
-                        "source_fingerprint": {
-                            "type": "string",
-                            "pattern": "^[a-f0-9]{64}$",
-                        },
-                        "id": {
-                            "type": "string",
-                            "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
-                        },
-                        "record": {
-                            "type": "object",
-                            "properties": {
-                                "title": {"type": "string", "maxLength": 1024},
-                                "description": {"type": "string", "maxLength": 1024},
-                                "body": {"type": "string"},
-                                "type": {
-                                    "type": "string",
-                                    "enum": ["user", "feedback", "reference"],
-                                },
-                            },
-                            "required": ["title", "description", "body", "type"],
-                            "additionalProperties": False,
-                        },
-                    },
-                    "required": ["source_id", "source_fingerprint", "id", "record"],
                     "additionalProperties": False,
                 },
                 "annotations": {
@@ -515,7 +469,7 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
         if name in ("content_put", "content_set_enabled"):
             properties["reconciles"] = {
                 "type": "object",
-                "description": "Local-only references to staged source plans or write conflicts; never sent to Server. Inspect retained proposals with content_queue_inspect and read the current target before merging. request_ids select only retained conflicts; recover pending outcomes by identical retry first. A still-inventoried source plan can be reconciled only by the exact staged record; a conflicted source plan requires an explicit merge of source and remote versions. Server persistence confirmation resolves selected conflicts.",
+                "description": "Local-only references for recovering retained writes; never sent to Server. Inspect retained proposals with content_queue_inspect and read the current target before merging. Use request_ids for retained conflicts and recover pending outcomes by identical retry first. Native source_keys are only for recovering retained requests that already reference them. Server persistence confirmation resolves selected conflicts.",
                 "properties": {
                     "request_ids": {
                         "type": "array",
