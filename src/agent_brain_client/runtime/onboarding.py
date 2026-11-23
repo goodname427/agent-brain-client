@@ -111,7 +111,7 @@ def approval_snapshot(sources, queue, route_scope_sha, group, project, resume, a
 
 def process_batch(sources, harness, client, queue, project, group, inventory, allowed):
     summary = Summary(harness)
-    rejected, legacy_sources = sources.onboarding_evidence()
+    excluded_sources = sources.onboarding_exclusions()
     wanted = {
         "native_memory_" + digest([project, group, item["source_id"], item["source_fingerprint"]])
         for item in inventory["sources"] if item["status"] == "not-checked"
@@ -128,7 +128,6 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
 
         key = digest([project, group, source_id, fingerprint])
         event_id, request_id = "native-" + key[:56], "native_memory_" + key
-        source_key = digest([source_id, fingerprint])
         retained = existing.get(request_id)
         other = other_routes.get(request_id)
         if retained and retained["state"] == "confirmed" and core_receipt(retained["response"], retained["request"]):
@@ -147,8 +146,8 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
             else:
                 summary.add("failed", "prior-origin-receipt-unconfirmed")
             continue
-        if source_id in rejected or source_key in legacy_sources:
-            summary.add("excluded", legacy_sources.get(source_key, "retained-exclusion"))
+        if source_id in excluded_sources:
+            summary.add("excluded", "retained-exclusion")
             continue
 
         try:

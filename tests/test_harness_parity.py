@@ -30,7 +30,8 @@ from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.interfaces.mcp.content import ContentServer, ManagedContentServer
 from agent_brain_client.interfaces.mcp.framing import ContentParameterError, ProtocolError
 from test_content_outbox import (
-    Cloud, POLICY, MEMORY, RULE, SKILL, seed_legacy_native_plan, seed_legacy_native_write,
+    Cloud, POLICY, MEMORY, RULE, SKILL, seed_legacy_native_plan, seed_legacy_native_review,
+    seed_legacy_native_write,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -197,6 +198,41 @@ class NativeMemoryCapture(unittest.TestCase):
                 project.parent.mkdir(parents=True)
                 project.write_bytes(b"An isolated Windows CodeBuddy project synthetic preference.")
 
+            sources = worker.adapter.sources
+            legacy_excluded = "Fictional original with a retained explicit exclusion."
+            source_file.with_name("explicitly-excluded.md").write_bytes(legacy_excluded.encode())
+            rows = {
+                item["source_fingerprint"]: item
+                for item in sources.provider.inventory(onboarding=True)["sources"]
+            }
+            excluded_row = rows[sha256(legacy_excluded.encode()).hexdigest()]
+            seed_legacy_native_plan(worker.adapter, excluded_row, MEMORY)
+            seed_legacy_native_review(
+                worker.adapter, excluded_row, "excluded", "secret-localonly-or-confidential",
+            )
+            original_row = rows[sha256(original.encode()).hexdigest()]
+            if windows_layout:
+                key = seed_legacy_native_plan(worker.adapter, original_row, MEMORY)
+                request = {
+                    "request_id": "synthetic-legacy-cas-onboarding",
+                    "method": "content_put",
+                    "params": dict(kind="memory", id="synthetic-topic", record=MEMORY,
+                                   expected_revision="missing"),
+                }
+                reconciles = seed_legacy_native_write(worker.adapter, key, request)
+                if harness == "codex":
+                    saved = worker.adapter.invoke(request, reconciles=reconciles)
+                    self.assertEqual(saved["local_queue"]["state"], "confirmed")
+            else:
+                seed_legacy_native_review(
+                    worker.adapter, original_row, "shareable", "safe-cross-project-personal-summary",
+                )
+            legacy_ledgers = {
+                filename: worker.adapter._load(filename)
+                for filename in ("memory-reviews.json", "imports.json")
+            }
+            cloud.calls.clear()
+
             scopes = cloud.grant["scopes"]
             cloud.grant["scopes"] = ["read"]
             self.assertNotIn("memory_onboard", {item["name"] for item in worker.catalog()})
@@ -216,20 +252,21 @@ class NativeMemoryCapture(unittest.TestCase):
             self.assertEqual(peer.requests, [])
             peer.admitted = False
             denied = tool(worker, "memory_onboard", args)
-            self.assertEqual(denied["reasons"]["server-source-paused-or-denied"], 1)
+            self.assertEqual(denied["reasons"].get("server-source-paused-or-denied"), 1, denied)
             self.assertEqual([r["method"] for r in peer.requests], ["memory_global_status"])
             peer.requests.clear()
             peer.admitted = True
 
             queued = tool(worker, "memory_onboard", args)
             self.assertEqual(queued["counts"]["pending"], 1, queued)
-            self.assertEqual(queued["counts"]["excluded"], len(protected) + 1 + (windows_layout and harness == "codebuddy"))
+            self.assertEqual(queued["counts"]["excluded"], len(protected) + 2 + (windows_layout and harness == "codebuddy"))
             self.assertEqual(queued["reasons"]["private-or-sensitive"], 4)
             self.assertEqual(queued["reasons"]["shareability-unconfirmed"], 1)
+            self.assertEqual(queued["reasons"]["retained-exclusion"], 1)
             if windows_layout and harness == "codebuddy":
                 self.assertEqual(queued["reasons"]["project-origin-unverified"], 1)
             encoded = json.dumps(queued, ensure_ascii=False)
-            for raw in [original, *protected.values(), str(workspace)]:
+            for raw in [original, legacy_excluded, *protected.values(), str(workspace)]:
                 self.assertNotIn(raw, encoded)
             self.assertEqual(len(peer.receipts), 1)
             admission, initial_wire = peer.requests
@@ -266,14 +303,15 @@ class NativeMemoryCapture(unittest.TestCase):
 
             worker = server()
             calls = len(peer.requests)
-            peer.extraction = "succeeded"
+            peer.extraction = "no-facts"
             resume = {key: value for key, value in args.items() if key != "approved"}
             resume["resume"] = True
             source_file.with_name("after-approval.md").write_text("A later fictional memory outside this approval.")
             done = tool(worker, "memory_onboard", resume)
             self.assertEqual(done["approval_id"], queued["approval_id"])
             self.assertEqual(done["counts"]["already_exists"], 1, done)
-            self.assertEqual(done["extraction"], {"succeeded": 1})
+            self.assertEqual(done["extraction"], {"no-facts": 1})
+            self.assertIn(initial_wire, peer.receipts.values())
             self.assertEqual(peer.requests[-1], initial_wire)
             self.assertEqual(len(peer.requests), calls + 2)
             self.assertEqual(len(peer.receipts), 2)
@@ -290,6 +328,9 @@ class NativeMemoryCapture(unittest.TestCase):
             self.assertEqual(peer.requests[-1]["method"], "memory_global_status")
             self.assertEqual(len(peer.receipts), 2)
             self.assertEqual(cloud.calls, [])
+            for filename, expected in legacy_ledgers.items():
+                self.assertEqual(worker.adapter._load(filename), expected)
+            self.assertNotIn(legacy_excluded, json.dumps(peer.requests))
             if harness == "codex" and not windows_layout:
                 for index in range(70):
                     raw = f"Fictional onboard batch item {index}".encode()
@@ -334,7 +375,7 @@ class HarnessParity(unittest.TestCase):
                     session.sources.read_onboarding_original(*selected)
                 self.assertEqual(cloud.calls, [])
 
-    def test_original_capture_preserves_legacy_receipt_and_uncertain_write(self):
+    def test_onboarding_exclusions_leave_legacy_cas_and_its_recovery_untouched(self):
         for acknowledgement_lost in (False, True):
             with self.subTest(acknowledgement_lost=acknowledgement_lost), tempfile.TemporaryDirectory() as tmp:
                 home = Path(tmp).resolve()
@@ -361,13 +402,8 @@ class HarnessParity(unittest.TestCase):
                 reconciles = seed_legacy_native_write(session, key, request)
                 session.invoke(request, reconciles=reconciles)
                 calls = len(cloud.calls)
-                status = "legacy-receipt-unconfirmed" if acknowledgement_lost else "legacy-cas-record-retained"
-                original_review = session._load("memory-reviews.json")
-                with patch.object(session.sources.provider, "read", side_effect=AssertionError("Legacy source read")):
-                    excluded, legacy = session.sources.onboarding_evidence()
-                    self.assertEqual(legacy, {key: status})
-                    self.assertEqual(excluded, set())
-                self.assertEqual(session._load("memory-reviews.json"), original_review)
+                with patch.object(session, "_queued", side_effect=AssertionError("Legacy CAS read")):
+                    self.assertEqual(session.sources.onboarding_exclusions(), set())
                 self.assertEqual(len(cloud.calls), calls)
                 if acknowledgement_lost:
                     replay = session.invoke(request, reconciles=reconciles)

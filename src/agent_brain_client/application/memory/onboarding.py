@@ -137,7 +137,7 @@ class Summary:
             or self.counts["pending"] > 0
             or self.counts["failed"] > 0
             or any(self.reasons[key] for key in (
-                "shareability-unconfirmed", "project-origin-unverified", "legacy-receipt-unconfirmed",
+                "shareability-unconfirmed", "project-origin-unverified",
             ))
         )
         return {
