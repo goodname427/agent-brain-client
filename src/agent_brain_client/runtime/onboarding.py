@@ -11,7 +11,7 @@ from agent_brain_client.adapters.storage.project_settings import source_active
 from agent_brain_client.application.control import check_request, request_timeout
 from agent_brain_client.application.memory.onboarding import SOURCE_SCOPE, Summary, authorization, excluded_original
 from agent_brain_client.domain import contract
-from agent_brain_client.domain.errors import CacheBlocked
+from agent_brain_client.domain.errors import CacheBlocked, GlobalRequestTooLarge
 from agent_brain_client.domain.events import NATIVE_MEMORY_CONTRACT, native_memory_event
 from agent_brain_client.domain.receipts import core_receipt
 from agent_brain_client.domain.scopes import digest, namespace, ordinary_drive_path, origin, select
@@ -287,6 +287,7 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
             if not allowed():
                 summary.add("pending", "onboarding-origin-changed")
                 continue
+            client.check_event_frame(request)
             if source_admitted is None and not transport_unconfirmed and request_timeout(90) > 4:
                 try:
                     source_admitted = client.status(group).get("source_admitted") is True
@@ -300,6 +301,9 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
                 summary.reasons["delivery-deferred"] += 1
                 break
             response = queue.invoke(request, event_gate=allowed)
+        except GlobalRequestTooLarge:
+            summary.add("failed", "original-exceeds-transport-envelope")
+            continue
         except (CacheBlocked, OSError, ValueError, OverflowError):
             summary.add("failed", "source-or-queue-unavailable")
             continue

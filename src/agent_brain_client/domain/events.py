@@ -7,7 +7,7 @@ from agent_brain_client.domain.validation import query_time
 from agent_brain_client.domain.validation import text
 
 NATIVE_MEMORY_CONTRACT = "agentbrain.native-memory.v1"
-MAX_NATIVE_MEMORY_UNITS = 8192
+MAX_NATIVE_MEMORY_BYTES = 131072
 
 
 def event_identifier(value):
@@ -88,9 +88,6 @@ def native_memory_event(value):
         raise ValueError("UTC source time required")
     query_time(stamp)
     body = value["content"]
-    text(body, 32768)
-    if (
-        len(body.encode("utf-16-le")) // 2 > MAX_NATIVE_MEMORY_UNITS
-        or hashlib.sha256(body.encode()).hexdigest() != value["source_fingerprint"]
-    ):
-        raise ValueError("Native source content exceeds bound or changed")
+    text(body, MAX_NATIVE_MEMORY_BYTES)
+    if hashlib.sha256(body.encode()).hexdigest() != value["source_fingerprint"]:
+        raise ValueError("Native source content changed")

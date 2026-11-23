@@ -15,3 +15,7 @@ class InstallBlocked(ValueError):
 
 class EventDiagnosticsUnavailable(ValueError):
     """The authenticated response does not implement event diagnostics."""
+
+
+class GlobalRequestTooLarge(ValueError):
+    """The encoded request does not fit the existing bounded HTTPS frame."""

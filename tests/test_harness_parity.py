@@ -26,7 +26,7 @@ from agent_brain_client.runtime.harness_content import content_host
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.scopes import digest, namespace, source_id
 from agent_brain_client.adapters.platforms.filesystem import native_platform, private_directory
-from agent_brain_client.domain.errors import CacheBlocked
+from agent_brain_client.domain.errors import CacheBlocked, GlobalRequestTooLarge
 from agent_brain_client.interfaces.mcp.content import ContentServer, ManagedContentServer
 from agent_brain_client.interfaces.mcp.framing import ContentParameterError, ProtocolError
 from test_content_outbox import (
@@ -40,6 +40,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class SyntheticCaptureServer:
     def __init__(self):
         self.requests = []
+        self.request_sizes = {}
         self.receipts = {}
         self.lose_ack = True
         self.admitted = True
@@ -48,6 +49,7 @@ class SyntheticCaptureServer:
     def open(self, request, **_):
         body = json.loads(request.data)
         self.requests.append(body)
+        self.request_sizes[body["request_id"]] = len(request.data)
         params = body["params"]
         key = (digest(params["origin"]), params["session_id"])
         if body["method"] == "memory_global_status":
@@ -218,7 +220,7 @@ class NativeMemoryCapture(unittest.TestCase):
                 "credential.md": "password: synthetic-password-12345",
                 "variables.md": 'EXAMPLE_SECRET_ACCESS_KEY="synthetic-credential-fixture"',
                 "confidential.md": "confidential: fictional unavailable material",
-                "oversized.md": "合" * 8193,
+                "invalid.md": "A fictional invalid original without transport.\0",
             }
             for filename, raw in protected.items():
                 source_file.with_name(filename).write_bytes(raw.encode())
@@ -365,6 +367,10 @@ class NativeMemoryCapture(unittest.TestCase):
             self.assertEqual(done["counts"]["excluded"], len(protected) + 1 + (windows_layout and harness == "codebuddy"))
             self.assertEqual(done["counts"]["failed"], 1)
             self.assertEqual(done["reasons"]["original-outside-bound"], 1)
+            self.assertFalse(any(
+                row["request"]["params"]["event"].get("content") == protected["invalid.md"]
+                for row in imported_queue._queued()
+            ))
             self.assertEqual(done["reasons"]["private-or-sensitive"], 4)
             self.assertEqual(done["reasons"]["shareability-unconfirmed"], 1)
             self.assertEqual(done["reasons"]["retained-exclusion"], 1)
@@ -443,26 +449,79 @@ class NativeMemoryCapture(unittest.TestCase):
                 self.assertEqual(len(peer.receipts), 216)
                 self.assertLess(len(json.dumps(batch)), 1024)
 
-                final_original = b"Fictional message recovered by the ordinary delivery worker."
+                final_original = ("Fictional 原文 🌿 e\u0301 \t \r\n" * 1400).encode()
+                self.assertGreater(len(final_original.decode().encode("utf-16-le")) // 2, 8192)
                 source_file.with_name("managed-worker.md").write_bytes(final_original)
                 with patch.object(delivery, "wake", side_effect=OSError("synthetic interrupted spawn")):
                     fresh = tool(worker, "memory_onboard", args, run_delivery=False)
                 self.assertEqual(fresh["status"], "onboarding-queued")
                 before = len(peer.requests)
+                peer.lose_ack = True
+
+                def simulated_process_exit(_):
+                    raise SystemExit(23)
+
                 with patch("agent_brain_client.runtime.host_binding.load_delivery_core",
                            return_value=collection.native_services()):
+                    with self.assertRaises(SystemExit):
+                        delivery.run(home, max_seconds=12, pause=simulated_process_exit)
+                    result = tool(server(), "memory_onboard", dict(resume, approval_id=fresh["approval_id"]),
+                                  run_delivery=False)
+                    self.assertEqual(result["counts"]["pending"], 1)
+                    # No caller needs to re-submit or generate another approval.
                     delivery.run(home, max_seconds=12, pause=lambda _: None)
-                result = tool(worker, "memory_onboard", dict(resume, approval_id=fresh["approval_id"]),
+                result = tool(server(), "memory_onboard", dict(resume, approval_id=fresh["approval_id"]),
                               run_delivery=False)
-                self.assertEqual(result["counts"]["received"], 1)
+                self.assertEqual(result["counts"]["received"], 0)
+                self.assertEqual(result["counts"]["already_exists"], 216)
                 self.assertEqual(result["counts"]["pending"], 0)
                 sent = [row for row in peer.requests[before:] if row["method"] == "memory_global_event_submit"]
-                self.assertEqual(len(sent), 1)
+                self.assertEqual(len(sent), 2)
+                self.assertEqual(sent[0], sent[1])
                 self.assertEqual(sent[0]["params"]["event"]["content"].encode(), final_original)
+                self.assertEqual(len(peer.receipts), 217)
                 self.assertFalse(any(
                     metadata.private_json(path, cache=True).get("harness") == "onboarding"
                     for path in delivery.directory(home).glob("*.json")
                 ))
+
+                # Measure the unchanged HTTPS envelope at the actual accepted
+                # boundary using escapes, CJK, astral and combining characters.
+                blank = copy.deepcopy(sent[0])
+                blank["params"]["event"]["content"] = ""
+                overhead = len(json.dumps(blank, ensure_ascii=False).encode())
+                mixed = ('"\\合🌿e\u0301\t\r\n' * 4000)
+                encoded_mixed = len(json.dumps(mixed, ensure_ascii=False).encode()) - 2
+                near = mixed + "x" * (131072 - overhead - encoded_mixed)
+                raw_max = mixed + "x" * (131072 - len(mixed.encode()))
+                worst = "x" + "\x01" * (131072 - 1)
+                excessive = raw_max + "x"
+                self.assertLess(len(near.encode()), 131072)
+                self.assertTrue(all(len(body.encode()) == 131072 for body in (raw_max, worst)))
+                self.assertEqual(len(excessive.encode()), 131073)
+                source_file.with_name("near-wire-limit.md").write_bytes(near.encode())
+                source_file.with_name("at-raw-limit.md").write_bytes(raw_max.encode())
+                source_file.with_name("escaped-raw-limit.md").write_bytes(worst.encode())
+                source_file.with_name("past-readable-limit.md").write_bytes(excessive.encode())
+                before = len(peer.requests)
+                limit_result = tool(worker, "memory_onboard", args)
+                self.assertEqual(limit_result["counts"]["received"], 3)
+                self.assertEqual(limit_result["counts"]["excluded"], 1)
+                self.assertEqual(limit_result["reasons"]["bounded inventory limit exceeded"], 1)
+                submitted = [r for r in peer.requests[before:] if r["method"] == "memory_global_event_submit"]
+                self.assertEqual(len(submitted), 3)
+                by_body = {row["params"]["event"]["content"]: row for row in submitted}
+                self.assertEqual(set(by_body), {near, raw_max, worst})
+                self.assertEqual(peer.request_sizes[by_body[near]["request_id"]], 131072)
+                self.assertGreater(peer.request_sizes[by_body[raw_max]["request_id"]], 131072)
+                self.assertGreater(peer.request_sizes[by_body[worst]["request_id"]], 780000)
+                self.assertEqual(source_file.with_name("past-readable-limit.md").read_bytes(), excessive.encode())
+                non_native = {"contract": "agentbrain.event.v1", "messages": [{"role": "user", "content": worst}]}
+                with self.assertRaises(GlobalRequestTooLarge):
+                    CollectionClient._wire_body("memory_global_event_submit", {"event": non_native}, "synthetic-rid")
+                with self.assertRaises(GlobalRequestTooLarge):
+                    CollectionClient._wire_body("memory_global_status", {"event": by_body[raw_max]["params"]["event"]},
+                                                "synthetic-rid")
 
     def test_first_origin_import_preserves_other_pending_capture_and_exact_replay(self):
         for harness in ("codex", "codebuddy"):
