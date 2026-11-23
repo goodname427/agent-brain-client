@@ -16,7 +16,7 @@ Windows 保留 `refs/heads/releases/personal-https-windows-stable`。Mac 保留�
 
 源码通过正常 PR 审阅合入后，在 Mac 或 Windows 上运行正式入口。默认 `publish` 直接执行一次正式快检，校验绑定最终候选源码树的结果，然后使用既有授权执行发布。四架构打包、公开扫描、manifest／源码字节核验与包 self-check 属于产物准备；上传和公开下载读回也单独计时。
 
-产品源码和执行工具分别固定精确提交，均来自官方仓库、已合入 main、工作区干净且字节等于 Git blob。若两份 checkout 不同，正式测试在产品 checkout 上运行。执行工具按其原有身份校验，不向旧产品包额外打入文件。官方 `Client release` 手动入口保留独立的只读准备 job 与 `contents:write` 发布 job。现有工作流的发布命令兼容旧参数 `--wait-for-ci 1800`，按默认入口运行本次快检，旧参数不查询或等待 GitHub CI。
+产品源码和执行工具分别固定精确提交，均来自官方仓库、已合入 main、工作区干净且字节等于 Git blob。若两份 checkout 不同，正式测试在产品 checkout 上运行。执行工具按其原有身份校验，不向旧产品包额外打入文件。官方 `Client release` 手动入口保留独立的只读准备 job 与 `contents:write` 发布 job。
 
 HTTPS 构建从精确产品提交的 Git 树选取 Python 模块。已核验的安装器源码归档使用归档内的源码树。两种入口共用平台文件范围和 Python 布局校验。合法范围内普通模块的新增、移动和删除随提交进入清单。已有注册策略的摘要、固定入口、凭据源码 pin 和包成员仍按各自的信任来源验证。
 

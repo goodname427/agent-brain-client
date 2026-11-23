@@ -1229,9 +1229,6 @@ def main():
         help="Required for prepare: UTF-8 public Markdown changelog, frozen with the bundle",
     )
     parser.add_argument("--allow-publish", action="store_true")
-    # Keep the checked-in Client release workflow callable while its command is
-    # updated separately. This option never queries or waits for Actions.
-    parser.add_argument("--wait-for-ci", type=int, choices=(1800,), help=argparse.SUPPRESS)
     test_options = parser.add_mutually_exclusive_group()
     test_options.add_argument(
         "--preflight-result", type=Path,
@@ -1243,8 +1240,8 @@ def main():
     )
     args = parser.parse_args()
     prepare_actions = ("prepare", "prepare-artifacts", "prepare-local")
-    if (args.preflight_result or args.skip_preflight_tests or args.wait_for_ci) and args.action != "publish":
-        parser.error("Preflight options are only used by publish")
+    if (args.preflight_result or args.skip_preflight_tests) and args.action != "publish":
+        parser.error("Preflight result or explicit skipping is only used by publish")
     if args.installation_mode != "upgrade" and args.action not in prepare_actions:
         parser.error("installation mode is frozen in the prepared bundle")
     if args.action in prepare_actions:
