@@ -243,7 +243,7 @@ class CodexMemoryInventory(unittest.TestCase):
         source.write_text('synthetic corrected durable fact')
         changed = restarted.sources.provider.inventory()['sources'][0]
         self.assertNotEqual(row['source_fingerprint'], changed['source_fingerprint'])
-        self.assertEqual(restarted.sources.onboarding_evidence(), (set(), {}))
+        self.assertEqual(restarted.sources.onboarding_exclusions(), set())
         self.assertIn(key, saved["items"])
         self.assertEqual(restarted._load('memory-reviews.json'), saved)
 
