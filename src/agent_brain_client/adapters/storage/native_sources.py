@@ -1,5 +1,6 @@
 """Bounded no-follow inventory and reads for a host-selected persistent source tree."""
 
+from contextlib import closing
 import hashlib
 import itertools
 import os
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 from agent_brain_client.adapters.platforms.tree import open_tree, is_link
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.errors import CacheBlocked
+from agent_brain_client.domain.events import MAX_NATIVE_MEMORY_BYTES
 from agent_brain_client.adapters.storage.content_limits import sha
 
 
@@ -337,7 +339,51 @@ def read_tree(root, source_id, *, prefix, identity_namespace="", select=None, wi
     return raw
 
 
-def selected_tree_sources(root, *, source_id, select, wanted=None):
+def native_source_id(prefix, name):
+    return prefix + sha(name.encode("utf-8", "surrogateescape"))
+
+
+def snapshot_tree(root, *, prefix, namespace, select, wanted=None):
+    """Stream inventory rows with private, relative read locators."""
+    tree = _selected_tree_sources(
+        root, source_id=lambda name: native_source_id(prefix, namespace + name),
+        select=select, wanted=wanted,
+    )
+    with closing(tree):
+        for status, source in tree:
+            if source is None:
+                yield status, None
+                continue
+            relative, row = source
+            if row["status"] == "not-checked":
+                row["locator"] = [namespace, relative.encode("utf-8", "surrogateescape").hex()]
+            yield status, row
+
+
+def snapshot_locator(prefix, source_id, locator):
+    if (
+        not isinstance(locator, list)
+        or len(locator) != 2
+        or any(not isinstance(part, str) for part in locator)
+    ):
+        raise CacheBlocked()
+    namespace, encoded = locator
+    try:
+        relative = bytes.fromhex(encoded).decode("utf-8", "surrogateescape")
+    except ValueError:
+        raise CacheBlocked() from None
+    if native_source_id(prefix, namespace + relative) != source_id:
+        raise CacheBlocked()
+    return namespace, relative
+
+
+def source_inventory_status(statuses):
+    if "incomplete" in statuses or statuses == {"complete", "unavailable"}:
+        return "incomplete"
+    return "complete" if "complete" in statuses else "unavailable"
+
+
+def _selected_tree_sources(root, *, source_id, select, wanted):
     """Yield metadata and relative locators from a selected persistent tree."""
     try:
         tree = open_tree(root, pin_root=True)
@@ -393,12 +439,12 @@ def selected_tree_sources(root, *, source_id, select, wanted=None):
                     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                         yield "complete", (relative, row(relative, "excluded", "non-regular or linked source excluded"))
                         continue
-                    if info.st_size > 131072:
+                    if info.st_size > MAX_NATIVE_MEMORY_BYTES:
                         yield "complete", (relative, row(relative, "excluded", "original outside file size bound"))
                         continue
                     with tree.verified_file(directory, entry, info) as stream:
-                        raw = stream.read(131073)
-                    if len(raw) > 131072:
+                        raw = stream.read(MAX_NATIVE_MEMORY_BYTES + 1)
+                    if len(raw) > MAX_NATIVE_MEMORY_BYTES:
                         raise OSError()
                     yield "complete", (relative, row(relative, "not-checked", "fingerprinted; semantic review required", sha(raw)))
             except OSError:
@@ -432,10 +478,13 @@ def read_selected_source(root, relative, *, select, with_mtime):
                 directory = child
             entry = SimpleNamespace(name=parts[-1])
             info = tree.info_name(directory, entry.name)
-            if is_link(info) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 131072:
+            if (
+                is_link(info) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_size > MAX_NATIVE_MEMORY_BYTES
+            ):
                 raise CacheBlocked()
             with tree.verified_file(directory, entry, info) as stream:
-                raw = stream.read(131073)
+                raw = stream.read(MAX_NATIVE_MEMORY_BYTES + 1)
             return (raw, info.st_mtime_ns) if with_mtime else raw
         finally:
             tree.close_directory(directory)

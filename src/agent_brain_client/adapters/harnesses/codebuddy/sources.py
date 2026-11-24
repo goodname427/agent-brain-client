@@ -8,7 +8,7 @@ from agent_brain_client.adapters.platforms.source_files import open_native_sourc
 from agent_brain_client.adapters.platforms.tree import file_version
 from agent_brain_client.adapters.storage.content_limits import sha
 from agent_brain_client.adapters.storage.native_sources import (
-    read_selected_source, selected_tree_sources,
+    native_source_id, read_selected_source, snapshot_locator, snapshot_tree, source_inventory_status,
 )
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.errors import CacheBlocked
@@ -47,14 +47,9 @@ class CodeBuddyMemorySources:
         self._trees = [
             (self.home / "memories", "cli/", _memory_tree),
             (self.ide, "ide/", _memory_tree),
+            (self.home / "memery", "memery/", _memory_tree),
+            (self.home / "projects", "projects/", _project_memory),
         ]
-        if windows:
-            self._trees.extend(
-                [
-                    (self.home / "memery", "memery/", _memory_tree),
-                    (self.home / "projects", "projects/", _project_memory),
-                ]
-            )
 
     def _user(self, *, with_mtime=False):
         stream, info = open_native_source(self.home / "CODEBUDDY.md")
@@ -84,26 +79,13 @@ class CodeBuddyMemorySources:
                         user = user.replace(form.encode(), b"")
         return (user, info.st_mtime_ns) if with_mtime else user
 
-    def _source_id(self, name):
-        return self.prefix + sha(name.encode("utf-8", "surrogateescape"))
-
     def snapshot_rows(self, *, wanted=None):
         """Stream path-free metadata plus a private, namespace-bound locator."""
         for root, namespace, select in self._trees:
-            tree = selected_tree_sources(
-                root, source_id=lambda relative: self._source_id(namespace + relative),
-                select=select, wanted=wanted,
+            yield from snapshot_tree(
+                root, prefix=self.prefix, namespace=namespace, select=select, wanted=wanted,
             )
-            with closing(tree):
-                for status, source in tree:
-                    if source is None:
-                        yield status, None
-                        continue
-                    relative, row = source
-                    if row["status"] == "not-checked":
-                        row["locator"] = [namespace, relative.encode("utf-8", "surrogateescape").hex()]
-                    yield status, row
-        user_id = self._source_id("CODEBUDDY.md")
+        user_id = native_source_id(self.prefix, "CODEBUDDY.md")
         if wanted is not None and wanted != user_id:
             return
         try:
@@ -121,15 +103,7 @@ class CodeBuddyMemorySources:
                 "reason": "user memory changed or unavailable",
             }
 
-    @staticmethod
-    def inventory_status(statuses):
-        if "incomplete" in statuses or statuses == {"complete", "unavailable"}:
-            return "incomplete"
-        if "complete" in statuses:
-            return "complete"
-        return "unavailable"
-
-    def inventory(self, *, onboarding=False):
+    def inventory(self):
         rows, statuses = [], set()
         for status, row in self.snapshot_rows():
             statuses.add(status)
@@ -137,7 +111,7 @@ class CodeBuddyMemorySources:
                 row.pop("locator", None)
                 rows.append(row)
         rows.sort(key=lambda row: row["source_id"])
-        status = self.inventory_status(statuses)
+        status = source_inventory_status(statuses)
         return {
             "schema": 1,
             "status": status,
@@ -152,7 +126,7 @@ class CodeBuddyMemorySources:
         }
 
     def read(self, source_id, *, with_mtime=False, locator=None):
-        if source_id == self._source_id("CODEBUDDY.md"):
+        if source_id == native_source_id(self.prefix, "CODEBUDDY.md"):
             return self._user(with_mtime=with_mtime)
         if locator is None:
             # Earlier approvals persisted only the ID and fingerprint.
@@ -162,16 +136,7 @@ class CodeBuddyMemorySources:
                      if row and row["source_id"] == source_id and "locator" in row),
                     None,
                 )
-        if (
-            not isinstance(locator, list)
-            or len(locator) != 2
-            or any(not isinstance(part, str) for part in locator)
-        ):
-            raise CacheBlocked()
-        namespace, encoded = locator
-        relative = bytes.fromhex(encoded).decode("utf-8", "surrogateescape")
-        if self._source_id(namespace + relative) != source_id:
-            raise CacheBlocked()
+        namespace, relative = snapshot_locator(self.prefix, source_id, locator)
         for root, name, select in self._trees:
             if name == namespace:
                 return read_selected_source(root, relative, select=select, with_mtime=with_mtime)

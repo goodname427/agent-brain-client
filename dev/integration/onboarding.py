@@ -17,7 +17,7 @@ from unittest.mock import patch
 from urllib.error import URLError
 
 
-def verify(server_root):
+def verify(server_root, harness="codex"):
     root = Path(__file__).resolve().parents[2]
     sys.path[:0] = [str(root / "src"), str(root / "tests"),
                     str(server_root / "src"), str(server_root / "tests")]
@@ -29,12 +29,13 @@ def verify(server_root):
     from agent_brain_server.memory.sources.router import _native_session
     from agent_brain_server.persistence.source_registry import SourceRegistry
     from agent_brain_client.adapters.server.collection import CollectionClient
+    from agent_brain_client.adapters.platforms.filesystem import native_platform
     from agent_brain_client.application.memory.onboarding import SOURCE_SCOPE
     from agent_brain_client.adapters.storage import metadata, registration
     from agent_brain_client.adapters.storage.content_session import ContentSession
     from agent_brain_client.domain.scopes import digest, namespace
     from agent_brain_client.interfaces.mcp.content import ContentServer
-    from agent_brain_client.runtime import collection
+    from agent_brain_client.runtime import collection, delivery, onboarding
     from agent_brain_client.runtime.harness_content import content_host
     from test_content_outbox import Cloud, POLICY
 
@@ -53,12 +54,11 @@ def verify(server_root):
         home.mkdir()
         work = home / "fictional-work"
         (work / ".git").mkdir(parents=True)
-        harness = "codex"
-        native = home / ".codex"
+        native = home / ("." + harness)
         original = "Fictional preference for native SQLite boundary verification."
         uncertain = "Fictional offline native memory approved in the second batch."
-        denied = "[LocalOnly] Fictional protected sample."
-        memory = native / "memories"
+        denied = "Fictional oversized original. " * 5000
+        memory = native / ("projects/unknown/memory" if harness == "codebuddy" else "memories")
         memory.mkdir(parents=True)
         (memory / "approved.md").write_text(original)
         (memory / "local.md").write_text(denied)
@@ -123,18 +123,20 @@ def verify(server_root):
 
         cloud = Cloud()
         cloud.queue_identity = {"device_id": hub.owner["device_id"]}
+        cloud.grant["platform"] = native_platform()
         endpoint = "https://synthetic.invalid"
         settings = {"device_home": str(home), "legacy_projects": [], "scope": hub.scope}
         policy = home / "policy.json"
         pin = metadata.write(policy, POLICY)
         enrolled = {"runtime": {"content_policy": str(policy), "content_policy_sha256": pin,
-                                "codex_home": str(native)}}
+                                "codex_home": str(native), "content_cache": str(home / "content")}}
 
         def transport(value, origin):
             client = object.__new__(CollectionClient)
             client.value, client.local, client.actor = value, origin, principal["actor"]
             client.base = SimpleNamespace(
                 queue_identity=cloud.queue_identity, _credential=lambda: "fictional-isolated-transport",
+                grant=cloud.grant,
                 profile={"endpoint": endpoint}, transport=SimpleNamespace(opener=SimpleNamespace(open=open_in_process)),
             )
             client.grant = cloud.grant
@@ -142,7 +144,7 @@ def verify(server_root):
             client.scope_sha = digest(hub.scope)
             return client
 
-        def run(arguments):
+        def call(arguments):
             content = ContentSession(home, home / "content", POLICY, cloud,
                                      host=content_host(harness), native_home=native)
             worker = ContentServer(content)
@@ -156,6 +158,16 @@ def verify(server_root):
             }})
             return result["structuredContent"]
 
+        def run(arguments):
+            result = call(arguments)
+            if result["counts"]["pending"]:
+                approval_id = result["approval_id"]
+                tasks = [metadata.private_json(path, cache=True) for path in delivery.directory(home).glob("*.json")]
+                task, = [task for task in tasks if task.get("approval_id") == approval_id]
+                onboarding.deliver_approved_batch(home, task, collection.native_services())
+                result = call(dict(args, resume=True, approval_id=approval_id))
+            return result
+
         args = {"harness": harness, "source_scope": SOURCE_SCOPE,
                 "destination": {"endpoint": endpoint, "actor": principal["actor"], "origin": str(work)}}
 
@@ -165,6 +177,7 @@ def verify(server_root):
             patch("agent_brain_client.adapters.server.collection.approved", return_value=True),
             patch.object(collection, "CollectionClient", side_effect=transport),
             patch.object(registration, "registration", return_value=({}, enrolled)),
+            patch.object(delivery, "wake"),
         ):
             first = run(dict(args, approved=True))
             (memory / "offline.md").write_text(uncertain)
@@ -194,7 +207,7 @@ def verify(server_root):
                              "params": params}, principal)
         assert status["result"]["capture_extraction"].get("l0_accepted") is True, status
         assert status["result"]["capture_extraction"]["state"] == "unknown", status
-        return {"l0_rows": len(rows), "same_id_replayed": True, "excluded_submissions": 0,
+        return {"harness": harness, "l0_rows": len(rows), "same_id_replayed": True, "excluded_submissions": 0,
                 "l0_accepted": True, "initial_call_received": 1,
                 "extraction": status["result"]["capture_extraction"]["state"]}
     finally:
@@ -205,4 +218,6 @@ def verify(server_root):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server-root", type=Path, required=True)
-    print(json.dumps(verify(parser.parse_args().server_root.resolve()), sort_keys=True))
+    parser.add_argument("--harness", choices=("codex", "codebuddy"), default="codex")
+    arguments = parser.parse_args()
+    print(json.dumps(verify(arguments.server_root.resolve(), arguments.harness), sort_keys=True))

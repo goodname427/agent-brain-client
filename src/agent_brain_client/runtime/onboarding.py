@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from agent_brain_client.adapters.platforms.filesystem import cache_locked
 from agent_brain_client.adapters.storage import metadata
+from agent_brain_client.adapters.storage.native_sources import source_inventory_status
 from agent_brain_client.adapters.storage.project_settings import source_active
 from agent_brain_client.application.control import check_request, request_timeout
 from agent_brain_client.application.memory.onboarding import SOURCE_SCOPE, Summary, authorization
@@ -232,7 +233,7 @@ def paged_snapshot(provider, queue):
             count += 1
     if rows:
         head = save_page(queue, head, rows)
-    return {"status": provider.inventory_status(statuses), "head": head, "count": count}
+    return {"status": source_inventory_status(statuses), "head": head, "count": count}
 
 
 def process_page(sources, harness, client, queue, project, group, inventory, allowed, *,
@@ -304,11 +305,7 @@ def approval_snapshot(sources, queue, route_scope_sha, group, project, resume, a
             return None
         return approval_id, saved["inventory"]
 
-    if hasattr(sources.provider, "snapshot_rows"):
-        snapshot = paged_snapshot(sources.provider, queue)
-    else:
-        inventory = sources.provider.inventory(onboarding=True)
-        snapshot = {field: inventory[field] for field in ("status", "sources")}
+    snapshot = paged_snapshot(sources.provider, queue)
     saved = {"binding": binding, "inventory": snapshot}
     snapshot_id = digest(saved)
     # Keep one in-flight attempt per exact snapshot, including when the latest
