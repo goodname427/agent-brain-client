@@ -704,7 +704,13 @@ class NativeMemoryCapture(unittest.TestCase):
         provider = worker.adapter.sources.provider
         source_root = provider.ide if harness == "codebuddy" else native / "memories"
         namespace = "ide/" if harness == "codebuddy" else ""
-        source_count = 1027 if windows_layout else 65
+        batches = [(source_root, namespace, 1027 if windows_layout else 65)]
+        if harness == "codebuddy" and windows_layout:
+            batches = [
+                (source_root, "ide/", 400),
+                (native / "memories", "cli/", 350),
+                (native / "memery", "memery/", 277),
+            ]
         expected = {}
 
         def write(root, relative, body, namespace=None):
@@ -716,12 +722,24 @@ class NativeMemoryCapture(unittest.TestCase):
                 expected[source_id] = body
             return path
 
-        for index in range(source_count):
-            write(source_root, f"nested/条目 {index:04d}.md", f"Fictional native memory {index}.", namespace)
+        for root, source_namespace, count in batches:
+            for index in range(count):
+                write(root, f"nested/条目 {index:04d}.md",
+                      f"Fictional {source_namespace} native memory {index}.", source_namespace)
+        if windows_layout:
+            root_counts = [sum(1 for _ in root.rglob("*.md")) for root, _, _ in batches]
+            self.assertEqual(root_counts, [400, 350, 277] if harness == "codebuddy" else [1027])
+        stable_sources = {}
         if harness == "codebuddy":
             write(native / "memories", "global/nested/任意主题.md", "Fictional CLI memory.", "cli/")
             write(native, "memery/nested/不是旧文件名.md", "Fictional IDE archive memory.", "")
             write(native, "projects/unknown/memory/nested/随笔.mdc", "Fictional IDE project memory.", "")
+            stable_sources = {
+                "memery/fixture_memery.md": "Fictional existing archive memory.",
+                "projects/unknown/memory/topic.md": "Fictional existing project memory.",
+            }
+            for path, body in stable_sources.items():
+                write(native, path, body, "")
             write(native, "projects/unknown/chat.md", "Fictional non-memory project text.")
             write(native, "projects/unknown/memory/.ide-migrated.json", "{}")
             write(native, "projects/unknown/memory/MEMORY.md", "Fictional native index.")
@@ -732,6 +750,8 @@ class NativeMemoryCapture(unittest.TestCase):
             write(native, "CODEBUDDY.md", user_text + GUIDANCE)
             expected[provider.prefix + sha256(b"CODEBUDDY.md").hexdigest()] = user_text
         else:
+            stable_sources["existing.md"] = "Fictional existing Codex memory."
+            write(source_root, "existing.md", stable_sources["existing.md"], "")
             write(source_root, "nested/.git/config", "Fictional Git metadata.")
         write(native, "sessions/previous.md", "Fictional transcript outside the native memory roots.")
 
@@ -752,7 +772,27 @@ class NativeMemoryCapture(unittest.TestCase):
             self.assertTrue(worker_pass(approval))
         self.assertFalse(peer.requests)
 
-        passes = 0
+        local = collection.eligible(value, args["destination"]["origin"])
+        for _ in range(2 if windows_layout else 1):
+            self.assertTrue(worker_pass(approval))
+        _, queue = collection.build_delivery_queue(value, local, harness)
+        before_restart = {
+            row["request"]["request_id"]: row["response"]
+            for row in queue._queued()
+            if row["state"] == "confirmed" and core_receipt(row["response"], row["request"])
+        }
+        remote_before_restart = {wire["request_id"]: wire for wire in peer.receipts.values()}
+        self.assertGreater(len(before_restart), 0)
+        self.assertLess(len(before_restart), len(expected))
+        self.assertEqual(before_restart.keys(), remote_before_restart.keys())
+        restarted = server()
+        progress = tool(restarted, "memory_onboard", resume, run_delivery=False)
+        self.assertEqual(progress["approval_id"], approval)
+        self.assertGreater(progress["counts"]["pending"], 0)
+        self.assertEqual(progress["counts"]["received"] + progress["counts"]["already_exists"],
+                         len(before_restart))
+
+        passes = 2 if windows_layout else 1
         while passes < 24:
             passes += 1
             pending = worker_pass(approval)
@@ -770,15 +810,29 @@ class NativeMemoryCapture(unittest.TestCase):
         self.assertEqual(len(peer.receipts), len(expected))
         self.assertEqual({row["params"]["event"]["content"] for row in peer.receipts.values()}, set(expected.values()))
         self.assertGreaterEqual(passes, (len(expected) + onboarding.PAGE_ITEMS - 1) // onboarding.PAGE_ITEMS)
-        local = collection.eligible(value, args["destination"]["origin"])
         _, queue = collection.build_delivery_queue(value, local, harness)
         rows = queue._queued()
         self.assertEqual(len(rows), len(expected))
+        after_restart = {}
         for row in rows:
             request = row["request"]
             event = request["params"]["event"]
             self.assertEqual(event["content"], expected[event["source_id"]])
             self.assertTrue(core_receipt(row["response"], request))
+            after_restart[request["request_id"]] = row["response"]
+        self.assertEqual({key: after_restart[key] for key in before_restart}, before_restart)
+        remote_after_restart = {wire["request_id"]: wire for wire in peer.receipts.values()}
+        self.assertEqual({key: remote_after_restart[key] for key in remote_before_restart}, remote_before_restart)
+        new_receipts = remote_after_restart.keys() - remote_before_restart.keys()
+        self.assertTrue(new_receipts)
+        self.assertEqual(remote_before_restart.keys() | new_receipts, after_restart.keys())
+        for path, body in stable_sources.items():
+            # The 0.8.42 adapter hashed the same namespace-relative path.
+            legacy_id = provider.prefix + sha256(path.encode()).hexdigest()
+            self.assertEqual(expected[legacy_id], body)
+            stable_event = [row["request"]["params"]["event"] for row in rows
+                            if row["request"]["params"]["event"]["source_id"] == legacy_id]
+            self.assertEqual([event["content"] for event in stable_event], [body])
         before = len(peer.requests)
         self.assertEqual(tool(server(), "memory_onboard", resume, run_delivery=False), done)
         new = tool(server(), "memory_onboard", args, run_delivery=False)
