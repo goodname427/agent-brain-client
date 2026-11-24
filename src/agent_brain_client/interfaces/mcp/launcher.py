@@ -1,4 +1,9 @@
-"""Start the approved MCP worker, run checks or dispatch a finite event Hook."""
+"""Supervise the approved MCP worker, run checks or dispatch a finite event Hook.
+
+The fixed entry runs transient startup checks from its own registered package.
+Its pin changes with the host binding validation fix so normal maintenance
+moves existing registrations to the repaired startup authority.
+"""
 
 import sys
 from pathlib import Path

@@ -190,8 +190,18 @@ def content_worker(active, runtime, harness):
     return WorkerSpec(tuple(content_command(active, runtime, harness)), runtime_fingerprint(runtime_files(manifest)), abi)
 
 
+def stdio_identity(entry, harness):
+    """Project the fields that select, authorize and execute the native process."""
+    fields = ("command", "args", "env", "cwd", "url")
+    if harness == "codex":
+        fields += ("env_vars", "environment_id", "default_tools_approval_mode", "tools")
+    else:
+        fields += ("type", "transport", "shell", "envFile")
+    return {key: entry[key] for key in fields if key in entry}
+
+
 def registration_stamp(runtime, harness):
-    """Identify only the owned MCP entries, independently of native Hooks."""
+    """Identify the enabled, owned MCP commands independently of native Hooks."""
     from agent_brain_client.adapters.installation.installation import inspect
 
     home = Path(runtime["device_home"])
@@ -210,13 +220,14 @@ def registration_stamp(runtime, harness):
         actual = binding.entry(binding.read(native / "config.toml"))
         receipt = binding.receipt(home)
         if (
-            not isinstance(actual, dict) or actual.get("enabled") is not True
+            not isinstance(actual, dict) or actual.get("enabled", True) is not True
             or receipt is not None and (
-                receipt["removed"] or not binding.matches(actual, receipt["mcp"])
+                receipt["removed"]
+                or stdio_identity(actual, harness) != stdio_identity(receipt["mcp"], harness)
             )
         ):
             return None
-        owned = actual
+        owned = stdio_identity(actual, harness)
     else:
         from agent_brain_client.adapters.harnesses.codebuddy import configuration as host
 
@@ -236,9 +247,12 @@ def registration_stamp(runtime, harness):
         for name in sorted(receipt["mcp_paths"]):
             path = private_files.safe(name)
             actual = host.Document(host.read_host(path)).value.get("mcpServers", {}).get(host.NAME)
-            if not host.same(actual, receipt["mcp"]):
+            if not isinstance(actual, dict) or actual.get("disabled", False) is not False:
                 return None
-            owned.append((name, actual))
+            identity = stdio_identity(actual, harness)
+            if not host.same(identity, stdio_identity(receipt["mcp"], harness)):
+                return None
+            owned.append((name, identity))
     if (
         pending.exists() or pending.is_symlink()
         or private_files.private_json(registered) != before
@@ -257,24 +271,24 @@ def foreground_binding(registered, harness, runtime):
     package, metadata, entries = registered
     entry_path = str(Path(package) / MCP_LAUNCHER_ENTRY)
     home = Path(runtime["device_home"])
-    native = binding.native_home(home, runtime) / "config.toml"
-    watch = [native]
+    shared = private_files.safe(Path(runtime["codex_home"]) / "config.toml")
+    content_entry = binding.entry(binding.read(shared))
+    if not isinstance(content_entry, dict) or registered_mcp_digest(content_entry) != metadata["mcp_sha256"]:
+        raise UpdateBlocked("Verified Content registration required")
+    watch = [shared]
     if harness == "codex":
+        native = binding.native_home(home, runtime) / "config.toml"
         host_entries = [(str(native), entries)]
-        content_entry = entries
+        if native != shared:
+            watch.append(native)
     else:
         host_entries = entries
         watch.extend(Path(path) for path, _ in entries)
-        content_entry = binding.entry(binding.read(native))
-        if not isinstance(content_entry, dict) or registered_mcp_digest(content_entry) != metadata["mcp_sha256"]:
-            raise UpdateBlocked("Verified Content registration required")
     normalized = []
     for path, entry in host_entries:
         if entry["args"].count(entry_path) != 1:
             raise UpdateBlocked("Verified fixed native MCP command required")
         value = dict(entry, args=[None if arg == entry_path else arg for arg in entry["args"]])
-        if harness == "codex":
-            value.pop("enabled_tools")
         normalized.append((path, value))
     state = home / ".config/agent-brain-client"
     watch.extend((state / "codex-mcp.json", state / "launcher-handover.json"))
