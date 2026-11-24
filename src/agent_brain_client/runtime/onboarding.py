@@ -1,5 +1,6 @@
 """Compose one historical import around the existing authenticated event queue."""
 
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
@@ -8,15 +9,20 @@ from uuid import uuid4
 
 from agent_brain_client.adapters.platforms.filesystem import cache_locked
 from agent_brain_client.adapters.storage import metadata
+from agent_brain_client.adapters.storage.native_sources import source_inventory_status
 from agent_brain_client.adapters.storage.project_settings import source_active
 from agent_brain_client.application.control import check_request, request_timeout
 from agent_brain_client.application.memory.onboarding import SOURCE_SCOPE, Summary, authorization
 from agent_brain_client.domain import contract
-from agent_brain_client.domain.errors import CacheBlocked, GlobalRequestTooLarge
+from agent_brain_client.domain.errors import CacheBlocked, CollectionCapacityExceeded, GlobalRequestTooLarge
 from agent_brain_client.domain.events import NATIVE_MEMORY_CONTRACT, native_memory_content, native_memory_event
 from agent_brain_client.domain.receipts import core_receipt
 from agent_brain_client.domain.scopes import digest, namespace, ordinary_drive_path, origin, select
 from agent_brain_client.runtime import collection
+
+
+PAGE_ITEMS = 64
+PAGE_BYTES = 512 * 1024
 
 
 def enrolled_origin(home, path, core):
@@ -74,12 +80,14 @@ def onboard_native_memory(adapter, arguments):
         state = queue._load(progress)
         if state is None:
             summary = Summary(harness)
-            summary.counts["pending"] = len(inventory["sources"])
+            summary.counts["pending"] = inventory["count"] if "head" in inventory else len(inventory["sources"])
             state = {
                 "started": time.time_ns(),
                 "track_receipts": True,
                 "summary": dict(summary.result(inventory["status"]), status="onboarding-queued"),
             }
+            if "head" in inventory:
+                state.update(next_page=inventory["head"], completed=Summary(harness).result(inventory["status"]))
             queue._save(progress, state)
     if batch_pending(state["summary"]):
         task = {
@@ -171,16 +179,96 @@ def deliver_approved_batch(home, task, core):
         if batch is None:
             raise CacheBlocked()
         _, inventory = batch
-        summary = process_batch(
-            sources, harness, client, queue, project, group, inventory, allowed,
-            approval_id=approval_id, legacy_started=None if state.get("track_receipts") else state["started"],
-        )
-        queue._save(progress, dict(state, summary=summary))
-        counts = summary["counts"]
-        advanced = sum(counts[k] for k in ("received", "already_exists")) > sum(
-            previous[k] for k in ("received", "already_exists")
-        )
+        if "head" in inventory:
+            updated = process_page(sources, harness, client, queue, project, group, inventory, allowed,
+                                   approval_id=approval_id, state=state)
+        else:
+            summary = process_batch(
+                sources, harness, client, queue, project, group, inventory, allowed,
+                approval_id=approval_id, legacy_started=None if state.get("track_receipts") else state["started"],
+            )
+            updated = dict(state, summary=summary)
+        queue._save(progress, updated)
+        counts = updated["summary"]["counts"]
+        advanced = updated.get("next_page") != state.get("next_page") or sum(
+            counts[k] for k in ("received", "already_exists")
+        ) > sum(previous[k] for k in ("received", "already_exists"))
         return counts["pending"] > 0, advanced
+
+
+def page_name(page_id):
+    if not isinstance(page_id, str) or not re.fullmatch("[a-f0-9]{64}", page_id):
+        raise CacheBlocked()
+    return "onboarding/pages/" + page_id + ".json"
+
+
+def save_page(queue, previous, rows):
+    page = {"previous": previous, "sources": rows}
+    page_id = digest(page)
+    name = page_name(page_id)
+    saved = queue._load(name)
+    if saved is None:
+        queue._save(name, page)
+    elif saved != page:
+        raise CacheBlocked()
+    return page_id
+
+
+def paged_snapshot(provider, queue):
+    # Each page commits to its predecessor. The approval binds the entire
+    # retained inventory with one digest, independent of its total size.
+    head, count, size, rows, statuses = None, 0, 0, [], set()
+    with closing(provider.snapshot_rows()) as snapshot:
+        for status, row in snapshot:
+            check_request()
+            statuses.add(status)
+            if row is None:
+                continue
+            row_bytes = len(contract.encode(row)) + 1
+            if rows and (len(rows) >= PAGE_ITEMS or size + row_bytes > PAGE_BYTES):
+                head = save_page(queue, head, rows)
+                size, rows = 0, []
+            rows.append(row)
+            size += row_bytes
+            count += 1
+    if rows:
+        head = save_page(queue, head, rows)
+    return {"status": source_inventory_status(statuses), "head": head, "count": count}
+
+
+def process_page(sources, harness, client, queue, project, group, inventory, allowed, *,
+                 approval_id, state):
+    status = inventory["status"]
+    page_id = state["next_page"]
+    summary = Summary(harness)
+    if page_id is None:
+        if inventory["count"] != 0:
+            raise CacheBlocked()
+        return dict(state, summary=summary.result(status))
+    page = queue._load(page_name(page_id))
+    if page is None or digest(page) != page_id:
+        raise CacheBlocked()
+    completed = state["completed"]
+    later = inventory["count"] - sum(completed["counts"].values()) - len(page["sources"])
+    if later < 0 or bool(later) != (page["previous"] is not None):
+        raise CacheBlocked()
+    portion = process_batch(
+        sources, harness, client, queue, project, group, dict(status=status, sources=page["sources"]),
+        allowed, approval_id=approval_id, legacy_started=None, exact_event=True,
+    )
+    for name in summary.counts:
+        summary.counts[name] = completed["counts"][name] + portion["counts"][name]
+    summary.reasons.update(completed["reasons"])
+    summary.reasons.update(portion["reasons"])
+    summary.extraction.update(completed["extraction"])
+    summary.extraction.update(portion["extraction"])
+    if not portion["counts"]["pending"]:
+        state = dict(state, next_page=page["previous"], completed=summary.result(status))
+    result = summary.result(status)
+    result["counts"] = dict(summary.counts, pending=summary.counts["pending"] + later)
+    if result["counts"]["pending"]:
+        result["status"] = "onboarding-incomplete"
+    return dict(state, summary=result)
 
 
 def read_approval(queue, approval_id, binding):
@@ -217,8 +305,7 @@ def approval_snapshot(sources, queue, route_scope_sha, group, project, resume, a
             return None
         return approval_id, saved["inventory"]
 
-    inventory = sources.provider.inventory(onboarding=True)
-    snapshot = {field: inventory[field] for field in ("status", "sources")}
+    snapshot = paged_snapshot(sources.provider, queue)
     saved = {"binding": binding, "inventory": snapshot}
     snapshot_id = digest(saved)
     # Keep one in-flight attempt per exact snapshot, including when the latest
@@ -242,13 +329,13 @@ def approval_snapshot(sources, queue, route_scope_sha, group, project, resume, a
 
 
 def process_batch(sources, harness, client, queue, project, group, inventory, allowed, *,
-                  approval_id, legacy_started):
+                  approval_id, legacy_started, exact_event=False):
     summary = Summary(harness)
     wanted = {
         "native_memory_" + digest([project, group, item["source_id"], item["source_fingerprint"]])
         for item in inventory["sources"] if item["status"] == "not-checked"
     }
-    existing, other_routes = retained_onboarding_events(queue, group, project, wanted)
+    existing, other_routes = retained_onboarding_events(queue, group, project, wanted, exact=exact_event)
     transport_unconfirmed = False
     source_admitted = None
     for index, item in enumerate(inventory["sources"]):
@@ -289,13 +376,14 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
             if not allowed():
                 summary.add("pending", "onboarding-origin-changed")
                 continue
+            body, mtime_ns = sources.read_onboarding_original(
+                source_id, fingerprint, locator=item.get("locator"),
+            )
             if retained is not None:
                 request = retained["request"]
-                body, _ = sources.read_onboarding_original(source_id, fingerprint)
                 if body != request["params"]["event"]["content"]:
                     raise CacheBlocked()
             else:
-                body, mtime_ns = sources.read_onboarding_original(source_id, fingerprint)
                 original_time = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(
                     milliseconds=mtime_ns // 1_000_000,
                 )
@@ -338,9 +426,17 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
             # the immutable pending outbox row predates this approval.
             if queue._load(attempt_file) != approval_id:
                 queue._save(attempt_file, approval_id)
-            response = queue.invoke(request, event_gate=allowed)
+            options = {"exact_event": True} if exact_event else {}
+            response = queue.invoke(request, event_gate=allowed, **options)
         except GlobalRequestTooLarge:
             summary.add("failed", "original-exceeds-transport-envelope")
+            continue
+        except CollectionCapacityExceeded:
+            if exact_event:
+                summary.counts["pending"] += len(inventory["sources"]) - index
+                summary.reasons["onboarding-queue-capacity"] += 1
+                break
+            summary.add("failed", "source-or-queue-unavailable")
             continue
         except (CacheBlocked, OSError, ValueError, OverflowError):
             summary.add("failed", "source-or-queue-unavailable")
@@ -369,7 +465,7 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
     return summary.result(inventory["status"])
 
 
-def retained_onboarding_events(queue, group, project, wanted):
+def retained_onboarding_events(queue, group, project, wanted, *, exact=False):
     """Respect receipts bound to a different prior origin without rebinding them."""
     def matches(row):
         request = row["request"]
@@ -386,9 +482,10 @@ def retained_onboarding_events(queue, group, project, wanted):
             raise CacheBlocked()
         return True
 
+    rows = queue._retained_queue_rows(wanted) if exact else queue._queued()
     current = {
         row["request"]["request_id"]: row
-        for row in queue._queued()
+        for row in rows
         if row["request"]["request_id"] in wanted and matches(row)
     }
     alternate = {}

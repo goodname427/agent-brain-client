@@ -1,7 +1,7 @@
 """Storage-neutral refresh contracts. Native mapping owns transaction recovery."""
 
 from contextlib import AbstractContextManager
-from typing import Protocol
+from typing import Generator, Protocol
 
 
 class Mapping(Protocol):
@@ -34,7 +34,9 @@ class NativeSourceProvider(Protocol):
     prefix: str
 
     def inventory(self) -> dict: ...
-    def read(self, source_id: str) -> bytes: ...
+    def snapshot_rows(self) -> Generator[tuple[str, dict | None], None, None]: ...
+    def read(self, source_id: str, *, with_mtime: bool = False,
+             locator: list[str] | None = None) -> bytes | tuple[bytes, int]: ...
 
 
 class NativeContentHost(Protocol):
