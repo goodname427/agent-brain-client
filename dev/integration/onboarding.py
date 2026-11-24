@@ -172,7 +172,8 @@ def verify(server_root, harness="codex"):
             result = call(arguments)
             if result["counts"]["pending"]:
                 approval_id = result["approval_id"]
-                tasks = [metadata.private_json(path, cache=True) for path in delivery.directory(home).glob("*.json")]
+                tasks = [metadata.private_json(path, cache=True)
+                         for path in delivery.task_files(delivery.directory(home))]
                 task, = [task for task in tasks if task.get("approval_id") == approval_id]
                 onboarding.deliver_approved_batch(home, task, collection.native_services())
                 result = call(dict(args, resume=True, approval_id=approval_id))

@@ -179,8 +179,14 @@ def secondary_projections(home, primary, *, names=None):
 
 def status(home):
     result = primary_status(home)
+    from agent_brain_client.runtime.delivery import runtime_status
     from agent_brain_client.runtime.collection import host_status
     from agent_brain_client.adapters.storage.collection import settings_path
+
+    if result.get("installed_commit"):
+        result.update(runtime_status(home, {
+            "version": result["installed_version"], "commit": result["installed_commit"],
+        }))
     settings = settings_path(home)
     value = metadata.private_json(settings) if settings.exists() else {"device_home": str(home)}
     result["hosts"] = host_status(value)

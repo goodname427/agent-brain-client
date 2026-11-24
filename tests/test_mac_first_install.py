@@ -87,13 +87,13 @@ class Peer:
 def remote(*args, **kwargs):
     return SimpleNamespace(opener=Peer())
 
-def worker(home):
+def worker(home, **options):
     with (patch.object(ClientReleases, 'verified_active', autospec=True,
                        side_effect=ClientReleases.verified_active) as verified,
           patch.object(collection, 'runtime_pins', create=True,
                        side_effect=AssertionError('Repeated code check'))):
         try:
-            run(home, max_seconds=2)
+            run(home, max_seconds=2, **options)
         finally:
             (home / 'synthetic-worker-finished').write_text(str(verified.call_count))
 
