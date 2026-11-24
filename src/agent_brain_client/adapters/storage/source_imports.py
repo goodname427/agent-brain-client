@@ -204,12 +204,13 @@ class SourceImports:
             "native_changed": False,
         }
 
-    def read_onboarding_original(self, source_id, fingerprint):
+    def read_onboarding_original(self, source_id, fingerprint, *, locator=None):
         require_platform("cache-storage", self.session.platform)
         native_source_identity(source_id, fingerprint)
         if not self.is_native(source_id):
             raise CacheBlocked()
-        raw, mtime_ns = self.provider.read(source_id, with_mtime=True)
+        options = {} if locator is None else {"locator": locator}
+        raw, mtime_ns = self.provider.read(source_id, with_mtime=True, **options)
         return self._checked_body(raw, fingerprint), mtime_ns
 
     @staticmethod

@@ -18,14 +18,14 @@ INPUT_SCHEMA = {
             "properties": {
                 "endpoint": {"type": "string"},
                 "actor": {"type": "string"},
-                "origin": {"type": "string", "description": "Exact approved local origin directory."},
+                "origin": {"type": "string", "description": "Exact enrolled origin for the approved personal destination."},
             },
             "required": ["endpoint", "actor", "origin"],
             "additionalProperties": False,
         },
         "source_scope": {
             "const": SOURCE_SCOPE,
-            "description": "The current host's supported personal native-memory scope, explicitly confirmed shareable by the user.",
+            "description": "The current host's supported personal native-memory scope. The user approves this whole scope, including any project-origin text covered by the approval, for the specified personal destination.",
         },
         "approved": {
             "const": True,

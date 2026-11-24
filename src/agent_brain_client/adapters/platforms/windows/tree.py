@@ -23,6 +23,7 @@ class WindowsTree(VerifiedTreeFiles):
         self.C = C
         self.W = W
         self.handles = []
+        self.directories = {}
         self.kernel = getattr(C, "WinDLL")("kernel32", use_last_error=True)
 
         class FileInformation(C.Structure):
@@ -122,9 +123,12 @@ class WindowsTree(VerifiedTreeFiles):
         return os.scandir(directory)
 
     def info(self, directory, entry):
-        self._name(entry.name)
+        return self.info_name(directory, entry.name)
+
+    def info_name(self, directory, name):
+        self._name(name)
         # DirEntry.stat has zero st_ino/st_dev on Windows 3.11; os.stat has IDs.
-        return os.stat(directory / entry.name, follow_symlinks=False)
+        return os.stat(directory / name, follow_symlinks=False)
 
     def open_directory(self, directory, entry, info):
         path = directory / entry.name
@@ -132,7 +136,7 @@ class WindowsTree(VerifiedTreeFiles):
         try:
             if not same_object(info, os.stat(path, follow_symlinks=False)):
                 raise OSError()
-            self.handles.append(handle)
+            self.directories[path] = handle
             return path
         except BaseException:
             self.kernel.CloseHandle(handle)
@@ -153,7 +157,15 @@ class WindowsTree(VerifiedTreeFiles):
     def close_directory(self, directory):
         pass  # Keep all ancestors pinned.
 
+    def release_directory(self, directory):
+        # Depth-first callers close a child only after all of its descendants.
+        if directory != self.root:
+            self.kernel.CloseHandle(self.directories.pop(directory))
+
     def close(self):
+        for handle in reversed(self.directories.values()):
+            self.kernel.CloseHandle(handle)
+        self.directories.clear()
         for handle in reversed(self.handles):
             self.kernel.CloseHandle(handle)
         self.handles.clear()

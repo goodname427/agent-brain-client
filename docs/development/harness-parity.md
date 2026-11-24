@@ -56,7 +56,24 @@ Codex 项目设置保留原目录摘要；CodeBuddy 项目使用独立前缀及�
 
 IDE 的原生 Memory 路径不是公开版本化 API；其他 IDE 版本应核对来源契约并以明确 unavailable / incomplete 状态报告，不能猜测其他目录或扩大扫描范围。CLI 智能选取 Rule 的差异有官方文档依据；“已写入原生文件”不代表宿主当前模型已采用。
 
-Windows CodeBuddy 另识别 `~/.codebuddy/memery/*_memery.md` 和 `~/.codebuddy/projects/<project>/memory/`。前者保留既有个人原生来源 ID，后者缺少可验证的归属时由 Onboarding 跳过。两个平台沿用受限原生读取器，公共流程只将获准的个人原文送入 L0，保留旧 CAS 回执和待处理记录。
+Mac 和 Windows CodeBuddy 另识别 `~/.codebuddy/memery/` 和 `~/.codebuddy/projects/<project>/memory/`。Mac CodeBuddy 4.12.4 的 `genie` 3.10.0 安装代码声明了这两个根，读取的 bundle SHA-256 为 `b82c7fdb981fe50ff70ff93f647d2b553b52349aca908f2aaba06e5ccb4388f8`。项目目录只进入约定的 `memory/` 子树。在专用根内按原生 Markdown 格式读取各层文件。原生 `MEMORY.md` 索引、迁移和状态文件、备份与会话目录由 CodeBuddy 适配器排除。用户级 `CODEBUDDY.md` 由适配器剥离 Client 管理的接入说明，再保留用户正文。
+
+Windows 实机 0.8.42 的 [#297](https://github.com/goodname427/agent-brain-client/issues/297) 中，112 条条目因无法确认项目归属被跳过。CodeBuddy 导入现在保留项目来源 ID，原文沿用户批准的 L0 路由提交。L0 路由绑定的是本次接收目标，无法由原生项目目录确定对应的 Server 项目。
+
+### Onboarding 门槛与责任
+
+| 原门槛 | 改后归属与行为 |
+| --- | --- |
+| CodeBuddy 项目归属不明整类排除 | 删除。适配器保留原生项目来源 ID，公共层沿明确获准的目标路由提交原文。 |
+| CodeBuddy 只在 Windows 注册上述两种来源，部分根仅认固定文件名或直属文件 | 适配器按实测布局注册根，扫描专用记忆子树内的原生格式。Codex 仍使用其配置根下的 `memories/`。 |
+| 旧的 Codex 盘点总条数、遍历条目数、层级和累计字节限制，CodeBuddy 合计超过 1,024 条整批失败 | 新审批统一走公共分页。每页最多 64 条和 512 KiB 元数据，跨页恢复同一快照。旧 Codex 诊断盘点保留原有限额，旧审批仍可查询与续跑。 |
+| 作用域、目的地和来源准入 | 公共层要求显式审批、匹配目的地、个人来源和当前准入。在后台读取原文及提交前复查范围。 |
+| 链接、文件替换、单文件 128 KiB、UTF-8 与传输边界 | 共用安全读取器和公共原文／传输合同。可观察结果区分排除、失败和待续跑。 |
+| L0 账本与重复提交 | 公共层复用稳定请求 ID、已验证回执与原目标绑定。队列达到并发待处理容量时保留待续跑，不因数量丢弃后续条目。 |
+
+0.8.42 的盘点 `cursor` 是结果摘要，用于检测变化。新批次将批准的来源 ID、指纹和本地读取定位写入内容寻址的页链，后台用持久化页指针续跑。
+
+Server 0.3.17 的公开原生事件含合约、事件 ID、时间及正文。Server 从已授权 `origin` 选取来源范围，再绑定 L0 命名空间和 session。`memory_onboard` 接受已授权的个人目标。项目来源 ID 保留在 Client 的快照与队列；逐条项目范围需独立的协议能力。用户必须明确授权整个提交范围进入该个人目标。
 
 ## 回归依据
 
@@ -64,4 +81,4 @@ Windows CodeBuddy 另识别 `~/.codebuddy/memery/*_memery.md` 和 `~/.codebuddy/
 
 共享 Onboarding 回归使用 `tests/test_harness_parity.py` 中的 `NativeMemoryCapture`，以合成目录覆盖四种组合及断线、暂停和重复调用。在 Mac 模拟 Windows 来源布局只检查公共流程和来源选择。Windows 原生句柄边界由 `tests/test_windows_native.py` 在 Windows 执行。
 
-[隔离 L0 检查](../../dev/integration/onboarding.py) 接受独立的 Server checkout，沿用该仓的离线 Core fixture 环境（`AGENTBRAIN_TEST_CORE`、`TEST_CORE_SOURCE`、`TEST_NODE`）。它把 Client 的合成 MCP 调用送入 Server 来源路由和隔离的 SQLite Core，核对原文、精确重复投递、排除项与原事件回执。
+[隔离 L0 检查](../../dev/integration/onboarding.py) 接受独立的 Server checkout，沿用该仓的离线 Core fixture 环境（`AGENTBRAIN_TEST_CORE`、`TEST_CORE_SOURCE`、`TEST_NODE`）。用 `--harness codex` 或 `--harness codebuddy` 把 Client 的合成 MCP 调用送入 Server 来源路由和隔离的 SQLite Core，核对原文、精确重复投递、文件大小排除和原事件回执。

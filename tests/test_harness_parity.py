@@ -106,7 +106,7 @@ class SyntheticCaptureServer:
 
 
 class NativeMemoryCapture(unittest.TestCase):
-    def exercise(self, home, harness, windows_layout, *, terminal_rerun=False):
+    def exercise(self, home, harness, windows_layout, *, terminal_rerun=False, large_batch=False):
         home.mkdir()
         workspace = home / "synthetic-workspace"
         workspace.mkdir()
@@ -230,6 +230,11 @@ class NativeMemoryCapture(unittest.TestCase):
             if terminal_rerun:
                 self.exercise_terminal_rerun(source_file, peer, worker, worker_pass, server, tool, args, value)
                 return
+            if large_batch:
+                self.exercise_large_batch(
+                    native, peer, worker, worker_pass, server, tool, args, value, windows_layout,
+                )
+                return
             missing = tool(worker, "memory_onboard", args)
             self.assertEqual(missing["inventory"], "unavailable")
             source_file.parent.mkdir(parents=True)
@@ -248,10 +253,13 @@ class NativeMemoryCapture(unittest.TestCase):
             originals = {**explicit_markers, **accepted_by_capture, "invalid.md": invalid_original}
             for filename, raw in originals.items():
                 source_file.with_name(filename).write_bytes(raw.encode())
-            if windows_layout and harness == "codebuddy":
-                project = native / "projects/unverified/memory/topic.md"
+            project_originals = set()
+            if harness == "codebuddy":
+                project = native / "projects/unverified/memory/milestones/计划 A.mdc"
                 project.parent.mkdir(parents=True)
-                project.write_bytes(b"An isolated Windows CodeBuddy project synthetic preference.")
+                project_original = "An isolated CodeBuddy project synthetic preference."
+                project.write_bytes(project_original.encode())
+                project_originals.add(project_original)
 
             sources = worker.adapter.sources
             legacy_excluded = "Fictional original previously excluded by a historical review."
@@ -261,7 +269,7 @@ class NativeMemoryCapture(unittest.TestCase):
             source_file.with_name("old-skipped.md").write_bytes(old_skipped.encode())
             rows = {
                 item["source_fingerprint"]: item
-                for item in sources.provider.inventory(onboarding=True)["sources"]
+                for item in sources.provider.inventory()["sources"]
             }
             excluded_row = rows[sha256(legacy_excluded.encode()).hexdigest()]
             seed_legacy_native_plan(worker.adapter, excluded_row, MEMORY)
@@ -281,7 +289,8 @@ class NativeMemoryCapture(unittest.TestCase):
                 legacy_original += " This revision is also shareable."
                 legacy_source.write_bytes(legacy_original.encode())
             allowed_originals = {
-                original, old_skipped, legacy_original, *explicit_markers.values(), *accepted_by_capture.values(),
+                original, old_skipped, legacy_original, *explicit_markers.values(),
+                *accepted_by_capture.values(), *project_originals,
             }
             allowed_count = len(allowed_originals)
             if windows_layout:
@@ -309,7 +318,7 @@ class NativeMemoryCapture(unittest.TestCase):
             scopes = cloud.grant["scopes"]
             cloud.grant["scopes"] = ["read"]
             self.assertNotIn("memory_onboard", {item["name"] for item in worker.catalog()})
-            with patch.object(worker.adapter.sources.provider, "inventory",
+            with patch.object(worker.adapter.sources.provider, "snapshot_rows",
                               side_effect=AssertionError("Grants must gate source enumeration")):
                 with self.assertRaises(ContentParameterError):
                     tool(worker, "memory_onboard", args)
@@ -397,15 +406,13 @@ class NativeMemoryCapture(unittest.TestCase):
             self.assertEqual({row["content"] for row in memory_events}, allowed_originals)
             preserved = next(row for row in memory_events if row["content"] == original)
             self.assertEqual(preserved["occurred_at"], "2009-02-13T23:31:30.123Z")
-            self.assertEqual(done["counts"]["excluded"], int(windows_layout and harness == "codebuddy"))
+            self.assertEqual(done["counts"]["excluded"], 0)
             self.assertEqual(done["counts"]["failed"], 1)
             self.assertEqual(done["reasons"]["original-outside-bound"], 1)
             self.assertFalse(any(
                 row["request"]["params"]["event"].get("content") == invalid_original
                 for row in imported_queue._queued()
             ))
-            if windows_layout and harness == "codebuddy":
-                self.assertEqual(done["reasons"]["project-origin-unverified"], 1)
             self.assertEqual(len(peer.requests), calls + allowed_count + 1)
             self.assertEqual(len(peer.receipts), allowed_count + 1)
             alternate = dict(args["destination"], origin=str(other_workspace))
@@ -438,20 +445,19 @@ class NativeMemoryCapture(unittest.TestCase):
                 self.assertEqual(len(peer.requests), before_large)
                 large_resume = dict(resume, approval_id=batch_id)
 
-                # Persist 168 confirmed records, then resume the 47-item tail
-                # under multiple deadlines and a freshly opened MCP worker.
+                # Interrupt the first page, then resume all pages under new
+                # deadlines and a freshly opened MCP worker.
                 with patch.object(onboarding, "request_timeout", side_effect=lambda _: (
-                    3 if len(peer.requests) - before_large >= 167 else 25
+                    3 if len(peer.requests) - before_large >= 17 else 25
                 )):
                     self.assertTrue(worker_pass(batch_id))
                 before_resume = len(peer.requests)
                 batch = tool(server(), "memory_onboard", large_resume, run_delivery=False)
-                self.assertEqual(batch["counts"]["received"], 166)
-                self.assertEqual(batch["counts"]["already_exists"], 2)
-                self.assertEqual(batch["counts"]["pending"], 47)
+                self.assertEqual(batch["counts"]["received"], 16)
+                self.assertGreater(batch["counts"]["pending"], 0)
                 self.assertEqual(len(peer.requests), before_resume)
-                prev_received = 166
-                for _ in range(10):
+                prev_received = batch["counts"]["received"]
+                for _ in range(24):
                     begin = len(peer.requests)
 
                     def remaining(_):
@@ -461,7 +467,7 @@ class NativeMemoryCapture(unittest.TestCase):
                         worker_pass(batch_id)
                     worker = server()  # No in-memory progress retained.
                     batch = tool(worker, "memory_onboard", large_resume, run_delivery=False)
-                    self.assertGreater(batch["counts"]["received"], prev_received)
+                    self.assertGreaterEqual(batch["counts"]["received"], prev_received)
                     self.assertEqual(batch["approval_id"], batch_id)
                     prev_received = batch["counts"]["received"]
                     if batch["counts"]["pending"] == 0:
@@ -496,7 +502,8 @@ class NativeMemoryCapture(unittest.TestCase):
                         delivery.run(home, max_seconds=12, pause=simulated_process_exit)
                     result = tool(server(), "memory_onboard", dict(resume, approval_id=fresh["approval_id"]),
                                   run_delivery=False)
-                    self.assertEqual(result["counts"]["pending"], 1)
+                    self.assertGreater(result["counts"]["pending"], 0)
+                    self.assertEqual(result["reasons"]["delivery-unconfirmed"], 1)
                     # No caller needs to re-submit or generate another approval.
                     delivery.run(home, max_seconds=12, pause=lambda _: None)
                 result = tool(server(), "memory_onboard", dict(resume, approval_id=fresh["approval_id"]),
@@ -533,10 +540,15 @@ class NativeMemoryCapture(unittest.TestCase):
                 source_file.with_name("escaped-raw-limit.md").write_bytes(worst.encode())
                 source_file.with_name("past-readable-limit.md").write_bytes(excessive.encode())
                 before = len(peer.requests)
-                limit_result = tool(worker, "memory_onboard", args)
+                limit_result = tool(worker, "memory_onboard", args, run_delivery=False)
+                limit_approval = limit_result["approval_id"]
+                for _ in range(8):
+                    if not worker_pass(limit_approval):
+                        break
+                limit_result = tool(worker, "memory_onboard", dict(resume, approval_id=limit_approval), run_delivery=False)
                 self.assertEqual(limit_result["counts"]["received"], 3)
                 self.assertEqual(limit_result["counts"]["excluded"], 1)
-                self.assertEqual(limit_result["reasons"]["bounded inventory limit exceeded"], 1)
+                self.assertEqual(limit_result["reasons"]["original outside file size bound"], 1)
                 submitted = [r for r in peer.requests[before:] if r["method"] == "memory_global_event_submit"]
                 self.assertEqual(len(submitted), 3)
                 by_body = {row["params"]["event"]["content"]: row for row in submitted}
@@ -562,13 +574,15 @@ class NativeMemoryCapture(unittest.TestCase):
             source_file.with_name(f"rerun-{index}.md").write_bytes(original.encode())
         by_fingerprint = {sha256(original.encode()).hexdigest(): original for original in originals}
         sources = worker.adapter.sources
-        accepted, pending, missing = [
-            by_fingerprint[item["source_fingerprint"]]
-            for item in sources.provider.inventory(onboarding=True)["sources"]
+        legacy_rows = [
+            {key: value for key, value in row.items() if key != "locator"}
+            for _, row in sources.provider.snapshot_rows() if row is not None
         ]
+        accepted, pending, missing = [by_fingerprint[row["source_fingerprint"]] for row in legacy_rows]
         peer.lose_ack = False
         peer.fail_before_commit = pending
-        first = tool(worker, "memory_onboard", args)
+        with patch.object(onboarding, "paged_snapshot", return_value={"status": "complete", "sources": legacy_rows}):
+            first = tool(worker, "memory_onboard", args)
         self.assertEqual(first["counts"]["received"], 1)
         self.assertEqual(first["counts"]["pending"], 2)
         old_id = first["approval_id"]
@@ -602,7 +616,7 @@ class NativeMemoryCapture(unittest.TestCase):
 
         with (
             patch.object(onboarding, "source_active", return_value=False),
-            patch.object(sources.provider, "inventory", side_effect=AssertionError("Paused source inventoried")),
+            patch.object(sources.provider, "snapshot_rows", side_effect=AssertionError("Paused source inventoried")),
         ):
             self.assertEqual(tool(worker, "memory_onboard", args)["error"]["code"],
                              "onboarding-personal-origin-required")
@@ -680,6 +694,164 @@ class NativeMemoryCapture(unittest.TestCase):
         self.assertEqual(again["counts"]["already_exists"], 3)
         self.assertEqual(len(peer.requests), before)
         self.assertEqual(len(peer.receipts), 3)
+
+    def exercise_large_batch(self, native, peer, worker, worker_pass, server,
+                             tool, args, value, windows_layout):
+        from agent_brain_client.adapters.harnesses.codebuddy.configuration import GUIDANCE
+        from agent_brain_client.domain.receipts import core_receipt
+
+        harness = args["harness"]
+        provider = worker.adapter.sources.provider
+        source_root = provider.ide if harness == "codebuddy" else native / "memories"
+        namespace = "ide/" if harness == "codebuddy" else ""
+        batches = [(source_root, namespace, 1027 if windows_layout else 65)]
+        if harness == "codebuddy" and windows_layout:
+            batches = [
+                (source_root, "ide/", 400),
+                (native / "memories", "cli/", 350),
+                (native / "memery", "memery/", 277),
+            ]
+        expected = {}
+
+        def write(root, relative, body, namespace=None):
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body.encode())
+            if namespace is not None:
+                source_id = provider.prefix + sha256((namespace + relative).encode()).hexdigest()
+                expected[source_id] = body
+            return path
+
+        for root, source_namespace, count in batches:
+            for index in range(count):
+                write(root, f"nested/条目 {index:04d}.md",
+                      f"Fictional {source_namespace} native memory {index}.", source_namespace)
+        if windows_layout:
+            root_counts = [sum(1 for _ in root.rglob("*.md")) for root, _, _ in batches]
+            self.assertEqual(root_counts, [400, 350, 277] if harness == "codebuddy" else [1027])
+        stable_sources = {}
+        if harness == "codebuddy":
+            write(native / "memories", "global/nested/任意主题.md", "Fictional CLI memory.", "cli/")
+            write(native, "memery/nested/不是旧文件名.md", "Fictional IDE archive memory.", "")
+            write(native, "projects/unknown/memory/nested/随笔.mdc", "Fictional IDE project memory.", "")
+            stable_sources = {
+                "memery/fixture_memery.md": "Fictional existing archive memory.",
+                "projects/unknown/memory/topic.md": "Fictional existing project memory.",
+            }
+            for path, body in stable_sources.items():
+                write(native, path, body, "")
+            write(native, "projects/unknown/chat.md", "Fictional non-memory project text.")
+            write(native, "projects/unknown/memory/.ide-migrated.json", "{}")
+            write(native, "projects/unknown/memory/MEMORY.md", "Fictional native index.")
+            write(source_root, "sessions/previous.md", "Fictional transcript.")
+            write(source_root, "nested/old-backup.md.bak", "Fictional backup.")
+            write(source_root, "nested/turns.jsonl", "Fictional session data.")
+            user_text = "A fictional user preference.\n"
+            write(native, "CODEBUDDY.md", user_text + GUIDANCE)
+            expected[provider.prefix + sha256(b"CODEBUDDY.md").hexdigest()] = user_text
+        else:
+            stable_sources["existing.md"] = "Fictional existing Codex memory."
+            write(source_root, "existing.md", stable_sources["existing.md"], "")
+            write(source_root, "nested/.git/config", "Fictional Git metadata.")
+        write(native, "sessions/previous.md", "Fictional transcript outside the native memory roots.")
+
+        with self.assertRaises(ContentParameterError):
+            worker.invoke("memory_onboard", {key: value for key, value in args.items() if key != "approved"})
+        wrong_destination = dict(args["destination"], actor="synthetic-other")
+        self.assertEqual(tool(worker, "memory_onboard", dict(args, destination=wrong_destination))["error"]["code"],
+                         "onboarding-destination-changed")
+        peer.lose_ack = windows_layout
+        queued = tool(worker, "memory_onboard", args, run_delivery=False)
+        approval = queued["approval_id"]
+        self.assertEqual(queued["counts"]["pending"], len(expected))
+        self.assertFalse(peer.requests)
+        resume = {key: value for key, value in args.items() if key != "approved"}
+        resume.update(resume=True, approval_id=approval)
+        write(source_root, "later.md", "Fictional memory created after the approval.")
+        with patch("agent_brain_client.runtime.onboarding.source_active", return_value=False):
+            self.assertTrue(worker_pass(approval))
+        self.assertFalse(peer.requests)
+
+        local = collection.eligible(value, args["destination"]["origin"])
+        for _ in range(2 if windows_layout else 1):
+            self.assertTrue(worker_pass(approval))
+        _, queue = collection.build_delivery_queue(value, local, harness)
+        before_restart = {
+            row["request"]["request_id"]: row["response"]
+            for row in queue._queued()
+            if row["state"] == "confirmed" and core_receipt(row["response"], row["request"])
+        }
+        remote_before_restart = {wire["request_id"]: wire for wire in peer.receipts.values()}
+        self.assertGreater(len(before_restart), 0)
+        self.assertLess(len(before_restart), len(expected))
+        self.assertEqual(before_restart.keys(), remote_before_restart.keys())
+        restarted = server()
+        progress = tool(restarted, "memory_onboard", resume, run_delivery=False)
+        self.assertEqual(progress["approval_id"], approval)
+        self.assertGreater(progress["counts"]["pending"], 0)
+        self.assertEqual(progress["counts"]["received"] + progress["counts"]["already_exists"],
+                         len(before_restart))
+
+        passes = 2 if windows_layout else 1
+        while passes < 24:
+            passes += 1
+            pending = worker_pass(approval)
+            done = tool(server(), "memory_onboard", resume, run_delivery=False)
+            self.assertEqual(done["approval_id"], approval)
+            self.assertEqual(sum(done["counts"].values()), len(expected))
+            if not pending:
+                break
+        self.assertEqual(done["status"], "onboarding-processed")
+        self.assertEqual(done["counts"], {
+            "received": len(expected) - int(windows_layout), "already_exists": int(windows_layout),
+            "excluded": 0, "pending": 0, "failed": 0,
+        })
+        self.assertEqual(done["extraction"], {"staged": len(expected)})
+        self.assertEqual(len(peer.receipts), len(expected))
+        self.assertEqual({row["params"]["event"]["content"] for row in peer.receipts.values()}, set(expected.values()))
+        self.assertGreaterEqual(passes, (len(expected) + onboarding.PAGE_ITEMS - 1) // onboarding.PAGE_ITEMS)
+        _, queue = collection.build_delivery_queue(value, local, harness)
+        rows = queue._queued()
+        self.assertEqual(len(rows), len(expected))
+        after_restart = {}
+        for row in rows:
+            request = row["request"]
+            event = request["params"]["event"]
+            self.assertEqual(event["content"], expected[event["source_id"]])
+            self.assertTrue(core_receipt(row["response"], request))
+            after_restart[request["request_id"]] = row["response"]
+        self.assertEqual({key: after_restart[key] for key in before_restart}, before_restart)
+        remote_after_restart = {wire["request_id"]: wire for wire in peer.receipts.values()}
+        self.assertEqual({key: remote_after_restart[key] for key in remote_before_restart}, remote_before_restart)
+        new_receipts = remote_after_restart.keys() - remote_before_restart.keys()
+        self.assertTrue(new_receipts)
+        self.assertEqual(remote_before_restart.keys() | new_receipts, after_restart.keys())
+        for path, body in stable_sources.items():
+            # The 0.8.42 adapter hashed the same namespace-relative path.
+            legacy_id = provider.prefix + sha256(path.encode()).hexdigest()
+            self.assertEqual(expected[legacy_id], body)
+            stable_event = [row["request"]["params"]["event"] for row in rows
+                            if row["request"]["params"]["event"]["source_id"] == legacy_id]
+            self.assertEqual([event["content"] for event in stable_event], [body])
+        before = len(peer.requests)
+        self.assertEqual(tool(server(), "memory_onboard", resume, run_delivery=False), done)
+        new = tool(server(), "memory_onboard", args, run_delivery=False)
+        self.assertNotEqual(new["approval_id"], approval)
+        for _ in range(24):
+            if not worker_pass(new["approval_id"]):
+                break
+        repeated = tool(server(), "memory_onboard", dict(resume, approval_id=new["approval_id"]), run_delivery=False)
+        self.assertEqual(repeated["counts"]["already_exists"], len(expected))
+        self.assertEqual(repeated["counts"]["received"], 1)
+        sent = [row for row in peer.requests[before:] if row["method"] == "memory_global_event_submit"]
+        self.assertEqual([row["params"]["event"]["content"] for row in sent],
+                         ["Fictional memory created after the approval."])
+
+    def test_native_memory_batches_through_l0(self):
+        for harness in ("codex", "codebuddy"):
+            for windows_layout in (False, True):
+                with self.subTest(harness=harness, windows_layout=windows_layout), tempfile.TemporaryDirectory() as tmp:
+                    self.exercise(Path(tmp).resolve() / "home", harness, windows_layout, large_batch=True)
 
     def test_explicit_rerun_rechecks_terminal_legacy_snapshot_and_confirms_only_missing_l0(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -938,12 +1110,16 @@ class WindowsCodeBuddySources(unittest.TestCase):
         sources = {
             path: self.write_source(path) for path in (
                 "memery/全局_memery.md",
+                "memery/归档/不同命名.mdc",
+                "memery/notes.md",
                 "projects/示例项目/memory/topic.md",
+                "projects/示例项目/memory/milestones/计划 A.mdc",
                 "projects/second-project/memory/topic.md",
+                "projects/history/memory/topic.md",
             )
         }
         for path in (
-            "memery/user-memery-state.json", "memery/notes.md", "memery/archive_memery.md.bak",
+            "memery/user-memery-state.json", "memery/archive_memery.md.bak",
             "projects/示例项目/memory/MEMORY.md", "projects/示例项目/memory/.ide-migrated.json",
             "projects/示例项目/memory/session.jsonl", "projects/示例项目/session.jsonl",
             "projects/示例项目/sessions/memory.md", "projects/示例项目/memory/history/turn.md",
@@ -956,7 +1132,7 @@ class WindowsCodeBuddySources(unittest.TestCase):
         first = self.inventory()
         self.assertEqual(first["status"], "complete")
         self.assertEqual(first, self.inventory())
-        self.assertEqual(first["counts"], {"not-checked": 3})
+        self.assertEqual(first["counts"], {"not-checked": len(sources)})
         expected = {self.source_id(path): file.read_bytes() for path, file in sources.items()}
         self.assertEqual({row["source_id"] for row in first["sources"]}, set(expected))
         for row in first["sources"]:
@@ -1004,17 +1180,18 @@ class WindowsCodeBuddySources(unittest.TestCase):
         self.assertEqual({row["source_id"] for row in result["sources"] if row["source_fingerprint"]},
                          {self.source_id("memery/global_memery.md")})
 
-    def test_onboarding_excludes_unverified_project_origin_without_reading_originals(self):
-        local = self.write_source("projects/example/memory/private.md")
-        personal = self.write_source("memery/fixture_memery.md")
-        result = self.adapter.sources.provider.inventory(onboarding=True)
+    def test_onboarding_keeps_project_namespace_when_origin_is_unknown(self):
+        local = self.write_source("projects/example/memory/milestones/开工.mdc")
+        personal = self.write_source("memery/milestones/开工.mdc")
+        result = self.adapter.sources.provider.inventory()
         rows = {row["source_id"]: row for row in result["sources"]}
-        project = rows[self.source_id("projects/example/memory/private.md")]
-        self.assertEqual(project["reason"], "project-origin-unverified")
-        self.assertIsNone(project["source_fingerprint"])
+        project = rows[self.source_id("projects/example/memory/milestones/开工.mdc")]
+        self.assertEqual(self.read_original(project), local.read_bytes().decode())
         self.assertNotIn(local.read_bytes().decode(), json.dumps(result))
-        personal_row = rows[self.source_id("memery/fixture_memery.md")]
+        self.assertNotIn("locator", project)
+        personal_row = rows[self.source_id("memery/milestones/开工.mdc")]
         self.assertEqual(self.read_original(personal_row), personal.read_bytes().decode())
+        self.assertNotEqual(project["source_id"], personal_row["source_id"])
         self.assertEqual(self.cloud.calls, [])
 
 
