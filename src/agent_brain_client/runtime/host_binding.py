@@ -28,13 +28,7 @@ def load_delivery_core(home):
     if root.parent in (state / "global-memory/code", state / "codebuddy/code"):
         return load_core(home)
 
-    from agent_brain_client.adapters.packages.client import ClientReleases
-
-    registration, _ = registration_store.registration(home)
-    channel = ClientReleases(registration["release_policy"], registration["release_policy_sha256"])
-    if channel.policy["runtime"]["device_home"] != str(Path(home)):
-        raise ValueError("Delivery release device binding changed")
-    active = channel.verified_active(serving=True)
+    active = serving_delivery_release(home)
     if active is None or Path(active["package"]) != root:
         raise ValueError("Verified serving delivery package required")
 
@@ -43,6 +37,16 @@ def load_delivery_core(home):
     # The release owns executable integrity. Settings pins belong to the
     # native Hook and may legitimately lag a successful package update.
     return core.native_services(verify_code=False)
+
+
+def serving_delivery_release(home):
+    from agent_brain_client.adapters.packages.client import ClientReleases
+
+    registration, _ = registration_store.registration(home)
+    channel = ClientReleases(registration["release_policy"], registration["release_policy_sha256"])
+    if channel.policy["runtime"]["device_home"] != str(Path(home)):
+        raise ValueError("Delivery release device binding changed")
+    return channel.verified_active(serving=True)
 
 
 def load_core(home):

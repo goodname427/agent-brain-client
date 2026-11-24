@@ -166,7 +166,7 @@ class NativeMemoryCapture(unittest.TestCase):
 
         def worker_pass(approval_id):
             matching = []
-            for file in delivery.directory(home).glob("*.json"):
+            for file in delivery.task_files(delivery.directory(home)):
                 task = metadata.private_json(file, cache=True)
                 if task.get("approval_id") == approval_id:
                     matching.append(task)
@@ -518,7 +518,7 @@ class NativeMemoryCapture(unittest.TestCase):
                 self.assertEqual(len(peer.receipts), before_large_receipts + 214)
                 self.assertFalse(any(
                     metadata.private_json(path, cache=True).get("harness") == "onboarding"
-                    for path in delivery.directory(home).glob("*.json")
+                    for path in delivery.task_files(delivery.directory(home))
                 ))
 
                 # Measure the unchanged HTTPS envelope at the actual accepted
