@@ -482,14 +482,11 @@ def retained_onboarding_events(queue, group, project, wanted, *, exact=False):
             raise CacheBlocked()
         return True
 
-    rows = (
-        (queue._retained_queue_row(rid + ".json", optional=True) for rid in wanted)
-        if exact else queue._queued()
-    )
+    rows = queue._retained_queue_rows(wanted) if exact else queue._queued()
     current = {
         row["request"]["request_id"]: row
         for row in rows
-        if row is not None and row["request"]["request_id"] in wanted and matches(row)
+        if row["request"]["request_id"] in wanted and matches(row)
     }
     alternate = {}
     for origin_file in queue.cache.parent.glob("*/origin.json"):

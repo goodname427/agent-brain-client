@@ -232,21 +232,24 @@ class FileContentOutbox(DurableOutbox):
     def _require_storage(self):
         require_platform("cache-storage", self.platform)
 
-    def _queued(self):
-        require_platform("cache-storage", self.platform)
+    def _outbox_directory(self):
         directory = self.cache / "outbox"
         self._safe(directory, self.cache)
         if directory.exists():
             cache_mode(directory, directory=True, blocked=CacheBlocked)
+        return directory
+
+    def _queued(self):
+        directory = self._outbox_directory()
         paths = list(directory.iterdir()) if directory.exists() else []
         # Retained confirmations are lifetime deduplication evidence. Bound
         # unresolved rows below, rather than total directory history.
         rows = []
         for path in paths:
-            self._safe(path, self.cache)
             # Preserve temporary evidence left by killed atomic saves; replay only
             # renamed request files so a lost confirmation remains recoverable.
             if re.fullmatch(r"\.client-native-[A-Za-z0-9_-]+", path.name):
+                self._safe(path, self.cache)
                 if not path.is_file() or path.stat().st_size > 1048576:
                     raise CacheBlocked()
                 cache_mode(path, blocked=CacheBlocked)
@@ -257,6 +260,13 @@ class FileContentOutbox(DurableOutbox):
         return sorted(
             rows, key=lambda row: (row["created"], row["request"]["request_id"])
         )
+
+    def _retained_queue_rows(self, request_ids):
+        self._outbox_directory()
+        for request_id in request_ids:
+            row = self._retained_queue_row(request_id + ".json", optional=True)
+            if row is not None:
+                yield row
 
     def _retained_queue_row(self, name, *, optional=False):
         if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}\.json", name):
