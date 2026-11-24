@@ -8,14 +8,133 @@ import sys
 import threading
 import time
 
-from agent_brain_client.adapters.platforms.filesystem import cache_directory, cache_locked
+from agent_brain_client.adapters.platforms.filesystem import (
+    LockTimeout, atomic_replace, cache_directory, cache_locked, cache_mode, sync_directory,
+)
 from agent_brain_client.adapters.storage import metadata
 from agent_brain_client.domain.scopes import digest
-from agent_brain_client.adapters.platforms.filesystem import LockTimeout
+
+
+PACKAGE = Path(__file__).resolve().parents[3]
 
 
 def directory(home):
     return Path(home) / '.config/agent-brain-client/global-memory/delivery'
+
+
+def task_files(root):
+    yield from (p for p in root.glob('*.json') if p.name not in ('status.json', 'spawn.json'))
+    onboarding = root / 'onboarding'
+    if onboarding.exists():
+        cache_mode(onboarding, directory=True, owner=True)
+        yield from onboarding.glob('*.json')
+
+
+def _package_identity():
+    receipt = PACKAGE / 'verified.json'
+    if not receipt.is_file():
+        return None
+    from agent_brain_client.adapters.storage.bounded_json import read_json
+
+    saved = read_json(receipt)
+    return {'version': saved['manifest']['version'], 'commit': saved['commit']}
+
+
+def _release(home):
+    if not (PACKAGE / 'verified.json').is_file():
+        return None
+    from agent_brain_client.runtime.host_binding import serving_delivery_release
+
+    active = serving_delivery_release(home)
+    if active is None or Path(active['package']) != PACKAGE:
+        raise ValueError('Verified serving delivery package required')
+    return {key: active[key] for key in ('version', 'commit')}
+
+
+def _held(path):
+    if path.exists():
+        metadata.canonical(path)
+        cache_mode(path, owner=True)
+        try:
+            with cache_locked(path, timeout=0):
+                pass
+        except LockTimeout:
+            return True
+    return False
+
+
+def _read(path):
+    if not path.exists():
+        return {}
+    try:
+        value = metadata.private_json(path, cache=True)
+        if not isinstance(value, dict):
+            raise ValueError('Delivery metadata must be an object')
+        return value
+    except FileNotFoundError:
+        return {}
+
+
+def _owner(root):
+    handoff = root / 'handoff'
+    return _read(handoff / 'owner.json') if _held(handoff / 'owner.lock') else {}
+
+
+def _move_tasks(source, target):
+    # Only scheduler descriptors move. Outbox rows, attempts and receipts
+    # stay where either version expects them for the duration of the send.
+    for path in source.glob('*.json'):
+        if re.fullmatch(r'[a-f0-9]{64}\.json', path.name) is None:
+            continue
+        try:
+            cache_mode(path, owner=True)
+            atomic_replace(path, target / path.name)
+        except FileNotFoundError:
+            continue  # The legacy worker may just have completed it.
+        except ValueError:
+            if path.exists():
+                raise
+            continue
+        except OSError as error:
+            if sys.platform != 'win32' or error.errno not in (3, 5, 32, 33):
+                raise
+            continue  # A Windows reader may briefly deny the rename.
+        sync_directory(target)
+        sync_directory(source)
+
+
+def _park_legacy(root):
+    parked = cache_directory(metadata.canonical(root / 'handoff/parked'))
+    cache_mode(parked, directory=True, owner=True)
+    _move_tasks(root, parked)
+
+
+def runtime_status(home, active):
+    root = directory(home)
+    handoff = root / 'handoff'
+    result = dict(running_delivery_version=None, running_delivery_commit=None,
+                  delivery_worker_status='idle')
+    if not (root / 'spawn.lock').exists():
+        return result
+    try:
+        with cache_locked(root / 'spawn.lock', timeout=0):
+            target = {key: active[key] for key in ('version', 'commit')}
+            busy = _held(root / 'worker.lock')
+            owner = _owner(root) if busy else {}
+            result.update(running_delivery_version=owner.get('version'),
+                          running_delivery_commit=owner.get('commit'))
+            if owner == target:
+                result['delivery_worker_status'] = 'current'
+            elif owner or _read(handoff / 'target.json') == target:
+                result['delivery_worker_status'] = 'handoff-pending'
+            elif busy:
+                result['delivery_worker_status'] = 'legacy-running'
+            elif time.time() - _read(root / 'spawn.json').get('at', 0) < 10:
+                if _read(root / 'status.json').get('status') == 'starting':
+                    result['delivery_worker_status'] = 'starting'
+    except (KeyError, OSError, TypeError, ValueError, LockTimeout):
+        result['delivery_worker_status'] = 'unknown'
+    return result
 
 
 def register_task(home, key, task, *, wake_worker=True):
@@ -24,7 +143,12 @@ def register_task(home, key, task, *, wake_worker=True):
     # The worker holds this same short lock through its idle decision and lease
     # release. A new durable task can therefore never disappear into that gap.
     with cache_locked(root / 'spawn.lock', timeout=20):
-        metadata.write(root / (key + '.json'), task, cache=True)
+        target = root
+        if task['harness'] == 'onboarding':
+            # Pre-handoff workers scan the root and cannot read paged approvals.
+            target = cache_directory(root / 'onboarding')
+            cache_mode(target, directory=True, owner=True)
+        metadata.write(target / (key + '.json'), task, cache=True)
     return wake(home) if wake_worker else False
 
 
@@ -75,25 +199,34 @@ def wake(home):
     if not root.exists():
         return False
     try:
+        release = _release(home)
         with cache_locked(root / 'spawn.lock', timeout=0):
             status = root / 'status.json'
-            completed_pass = False
-            if status.exists():
-                state = metadata.private_json(status, cache=True)
-                completed_pass = state.get('status') == 'idle'
-                tasks = [p for p in root.glob('*.json')
-                         if p.name not in ('status.json', 'spawn.json')]
-                if state.get('status') == 'idle' and all(
-                        p.stat().st_mtime < state.get('scan_started', 0) for p in tasks):
+            handoff = root / 'handoff'
+            busy = _held(root / 'worker.lock')
+            target = _read(handoff / 'target.json')
+            if busy:
+                if release is None:
                     return False
-            try:
-                with cache_locked(root / 'worker.lock', timeout=0):
-                    pass
-            except LockTimeout:
-                return False
+                owner = _owner(root)
+                if owner == release:
+                    return False
+                cache_directory(metadata.canonical(handoff))
+                if not owner:
+                    _park_legacy(root)
+                if target != release:
+                    metadata.write(handoff / 'target.json', release, cache=True)
+                elif _held(handoff / 'standby.lock'):
+                    return False
+            state = _read(status)
+            completed_pass = state.get('status') == 'idle'
+            if not busy and not target and not any((handoff / 'parked').glob('*.json')):
+                if completed_pass and all(
+                        p.stat().st_mtime < state.get('scan_started', 0) for p in task_files(root)):
+                    return False
             stamp = root / 'spawn.json'
-            if stamp.exists() and not completed_pass:
-                saved = metadata.private_json(stamp, cache=True)
+            saved = _read(stamp)
+            if (busy or not completed_pass) and saved.get('release') == release:
                 if 0 <= time.time() - saved.get('at', 0) < 10:
                     return False
             entry = Path(__file__).resolve().parents[1] / 'interfaces/cli/delivery.py'
@@ -104,12 +237,15 @@ def wake(home):
                                             | subprocess.CREATE_NEW_PROCESS_GROUP)
             else:
                 options['start_new_session'] = True
-            subprocess.Popen([sys.executable, '-I', '-B', str(entry),
-                              '--device-home', str(home)], **options)
-            metadata.write(stamp, {'at': time.time()}, cache=True)
-            metadata.write(status, {'status': 'starting', 'at': time.time()}, cache=True)
+            argv = [sys.executable, '-I', '-B', str(entry), '--device-home', str(home)]
+            if busy:
+                argv.append('--wait-for-lease')
+            subprocess.Popen(argv, **options)
+            metadata.write(stamp, {'at': time.time(), 'release': release}, cache=True)
+            if not busy:
+                metadata.write(status, {'status': 'starting', 'at': time.time()}, cache=True)
             return True
-    except LockTimeout:
+    except (FileNotFoundError, ValueError, LockTimeout):
         return False
 
 
@@ -175,7 +311,49 @@ def deliver_with_cursor(home, identity, queue, allowed, allowed_event=lambda eve
                                cursor, {'after': key}, cache=True))
 
 
-def run(home, *, max_seconds=600, pause=time.sleep):
+def _claim_worker(root, release, lease, *, bind, wait, deadline, pause):
+    if release is None:
+        if wait:
+            return False
+        lease.enter_context(cache_locked(root / 'worker.lock', timeout=0))
+        return True
+
+    handoff = cache_directory(metadata.canonical(root / 'handoff'))
+    cache_mode(handoff, directory=True, owner=True)
+    target = handoff / 'target.json'
+    with ExitStack() as standby:
+        if wait:
+            standby.enter_context(cache_locked(handoff / 'standby.lock', timeout=2))
+        while True:
+            with cache_locked(root / 'spawn.lock', timeout=2):
+                if wait and _read(target) != release:
+                    return False
+                try:
+                    lease.enter_context(cache_locked(root / 'worker.lock', timeout=0))
+                except LockTimeout:
+                    if not wait:
+                        return False
+                    if not _owner(root):
+                        _park_legacy(root)
+                else:
+                    # The candidate may have changed while we waited. Verify
+                    # the serving package before publishing actual ownership.
+                    bind()
+                    lease.enter_context(cache_locked(handoff / 'owner.lock', timeout=0))
+                    metadata.write(handoff / 'owner.json', release, cache=True)
+                    parked = handoff / 'parked'
+                    if parked.exists():
+                        cache_mode(parked, directory=True, owner=True)
+                        _move_tasks(parked, root)
+                    target.unlink(missing_ok=True)
+                    return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            pause(min(0.5, remaining))
+
+
+def run(home, *, max_seconds=600, pause=time.sleep, wait_for_lease=False):
     from agent_brain_client.application.control import RequestControl
     from agent_brain_client.runtime.host_binding import load_delivery_core
 
@@ -204,19 +382,32 @@ def run(home, *, max_seconds=600, pause=time.sleep):
         return core
 
     try:
+        release = _package_identity()
         with ExitStack() as lease:
-            lease.enter_context(cache_locked(root / 'worker.lock', timeout=0))
+            if not _claim_worker(root, release, lease, bind=shared_core, wait=wait_for_lease,
+                                 deadline=time.monotonic() + max_seconds, pause=pause):
+                return
+            target = root / 'handoff/target.json'
+
+            def replaced():
+                if release is None:
+                    return False
+                requested = _read(target)
+                return bool(requested) and requested != release
+
             end = time.monotonic() + max_seconds
             delay = 1
             while time.monotonic() < end:
+                if replaced():
+                    return
                 scan_started = time.time()
                 pending = False
                 # Retry a failed binding after backoff, without repeating it for
                 # each task or blocking independently pinned project work.
                 binding_error = None
-                for file in sorted(root.glob('*.json')):
-                    if file.name in ('spawn.json', 'status.json'):
-                        continue
+                for file in sorted(task_files(root)):
+                    if replaced():
+                        return
                     control = RequestControl(min(30, max(0.1, end - time.monotonic())))
                     try:
                         with control.activate():
@@ -288,9 +479,7 @@ def run(home, *, max_seconds=600, pause=time.sleep):
                         break
                 if not pending:
                     with cache_locked(root / 'spawn.lock', timeout=1):
-                        changed = any(p.stat().st_mtime >= scan_started
-                                      for p in root.glob('*.json')
-                                      if p.name not in ('spawn.json', 'status.json'))
+                        changed = any(p.stat().st_mtime >= scan_started for p in task_files(root))
                         if changed:
                             continue
                         metadata.write(root / 'status.json', {
@@ -301,7 +490,7 @@ def run(home, *, max_seconds=600, pause=time.sleep):
                         return
                 pause(min(delay, max(0, end - time.monotonic())))
                 delay = min(delay * 2, 30)
-    except LockTimeout:
+    except (ValueError, LockTimeout):
         return
 
 

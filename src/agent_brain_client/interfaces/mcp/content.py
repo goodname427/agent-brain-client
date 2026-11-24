@@ -131,6 +131,9 @@ class ContentServer(Server):
             "model_loaded": "unknown",
             "active_package_version": None,
             "active_package_commit": None,
+            "running_delivery_version": None,
+            "running_delivery_commit": None,
+            "delivery_worker_status": "unknown",
             "reload_required": None,
             # This worker cannot see the host's session tool cache. A current
             # worker is not proof that the host has adopted its tool list.
@@ -144,6 +147,7 @@ class ContentServer(Server):
                 private_json,
             )
             from agent_brain_client.adapters.packages.client import ClientReleases
+            from agent_brain_client.runtime.delivery import runtime_status
 
             meta = private_json(
                 self.adapter.home / ".config/agent-brain-client/codex-mcp.json"
@@ -163,6 +167,7 @@ class ContentServer(Server):
                 active_package_version=active["version"],
                 active_package_commit=active.get("commit"),
             )
+            value.update(runtime_status(self.adapter.home, active))
             if self.managed_stdio:
                 current = json.loads((CLIENT_ROOT / "verified.json").read_bytes())["manifest"]
                 selected = json.loads(
