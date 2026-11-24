@@ -192,7 +192,7 @@
     "src/agent_brain_client/runtime/installation.py": "529786be0bc86f4492e5ba0e5cf22ef24d6de8be7599029e2a92f17d872c0afb",
     "src/agent_brain_client/runtime/installation_completion.py": "5667fd8fa0884ed06af54a7f6176a7339ae9a942198accac1a17d650042d171b",
     "src/agent_brain_client/runtime/launcher.py": "4039f399d4e78fbdb7c7de32be3310a960b642848c3058ef17d3aa7e5f25d05a",
-    "src/agent_brain_client/runtime/onboarding.py": "2d910e5f5543f07f0edf8b610e76318fe64654796e4a933cc7d493773a550b01",
+    "src/agent_brain_client/runtime/onboarding.py": "2360754e6a548e31c6e7c5dedb9674bc5c8f0d65857060a3420a683a970e3cc0",
     "src/agent_brain_client/runtime/project_memory.py": "7f4ddb7382fd5dd9f35c8356323fe40d522ed56ba551ebb844c24c3bc613b878",
     "src/agent_brain_client/runtime/source_enrollment.py": "ce880accd5cd9872afe4f79178e00606676a6b8e2ec84675c4e6a97269407b3a",
     "src/agent_brain_client/runtime/updates.py": "79608a3e7e5aa08c77bf54776a8fed86d7be28fb7ba4273e133900d8d23a4bf5"
@@ -201,5 +201,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.8.40"
+  "version": "0.8.41"
 }
