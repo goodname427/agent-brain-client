@@ -178,6 +178,25 @@ def same(left, right):
     return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
 
 
+def maintain_mcp(text, previous, wanted):
+    """Update receipt-owned fields while retaining CodeBuddy's IDE settings."""
+    path = ("mcpServers", NAME)
+    doc = Document(text)
+    actual = doc.value.get("mcpServers", {}).get(NAME)
+    ide_fields = {"description", "disabled"} - previous.keys()
+    if (
+        not isinstance(actual, dict)
+        or type(actual.get("disabled", False)) is not bool
+        or not same({key: value for key, value in actual.items() if key not in ide_fields}, previous)
+    ):
+        raise ValueError("Existing CodeBuddy MCP binding preserved")
+    for key in dict.fromkeys((*previous, *wanted)):
+        if not same(previous.get(key), wanted.get(key)):
+            text = doc.patch((*path, key), wanted.get(key), remove=key not in wanted)
+            doc = Document(text)
+    return text
+
+
 def render_json(text, wanted, previous, *, hooks=False, remove=False):
     doc = Document(text)
     if not hooks:
@@ -318,7 +337,8 @@ def refresh(home, source, *, check_only=False):
         return absent
     # Check-only maintenance must report native drift just as an update does.
     # No credential or backend call is needed to validate owned native images.
-    status(home, None, backend_check=lambda *args: (None, {"status": "native-ownership-only"}))
+    status(home, None, backend_check=lambda *args: (None, {"status": "native-ownership-only"}),
+           maintenance=True)
     from agent_brain_client.adapters.packages.frozen import runtime_pins
 
     pins = runtime_pins(source)
@@ -493,9 +513,12 @@ def install(home, source, core, *, surface=None, remove=False, enable_hooks=None
         private_directory,
     )
     from agent_brain_client.adapters.storage.host_files import (
+        HostConfigChanged,
+        host_image,
         host_plan,
         host_apply,
         host_restore,
+        sha,
     )
 
     directory = state_directory(home)
@@ -544,11 +567,17 @@ def install(home, source, core, *, surface=None, remove=False, enable_hooks=None
         if maintenance and set(map(str, mcp_paths(home, surface))) != set(map(str, paths)):
             raise ValueError("Higher priority CodeBuddy MCP configuration changed")
         keep_mcp = maintenance and same(mcp, previous_mcp)
-        if keep_mcp:
-            mcp = previous_mcp
-            for path in paths:
-                render_json(read_host(path), mcp, mcp)
+        mcp_preimages = {}
+        if maintenance:
             payload = {}
+            for path in paths:
+                image = host_image(path)
+                raw = image[0] if image else b""
+                target = maintain_mcp(raw.decode("utf-8-sig"), previous_mcp, mcp)
+                if not keep_mcp:
+                    bom = b"\xef\xbb\xbf"
+                    payload[path] = (bom if raw.startswith(bom) else b"") + target.encode("utf-8")
+                    mcp_preimages[str(path)] = sha(raw)
         else:
             payload = {
                 p: render_json(read_host(p), mcp, previous_mcp, remove=remove)
@@ -562,8 +591,6 @@ def install(home, source, core, *, surface=None, remove=False, enable_hooks=None
         payload[settings] = render_json(
             read_host(settings), hooks if hooks_enabled else None, previous_hooks, hooks=True, remove=remove or not hooks_enabled
         )
-        from agent_brain_client.adapters.storage.host_files import host_image
-
         previous_paths = instruction_paths(home, surface, receipt) if receipt else []
         wanted_paths = [] if remove else instruction_paths(home, surface)
         record = metadata_io.private_json(journal) if previous_paths and journal.exists() else {}
@@ -598,6 +625,8 @@ def install(home, source, core, *, surface=None, remove=False, enable_hooks=None
             "surface": surface,
             "host": host_plan(payload, private_paths=(receipt_file,)),
         }
+        if any(record["host"][path]["before_sha"] != digest for path, digest in mcp_preimages.items()):
+            raise HostConfigChanged("CodeBuddy MCP configuration concurrently changed")
         changed_paths = {
             name
             for name, row in record["host"].items()
@@ -620,7 +649,7 @@ def install(home, source, core, *, surface=None, remove=False, enable_hooks=None
                 if set(mcp_paths(home, surface)) != set(paths):
                     raise ValueError("Higher priority CodeBuddy MCP configuration changed")
                 for path in paths:
-                    render_json(read_host(path), mcp, mcp)
+                    maintain_mcp(read_host(path), mcp, mcp)
             record["phase"] = "complete"
             metadata_io.write(journal, record)
         except Exception:
@@ -644,7 +673,7 @@ def install(home, source, core, *, surface=None, remove=False, enable_hooks=None
     }
 
 
-def status(home, core, *, backend_check):
+def status(home, core, *, backend_check, maintenance=False):
     directory = state_directory(home)
     journal = directory / "transaction.json"
     record = metadata_io.private_json(journal) if journal.exists() or journal.is_symlink() else {}
@@ -660,7 +689,11 @@ def status(home, core, *, backend_check):
     if set(map(str, mcp_paths(home, receipt["surface"]))) != set(receipt["mcp_paths"]):
         raise ValueError("Higher priority CodeBuddy MCP configuration changed")
     for file in receipt["mcp_paths"]:
-        render_json(read_host(canonical(file)), receipt["mcp"], receipt["mcp"])
+        text = read_host(canonical(file))
+        if maintenance:
+            maintain_mcp(text, receipt["mcp"], receipt["mcp"])
+        else:
+            render_json(text, receipt["mcp"], receipt["mcp"])
     if receipt.get("hooks_enabled", True):
         render_json(read_host(Path(home) / ".codebuddy/settings.json"), receipt["hooks"], receipt["hooks"], hooks=True)
     else:
