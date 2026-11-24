@@ -423,8 +423,12 @@ class Installation(unittest.TestCase):
         config = self.native / 'mcp.json'
         disabled = cbhost.Document(config.read_text()).patch(('mcpServers', cbhost.NAME, 'disabled'), True)
         config.write_text(disabled)
+        self.assertFalse(cbhost.refresh(self.home, ROOT)['native_changes']['mcp'])
+        self.assertEqual(config.read_text(), disabled)
         with self.assertRaises(ValueError):
-            cbhost.refresh(self.home, ROOT)
+            self.install(surface='ide')
+        with self.assertRaises(ValueError):
+            self.install(surface='ide', remove=True)
         self.assertEqual(config.read_text(), disabled)
 
     def test_legacy_receipt_owner_repair_requires_the_original_private_journal(self):
