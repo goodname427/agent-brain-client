@@ -73,7 +73,7 @@ def prepare_fresh_installation(
     if new_transaction:
         if (
             confirm(
-                "Disconnect affected Agent Brain MCP services and let active Hooks finish; keep unrelated Clients and the IDE open. Retain old files and unsent queues in the reported archive; "
+                "Disconnect affected Agent Brain MCP services and let active Hooks finish; keep unrelated Clients and the IDE open. Retain old files and unsent queues in the reported archive; any external cache stays at its reported original path. "
                 "connect a NEW device to the SAME Server/account. Existing pause states, source scope and exclusions/isolation are retained. Old queues will NOT resume. Type FRESH to continue."
             )
             != "FRESH"
@@ -96,6 +96,7 @@ def prepare_fresh_installation(
         "status": "fresh-install-ready",
         "installed": False,
         "archive": record["archive"],
+        "retained_external_cache": record.get("external_cache", {}).get("path"),
         "old_queue_replayed": False,
         "old_identity_reused": False,
     }

@@ -240,6 +240,7 @@ def main(argv=None):
             value = dict(
                 value,
                 retained_archive=fresh["archive"],
+                retained_external_cache=fresh.get("external_cache", {}).get("path"),
                 old_identity_reused=False,
                 old_queue_replayed=False,
             )

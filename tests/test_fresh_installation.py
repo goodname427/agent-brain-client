@@ -1662,5 +1662,177 @@ with locked(Path(sys.argv[1]), shared=sys.argv[2]=='shared', cache=True):
 
 
 
+class ExternalRetainedCache(unittest.TestCase):
+    setUp = FreshInstallation.setUp
+    prepare = FreshInstallation.prepare
+    snapshot = ReinstallRuntime.snapshot
+
+    def externalize(self):
+        old = self.cache
+        self.cache = self.home / 'Code/synthetic-client/.local/verification/target-content-cache'
+        private_directory(self.cache.parent)
+        old.rename(self.cache)
+        self.old_queue = self.cache / 'outbox/retained_original_request.json'
+        self.policy['runtime']['content_cache'] = str(self.cache)
+        policy_path = self.root / 'first-install/release-policy.json'
+        io.write(policy_path, self.policy)
+        self.metadata['release_policy_sha256'] = io.digest(policy_path.read_bytes())
+        io.write(self.root / 'codex-mcp.json', self.metadata)
+
+    def test_read_only_cli_checks_external_cache_without_creating_files(self):
+        self.externalize()
+        before = self.snapshot()
+        output = streamio.StringIO()
+        with (patch.object(Path, 'home', return_value=self.home),
+              patch.object(sys, 'argv', ['install.py', '--action', 'reinstall-check']),
+              patch('builtins.input', side_effect=AssertionError('No prompt')),
+              patch('sys.stdout', output)):
+            self.assertEqual(_install_cli.main(), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result['status'], 'fresh-install-runtime-idle')
+        self.assertEqual(result['retained_external_cache'], str(self.cache))
+        self.assertFalse(result['device_credentials_accessed'])
+        self.assertFalse(result['network_used'])
+        self.assertEqual({r['path'] for r in result['locks'] if str(self.cache) in r['path']},
+                         {str(self.cache / n) for n in ('.content-runtime.lock', 'content.lock', 'outbox-enqueue.lock')})
+        self.assertTrue(all(r['state'] == 'absent' for r in result['locks']))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_busy_external_lease_blocks_detach_then_resumes_same_transaction(self):
+        self.externalize()
+        before = self.config.read_bytes()
+        with locked(self.cache / '.content-runtime.lock', shared=True, cache=True):
+            self.assertEqual(self.port.runtime_status()['status'], 'fresh-install-runtime-in-use')
+            with self.assertRaises(RuntimeInUse):
+                self.prepare()
+        record = read_journal(self.home)
+        self.assertEqual(record['phase'], 'detaching')
+        self.assertEqual(self.config.read_bytes(), before)
+        result = self.prepare(lambda _: self.fail('Resume never reconfirms'))
+        self.assertEqual(result['archive'], record['archive'])
+        self.assertEqual(result['retained_external_cache'], str(self.cache))
+        self.assertEqual(self.old_queue.read_bytes(), b'SYNTHETIC_UNSENT_OLD_QUEUE_DO_NOT_REPLAY')
+
+    def test_legacy_receipt_controls_and_external_queue_are_retained(self):
+        receipt, _ = RetainedHookData.old_hook_receipt(self)
+        raw = receipt.read_bytes()
+        self.externalize()
+        queue = self.old_queue.read_bytes()
+        result = self.prepare()
+        record = read_journal(self.home)
+        self.assertIsNone(record['cache_relative'])
+        self.assertEqual(record['external_cache']['path'], str(self.cache))
+        self.assertEqual((Path(result['archive']) / receipt.relative_to(self.root)).read_bytes(), raw)
+        self.assertEqual(self.old_queue.read_bytes(), queue)
+        self.assertEqual(record['mapping']['owned'], self.owned)
+        self.assertFalse(record['routing']['enabled'])
+        self.assertTrue(record['routing']['global_off'])
+        self.assertFalse(record['routing']['all_projects'])
+        self.assertEqual(record['routing']['exclude_roots'], [str(self.home / 'private')])
+        self.assertEqual(self.native_memory.read_bytes(), b'SYNTHETIC_NATIVE_MEMORY_NOT_UPLOADED')
+        new_cache = self.root / 'codex/content-cache'
+        private_directory(new_cache)
+        self.port.restore_mapping(new_cache, self.content)
+        self.assertEqual(self.memory_path.read_text(), MEMORY['body'])
+        self.assertFalse((new_cache / 'outbox').exists())
+        self.assertEqual(self.old_queue.read_bytes(), queue)
+        self.assertFalse(result['old_queue_replayed'])
+        self.assertFalse(result['old_identity_reused'])
+
+    def test_directory_replacement_blocks_detach_and_archive_resume(self):
+        self.externalize()
+        record = self.port.plan()
+        original = self.cache.with_name('original-cache')
+        self.cache.rename(original)
+        private_directory(self.cache)
+        before = self.config.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'external cache changed'):
+            self.port.detach(record)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertTrue((original / 'outbox/retained_original_request.json').exists())
+        record['phase'] = 'archiving'
+        with self.port.lease():
+            self.port.save(record)
+        with self.assertRaisesRegex(ValueError, 'external cache changed'):
+            self.prepare(lambda _: self.fail('No new transaction'))
+        self.assertEqual(read_journal(self.home)['id'], record['id'])
+        self.assertEqual(read_journal(self.home)['phase'], 'archiving')
+
+    def test_archive_interruption_preserves_external_cache_and_resumes(self):
+        self.externalize()
+        from agent_brain_client.adapters.storage import reinstallation as storage
+        retain = storage.retain_item
+        calls = []
+        def interrupt(source, destination, identity):
+            retain(source, destination, identity)
+            calls.append(source)
+            if len(calls) == 1:
+                raise OSError('SYNTHETIC_INTERRUPTION_AFTER_MOVE')
+        with patch.object(storage, 'retain_item', side_effect=interrupt):
+            with self.assertRaises(OSError):
+                self.prepare()
+        record = read_journal(self.home)
+        self.assertEqual(record['phase'], 'archiving')
+        self.assertTrue(self.old_queue.exists())
+        status = self.port.runtime_status()
+        self.assertEqual(status['status'], 'fresh-install-resume-required')
+        self.assertEqual(status['retained_external_cache'], str(self.cache))
+        result = self.prepare(lambda _: self.fail('No reconfirmation'))
+        self.assertEqual(result['archive'], record['archive'])
+        self.assertTrue(self.old_queue.exists())
+
+    def test_links_access_and_policy_digest_are_still_checked(self):
+        self.externalize()
+        policy_path = self.root / 'first-install/release-policy.json'
+        raw = policy_path.read_bytes()
+        atomic(policy_path, raw + b' ', 0o600)
+        with self.assertRaisesRegex(ValueError, 'digest changed'):
+            self.port.runtime_status()
+        atomic(policy_path, raw, 0o600)
+        from agent_brain_client.adapters.storage import reinstallation as storage
+        with patch.object(storage, 'cache_mode', side_effect=ValueError('SYNTHETIC_ACCESS_DENIED')):
+            with self.assertRaisesRegex(ValueError, 'ACCESS_DENIED'):
+                self.port.plan()
+        if os.name != 'nt':
+            original = self.cache.with_name('original-cache')
+            self.cache.rename(original)
+            self.cache.symlink_to(original, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                self.port.runtime_status()
+        self.assertIsNone(read_journal(self.home))
+
+    def test_completed_history_does_not_require_old_cache_to_exist(self):
+        self.externalize()
+        record = self.port.plan()
+        record.update(phase='complete', new_profile_sha256='b' * 64,
+                      memory_accessibility={'status': 'memory-catalog-readable', 'verified_records': 0})
+        with self.port.lease():
+            self.port.save(record)
+        self.cache.rename(self.cache.with_name('retained-history-cache'))
+        self.assertEqual(read_journal(self.home), record)
+        with patch.object(self.port, 'read_registration', side_effect=ValueError('CURRENT_REGISTRATION_REQUIRED')):
+            with self.assertRaisesRegex(ValueError, 'CURRENT_REGISTRATION_REQUIRED'):
+                self.port.runtime_status()
+
+    def test_ambiguous_or_escaping_external_journals_are_rejected(self):
+        self.externalize()
+        record = self.port.plan()
+        invalid = [
+            dict(record, cache_relative='first-install/content-cache'),
+            dict(record, external_cache={'path': str(self.root), 'identity': [1, 2, True]}),
+            dict(record, external_cache={'path': str(self.home), 'identity': [1, 2, True]}),
+            dict(record, external_cache={'path': '../cache', 'identity': [1, 2, True]}),
+            dict(record, external_cache={'path': str(self.cache), 'identity': [1, 2, False]}),
+        ]
+        from agent_brain_client.adapters.storage.reinstallation import journal_path
+        with self.port.lease():
+            for value in invalid:
+                with self.subTest(location=value.get('external_cache')):
+                    io.write(journal_path(self.home), value)
+                    with self.assertRaises(ValueError):
+                        read_journal(self.home)
+        self.assertTrue(self.old_queue.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

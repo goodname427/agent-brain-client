@@ -17,6 +17,7 @@ from agent_brain_client.adapters.storage.host_files import (
 )
 from agent_brain_client.adapters.platforms.filesystem import (
     private_directory,
+    cache_mode,
     private_mode,
     locked,
     LockTimeout,
@@ -28,6 +29,7 @@ from agent_brain_client.adapters.platforms.retention import (
     retain_item,
     retention_root,
     RetentionFailure,
+    canonical as retention_path,
 )
 
 
@@ -76,19 +78,36 @@ def read_journal(home):
         raise ValueError("Fresh-install journal changed")
     if not re.fullmatch(r"[a-f0-9]{32}", value.get("id", "")):
         raise ValueError("Fresh installation instance changed")
-    relative = PurePosixPath(value["cache_relative"])
-    if (
-        relative.is_absolute()
-        or ".." in relative.parts
-        or str(relative) != value["cache_relative"]
-    ):
-        raise ValueError("Retained cache scope changed")
+    cache_record_path(home, value)
     if (
         Path(value["archive"])
         != Path(home) / ".config/agent-brain-retained" / value["id"]
     ):
         raise ValueError("Retention archive scope changed")
     return value
+
+
+def cache_record_path(home, record):
+    """Validate recorded scope without requiring historical caches to exist."""
+    root = Path(home) / ".config/agent-brain-client"
+    external = record.get("external_cache")
+    if external is not None:
+        if (record["cache_relative"] is not None or not isinstance(external, dict)
+                or set(external) != {"path", "identity"}
+                or not isinstance(external["path"], str)):
+            raise ValueError("Retained external cache scope changed")
+        path, identity = Path(external["path"]), external["identity"]
+        if (not path.is_absolute() or ".." in path.parts
+                or path == root or root in path.parents or path in root.parents
+                or not isinstance(identity, list) or len(identity) != 3
+                or any(type(n) is not int for n in identity[:2]) or identity[2] is not True):
+            raise ValueError("Retained external cache identity required")
+        return path
+    relative = PurePosixPath(record["cache_relative"])
+    if (relative.is_absolute() or ".." in relative.parts
+            or str(relative) != record["cache_relative"]):
+        raise ValueError("Retained cache scope changed")
+    return root / record["cache_relative"]
 
 
 def require_memory_verified(home, profile_sha=None):
@@ -198,10 +217,7 @@ class RetainedInstallation:
 
         validate_policy(content, profile["grant"])
         cache = io.canonical(Path(runtime["content_cache"]), existing=True)
-        if self.root not in cache.parents:
-            raise ValueError(
-                "Retain an external content cache separately before reconnecting"
-            )
+        cache_location = self.cache_location(cache)
         snapshot = self.read_mapping(self.home, self.native, cache, content)
         payload = self.host_payload(
             self.home, self.native, metadata, installed=installed
@@ -254,7 +270,7 @@ class RetainedInstallation:
                 runtime["https_profile"]: runtime["https_profile_sha256"],
                 runtime["content_policy"]: runtime["content_policy_sha256"],
             },
-            "cache_relative": cache.relative_to(self.root).as_posix(),
+            **cache_location,
             "old_profile_sha256": runtime["https_profile_sha256"],
             "archived": [],
             "old_queue_replayed": False,
@@ -284,7 +300,7 @@ class RetainedInstallation:
             current = self.read_mapping(
                 self.home,
                 self.native,
-                self.root / record["cache_relative"],
+                self.retained_cache(record),
                 record["content"],
             )
             if current != record["mapping"]:
@@ -300,6 +316,26 @@ class RetainedInstallation:
             self.save(record)
             host_apply(record["host"], lambda: self.save(record))
 
+    def cache_location(self, cache):
+        cache = retention_path(cache, existing=True)
+        cache_mode(cache, directory=True, owner=True)
+        if self.root in cache.parents:
+            return {"cache_relative": cache.relative_to(self.root).as_posix()}
+        location = {"cache_relative": None,
+                    "external_cache": {"path": str(cache), "identity": item_identity(cache)}}
+        cache_record_path(self.home, location)
+        return location
+
+    def retained_cache(self, record):
+        cache = retention_path(cache_record_path(self.home, record))
+        if record.get("external_cache") is not None:
+            cache_mode(cache, directory=True, owner=True)
+            if item_identity(cache) != record["external_cache"]["identity"]:
+                raise ValueError("Retained external cache changed")
+        elif self.root not in cache.parents:
+            raise ValueError("Device-local runtime cache required")
+        return cache
+
     def runtime_paths(self, record):
         # This exact set is shared by preflight and the authoritative mutation
         # gate. A process merely using another file in the directory is irrelevant.
@@ -311,9 +347,7 @@ class RetainedInstallation:
                     "hook-install.lock" if name == "global-memory" else
                     "install.lock" if name == "codebuddy" else "first-install.lock"
                 ), False))
-        cache = io.canonical(self.root / record["cache_relative"])
-        if self.root not in cache.parents:
-            raise ValueError("Device-local runtime cache required")
+        cache = self.retained_cache(record)
         if cache.exists():
             paths.extend((cache / name, True) for name in (
                 ".content-runtime.lock", "content.lock", "outbox-enqueue.lock"))
@@ -325,6 +359,7 @@ class RetainedInstallation:
             return {"status": "fresh-install-resume-required", "native_changed": False,
                     "phase": record["phase"], "transaction_id": record["id"],
                     "retained_archive": record["archive"], "archived_items": record["archived"],
+                    "retained_external_cache": record.get("external_cache", {}).get("path"),
                     "pending_items": [name for name in record["children"] if name not in record["archived"]],
                     "snapshot_only": True,
                     "next_action": "Preserve both remaining source files and the archive. Rerun the SAME reinstall command with the SAME Server/account from the current official checkout to resume this transaction. This is recovery state, not a new lock inventory; do not create another transaction, remove records or close all hosts."}
@@ -339,9 +374,7 @@ class RetainedInstallation:
             if runtime["device_home"] != str(self.home):
                 raise ValueError("Original device required")
             cache = io.canonical(Path(runtime["content_cache"]), existing=True)
-            if self.root not in cache.parents:
-                raise ValueError("Device-local runtime cache required")
-            record = {"cache_relative": cache.relative_to(self.root).as_posix()}
+            record = self.cache_location(cache)
         rows = []
         for path, _ in self.runtime_paths(record):
             state = lock_probe(path)
@@ -353,6 +386,7 @@ class RetainedInstallation:
         return {"status": "fresh-install-runtime-in-use" if busy else "fresh-install-runtime-idle",
                 "native_changed": False, "device_credentials_accessed": False,
                 "network_used": False, "locks": rows,
+                "retained_external_cache": record.get("external_cache", {}).get("path"),
                 "automatic_shutdown_supported": False,
                 "snapshot_only": True,
                 "next_action": RUNTIME_NEXT_ACTION if busy else
@@ -368,9 +402,12 @@ class RetainedInstallation:
                     if lock_probe(path) != "busy":
                         raise  # Access failure or a changed snapshot is not an identified worker.
                     raise RuntimeInUse(path) from None
+            self.retained_cache(record)
             yield
 
     def archive(self, record):
+        if record.get("external_cache") is not None:
+            self.retained_cache(record)
         for name, row in record["host"].items():
             try:
                 _, target_image, current = host_row(Path(name), row)
