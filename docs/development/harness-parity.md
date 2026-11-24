@@ -56,7 +56,11 @@ Codex 项目设置保留原目录摘要；CodeBuddy 项目使用独立前缀及�
 
 IDE 的原生 Memory 路径不是公开版本化 API；其他 IDE 版本应核对来源契约并以明确 unavailable / incomplete 状态报告，不能猜测其他目录或扩大扫描范围。CLI 智能选取 Rule 的差异有官方文档依据；“已写入原生文件”不代表宿主当前模型已采用。
 
-Windows CodeBuddy 另识别 `~/.codebuddy/memery/*_memery.md` 和 `~/.codebuddy/projects/<project>/memory/`。前者保留既有个人原生来源 ID，后者缺少可验证的归属时由 Onboarding 跳过。两个平台沿用受限原生读取器，公共流程只将获准的个人原文送入 L0，保留旧 CAS 回执和待处理记录。
+Windows CodeBuddy 另识别 `~/.codebuddy/memery/` 和 `~/.codebuddy/projects/<project>/memory/`。在这些专用目录内，匹配原生 Markdown 格式的记忆可使用任意文件名和子目录。项目目录仅进入其约定的 `memory/` 子树。原生 `MEMORY.md` 索引、迁移和状态文件、备份、会话目录及链接不进入原文投递。用户级 `CODEBUDDY.md` 继续剥离 Client 管理的接入说明。
+
+Windows 实机 0.8.42 的 [#297](https://github.com/goodname427/agent-brain-client/issues/297) 中，112 条条目因无法确认项目归属被跳过。CodeBuddy 导入现在保留项目来源 ID，原文沿用户批准的 L0 路由提交。L0 路由绑定的是本次接收目标，无法由原生项目目录确定对应的 Server 项目。
+
+CodeBuddy 的一次新审批保存按页校验的来源 ID、指纹及本机读取定位，页内限制条数及缓存大小。后台按页推进，收到回执后复用同一请求 ID，汇总已处理页及待处理条数。续跑使用原审批快照及原文件指纹。旧的审批快照仍可查询和续跑。
 
 ## 回归依据
 

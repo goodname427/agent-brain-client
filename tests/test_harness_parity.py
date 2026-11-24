@@ -106,7 +106,7 @@ class SyntheticCaptureServer:
 
 
 class NativeMemoryCapture(unittest.TestCase):
-    def exercise(self, home, harness, windows_layout, *, terminal_rerun=False):
+    def exercise(self, home, harness, windows_layout, *, terminal_rerun=False, large_codebuddy=False):
         home.mkdir()
         workspace = home / "synthetic-workspace"
         workspace.mkdir()
@@ -230,6 +230,11 @@ class NativeMemoryCapture(unittest.TestCase):
             if terminal_rerun:
                 self.exercise_terminal_rerun(source_file, peer, worker, worker_pass, server, tool, args, value)
                 return
+            if large_codebuddy:
+                self.exercise_large_codebuddy(
+                    home, native, peer, worker, worker_pass, server, tool, args, value, windows_layout,
+                )
+                return
             missing = tool(worker, "memory_onboard", args)
             self.assertEqual(missing["inventory"], "unavailable")
             source_file.parent.mkdir(parents=True)
@@ -248,10 +253,13 @@ class NativeMemoryCapture(unittest.TestCase):
             originals = {**explicit_markers, **accepted_by_capture, "invalid.md": invalid_original}
             for filename, raw in originals.items():
                 source_file.with_name(filename).write_bytes(raw.encode())
+            project_originals = set()
             if windows_layout and harness == "codebuddy":
-                project = native / "projects/unverified/memory/topic.md"
+                project = native / "projects/unverified/memory/milestones/计划 A.mdc"
                 project.parent.mkdir(parents=True)
-                project.write_bytes(b"An isolated Windows CodeBuddy project synthetic preference.")
+                project_original = "An isolated Windows CodeBuddy project synthetic preference."
+                project.write_bytes(project_original.encode())
+                project_originals.add(project_original)
 
             sources = worker.adapter.sources
             legacy_excluded = "Fictional original previously excluded by a historical review."
@@ -281,7 +289,8 @@ class NativeMemoryCapture(unittest.TestCase):
                 legacy_original += " This revision is also shareable."
                 legacy_source.write_bytes(legacy_original.encode())
             allowed_originals = {
-                original, old_skipped, legacy_original, *explicit_markers.values(), *accepted_by_capture.values(),
+                original, old_skipped, legacy_original, *explicit_markers.values(),
+                *accepted_by_capture.values(), *project_originals,
             }
             allowed_count = len(allowed_originals)
             if windows_layout:
@@ -397,15 +406,13 @@ class NativeMemoryCapture(unittest.TestCase):
             self.assertEqual({row["content"] for row in memory_events}, allowed_originals)
             preserved = next(row for row in memory_events if row["content"] == original)
             self.assertEqual(preserved["occurred_at"], "2009-02-13T23:31:30.123Z")
-            self.assertEqual(done["counts"]["excluded"], int(windows_layout and harness == "codebuddy"))
+            self.assertEqual(done["counts"]["excluded"], 0)
             self.assertEqual(done["counts"]["failed"], 1)
             self.assertEqual(done["reasons"]["original-outside-bound"], 1)
             self.assertFalse(any(
                 row["request"]["params"]["event"].get("content") == invalid_original
                 for row in imported_queue._queued()
             ))
-            if windows_layout and harness == "codebuddy":
-                self.assertEqual(done["reasons"]["project-origin-unverified"], 1)
             self.assertEqual(len(peer.requests), calls + allowed_count + 1)
             self.assertEqual(len(peer.receipts), allowed_count + 1)
             alternate = dict(args["destination"], origin=str(other_workspace))
@@ -681,6 +688,103 @@ class NativeMemoryCapture(unittest.TestCase):
         self.assertEqual(len(peer.requests), before)
         self.assertEqual(len(peer.receipts), 3)
 
+    def exercise_large_codebuddy(self, home, native, peer, worker, worker_pass, server,
+                                 tool, args, value, windows_layout):
+        from agent_brain_client.adapters.harnesses.codebuddy.configuration import GUIDANCE
+        from agent_brain_client.domain.receipts import core_receipt
+
+        ide_root = worker.adapter.sources.provider.ide
+        expected = {}
+
+        def write(root, relative, body, namespace=None):
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body.encode())
+            if namespace is not None:
+                source_id = "codebuddy-memory:" + sha256((namespace + relative).encode()).hexdigest()
+                expected[source_id] = body
+            return path
+
+        for index in range(1027 if windows_layout else 3):
+            write(ide_root, f"nested/条目 {index:04d}.mdc", f"Fictional IDE memory {index}.", "ide/")
+        write(native / "memories", "global/nested/任意主题.md", "Fictional CLI memory.", "cli/")
+        if windows_layout:
+            write(native, "memery/nested/不是旧文件名.md", "Fictional Windows archive memory.", "")
+            write(native, "projects/unknown/memory/nested/随笔.mdc", "Fictional Windows project memory.", "")
+            write(native, "projects/unknown/chat.md", "Fictional non-memory project text.")
+            write(native, "projects/unknown/memory/.ide-migrated.json", "{}")
+            write(native, "projects/unknown/memory/MEMORY.md", "Fictional native index.")
+        write(ide_root, "sessions/previous.md", "Fictional transcript.")
+        write(ide_root, "nested/old-backup.md.bak", "Fictional backup.")
+        write(ide_root, "nested/turns.jsonl", "Fictional session data.")
+        user_text = "A fictional user preference.\n"
+        write(native, "CODEBUDDY.md", user_text + GUIDANCE)
+        expected["codebuddy-memory:" + sha256(b"CODEBUDDY.md").hexdigest()] = user_text
+
+        with self.assertRaises(ContentParameterError):
+            worker.invoke("memory_onboard", {key: value for key, value in args.items() if key != "approved"})
+        wrong_destination = dict(args["destination"], actor="synthetic-other")
+        self.assertEqual(tool(worker, "memory_onboard", dict(args, destination=wrong_destination))["error"]["code"],
+                         "onboarding-destination-changed")
+        peer.lose_ack = windows_layout
+        queued = tool(worker, "memory_onboard", args, run_delivery=False)
+        approval = queued["approval_id"]
+        self.assertEqual(queued["counts"]["pending"], len(expected))
+        self.assertFalse(peer.requests)
+        resume = {key: value for key, value in args.items() if key != "approved"}
+        resume.update(resume=True, approval_id=approval)
+        write(ide_root, "later.md", "Fictional memory created after the approval.")
+        with patch("agent_brain_client.runtime.onboarding.source_active", return_value=False):
+            self.assertTrue(worker_pass(approval))
+        self.assertFalse(peer.requests)
+
+        passes = 0
+        while passes < 24:
+            passes += 1
+            pending = worker_pass(approval)
+            done = tool(server(), "memory_onboard", resume, run_delivery=False)
+            self.assertEqual(done["approval_id"], approval)
+            self.assertEqual(sum(done["counts"].values()), len(expected))
+            if not pending:
+                break
+        self.assertEqual(done["status"], "onboarding-processed")
+        self.assertEqual(done["counts"], {
+            "received": len(expected) - int(windows_layout), "already_exists": int(windows_layout),
+            "excluded": 0, "pending": 0, "failed": 0,
+        })
+        self.assertEqual(done["extraction"], {"staged": len(expected)})
+        self.assertEqual(len(peer.receipts), len(expected))
+        self.assertEqual({row["params"]["event"]["content"] for row in peer.receipts.values()}, set(expected.values()))
+        if windows_layout:
+            self.assertGreater(passes, 16)
+        local = collection.eligible(value, args["destination"]["origin"])
+        _, queue = collection.build_delivery_queue(value, local, "codebuddy")
+        rows = queue._queued()
+        self.assertEqual(len(rows), len(expected))
+        for row in rows:
+            request = row["request"]
+            event = request["params"]["event"]
+            self.assertEqual(event["content"], expected[event["source_id"]])
+            self.assertTrue(core_receipt(row["response"], request))
+        before = len(peer.requests)
+        self.assertEqual(tool(server(), "memory_onboard", resume, run_delivery=False), done)
+        new = tool(server(), "memory_onboard", args, run_delivery=False)
+        self.assertNotEqual(new["approval_id"], approval)
+        for _ in range(24):
+            if not worker_pass(new["approval_id"]):
+                break
+        repeated = tool(server(), "memory_onboard", dict(resume, approval_id=new["approval_id"]), run_delivery=False)
+        self.assertEqual(repeated["counts"]["already_exists"], len(expected))
+        self.assertEqual(repeated["counts"]["received"], 1)
+        sent = [row for row in peer.requests[before:] if row["method"] == "memory_global_event_submit"]
+        self.assertEqual([row["params"]["event"]["content"] for row in sent],
+                         ["Fictional memory created after the approval."])
+
+    def test_codebuddy_native_memory_batches_through_l0(self):
+        for windows_layout in (False, True):
+            with self.subTest(windows_layout=windows_layout), tempfile.TemporaryDirectory() as tmp:
+                self.exercise(Path(tmp).resolve() / "home", "codebuddy", windows_layout, large_codebuddy=True)
+
     def test_explicit_rerun_rechecks_terminal_legacy_snapshot_and_confirms_only_missing_l0(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.exercise(Path(tmp).resolve() / "home", "codex", False, terminal_rerun=True)
@@ -938,12 +1042,16 @@ class WindowsCodeBuddySources(unittest.TestCase):
         sources = {
             path: self.write_source(path) for path in (
                 "memery/全局_memery.md",
+                "memery/归档/不同命名.mdc",
+                "memery/notes.md",
                 "projects/示例项目/memory/topic.md",
+                "projects/示例项目/memory/milestones/计划 A.mdc",
                 "projects/second-project/memory/topic.md",
+                "projects/history/memory/topic.md",
             )
         }
         for path in (
-            "memery/user-memery-state.json", "memery/notes.md", "memery/archive_memery.md.bak",
+            "memery/user-memery-state.json", "memery/archive_memery.md.bak",
             "projects/示例项目/memory/MEMORY.md", "projects/示例项目/memory/.ide-migrated.json",
             "projects/示例项目/memory/session.jsonl", "projects/示例项目/session.jsonl",
             "projects/示例项目/sessions/memory.md", "projects/示例项目/memory/history/turn.md",
@@ -956,7 +1064,7 @@ class WindowsCodeBuddySources(unittest.TestCase):
         first = self.inventory()
         self.assertEqual(first["status"], "complete")
         self.assertEqual(first, self.inventory())
-        self.assertEqual(first["counts"], {"not-checked": 3})
+        self.assertEqual(first["counts"], {"not-checked": len(sources)})
         expected = {self.source_id(path): file.read_bytes() for path, file in sources.items()}
         self.assertEqual({row["source_id"] for row in first["sources"]}, set(expected))
         for row in first["sources"]:
@@ -1004,17 +1112,18 @@ class WindowsCodeBuddySources(unittest.TestCase):
         self.assertEqual({row["source_id"] for row in result["sources"] if row["source_fingerprint"]},
                          {self.source_id("memery/global_memery.md")})
 
-    def test_onboarding_excludes_unverified_project_origin_without_reading_originals(self):
-        local = self.write_source("projects/example/memory/private.md")
-        personal = self.write_source("memery/fixture_memery.md")
+    def test_onboarding_keeps_project_namespace_when_origin_is_unknown(self):
+        local = self.write_source("projects/example/memory/milestones/开工.mdc")
+        personal = self.write_source("memery/milestones/开工.mdc")
         result = self.adapter.sources.provider.inventory(onboarding=True)
         rows = {row["source_id"]: row for row in result["sources"]}
-        project = rows[self.source_id("projects/example/memory/private.md")]
-        self.assertEqual(project["reason"], "project-origin-unverified")
-        self.assertIsNone(project["source_fingerprint"])
+        project = rows[self.source_id("projects/example/memory/milestones/开工.mdc")]
+        self.assertEqual(self.read_original(project), local.read_bytes().decode())
         self.assertNotIn(local.read_bytes().decode(), json.dumps(result))
-        personal_row = rows[self.source_id("memery/fixture_memery.md")]
+        self.assertNotIn("locator", project)
+        personal_row = rows[self.source_id("memery/milestones/开工.mdc")]
         self.assertEqual(self.read_original(personal_row), personal.read_bytes().decode())
+        self.assertNotEqual(project["source_id"], personal_row["source_id"])
         self.assertEqual(self.cloud.calls, [])
 
 

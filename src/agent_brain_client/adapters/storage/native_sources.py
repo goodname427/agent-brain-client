@@ -5,6 +5,7 @@ import itertools
 import os
 from pathlib import Path
 import stat
+from types import SimpleNamespace
 from agent_brain_client.adapters.platforms.tree import open_tree, is_link
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.errors import CacheBlocked
@@ -23,7 +24,6 @@ def inventory_tree(
     max_depth=16,
     select=None,
     optional=False,
-    excluded_reason=None,
 ):
     """Fingerprint only the selected persistent memory tree; never inspect sessions.
 
@@ -164,14 +164,6 @@ def inventory_tree(
                                 "reason": "non-regular source excluded",
                             }
                         )
-                        continue
-                    if excluded_reason is not None:
-                        rows.append({
-                            "source_id": source_id(relative),
-                            "source_fingerprint": None,
-                            "status": "excluded",
-                            "reason": excluded_reason,
-                        })
                         continue
                     walked += 1
                     if walked > max_files:
@@ -343,3 +335,110 @@ def read_tree(root, source_id, *, prefix, identity_namespace="", select=None, wi
                 pass
         tree.close()
     return raw
+
+
+def selected_tree_sources(root, *, source_id, select, wanted=None):
+    """Yield metadata and relative locators from a selected persistent tree."""
+    try:
+        tree = open_tree(root, pin_root=True)
+    except FileNotFoundError:
+        return
+    except OSError:
+        yield "unavailable", None
+        return
+
+    def entries(directory):
+        with tree.scan(directory) as scan:
+            return iter(sorted(scan, key=lambda entry: entry.name))
+
+    def row(relative, status, reason, fingerprint=None):
+        return {
+            "source_id": source_id(relative), "source_fingerprint": fingerprint,
+            "status": status, "reason": reason,
+        }
+
+    stack = [(tree.root, "", None)]
+    try:
+        yield "complete", None
+        while stack:
+            directory, prefix, remaining = stack[-1]
+            if remaining is None:
+                try:
+                    remaining = entries(directory)
+                except OSError:
+                    remaining = iter(())
+                    yield "incomplete", (prefix, row(prefix or ".", "unavailable", "directory unreadable"))
+                stack[-1] = directory, prefix, remaining
+            entry = next(remaining, None)
+            if entry is None:
+                stack.pop()
+                tree.release_directory(directory)
+                continue
+            relative = prefix + "/" + entry.name if prefix else entry.name
+            allow_file, allow_directory = select(relative, False), select(relative, True)
+            if not (allow_file or allow_directory):
+                continue
+            try:
+                if wanted is not None and source_id(relative) != wanted:
+                    if not allow_directory or not entry.is_dir(follow_symlinks=False):
+                        continue
+                    allow_file = False
+                info = tree.info(directory, entry)
+                if is_link(info):
+                    yield "complete", (relative, row(relative, "excluded", "symlink or reparse source excluded"))
+                elif stat.S_ISDIR(info.st_mode):
+                    if allow_directory:
+                        stack.append((tree.open_directory(directory, entry, info), relative, None))
+                elif allow_file:
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        yield "complete", (relative, row(relative, "excluded", "non-regular or linked source excluded"))
+                        continue
+                    if info.st_size > 131072:
+                        yield "complete", (relative, row(relative, "excluded", "original outside file size bound"))
+                        continue
+                    with tree.verified_file(directory, entry, info) as stream:
+                        raw = stream.read(131073)
+                    if len(raw) > 131072:
+                        raise OSError()
+                    yield "complete", (relative, row(relative, "not-checked", "fingerprinted; semantic review required", sha(raw)))
+            except OSError:
+                yield "incomplete", (relative, row(relative, "unavailable", "entry changed or unreadable"))
+    finally:
+        for directory, _, _ in reversed(stack):
+            tree.release_directory(directory)
+        tree.close()
+
+
+def read_selected_source(root, relative, *, select, with_mtime):
+    """Open a retained relative locator through the same no-follow tree."""
+    parts = relative.split("/")
+    if any(part in {"", ".", ".."} for part in parts) or not select(relative, False):
+        raise CacheBlocked()
+    try:
+        tree = open_tree(root, pin_root=True)
+        directory = tree.root
+        prefix = []
+        try:
+            for name in parts[:-1]:
+                prefix.append(name)
+                if not select("/".join(prefix), True):
+                    raise CacheBlocked()
+                entry = SimpleNamespace(name=name)
+                info = tree.info_name(directory, entry.name)
+                if is_link(info) or not stat.S_ISDIR(info.st_mode):
+                    raise CacheBlocked()
+                child = tree.open_directory(directory, entry, info)
+                tree.close_directory(directory)
+                directory = child
+            entry = SimpleNamespace(name=parts[-1])
+            info = tree.info_name(directory, entry.name)
+            if is_link(info) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 131072:
+                raise CacheBlocked()
+            with tree.verified_file(directory, entry, info) as stream:
+                raw = stream.read(131073)
+            return (raw, info.st_mtime_ns) if with_mtime else raw
+        finally:
+            tree.close_directory(directory)
+            tree.close()
+    except OSError:
+        raise CacheBlocked() from None

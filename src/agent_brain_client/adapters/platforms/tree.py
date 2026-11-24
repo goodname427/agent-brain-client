@@ -41,11 +41,11 @@ class VerifiedTreeFiles:
                 raise OSError("Source changed during read")
 
 
-def open_tree(root):
+def open_tree(root, *, pin_root=False):
     if os.name == "nt":
         from agent_brain_client.adapters.platforms.windows.tree import WindowsTree
 
         return WindowsTree(root)
     from agent_brain_client.adapters.platforms.posix.tree import PosixTree
 
-    return PosixTree(root)
+    return PosixTree(root, pin_root=pin_root)

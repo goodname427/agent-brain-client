@@ -251,43 +251,48 @@ class FileContentOutbox(DurableOutbox):
                     raise CacheBlocked()
                 cache_mode(path, blocked=CacheBlocked)
                 continue
-            if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}\.json", path.name):
-                raise CacheBlocked()
-            row = self._load("outbox/" + path.name)
-            if (
-                not isinstance(row, dict)
-                or set(row)
-                != {
-                    "schema",
-                    "policy_sha",
-                    "created",
-                    "request",
-                    "request_sha",
-                    "state",
-                    "response",
-                    "remote",
-                    "reconciles",
-                    "resolution_request_id",
-                }
-                or row["schema"] != 1
-                or row["policy_sha"] != self.queue_sha
-                or type(row["created"]) is not int
-                or row["state"]
-                not in ("pending", "confirmed", "conflict", "blocked", "reconciled")
-            ):
-                raise CacheBlocked()
-            self._check_write(row["request"])
-            if (
-                row["request"]["request_id"] + ".json" != path.name
-                or sha(contract.encode(row["request"])) != row["request_sha"]
-            ):
-                raise CacheBlocked()
-            rows.append(row)
+            rows.append(self._retained_queue_row(path.name))
         if sum(self._awaits_resolution(row) for row in rows) > 1024:
             raise CacheBlocked()
         return sorted(
             rows, key=lambda row: (row["created"], row["request"]["request_id"])
         )
+
+    def _retained_queue_row(self, name, *, optional=False):
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}\.json", name):
+            raise CacheBlocked()
+        row = self._load("outbox/" + name)
+        if row is None and optional:
+            return None
+        if (
+            not isinstance(row, dict)
+            or set(row)
+            != {
+                "schema",
+                "policy_sha",
+                "created",
+                "request",
+                "request_sha",
+                "state",
+                "response",
+                "remote",
+                "reconciles",
+                "resolution_request_id",
+            }
+            or row["schema"] != 1
+            or row["policy_sha"] != self.queue_sha
+            or type(row["created"]) is not int
+            or row["state"]
+            not in ("pending", "confirmed", "conflict", "blocked", "reconciled")
+        ):
+            raise CacheBlocked()
+        self._check_write(row["request"])
+        if (
+            row["request"]["request_id"] + ".json" != name
+            or sha(contract.encode(row["request"])) != row["request_sha"]
+        ):
+            raise CacheBlocked()
+        return row
 
     def _load(self, name, default=None):
         require_platform("cache-storage", self.platform)
@@ -325,8 +330,8 @@ class FileEventQueue(FileContentOutbox):
         if source_keys:
             raise CacheBlocked()
 
-    def invoke(self, request, reconciles=None, *, event_gate=None):
-        result = self.invoke_write(request, reconciles, event_gate=event_gate)
+    def invoke(self, request, reconciles=None, *, event_gate=None, exact_event=False):
+        result = self.invoke_write(request, reconciles, event_gate=event_gate, exact_event=exact_event)
         if result.get("local_refresh", {}).get("status") == "event-disabled":
             return result
         refresh = (
