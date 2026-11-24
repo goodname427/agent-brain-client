@@ -1,5 +1,6 @@
 """The same real content contract through each host, plus a forbidden-host runtime."""
 
+from concurrent.futures import ThreadPoolExecutor
 import copy
 from hashlib import sha256
 import io
@@ -9,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from threading import Barrier
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -44,6 +46,7 @@ class SyntheticCaptureServer:
         self.request_native_header = {}
         self.receipts = {}
         self.lose_ack = True
+        self.fail_before_commit = None
         self.admitted = True
         self.extraction = "staged"
 
@@ -69,6 +72,9 @@ class SyntheticCaptureServer:
         else:
             assert body["method"] == "memory_global_event_submit"
             event = params["event"]
+            if self.fail_before_commit is not None and event.get("content") == self.fail_before_commit:
+                self.fail_before_commit = None
+                raise URLError("Synthetic transport failed before L0")
             if event["contract"] == "agentbrain.native-memory.v1":
                 assert set(event) == {"contract", "event_id", "occurred_at", "content"}
                 count = 1
@@ -100,7 +106,7 @@ class SyntheticCaptureServer:
 
 
 class NativeMemoryCapture(unittest.TestCase):
-    def exercise(self, home, harness, windows_layout):
+    def exercise(self, home, harness, windows_layout, *, terminal_rerun=False):
         home.mkdir()
         workspace = home / "synthetic-workspace"
         workspace.mkdir()
@@ -221,6 +227,9 @@ class NativeMemoryCapture(unittest.TestCase):
                 "approved": True,
                 "source_scope": SOURCE_SCOPE,
             }
+            if terminal_rerun:
+                self.exercise_terminal_rerun(source_file, peer, worker, worker_pass, server, tool, args, value)
+                return
             missing = tool(worker, "memory_onboard", args)
             self.assertEqual(missing["inventory"], "unavailable")
             source_file.parent.mkdir(parents=True)
@@ -545,6 +554,136 @@ class NativeMemoryCapture(unittest.TestCase):
                 with self.assertRaises(GlobalRequestTooLarge):
                     CollectionClient._wire_body("memory_global_status", {"event": by_body[raw_max]["params"]["event"]},
                                                 "synthetic-rid")
+
+    def exercise_terminal_rerun(self, source_file, peer, worker, worker_pass, server, tool, args, value):
+        source_file.parent.mkdir(parents=True)
+        originals = ["Synthetic original A \r\n", "合成原文 B 🌿\r\n", "Synthetic original C e\u0301\r\n"]
+        for index, original in enumerate(originals):
+            source_file.with_name(f"rerun-{index}.md").write_bytes(original.encode())
+        by_fingerprint = {sha256(original.encode()).hexdigest(): original for original in originals}
+        sources = worker.adapter.sources
+        accepted, pending, missing = [
+            by_fingerprint[item["source_fingerprint"]]
+            for item in sources.provider.inventory(onboarding=True)["sources"]
+        ]
+        peer.lose_ack = False
+        peer.fail_before_commit = pending
+        first = tool(worker, "memory_onboard", args)
+        self.assertEqual(first["counts"]["received"], 1)
+        self.assertEqual(first["counts"]["pending"], 2)
+        old_id = first["approval_id"]
+        resume = {key: val for key, val in args.items() if key != "approved"}
+        resume["resume"] = True
+        old_resume = dict(resume, approval_id=old_id)
+        accepted_wire, pending_wire = [
+            request for request in peer.requests if request["method"] == "memory_global_event_submit"
+        ]
+        local = collection.eligible(value, args["destination"]["origin"])
+        _, queue = collection.build_delivery_queue(value, local, args["harness"])
+        progress = onboarding.progress_name(old_id)
+        old = queue._load(progress)
+        old.pop("track_receipts", None)
+        old["summary"].update(
+            status="onboarding-processed", reasons={"historical-text-exclusion": 2},
+            counts={"received": 1, "already_exists": 0, "excluded": 2, "pending": 0, "failed": 0},
+        )
+        queue._save(progress, old)
+        for request in (accepted_wire, pending_wire):
+            (queue.cache / "onboarding/attempts" / (request["request_id"] + ".json")).unlink(missing_ok=True)
+        old_receipts = dict(peer.receipts)
+        self.assertEqual(len(old_receipts), 1)
+        pending_row = queue._load("outbox/" + pending_wire["request_id"] + ".json")
+        self.assertEqual(pending_row["state"], "pending")
+        before = len(peer.requests)
+        self.assertFalse(deliver_pending(queue, allowed=lambda _: True))
+        self.assertFalse(worker_pass(old_id))
+        self.assertEqual(tool(worker, "memory_onboard", old_resume), dict(old["summary"], approval_id=old_id))
+        self.assertEqual(len(peer.requests), before)
+
+        with (
+            patch.object(onboarding, "source_active", return_value=False),
+            patch.object(sources.provider, "inventory", side_effect=AssertionError("Paused source inventoried")),
+        ):
+            self.assertEqual(tool(worker, "memory_onboard", args)["error"]["code"],
+                             "onboarding-personal-origin-required")
+        callers = Barrier(2, timeout=5)
+
+        def initial_call():
+            caller = server()
+            callers.wait()
+            return tool(caller, "memory_onboard", args, run_delivery=False)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            submissions = [pool.submit(initial_call) for _ in range(2)]
+            fresh, duplicate = (request.result(timeout=10) for request in submissions)
+        self.assertEqual(fresh, duplicate)
+        self.assertNotEqual(fresh["approval_id"], old_id)
+        self.assertEqual(fresh["status"], "onboarding-queued")
+        self.assertEqual(len(peer.requests), before)
+        new_id = fresh["approval_id"]
+        alternate = source_file.with_name("alternate-snapshot.md")
+        alternate.write_text("Synthetic original in a different approval snapshot.")
+        other = tool(worker, "memory_onboard", args, run_delivery=False)
+        self.assertNotEqual(other["approval_id"], new_id)
+        alternate.unlink()
+        self.assertEqual(tool(worker, "memory_onboard", args, run_delivery=False), fresh)
+        self.assertEqual(len(peer.requests), before)
+
+        # Revoke after the worker resolved its origin and before it reads originals.
+        with (
+            patch.object(onboarding, "source_active", side_effect=[True, False, False]),
+            patch.object(type(sources), "read_onboarding_original",
+                         side_effect=AssertionError("Revoked source original read")),
+        ):
+            self.assertTrue(worker_pass(new_id))
+        self.assertEqual(len(peer.requests), before)
+        paused = tool(worker, "memory_onboard", resume, run_delivery=False)
+        self.assertEqual(paused["approval_id"], new_id)
+        self.assertEqual(paused["counts"]["pending"], 2)
+        self.assertEqual(paused["reasons"], {"onboarding-origin-changed": 2})
+
+        peer.admitted = False
+        self.assertTrue(worker_pass(new_id))
+        self.assertEqual([request["method"] for request in peer.requests[before:]], ["memory_global_status"])
+        self.assertEqual(peer.receipts, old_receipts)
+        self.assertEqual(tool(worker, "memory_onboard", args, run_delivery=False)["approval_id"], new_id)
+        peer.admitted = True
+        peer.fail_before_commit = missing
+        self.assertTrue(worker_pass(new_id))
+        interim = tool(worker, "memory_onboard", resume, run_delivery=False)
+        self.assertEqual(interim["counts"], {
+            "received": 1, "already_exists": 1, "excluded": 0, "pending": 1, "failed": 0,
+        })
+        self.assertEqual(len(peer.receipts), 2)
+        confirmed_row = queue._load("outbox/" + pending_wire["request_id"] + ".json")
+        self.assertEqual(confirmed_row["state"], "confirmed")
+        self.assertEqual(confirmed_row["created"], pending_row["created"])
+
+        done = tool(server(), "memory_onboard", dict(resume, approval_id=new_id))
+        self.assertEqual(done["status"], "onboarding-processed")
+        self.assertEqual(done["counts"], {
+            "received": 2, "already_exists": 1, "excluded": 0, "pending": 0, "failed": 0,
+        })
+        self.assertEqual({row["params"]["event"]["content"] for row in peer.receipts.values()}, set(originals))
+        self.assertEqual({key: peer.receipts[key] for key in old_receipts}, old_receipts)
+        sent = [request for request in peer.requests[before:] if request["method"] == "memory_global_event_submit"]
+        self.assertEqual(sent[0], pending_wire)
+        self.assertEqual(sent[1], sent[2])
+        self.assertEqual([request["params"]["event"]["content"] for request in sent], [pending, missing, missing])
+        self.assertNotIn(accepted_wire, sent)
+        before = len(peer.requests)
+        self.assertEqual(tool(worker, "memory_onboard", old_resume), dict(old["summary"], approval_id=old_id))
+        self.assertEqual(tool(worker, "memory_onboard", dict(resume, approval_id=new_id)), done)
+        again = tool(worker, "memory_onboard", args)
+        self.assertNotEqual(again["approval_id"], new_id)
+        self.assertEqual(again["counts"]["received"], 0)
+        self.assertEqual(again["counts"]["already_exists"], 3)
+        self.assertEqual(len(peer.requests), before)
+        self.assertEqual(len(peer.receipts), 3)
+
+    def test_explicit_rerun_rechecks_terminal_legacy_snapshot_and_confirms_only_missing_l0(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.exercise(Path(tmp).resolve() / "home", "codex", False, terminal_rerun=True)
 
     def test_first_origin_import_preserves_other_pending_capture_and_exact_replay(self):
         for harness in ("codex", "codebuddy"):

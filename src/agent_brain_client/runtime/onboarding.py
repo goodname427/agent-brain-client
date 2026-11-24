@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
 import time
+from uuid import uuid4
 
 from agent_brain_client.adapters.platforms.filesystem import cache_locked
 from agent_brain_client.adapters.storage import metadata
@@ -76,10 +77,11 @@ def onboard_native_memory(adapter, arguments):
             summary.counts["pending"] = len(inventory["sources"])
             state = {
                 "started": time.time_ns(),
+                "track_receipts": True,
                 "summary": dict(summary.result(inventory["status"]), status="onboarding-queued"),
             }
             queue._save(progress, state)
-    if state["summary"]["status"] == "onboarding-queued" or state["summary"]["counts"]["pending"]:
+    if batch_pending(state["summary"]):
         task = {
             "schema": 1, "harness": "onboarding", "source_harness": harness,
             "origin": local, "approval_id": approval_id,
@@ -96,6 +98,10 @@ def onboard_native_memory(adapter, arguments):
 
 def progress_name(approval_id):
     return "onboarding/" + approval_id + "-progress.json"
+
+
+def batch_pending(summary):
+    return summary["status"] == "onboarding-queued" or summary["counts"]["pending"] > 0
 
 
 def enrolled_sources(home, harness, client, queue):
@@ -159,14 +165,15 @@ def deliver_approved_batch(home, task, core):
             raise CacheBlocked()
         summary = state["summary"]
         previous = summary["counts"]
-        if summary["status"] != "onboarding-queued" and not previous["pending"]:
+        if not batch_pending(summary):
             return False, False
         batch = approval_snapshot(sources, queue, client.scope_sha, group, project, True, approval_id)
         if batch is None:
             raise CacheBlocked()
         _, inventory = batch
         summary = process_batch(
-            sources, harness, client, queue, project, group, inventory, allowed, started=state["started"],
+            sources, harness, client, queue, project, group, inventory, allowed,
+            approval_id=approval_id, legacy_started=None if state.get("track_receipts") else state["started"],
         )
         queue._save(progress, dict(state, summary=summary))
         counts = summary["counts"]
@@ -174,6 +181,22 @@ def deliver_approved_batch(home, task, core):
             previous[k] for k in ("received", "already_exists")
         )
         return counts["pending"] > 0, advanced
+
+
+def read_approval(queue, approval_id, binding):
+    if not isinstance(approval_id, str) or not re.fullmatch("[a-f0-9]{64}", approval_id):
+        raise CacheBlocked()
+    saved = queue._load("onboarding/" + approval_id + ".json")
+    if saved is None:
+        return None
+    if (
+        not isinstance(saved, dict)
+        or set(saved) not in ({"binding", "inventory"}, {"binding", "inventory", "attempt"})
+        or saved["binding"] != binding
+        or digest(saved) != approval_id
+    ):
+        raise CacheBlocked()
+    return saved
 
 
 def approval_snapshot(sources, queue, route_scope_sha, group, project, resume, approval_id):
@@ -189,33 +212,37 @@ def approval_snapshot(sources, queue, route_scope_sha, group, project, resume, a
             if not isinstance(latest, dict) or set(latest) != {"approval_id"}:
                 raise CacheBlocked()
             approval_id = latest["approval_id"]
-        if not isinstance(approval_id, str) or len(approval_id) != 64 or any(
-            char not in "0123456789abcdef" for char in approval_id
-        ):
-            raise CacheBlocked()
-        saved = queue._load("onboarding/" + approval_id + ".json")
+        saved = read_approval(queue, approval_id, binding)
         if saved is None:
             return None
-        if (not isinstance(saved, dict) or set(saved) != {"binding", "inventory"}
-                or saved["binding"] != binding or digest(saved) != approval_id):
-            raise CacheBlocked()
         return approval_id, saved["inventory"]
 
     inventory = sources.provider.inventory(onboarding=True)
     snapshot = {field: inventory[field] for field in ("status", "sources")}
     saved = {"binding": binding, "inventory": snapshot}
-    approval_id = digest(saved)
-    entry = "onboarding/" + approval_id + ".json"
-    prior = queue._load(entry)
-    if prior is None:
-        queue._save(entry, saved)
-    elif prior != saved:
+    snapshot_id = digest(saved)
+    # Keep one in-flight attempt per exact snapshot, including when the latest
+    # approval points to another snapshot. Retain every older approval by ID.
+    active = "onboarding/" + snapshot_id + "-active.json"
+    approval_id = queue._load(active, snapshot_id)
+    prior = read_approval(queue, approval_id, binding)
+    if approval_id != snapshot_id and (prior is None or prior["inventory"] != snapshot):
         raise CacheBlocked()
+    progress = queue._load(progress_name(approval_id))
+    if progress is not None and not batch_pending(progress["summary"]):
+        saved["attempt"] = uuid4().hex
+        approval_id = digest(saved)
+        prior = None
+    if prior is None:
+        queue._save("onboarding/" + approval_id + ".json", saved)
+        if approval_id != snapshot_id:
+            queue._save(active, approval_id)
     queue._save("onboarding/latest.json", {"approval_id": approval_id})
     return approval_id, snapshot
 
 
-def process_batch(sources, harness, client, queue, project, group, inventory, allowed, *, started):
+def process_batch(sources, harness, client, queue, project, group, inventory, allowed, *,
+                  approval_id, legacy_started):
     summary = Summary(harness)
     wanted = {
         "native_memory_" + digest([project, group, item["source_id"], item["source_fingerprint"]])
@@ -236,12 +263,19 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
 
         key = digest([project, group, source_id, fingerprint])
         event_id, request_id = "native-" + key[:56], "native_memory_" + key
+        attempt_file = "onboarding/attempts/" + request_id + ".json"
         retained = existing.get(request_id)
         other = other_routes.get(request_id)
         if retained and retained["state"] == "confirmed" and core_receipt(retained["response"], retained["request"]):
             response = retained["response"]
             recorded = response.get("result", {}).get("replayed") is not True
-            outcome = "received" if retained["created"] >= started and recorded else "already_exists"
+            owner = queue._load(attempt_file)
+            # Older workers left no attempt record. Preserve their in-flight
+            # counts when resuming, with an actual validated L0 receipt.
+            received = owner == approval_id or (
+                owner is None and legacy_started is not None and retained["created"] >= legacy_started
+            )
+            outcome = "received" if received and recorded else "already_exists"
             summary.add(outcome, response=response)
             continue
         if other:
@@ -252,6 +286,9 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
             continue
 
         try:
+            if not allowed():
+                summary.add("pending", "onboarding-origin-changed")
+                continue
             if retained is not None:
                 request = retained["request"]
                 body, _ = sources.read_onboarding_original(source_id, fingerprint)
@@ -281,9 +318,6 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
             except ValueError:
                 summary.add("failed", "original-outside-bound")
                 continue
-            if not allowed():
-                summary.add("pending", "onboarding-origin-changed")
-                continue
             client.check_event_frame(request)
             if source_admitted is None and not transport_unconfirmed and request_timeout(90) > 4:
                 try:
@@ -297,6 +331,13 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
                 summary.counts["pending"] += len(inventory["sources"]) - index
                 summary.reasons["delivery-deferred"] += 1
                 break
+            if not allowed():
+                summary.add("pending", "onboarding-origin-changed")
+                continue
+            # Attribute a later confirmation across worker passes, even when
+            # the immutable pending outbox row predates this approval.
+            if queue._load(attempt_file) != approval_id:
+                queue._save(attempt_file, approval_id)
             response = queue.invoke(request, event_gate=allowed)
         except GlobalRequestTooLarge:
             summary.add("failed", "original-exceeds-transport-envelope")
@@ -311,6 +352,8 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
         ):
             outcome = "already_exists" if response["result"].get("replayed") is True else "received"
             summary.add(outcome, response=response)
+        elif response.get("local_refresh", {}).get("status") == "event-disabled":
+            summary.add("pending", "onboarding-origin-changed")
         elif state == "pending":
             transport_unconfirmed = True
             summary.add("pending", "delivery-unconfirmed")
