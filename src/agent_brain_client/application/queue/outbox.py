@@ -5,7 +5,7 @@ host config, transcript discovery, credentials or context injection lives here.
 """
 
 from agent_brain_client.domain.content import same_record
-from agent_brain_client.domain.errors import CacheBlocked
+from agent_brain_client.domain.errors import CacheBlocked, CollectionCapacityExceeded
 from agent_brain_client.domain.events import NATIVE_MEMORY_CONTRACT
 import hashlib
 import json
@@ -108,11 +108,13 @@ class DurableOutbox:
                     pass
             self._save("outbox/" + request["request_id"] + ".json", row)
 
-    def invoke_write(self, request, reconciles=None, *, event_gate=None):
+    def invoke_write(self, request, reconciles=None, *, event_gate=None, exact_event=False):
         """One write/replay implementation for native mapping and event hosts."""
         check_request()
         self._require_storage()
         method = request.get("method")
+        if exact_event and (method != "memory_event_submit" or reconciles is not None):
+            raise CacheBlocked()
         with (
             self._outbox_stage("content-write"),
             self._outbox_lock(self.cache / "content.lock", "content-lock"),
@@ -146,10 +148,15 @@ class DurableOutbox:
                 except Exception:
                     pass
             with self._outbox_stage("outbox-drain"):
-                self._drain(
-                    request["request_id"] if method == "memory_event_submit" else None,
-                    event_gate=event_gate,
-                )
+                if exact_event:
+                    # Enqueue already validated the ledger under its lock.
+                    # This event-only write carries no other reconciliation.
+                    self._drain_pass(request["request_id"], event_gate, rows=(row,))
+                else:
+                    self._drain(
+                        request["request_id"] if method == "memory_event_submit" else None,
+                        event_gate=event_gate,
+                    )
             with self._outbox_stage("outbox-result"):
                 result = self._queue_result(
                     self._load("outbox/" + request["request_id"] + ".json")
@@ -247,7 +254,7 @@ class DurableOutbox:
             return old
         rows = self._queued()
         if sum(self._awaits_resolution(row) for row in rows) >= 1024:
-            raise CacheBlocked()
+            raise CollectionCapacityExceeded()
         target = (request["params"]["kind"], request["params"]["id"])
         for rid in reconciles["request_ids"]:
             previous = next(
@@ -337,10 +344,10 @@ class DurableOutbox:
         return self._read_target(*target)
 
     def _drain_pass(
-        self, event_request_id=None, event_gate=None, *, exact_request_id=None
+        self, event_request_id=None, event_gate=None, *, exact_request_id=None, rows=None
     ):
         resolved = False
-        for row in self._queued():
+        for row in self._queued() if rows is None else rows:
             check_request()
             request = row["request"]
             if (
