@@ -1198,6 +1198,7 @@ def inspect(home):
             "protocol_checked": True,
             "model_loaded": "unknown",
             "installed_version": active["version"],
+            "installed_commit": active.get("commit"),
             "update_checkpoint": "approved-MCP-startup",
         }
     except PlatformUnsupported as error:

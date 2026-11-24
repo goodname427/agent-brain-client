@@ -13,8 +13,9 @@ def main():
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--device-home', type=Path, required=True)
+    parser.add_argument('--wait-for-lease', action='store_true')
     args = parser.parse_args()
-    run(args.device_home)
+    run(args.device_home, wait_for_lease=args.wait_for_lease)
     return 0
 
 
