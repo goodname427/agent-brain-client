@@ -48,6 +48,11 @@ def child(wrapper, entry, *arguments):
     from agent_brain_client.domain.scopes import digest
     from agent_brain_client.runtime import delivery
 
+    if "--fixture-legacy-wake" in arguments:
+        print(json.dumps(delivery.wake(home)))
+        return
+
+    legacy_version = (home / "legacy-version").read_text()
     record = metadata.private_json(home / "synthetic-credential.json")
     log = home / "wire.jsonl"
     original_init = ContentSession.__init__
@@ -83,7 +88,7 @@ def child(wrapper, entry, *arguments):
                 assert all(row == body for row in matching)
                 with log.open("a") as stream:
                     stream.write(json.dumps(dict(version=version, request=body)) + "\n")
-                if version == "0.8.42" and (home / "hold-send").exists() and not matching:
+                if version == legacy_version and (home / "hold-send").exists() and not matching:
                     (home / "in-flight").touch()
                     deadline = time.monotonic() + 18
                     while not (home / "finish-send").exists() and time.monotonic() < deadline:
@@ -123,7 +128,7 @@ def child(wrapper, entry, *arguments):
         def pause(seconds):
             until = time.monotonic() + seconds
             while time.monotonic() < until or (
-                version == "0.8.42" and (home / "hold-idle").exists()
+                version == legacy_version and (home / "hold-idle").exists()
             ):
                 if (home / "closing-fixture").exists():
                     raise SystemExit(0)
@@ -186,7 +191,7 @@ class Handoff(unittest.TestCase):
         manifest = json.loads((directory / "releases/manifest.json").read_bytes())
         return commit, manifest, lambda name: (directory / name).read_bytes()
 
-    def exercise(self, harness, *, reproduce=False, idle=False, lost_ack=False):
+    def exercise(self, harness, *, legacy_version="0.8.42", reproduce=False, idle=False, lost_ack=False):
         python = Path(sys.executable).resolve(strict=True)
         fixture = FirstInstall("test_first_install_cli_emits_onboard_handoff_without_importing")
         fixture.setUp()
@@ -195,6 +200,7 @@ class Handoff(unittest.TestCase):
         fixture.code = fixture.authority.issue(fixture.fixture_grant, 300)
         fixture.fixture()
         self.fixture, self.home, self.shared_control = fixture, fixture.home, harness == "codebuddy"
+        (self.home / "legacy-version").write_text(legacy_version)
         if self.shared_control:
             fixture.config.unlink()
             fixture.native.rmdir()
@@ -219,7 +225,7 @@ class Handoff(unittest.TestCase):
             f'exec {shlex.quote(str(python))} "$@"\n'
         )
         fixture.materials["dependencies"]["python_sha256"] = sha256(wrapper.read_bytes()).hexdigest()
-        old = self.published("0.8.42")
+        old = self.published(legacy_version)
         with patch.object(GitReleaseSource, "latest", return_value=old):
             initial = fixture.run_wizard(updater=None)
         self.assertTrue(initial["installed"], initial)
@@ -295,7 +301,7 @@ class Handoff(unittest.TestCase):
         self.assertIn("approval_id", accepted, accepted)
         self.assertEqual(accepted["counts"]["pending"], 1, accepted)
         root = delivery.directory(self.home)
-        expected = self.home / ("source-check-0.8.42" if idle else "in-flight")
+        expected = self.home / ("source-check-" + legacy_version if idle else "in-flight")
         try:
             wait_until(expected.exists, timeout=8)
         except AssertionError:
@@ -306,7 +312,7 @@ class Handoff(unittest.TestCase):
         self.assertTrue(delivery._held(root / "worker.lock"))
         self.assertFalse((root / "handoff/owner.json").exists())
 
-        published = self.published("0.8.43")
+        published = old if legacy_version == "0.8.43" else self.published("0.8.43")
 
         def fixed_release():
             from dev.build.package import export
@@ -359,6 +365,7 @@ class Handoff(unittest.TestCase):
             self.assertTrue(any((root / "onboarding").glob("*.json")))
             self.assertTrue(any((root / "handoff/parked").glob("*.json")))
 
+        released_at = time.monotonic()
         (self.home / "finish-send").touch()
         (self.home / "hold-idle").unlink(missing_ok=True)
         if reproduce:
@@ -372,13 +379,25 @@ class Handoff(unittest.TestCase):
             (self.home / "hold-current").touch()
             next_release = fixed_release()
             version = update(next_release)
+            released_at = time.monotonic()
 
         wait_until((self.home / "current-in-flight").exists, timeout=12)
-        self.assertTrue((self.home / "delivery-exited-0.8.42").exists())
+        self.assertLess(time.monotonic() - released_at, 13)
+        wait_until((self.home / ("delivery-exited-" + legacy_version)).exists)
         actual = runtime()
         self.assertEqual(actual["running_delivery_version"], version)
         self.assertEqual(actual["running_delivery_commit"], next_release[0])
         self.assertEqual(actual["delivery_worker_status"], "current")
+        legacy_pid = self.home / ("delivery-pid-" + legacy_version)
+        retired = legacy_pid.read_text()
+        wake = subprocess.run(
+            [self.python, "-I", "-B", str(Path(active["package"]) / ENTRY),
+             "--device-home", str(self.home), "--fixture-legacy-wake"],
+            capture_output=True, check=True, timeout=8,
+        )
+        self.assertIs(json.loads(wake.stdout), False)
+        self.assertEqual(legacy_pid.read_text(), retired)
+        self.assertEqual(runtime()["delivery_worker_status"], "current")
         (self.home / "finish-current").touch()
 
         result = {}
@@ -397,18 +416,18 @@ class Handoff(unittest.TestCase):
         sent = [json.loads(line) for line in (self.home / "wire.jsonl").read_text().splitlines()]
         unique = {row["request"]["request_id"] for row in sent}
         self.assertEqual((len(unique), len(sent)), (66, 66 + int(lost_ack)))
-        worker_posts = [row for row in sent if row["version"] == "0.8.42"]
+        worker_posts = [row for row in sent if row["version"] == legacy_version]
         self.assertEqual(len(worker_posts), 0 if idle else 1)
         if lost_ack:
             same = [row for row in sent if row["request"] == worker_posts[0]["request"]]
-            self.assertEqual([row["version"] for row in same], ["0.8.42", version])
+            self.assertEqual([row["version"] for row in same], [legacy_version, version])
         self.assertFalse(any((root / "handoff/parked").glob("*.json")))
         receipt_root = state / ("global-memory" if harness == "codex" else "codebuddy") / "outboxes"
         receipts = [metadata.private_json(row, cache=True) for row in receipt_root.glob("*/outbox/*.json")]
         self.assertEqual({row["request"]["request_id"] for row in receipts}, unique)
         self.assertTrue(all(row["state"] == "confirmed" for row in receipts))
         failures = {path.name for path in self.home.glob("delivery-error-*")}
-        self.assertEqual(failures, {"delivery-error-0.8.42"} if reproduce else set())
+        self.assertEqual(failures, {"delivery-error-" + legacy_version} if reproduce else set())
         self.assertIsNone(child_process.poll())
         self.assertEqual({row["name"] for row in exchange("tools/list")["tools"]},
                          {row["name"] for row in tools})
@@ -424,6 +443,12 @@ class Handoff(unittest.TestCase):
 
     def test_fixed_mac_codex_legacy_in_flight(self):
         self.exercise("codex")
+
+    def test_fixed_windows_layout_published_0843_in_flight(self):
+        self.exercise("codebuddy", legacy_version="0.8.43", lost_ack=True)
+
+    def test_fixed_mac_codex_published_0843_idle(self):
+        self.exercise("codex", legacy_version="0.8.43", idle=True)
 
 
 if __name__ == "__main__":
