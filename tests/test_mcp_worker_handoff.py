@@ -522,8 +522,8 @@ class RegistrationStampTests(unittest.TestCase):
 
 
 @unittest.skipUnless(sys.platform == "darwin", "Synthetic Mac first-install binding")
-class ManualUpdateTests(unittest.TestCase):
-    """Run the public update and keep talking to the originally registered process."""
+class ManualUpdateFixture(unittest.TestCase):
+    shared_control = False
 
     def setUp(self):
         import platform
@@ -537,6 +537,13 @@ class ManualUpdateTests(unittest.TestCase):
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         fixture.fixture()
+        if self.shared_control:
+            fixture.config.unlink()
+            fixture.native.rmdir()
+            fixture.harness = "codebuddy"
+            fixture.native = fixture.home / ".config/agent-brain-client/shared-native"
+            fixture.native.mkdir(mode=0o700)
+            fixture.config = fixture.native / "config.toml"
         # Bind executable bytes before first install creates its dependency
         # policy, launcher receipt, or registered command.
         fixture.runtime.stop()
@@ -582,7 +589,10 @@ version = sys.argv[sys.argv.index("--client-version") + 1]
 harness = sys.argv[sys.argv.index("--harness") + 1]
 seed = sys.argv[sys.argv.index("--managed-stdio") + 1]
 protocol = "2025-11-25"
-tools = [{"name": "content_catalog", "inputSchema": {"type": "object"}}]
+tools = [
+    {"name": name, "inputSchema": {"type": "object"}}
+    for name in ("content_catalog", "fixture_unregistered")
+]
 
 class Worker:
     ready = seed == protocol
@@ -614,7 +624,7 @@ write_response(sys.stdout, {
 serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
 '''
 
-    def packages(self, channel, installed):
+    def packages(self, channel, installed, *, replace_launcher=False):
         from agent_brain_client.adapters.packages.client import launcher_package_files
         from agent_brain_client.adapters.packages.releases import digest
 
@@ -624,7 +634,9 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
         old_contents = dict(payload)
         old_contents[content] = self.worker_source()
         next_contents = dict(old_contents)
-        next_contents[content] += b"\n# Only this worker entry changed.\n"
+        next_contents[content] += b"\n# Updated synthetic worker.\n"
+        if replace_launcher:
+            next_contents["src/agent_brain_client/interfaces/mcp/launcher.py"] += b"\n# Updated fixed supervisor.\n"
 
         def release(version, data):
             return {
@@ -649,10 +661,10 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
         self.assertEqual(registered["command"], self.python)
         command = [registered["command"], *registered["args"]]
         environment = {
-            **registered.get("env", {}),
             "HOME": str(self.home),
-            "CODEX_HOME": str(self.fixture.native),
+            "CODEX_HOME": str(self.home / ".codex" if self.shared_control else self.fixture.native),
             "LANG": "en_US.UTF-8",
+            **registered.get("env", {}),
         }
         stderr = (self.home / "managed-update.stderr").open("w+b")
         self.addCleanup(stderr.close)
@@ -708,6 +720,64 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
             return response["result"]
 
         return child, exchange
+
+    def codebuddy_registration(self, *, surface="cli", replace_launcher=False):
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration as host
+        from agent_brain_client.adapters.packages.client import ClientReleases
+        from agent_brain_client.adapters.packages.frozen import freeze_code, runtime_pins
+        from agent_brain_client.adapters.packages.releases import atomic_json, digest
+        from agent_brain_client.adapters.platforms.filesystem import (
+            cache_directory,
+            private_directory,
+        )
+        from agent_brain_client.adapters.storage import metadata
+        from agent_brain_client.adapters.storage.collection import settings_path
+        from agent_brain_client.domain.scopes import digest as scope_digest
+        from agent_brain_client.runtime.delivery import directory
+
+        state = self.home / ".config/agent-brain-client"
+        registration = metadata.private_json(state / "codex-mcp.json")
+        channel = ClientReleases(registration["release_policy"], registration["release_policy_sha256"])
+        active = self.packages(channel, Path(registration["package"]), replace_launcher=replace_launcher)
+        source = Path(active["package"])
+        pins = runtime_pins(source)
+        settings_file = settings_path(self.home)
+        private_directory(settings_file.parent)
+        freeze_code(settings_file.parent, pins, source=source)
+        scope = {
+            "schema": 1, "profile_id": "a" * 32, "include_roots": [], "exclude_roots": [],
+            "non_project_roots": [str(self.home)], "recall_personal": True,
+        }
+        approved = scope_digest(scope)
+        metadata.write(settings_file, {
+            "schema": 1, "enabled": True, "device_home": str(self.home), "scope": scope,
+            "approved_scope_sha256": approved, "server_scope_sha256": approved,
+            "legacy_projects": [], "operator": None, "operator_sha256": None, "code_sha256": pins,
+        })
+        cache_directory(directory(self.home))
+        atomic_json(channel.engine.local / "startup-check.json", {
+            "policy_sha256": digest(json.dumps(channel.policy, sort_keys=True).encode()),
+            "checked_at": time.time(),
+        })
+        # Start with the migrated shared MCP entry and Hook maintenance pending.
+        definitions = host.definitions
+        def pending_hooks(entry, home, **_):
+            mcp, _ = definitions(entry, home, fixed_hooks=True)
+            _, hooks = definitions(entry, home)
+            return mcp, hooks
+
+        with patch.object(host, "definitions", side_effect=pending_hooks):
+            host.install(self.home, source, None, surface=surface)
+        receipt_file = host.state_directory(self.home) / "registration.json"
+        receipt = metadata.private_json(receipt_file)
+        config = Path(receipt["mcp_paths"][0])
+        # Untouched native bytes include a BOM and a user comment.
+        config.write_bytes(b"\xef\xbb\xbf" + config.read_bytes().replace(b"{", b"{ // fixture\n", 1))
+        return channel, receipt_file, config
+
+
+class ManualUpdateTests(ManualUpdateFixture):
+    """Run the public update and keep talking to the originally registered process."""
 
     def test_public_update_keeps_fixed_registration_and_switches_existing_stdio(self):
         from agent_brain_client.adapters.installation import installation
@@ -797,60 +867,6 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
         # wait for the next periodic tick or require an initialize request.
         wait_until(lambda: (self.home / ("synthetic-background-" + commit)).exists())
         self.assertIsNone(child.poll())
-
-    def codebuddy_registration(self):
-        from agent_brain_client.adapters.harnesses.codebuddy import configuration as host
-        from agent_brain_client.adapters.packages.client import ClientReleases
-        from agent_brain_client.adapters.packages.frozen import freeze_code, runtime_pins
-        from agent_brain_client.adapters.packages.releases import atomic_json, digest
-        from agent_brain_client.adapters.platforms.filesystem import (
-            cache_directory,
-            private_directory,
-        )
-        from agent_brain_client.adapters.storage import metadata
-        from agent_brain_client.adapters.storage.collection import settings_path
-        from agent_brain_client.domain.scopes import digest as scope_digest
-        from agent_brain_client.runtime.delivery import directory
-
-        state = self.home / ".config/agent-brain-client"
-        registration = metadata.private_json(state / "codex-mcp.json")
-        channel = ClientReleases(registration["release_policy"], registration["release_policy_sha256"])
-        active = self.packages(channel, Path(registration["package"]))
-        source = Path(active["package"])
-        pins = runtime_pins(source)
-        settings_file = settings_path(self.home)
-        private_directory(settings_file.parent)
-        freeze_code(settings_file.parent, pins, source=source)
-        scope = {
-            "schema": 1, "profile_id": "a" * 32, "include_roots": [], "exclude_roots": [],
-            "non_project_roots": [str(self.home)], "recall_personal": True,
-        }
-        approved = scope_digest(scope)
-        metadata.write(settings_file, {
-            "schema": 1, "enabled": True, "device_home": str(self.home), "scope": scope,
-            "approved_scope_sha256": approved, "server_scope_sha256": approved,
-            "legacy_projects": [], "operator": None, "operator_sha256": None, "code_sha256": pins,
-        })
-        cache_directory(directory(self.home))
-        atomic_json(channel.engine.local / "startup-check.json", {
-            "policy_sha256": digest(json.dumps(channel.policy, sort_keys=True).encode()),
-            "checked_at": time.time(),
-        })
-        # Start with the migrated shared MCP entry and Hook maintenance pending.
-        definitions = host.definitions
-        def pending_hooks(entry, home, **_):
-            mcp, _ = definitions(entry, home, fixed_hooks=True)
-            _, hooks = definitions(entry, home)
-            return mcp, hooks
-
-        with patch.object(host, "definitions", side_effect=pending_hooks):
-            host.install(self.home, source, None, surface="cli")
-        receipt_file = host.state_directory(self.home) / "registration.json"
-        receipt = metadata.private_json(receipt_file)
-        config = Path(receipt["mcp_paths"][0])
-        # Untouched native bytes include a BOM and a user comment.
-        config.write_bytes(b"\xef\xbb\xbf" + config.read_bytes().replace(b"{", b"{ // fixture\n", 1))
-        return channel, receipt_file, config
 
     def run_codebuddy_hook(self, receipt):
         import shlex
@@ -1001,6 +1017,112 @@ serve(Worker(), sys.stdin.buffer, sys.stdout, managed_stdio=True)
         self.assertFalse(allowed(new, dict(desired, enabled=False)))
         self.assertTrue(allowed(changed_abi, dict(desired, args=[str(Path(changed_abi["package"]) / entry)])))
         self.assertFalse(allowed(changed_entry, dict(desired, args=[str(Path(changed_entry["package"]) / entry)])))
+
+
+class SharedControlStartupTests(ManualUpdateFixture):
+    shared_control = True
+
+    def assert_tool_served(self, entry, harness, version="0.8.25"):
+        child, exchange = self.start_registered(entry)
+        exchange("initialize", INIT)
+        exchange("notifications/initialized", notification=True)
+        self.assertEqual([tool["name"] for tool in exchange("tools/list")["tools"]], ["content_catalog"])
+        result = exchange("tools/call", {"name": "content_catalog"})
+        self.assertEqual((result["harness"], result["worker_version"]), (harness, version))
+        child.stdin.close()
+        self.assertEqual(child.wait(timeout=8), 0)
+
+    def assert_startup_refused(self, entry):
+        result = subprocess.run(
+            [entry["command"], *entry["args"]], input=b"", capture_output=True, timeout=10,
+            env={**entry.get("env", {}), "HOME": str(self.home), "LANG": "en_US.UTF-8"},
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, b"")
+        self.assertEqual(json.loads(result.stderr.splitlines()[-1])["status"], "verified-startup-unavailable")
+
+    def test_codebuddy_only_uses_shared_catalog_and_accepts_default_switch(self):
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration as host
+
+        _, _, config = self.codebuddy_registration(surface="ide")
+        self.assertFalse((self.home / ".codex").exists())
+        native = host.Document(host.read_host(config))
+        entry = native.value["mcpServers"][host.NAME]
+        self.assertNotIn("disabled", entry)
+        self.assert_tool_served(entry, "codebuddy")
+        config.write_text(native.patch(("mcpServers", host.NAME), dict(
+            entry, disabled=False, description="IDE metadata",
+        )), encoding="utf-8")
+        self.assert_tool_served(entry, "codebuddy")
+        self.assertFalse((self.home / ".codex").exists())
+
+    def test_each_host_uses_its_own_binding_and_cannot_start_with_disabled_or_changed_command(self):
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration as host
+        from agent_brain_client.adapters.harnesses.codex import binding
+        from agent_brain_client.adapters.storage.toml_document import toml_replace
+
+        _, _, config = self.codebuddy_registration(surface="ide")
+        codex_home = self.home / ".codex"
+        binding.install(self.home, native=codex_home)
+        codex = codex_home / "config.toml"
+        self.assertNotEqual(codex.read_bytes(), self.fixture.config.read_bytes())
+        entry = binding.entry(codex.read_bytes())
+        self.assert_tool_served(entry, "codex")
+
+        def write_codex(value):
+            codex.write_text(toml_replace('model = "synthetic"\n', ("mcp_servers", binding.NAME), value))
+
+        default = dict(entry, startup_timeout_sec=70)
+        default.pop("enabled")
+        write_codex(default)
+        self.assert_tool_served(entry, "codex")
+        for change in ({"enabled": False}, {"command": "/synthetic/other-python"},
+                       {"env": {"CODEX_HOME": "/synthetic/other-home"}}, {"args": ["-I"]},
+                       {"default_tools_approval_mode": "approve"}):
+            with self.subTest(harness="codex", change=change):
+                write_codex(dict(entry, **change))
+                self.assert_startup_refused(entry)
+
+        native = host.Document(host.read_host(config))
+        buddy = native.value["mcpServers"][host.NAME]
+        config.write_text(native.patch(("mcpServers", host.NAME, "disabled"), False))
+        self.assert_tool_served(buddy, "codebuddy")
+        for change in ({"disabled": True}, {"command": "/synthetic/other-python"},
+                       {"env": {"PATH": "/synthetic/other-path"}}, {"args": ["-I"]},
+                       {"cwd": str(self.home / "other-cwd")}):
+            with self.subTest(harness="codebuddy", change=change):
+                config.write_text(native.patch(("mcpServers", host.NAME), dict(buddy, **change)))
+                self.assert_startup_refused(buddy)
+
+    def test_public_update_replaces_old_fixed_entry_and_preserves_ide_settings(self):
+        from agent_brain_client.adapters.harnesses.codebuddy import configuration as host
+        from agent_brain_client.adapters.storage import metadata
+        from agent_brain_client.runtime.updates import manage_update
+
+        channel, receipt_file, config = self.codebuddy_registration(surface="ide", replace_launcher=True)
+        before = metadata.private_json(receipt_file)["mcp"]
+        native = host.Document(host.read_host(config))
+        config.write_bytes(b"\xef\xbb\xbf" + native.patch(("mcpServers", host.NAME), dict(
+            before, disabled=True, description="Keep this setting",
+        )).encode())
+        check = manage_update(self.home, "check-update", channel_factory=lambda *args: channel)
+        self.assertEqual(check["status"], "client-update-available", check)
+        self.assertTrue(check["launcher_update_available"], check)
+        report = manage_update(self.home, "update", channel_factory=lambda *args: channel)
+        self.assertEqual(report["status"], "client-update-updated", report)
+        self.assertTrue(report["bootstrap_registration_changed"], report)
+        self.assertTrue(report["global_hook"]["hosts"]["codebuddy"]["native_changes"]["mcp"])
+        after = metadata.private_json(receipt_file)["mcp"]
+        self.assertNotEqual(before["args"], after["args"])
+        self.assertTrue(config.read_bytes().startswith(b"\xef\xbb\xbf"))
+        self.assertIn(b"// fixture", config.read_bytes())
+        updated = host.Document(host.read_host(config))
+        self.assertEqual(updated.value["mcpServers"][host.NAME], dict(
+            after, disabled=True, description="Keep this setting",
+        ))
+        self.assert_startup_refused(after)
+        config.write_text(updated.patch(("mcpServers", host.NAME, "disabled"), False))
+        self.assert_tool_served(after, "codebuddy", "0.8.26")
 
 
 if __name__ == "__main__":
