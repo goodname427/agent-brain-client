@@ -9,12 +9,14 @@ import unittest
 from unittest.mock import patch
 
 from test_content_outbox import Cloud,MEMORY,RULE,SKILL,POLICY
+from agent_brain_client.adapters.harnesses.codebuddy.content_ports import CodeBuddyContentPorts
 from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.application.tools.catalog import enabled_tools
 from agent_brain_client.domain.content import validate_lifecycle_target
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.interfaces.mcp.content import ContentServer
+from agent_brain_client.interfaces.mcp.framing import ContentParameterError, ContentToolUnavailable
 import agent_brain_client.domain.contract as contract
 
 
@@ -31,13 +33,86 @@ class LifecycleContract(unittest.TestCase):
             contract.validate(method, dict(target, expected_revision='a' * 64))
             with self.assertRaises(ValueError):
                 contract.validate(method, dict(target, expected_revision='missing'))
-            cloud = Cloud()
-            self.assertIn(method, enabled_tools(POLICY, cloud.grant))
-            self.assertNotIn(method, enabled_tools(POLICY, dict(cloud.grant, scopes=['read'])))
+        cloud = Cloud()
+        self.assertIn('content_lifecycle', enabled_tools(POLICY, cloud.grant))
+        self.assertNotIn('content_lifecycle', enabled_tools(POLICY, dict(cloud.grant, scopes=['read'])))
         archived = dict(contract.envelope('rule', target['id'], None), archived=True, revision='b' * 64)
         validate_lifecycle_target(archived, target['kind'], target['id'])
         with self.assertRaises(ValueError):
             validate_lifecycle_target(dict(archived, record=RULE), target['kind'], target['id'])
+
+
+    def test_authorized_remove_preserves_scope_original_cas_and_receipt_for_both_hosts(self):
+        class RemoveTransport(Cloud):
+            def request(self, request):
+                if request["method"] != "content_remove":
+                    return super().request(request)
+                self.calls.append(copy.deepcopy(request))
+                contract.validate("content_remove", request["params"])
+                params, rid = request["params"], request["request_id"]
+                target = params["kind"], params["id"]
+                if params["expected_revision"] != contract.envelope(*target, self.records.get(target))["revision"]:
+                    return {"request_id": rid, "error": {"code": "revision_conflict", "retryable": False},
+                            "persistence": {"durable": False}}
+                self.records.pop(target)
+                self.puts += 1
+                return {"request_id": rid, "result": contract.envelope(*target, None),
+                        "persistence": {"durable": True, "state": "remote-confirmed", "commit": "a" * 40}}
+
+        for host in (CodexContentPorts, CodeBuddyContentPorts):
+            with self.subTest(host=host.name), tempfile.TemporaryDirectory() as temporary:
+                home = Path(temporary).resolve()
+                cloud = RemoveTransport()
+                cloud.grant = dict(cloud.grant, scopes=["read", "remove"])
+                cloud.records[("memory", "synthetic-topic")] = copy.deepcopy(MEMORY)
+                session = ContentSession(home, home / "cache", POLICY, cloud, host=host, native_home=home / ("." + host.name))
+                server = ContentServer(session)
+                server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                    "protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": host.name, "version": "1"},
+                }})
+                server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+                def rpc(method, **params):
+                    return server.handle({"jsonrpc": "2.0", "id": 2, "method": method, "params": params})
+
+                def call(name, **arguments):
+                    return rpc("tools/call", name=name, arguments=arguments)["structuredContent"]
+
+                tools = {tool["name"]: tool for tool in rpc("tools/list")["tools"]}
+                schema = tools["content_lifecycle"]["inputSchema"]
+                self.assertEqual(schema["properties"]["action"]["enum"], ["remove"])
+                self.assertFalse({"content_archive", "content_restore", "content_remove"} & set(tools))
+                target = {"kind": "memory", "id": "synthetic-topic"}
+                revision = call("content_read", **target)["result"]["revision"]
+                remove = dict(target, action="remove", expected_revision=revision, request_id="synthetic_remove_id")
+                cloud.calls.clear()
+                with self.assertRaises(ContentToolUnavailable):
+                    call("content_lifecycle", **dict(remove, action="archive"))
+                with self.assertRaises(ContentParameterError):
+                    call("content_lifecycle", **dict(remove, action=[]))
+                with self.assertRaises(ContentParameterError):
+                    call("content_lifecycle", **dict(remove, kind="unsupported"))
+                denied = call("content_lifecycle", **dict(remove, kind="rule", id="out-of-scope"))
+                self.assertEqual(denied["error"]["code"], "content_adapter_blocked")
+                self.assertEqual(cloud.calls, [])
+
+                stale = call("content_lifecycle", **dict(remove, expected_revision="b" * 64, request_id="synthetic_stale_rm"))
+                self.assertEqual(stale["error"]["code"], "revision_conflict")
+                self.assertFalse(stale["persistence"]["durable"])
+                self.assertEqual(call("content_read", **target)["result"]["revision"], revision)
+
+                saved = call("content_lifecycle", **remove)
+                self.assertTrue(saved["persistence"]["durable"])
+                self.assertTrue(saved["local_queue"]["server_saved"])
+                self.assertIsNone(saved["result"]["record"])
+                self.assertEqual(call("content_lifecycle", **remove)["result"], saved["result"])
+                self.assertEqual(cloud.puts, 1)
+                self.assertEqual([request for request in cloud.calls if request["request_id"] == remove["request_id"]], [{
+                    "method": "content_remove",
+                    "request_id": remove["request_id"],
+                    "params": dict(target, expected_revision=revision),
+                }])
+                self.assertEqual(call("content_catalog", kinds=["memory"])["result"]["artifacts"], [])
 
 
 class OfflineReads(unittest.TestCase):
@@ -121,8 +196,7 @@ class OfflineReads(unittest.TestCase):
 
         self.cloud.grant = dict(self.cloud.grant, scopes=['read'])
         tools = {tool['name']: tool for tool in ContentServer(self.restart()).catalog()}
-        self.assertNotIn('content_archive', tools)
-        self.assertNotIn('content_restore', tools)
+        self.assertNotIn('content_lifecycle', tools)
         self.assertIn('include_archived', tools['content_read']['inputSchema']['properties'])
 
     def test_no_snapshot_and_unknown_cached_id_are_errors_not_remote_absence(self):

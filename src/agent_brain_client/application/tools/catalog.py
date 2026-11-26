@@ -8,6 +8,15 @@ from agent_brain_client.domain.content_policy import validate_policy
 from agent_brain_client.domain.operations import CONTENT_WRITES, LIFECYCLE_WRITES, RULE_SKILL_WRITES
 
 
+LIFECYCLE_TOOL = "content_lifecycle"
+LIFECYCLE_ACTION_METHODS = {
+    "archive": "content_archive",
+    "restore": "content_restore",
+    "remove": "content_remove",
+}
+LIFECYCLE_METHODS = frozenset(LIFECYCLE_ACTION_METHODS.values())
+
+
 RECALL_EVIDENCE_GUIDANCE = (
     "This is the approved content service; synthetic sandbox tools are a separate test service and cannot prove production capture or recall. "
     "Use this currently connected approved-content service for Agent Brain personal memory. "
@@ -115,6 +124,7 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
                     "turn_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
                     "method": {
                         "type": "string",
+                        "description": "Use the underlying write method. For content_lifecycle, select the method corresponding to its action.",
                         "enum": [
                             "content_put",
                             "content_remove",
@@ -149,13 +159,6 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
     return tools
 
 
-LOCAL_TOOLS = frozenset(
-    tool["name"]
-    for tool in local_tools([], True, True)
-    if tool["name"] != "memory_query"
-)
-
-
 def memory_sources_authorized(policy, grant):
     if policy is None and grant is None:
         return True  # isolated protocol self-check
@@ -165,7 +168,9 @@ def memory_sources_authorized(policy, grant):
 
 
 def tool_names(methods, memory_sources):
-    names = set(methods) - contract.HOOK_METHODS
+    names = set(methods) - contract.HOOK_METHODS - LIFECYCLE_METHODS
+    if LIFECYCLE_METHODS.intersection(methods):
+        names.add(LIFECYCLE_TOOL)
     names |= {
         tool["name"]
         for tool in local_tools(
@@ -179,12 +184,7 @@ def tool_names(methods, memory_sources):
     return sorted(names)
 
 
-def enabled_tools(policy, grant, *, lifecycle=True):
-    """One tool contract for plans, installation checks and the running MCP.
-
-    All names remain bounded by existing read/put/remove and artifact grants.
-    Local helpers grant no Server methods, future sources or directory access.
-    """
+def authorized_content_methods(policy, grant, *, lifecycle=True):
     validate_policy(policy, grant)
     methods = contract.mcp_methods(grant["scopes"])
     if "memory" not in policy["kinds"]:
@@ -193,7 +193,71 @@ def enabled_tools(policy, grant, *, lifecycle=True):
         methods -= RULE_SKILL_WRITES
     if not lifecycle:
         methods -= LIFECYCLE_WRITES
+    return methods
+
+
+def enabled_tools(policy, grant, *, lifecycle=True):
+    """Public tool allowlist for the enrolled content policy and grant."""
+    methods = authorized_content_methods(policy, grant, lifecycle=lifecycle)
     return tool_names(methods, memory_sources_authorized(policy, grant))
+
+
+def lifecycle_tool(methods, kinds, client_version, update_guidance):
+    actions = [action for action, method in LIFECYCLE_ACTION_METHODS.items() if method in methods]
+    archive_actions = [action for action in ("archive", "restore") if action in actions]
+    rule_skill_kinds = [kind for kind in kinds if kind in RULE_SKILL]
+    action_guidance = {
+        "archive": "Archive a Rule or Skill, removing it from the active catalog and local mappings.",
+        "restore": "Restore the original Rule or Skill with enabled:false.",
+        "remove": "Remove an explicitly identified item using the existing remove grant and ordinary read revision.",
+    }
+    description = (
+        "Only on the user's explicit request for this exact target. "
+        + " ".join(action_guidance[action] for action in actions)
+        + " On exact retry, retain the same action, target, expected_revision and request_id. "
+        "Check Server persistence and local_refresh separately. "
+        f"Running worker version: {client_version}. {update_guidance}"
+    )
+    existing_revision = "^[a-f0-9]{64}$"
+    revision_sources = []
+    if archive_actions:
+        revision_sources.append("Use content_read with include_archived:true for archive or restore.")
+    if "remove" in actions:
+        revision_sources.append("Use the ordinary content_read for remove.")
+    schema = {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": actions},
+            "kind": {"type": "string", "enum": kinds if "remove" in actions else rule_skill_kinds},
+            "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"},
+            "expected_revision": {
+                "type": "string",
+                "pattern": "^(missing|[a-f0-9]{64})$" if "remove" in actions else existing_revision,
+                "description": " ".join(revision_sources),
+            },
+            "request_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{16,128}$"},
+        },
+        "required": ["action", "kind", "id", "expected_revision", "request_id"],
+        "additionalProperties": False,
+    }
+    if archive_actions and "remove" in actions:
+        schema["allOf"] = [{
+            "if": {"properties": {"action": {"enum": archive_actions}}},
+            "then": {"properties": {
+                "kind": {"enum": rule_skill_kinds},
+                "expected_revision": {"pattern": existing_revision},
+            }},
+        }]
+    return {
+        "name": LIFECYCLE_TOOL,
+        "description": description,
+        "inputSchema": schema,
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": "archive" in actions or "remove" in actions,
+            "idempotentHint": True,
+        },
+    }
 
 
 def tool_definitions(methods, kinds, memory_sources, client_version, update_guidance, *, lifecycle=True):
@@ -230,11 +294,6 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
             properties["kind"]["enum"] = [kind for kind in kinds if kind in RULE_SKILL]
         if name == "content_set_enabled":
             properties["enabled"] = {"type": "boolean"}
-        if name in LIFECYCLE_WRITES:
-            properties["expected_revision"].update(
-                pattern="^[a-f0-9]{64}$",
-                description="Current revision from content_read with include_archived:true, or the original revision on exact retry.",
-            )
         if "record" in fields:
             properties["record"] = {
                 "oneOf": [
@@ -406,10 +465,6 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
             description += "Only on an explicit user enable/disable request for this exact Rule/Skill. Changes enabled alone on an existing record; ordinary content_put edits must preserve enabled. Check local_refresh separately from persistence; a saved change may still require a local mapping retry. "
         if archive_read:
             description += "With include_archived:true the Server must be live and support lifecycle reads. An archived target returns archived:true, record:null and a restore revision. Default reads and catalog remain active-only. "
-        if name == "content_archive":
-            description += "Only on an explicit user archive request for this exact Rule/Skill. A confirmed archive removes it from the active catalog and local mappings. Retain the original request_id and exact arguments on retries. Check Server persistence and local_refresh separately. "
-        if name == "content_restore":
-            description += "Only on an explicit user restore request for this exact archived Rule/Skill. Restores its original ID and content with enabled:false. Retain the original request_id and exact arguments on retries. Check Server persistence and local_refresh separately. "
         if name == "content_put":
             description += "Preserve existing Rule/Skill enabled state; create disabled. Use content_set_enabled only for explicit user activation requests. "
         if name == "content_catalog":
@@ -431,18 +486,20 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
                 },
                 "annotations": {
                     "readOnlyHint": name not in contract.WRITES,
-                    "destructiveHint": name in ("content_remove", "content_archive"),
+                    "destructiveHint": False,
                     "idempotentHint": True,
                 },
             }
         )
+    if LIFECYCLE_TOOL in declared:
+        tools.append(lifecycle_tool(methods, kinds, client_version, update_guidance))
     tools.extend(
         tool
         for tool in local_tools(
             kinds,
             memory_sources,
             "memory_query" in declared,
-            LIFECYCLE_WRITES.intersection(declared),
+            LIFECYCLE_WRITES.intersection(methods),
         )
         if tool["name"] in declared
     )

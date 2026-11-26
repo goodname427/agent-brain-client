@@ -24,7 +24,10 @@ from agent_brain_client.domain.operations import CONTENT_WRITES, LIFECYCLE_WRITE
 from agent_brain_client.application.tools.catalog import (
     RECALL_EVIDENCE_GUIDANCE,
     tool_definitions,
-    LOCAL_TOOLS,
+    LIFECYCLE_ACTION_METHODS,
+    LIFECYCLE_METHODS,
+    LIFECYCLE_TOOL,
+    authorized_content_methods,
     memory_sources_authorized,
     tool_names,
     enabled_tools,
@@ -62,7 +65,6 @@ from agent_brain_client.adapters.storage.content_session import (
     ROOT as CLIENT_ROOT,
 )
 from agent_brain_client.adapters.storage.content import CONTENT_CACHE_ABI, operation_diagnostics
-from agent_brain_client.domain.content_policy import validate_policy
 from agent_brain_client.adapters.platforms.macos.component import ComponentClient
 from agent_brain_client.adapters.platforms.filesystem import (
     LockTimeout,
@@ -275,6 +277,7 @@ class ContentServer(Server):
         }
 
     def invoke(self, name, arguments):
+        method = name
         if name == "memory_query":
             return self.layered_recall(arguments)
         try:
@@ -399,17 +402,29 @@ class ContentServer(Server):
                         {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
                     ],
                 }
-            if name in contract.HOOK_METHODS or name not in self.adapter.methods():
+            methods = self.adapter.methods()
+            if name == LIFECYCLE_TOOL:
+                if not LIFECYCLE_METHODS.intersection(methods):
+                    raise ContentToolUnavailable("Content lifecycle is outside the installed tool grant.")
+            elif name in contract.HOOK_METHODS or name in LIFECYCLE_METHODS or name not in methods:
                 raise ContentToolUnavailable(
                     "Tool is not exposed by this worker. Inspect tools/list and the installed tool grant; retry the normal MCP connection if it failed to initialize. Tool absence alone does not prove a remote outage."
                 )
             if not isinstance(arguments, dict):
                 raise ContentParameterError("Content tool arguments must be an object.")
-            required = contract.FIELDS[name] | (
-                {"request_id"} if name in contract.WRITES else set()
+            if name == LIFECYCLE_TOOL:
+                arguments = dict(arguments)
+                action = arguments.pop("action", None)
+                if not isinstance(action, str) or action not in LIFECYCLE_ACTION_METHODS:
+                    raise ContentParameterError("Use an action listed in the content_lifecycle input schema.")
+                method = LIFECYCLE_ACTION_METHODS[action]
+                if method not in methods:
+                    raise ContentToolUnavailable("This lifecycle action is outside the installed tool grant.")
+            required = contract.FIELDS[method] | (
+                {"request_id"} if method in contract.WRITES else set()
             )
             allowed = (
-                contract.FIELDS[name]
+                contract.FIELDS[method]
                 | ({"cursor"} if name == "content_catalog" else set())
                 | ({"include_archived"} if name == "content_read" and self._lifecycle_enabled() else set())
                 | {"request_id"}
@@ -426,7 +441,7 @@ class ContentServer(Server):
             params = dict(arguments)
             reconciles = params.pop("reconciles", None)
             rid = params.pop("request_id", uuid.uuid4().hex)
-            contract.validate(name, params)
+            contract.validate(method, params)
             if (
                 not isinstance(rid, str)
                 or not 16 <= len(rid) <= 128
@@ -459,14 +474,14 @@ class ContentServer(Server):
                 + name
                 + " arguments; use the exact fields and types in this tool input schema."
             )
-            if name in LIFECYCLE_WRITES:
+            if method in LIFECYCLE_WRITES:
                 message += " Use a stable request_id and the revision from content_read with include_archived:true. Keep both unchanged on exact retry."
-            elif name in contract.WRITES:
+            elif method in contract.WRITES:
                 message += " Writes require a stable request_id and the expected_revision obtained from content_read."
             raise ContentParameterError(message) from None
         with operation_diagnostics() as diagnostic:
             try:
-                request = {"request_id": rid, "method": name, "params": params}
+                request = {"request_id": rid, "method": method, "params": params}
                 if (
                     name == "content_put"
                     and params["kind"] == "memory"
@@ -767,10 +782,10 @@ class SafeArgumentParser(argparse.ArgumentParser):
 
 def installation_check(client, policy, client_version="0.2.0"):
     """Fixed read-only MCP/auth check. No content cache/native mapping is created."""
-    validate_policy(policy, client.grant)
-    expected_tools = set(enabled_tools(
+    methods = authorized_content_methods(
         policy, client.grant, lifecycle=getattr(client, "supports_content_lifecycle", True)
-    ))
+    )
+    expected_tools = set(tool_names(methods, memory_sources_authorized(policy, client.grant)))
 
     class Adapter:
         def __init__(self):
@@ -781,7 +796,7 @@ def installation_check(client, policy, client_version="0.2.0"):
             return {"status": "protocol-only", "native_changed": False}
 
         def methods(self):
-            return expected_tools - LOCAL_TOOLS
+            return methods
 
         def invoke(self, request):
             if request["method"] != "content_catalog":

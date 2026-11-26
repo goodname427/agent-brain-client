@@ -362,7 +362,7 @@ _NOTIFY_CAPTURE_INSTRUCTIONS = (
     "exclude secrets, LocalOnly, confidential or customer-identifying content, and "
     "report unsafe scope as deferred. For memory writes use content_read/CAS and "
     "content_request_id with the supplied turn digest. Honor explicit forgetting "
-    "with the existing authorized content_remove path. Do not read transcripts or "
+    "through content_lifecycle(action=remove) when that action is authorized. Do not read transcripts or "
     "store raw conversation text. Never claim durable save without the Server receipt."
 )
 
