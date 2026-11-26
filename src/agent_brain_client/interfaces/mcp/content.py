@@ -830,11 +830,11 @@ def installation_check(client, policy, client_version="0.2.0"):
             },
         }
     )
-    tool_names = [tool["name"] for tool in tools["tools"]]
+    listed_names = [tool["name"] for tool in tools["tools"]]
     if (
         first["serverInfo"]["name"] != "agent-brain-content"
-        or len(tool_names) != len(set(tool_names))
-        or set(tool_names) != expected_tools
+        or len(listed_names) != len(set(listed_names))
+        or set(listed_names) != expected_tools
         or result["isError"]
     ):
         raise ValueError("Content protocol check failed")
