@@ -211,7 +211,12 @@ def measure(args):
         worker = Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:
-            if args.server_example:
+            if args.client_output:
+                output = json.loads(args.client_output.read_text(encoding="utf-8"))
+                bodies = [output.get("hookSpecificOutput", {}).get("additionalContext", "")]
+                markers = (bodies[0].splitlines()[0],) if bodies[0] else ("Historical memory evidence.",)
+                evidence = args.evidence
+            elif args.server_example:
                 result = json.loads((ROOT / "tests/fixtures/server_final_context.json").read_text(encoding="utf-8"))
                 bodies = [result["final_context"]["body"]]
                 markers = ("amber-47", "github.com/synthetic/project-b")
@@ -225,22 +230,22 @@ def measure(args):
                 server.requests = []
                 start = monotonic()
                 result = subprocess.run(
-                    [args.executable, *invocation, "What is the release gate for Project B?"],
+                    [args.executable, *invocation, args.prompt],
                     cwd=workspace, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=35,
                 )
                 duration = round(1000 * (monotonic() - start))
                 spans = [span for data in server.requests for span in model_text(
                     data.get("input") if args.host == "codex" else data.get("messages"),
                 ) if any(marker in span for marker in markers)]
-                exact = any(body in span for span in spans)
+                exact = any(body in span for span in spans) if body else not spans
                 print(json.dumps({
                     "host": args.host, "utf8_bytes": size, "exact_body": exact,
                     "body_sha256": hashlib.sha256(body.encode()).hexdigest(),
-                    "middle_evidence": any(evidence in span for span in spans),
+                    "middle_evidence": any(evidence in span for span in spans) if evidence else None,
                     "model_requests": len(server.requests), "wall_ms": duration,
                     "exit_code": result.returncode,
                 }), flush=True)
-                if result.returncode or not server.requests or not spans:
+                if result.returncode or not server.requests or (body and not spans):
                     raise SystemExit("Native model request or Hook context missing")
         finally:
             server.shutdown()
@@ -254,11 +259,14 @@ def main():
     fixture = parser.add_mutually_exclusive_group()
     fixture.add_argument("--bytes", type=int, nargs="+")
     fixture.add_argument("--server-example", action="store_true")
+    fixture.add_argument("--client-output", type=Path, help="Synthetic Hook JSON from a Client/Server integration run")
     parser.add_argument("--cjk", action="store_true")
+    parser.add_argument("--evidence", help="Evidence marker for --client-output")
+    parser.add_argument("--prompt", default="What is the release gate for Project B?")
     args = parser.parse_args()
     if args.emit_hook is not None:
         hook_main(args.emit_hook)
-    elif args.host and args.executable and (args.bytes or args.server_example):
+    elif args.host and args.executable and (args.bytes or args.server_example or args.client_output):
         measure(args)
     else:
         parser.error("--host, --executable, and a fixture selector are required")

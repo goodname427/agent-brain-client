@@ -62,7 +62,10 @@ the snapshot unread.
 legacy compatibility, negative scope/provenance cases and bounded empty groups.
 It runs in the full Mac suite and Windows contract jobs. The subprocess fixture
 `tests/layered_recall_bridge.py` supports an explicit Server integration runner;
-it is never part of a release and never activates host credentials.
+it is never part of a release and never activates host credentials. Enable
+`final_context` in its test configuration to exchange the status and query
+frames with a separately running Server fixture. Its `hook_output` is suitable
+for replay with the native model-request probe's `--client-output` option.
 
 ## Server final context for automatic recall
 
