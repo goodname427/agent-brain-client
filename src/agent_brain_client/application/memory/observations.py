@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 import json
 from agent_brain_client.domain import contract
-from agent_brain_client.application.memory.l0 import stage_source_project
+from agent_brain_client.application.memory.l0 import stage_workspace_source
 from agent_brain_client.domain.events import l0_request
 from agent_brain_client.domain.scopes import digest
 from agent_brain_client.domain.errors import CacheBlocked
@@ -62,7 +62,8 @@ def prompt_fingerprint(queue, *, project_id, session_id, operation_id):
     return None
 
 
-def stage_messages(queue, *, project_id, session_id, operation_id, phase, messages, occurred_at=None):
+def stage_messages(queue, *, project_id, session_id, operation_id, phase, messages, occurred_at=None,
+                   workspace=None):
     contract.event_identifier(session_id)
     contract.event_identifier(project_id)
     contract.event_identifier(operation_id)
@@ -119,7 +120,6 @@ def stage_messages(queue, *, project_id, session_id, operation_id, phase, messag
                 batch.append(item)
         if batch:
             batches.append(batch)
-        project = getattr(queue, "capture_workspace_project", lambda: None)()
         requests = []
         for index, batch in enumerate(batches):
             key = _batch_key(project_id, session_id, operation_id, phase, index)
@@ -138,9 +138,9 @@ def stage_messages(queue, *, project_id, session_id, operation_id, phase, messag
             queue._save(marker, {"schema": 1, "content_sha256": fingerprint})
         # Atomic full observation precedes the first enqueue. A process may die
         # after any batch; the supervisor needs no input replay to finish it.
-        if project is not None:
+        if workspace is not None:
             for request in requests:
-                stage_source_project(queue, request, project)
+                stage_workspace_source(queue, request, workspace)
         queue._save(pending, saved)
         rows = _finish_staging(queue, pending, saved)
     return _result(rows)

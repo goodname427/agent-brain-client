@@ -16,6 +16,7 @@ from agent_brain_client.adapters.storage import (
     metadata as metadata_io,
 )
 from agent_brain_client.adapters.harnesses.hook_output import hook_context
+from agent_brain_client.adapters.storage.workspace_identity import host_workspace
 
 ROOT = Path(__file__).resolve().parents[5]
 
@@ -65,6 +66,7 @@ def submit_hook(value, local, payload, *, services):
     return stage_hook_messages(
         queue, scope, turn, kind, text, payload, excluded=blocked.exists,
         native_home=lambda: registration_store.content_location(value["device_home"], r, "codex")[0],
+        workspace=host_workspace(payload["cwd"], local["cwd"]),
     )
 
 
@@ -81,8 +83,13 @@ def hook(value, *, services, observe=None):
     if len(raw) > 1048576:
         raise ValueError("Bounded native payload required")
     payload = json.loads(raw, object_pairs_hook=metadata_io.unique)
-    if ordinary_drive_path(payload.get("cwd")) != local["cwd"]:
-        return {}
+    # Codex reports the host-selected cwd. The command's cwd remains the
+    # independent admission check, including when Windows uses another spelling.
+    selected_cwd = ordinary_drive_path(payload.get("cwd"))
+    if selected_cwd != local["cwd"]:
+        workspace = host_workspace(selected_cwd, local["cwd"])
+        if workspace is None or host_workspace(local["cwd"], selected_cwd) != workspace:
+            return {}
     payload["cwd"] = local["cwd"]
     kind = payload.get("hook_event_name")
     from agent_brain_client.application.memory.lifecycle import handle

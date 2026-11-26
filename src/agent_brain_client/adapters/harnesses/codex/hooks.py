@@ -13,7 +13,8 @@ def native_hook_fields(policy, payload):
     return normalized_hook_fields(policy, payload)
 
 
-def stage_hook_messages(queue, scope, turn, kind, text, payload, *, native_home, excluded):
+def stage_hook_messages(queue, scope, turn, kind, text, payload, *, native_home, excluded,
+                        workspace=None):
     """Keep the first prompt's request and stage later native IDs at either Hook."""
     from agent_brain_client.domain.scopes import digest
 
@@ -30,7 +31,7 @@ def stage_hook_messages(queue, scope, turn, kind, text, payload, *, native_home,
             return _review_result(blocked["diagnostic"])
         return _stage_hook_messages(
             queue, name, completion, review, scope, source, turn, kind, text, payload,
-            native_home=native_home,
+            native_home=native_home, workspace=workspace,
         )
 
 
@@ -97,7 +98,7 @@ def _review_result(diagnostic):
 
 
 def _stage_hook_messages(queue, name, completion, review, scope, source, turn, kind, text, payload, *,
-                         native_home):
+                         native_home, workspace):
     from agent_brain_client.adapters.harnesses.codex import transcript
     from agent_brain_client.application.memory.observations import (
         prompt_fingerprint,
@@ -110,6 +111,7 @@ def _stage_hook_messages(queue, name, completion, review, scope, source, turn, k
         return stage_messages(
             queue, **source, operation_id=operation_id, phase=phase,
             messages=[{"role": "user" if phase == "prompt" else "assistant", "content": body}],
+            workspace=workspace,
         )
 
     is_stop = kind == "Stop"
