@@ -98,6 +98,10 @@ def recall(
             params["final_context"] = {
                 "format": final_context.FORMAT, "host": harness, "max_utf8_bytes": budget,
             }
+            if final_context.TIME_ZONE_CAPABILITY in capabilities:
+                time_zone = client.recall_time_zone()
+                if time_zone is not None:
+                    params["final_context"]["time_zone"] = time_zone
             if PROJECT_ORIGIN_CAPABILITY in capabilities:
                 project = client.recall_workspace_project()
                 if project is not None:

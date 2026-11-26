@@ -7,6 +7,7 @@ import re
 
 FORMAT = "agentbrain.final-context.v1"
 CAPABILITY = "final-context-v1"
+TIME_ZONE_CAPABILITY = "recall-time-zone-v1"
 # Model-request bytes observed through the Mac CLI entry points. The CodeBuddy
 # measurement exceeds the protocol ceiling. Keep the host-specific caps until
 # the same probes have run on Windows and in the IDE.

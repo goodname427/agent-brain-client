@@ -10,11 +10,15 @@ from urllib.request import Request
 from agent_brain_client.adapters.storage import metadata as metadata
 from agent_brain_client.adapters.storage import registration as registration_store
 from agent_brain_client.domain.errors import CacheBlocked, GlobalRequestTooLarge
-from agent_brain_client.domain.final_context import CAPABILITY as FINAL_CONTEXT_CAPABILITY
+from agent_brain_client.domain.final_context import (
+    CAPABILITY as FINAL_CONTEXT_CAPABILITY,
+    TIME_ZONE_CAPABILITY,
+)
 from agent_brain_client.domain.events import (
     MAX_NATIVE_MEMORY_BYTES, NATIVE_MEMORY_CONTRACT, PROJECT_ORIGIN_CAPABILITY,
     WORKSPACE_ORIGIN_CAPABILITY,
 )
+from agent_brain_client.adapters.platforms.time_zone import current_iana_time_zone
 from agent_brain_client.adapters.storage.workspace_identity import workspace_project
 from agent_brain_client.domain.scopes import (
     digest,
@@ -157,8 +161,12 @@ class CollectionClient:
         return frozenset(
             name for name in names if name in (
                 PROJECT_ORIGIN_CAPABILITY, FINAL_CONTEXT_CAPABILITY, WORKSPACE_ORIGIN_CAPABILITY,
+                TIME_ZONE_CAPABILITY,
             )
         )
+
+    def recall_time_zone(self):
+        return current_iana_time_zone()
 
     def recall_workspace_project(self):
         return workspace_project(self.local)

@@ -68,6 +68,7 @@
     "src/agent_brain_client/adapters/platforms/processes.py": "3abef1bbacc06f31f947e444355c46f74bf9690f48f13e7f69049073a09a31fa",
     "src/agent_brain_client/adapters/platforms/retention.py": "0406283bc3ace11237433d7e3a6e7ff70ee317c5a6b396d36bfcb3bfccf4fdcb",
     "src/agent_brain_client/adapters/platforms/source_files.py": "01975220d454b576181ec46ffb142d0ae334cf5cbce1163e6928029d15192a6c",
+    "src/agent_brain_client/adapters/platforms/time_zone.py": "de4c4fc42f9934e7badb443c87e51025cb32a7c4ebb4ede5eb5b055a151e292e",
     "src/agent_brain_client/adapters/platforms/tree.py": "f398eed5a7caf4d3cb816413205efb02a1e1c008352a1baf98e6651e904fdbb8",
     "src/agent_brain_client/adapters/platforms/windows/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/adapters/platforms/windows/access.py": "ca9bf2173fb36ab8145528f2f26b9b22a06e5f0e79577a43b9442cb420ee35c3",
@@ -76,7 +77,7 @@
     "src/agent_brain_client/adapters/platforms/windows/native.py": "eb11f231bb2a74375e1d9c8f90fa75947ddd5820629b796c6c04905f96660af0",
     "src/agent_brain_client/adapters/platforms/windows/tree.py": "28141dd22704cbe52c68724a7fdb63ef09689530c6979cf213ff972d811f0a2b",
     "src/agent_brain_client/adapters/server/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "src/agent_brain_client/adapters/server/collection.py": "aff850738b8150024e715112b4a6efb40281b3cd6bd8ac8f7fb2c7c6d5a42e7a",
+    "src/agent_brain_client/adapters/server/collection.py": "fbd8044f1a1addf199e0b1fae2d83acdc6347181636757b618a486d30a0d7fa2",
     "src/agent_brain_client/adapters/server/http.py": "73a6d127d2f147e6fdc3d88a6a5c2e728e10ffe044e2555e53cff94ddc06be8d",
     "src/agent_brain_client/adapters/server/https.py": "8cde299679e0ad94029471fb3f45ef1614c05944cab1991d2fd2f3c22ee21b56",
     "src/agent_brain_client/adapters/server/ssh.py": "a7136d1f53080d369bb577fe41764df353158c8616154c52a09f7a42a2b30acf",
@@ -129,7 +130,7 @@
     "src/agent_brain_client/application/memory/observations.py": "6e1b098b42cef876a64989b1b307e48d42f0f77ffb41372de0c50a47c7167c38",
     "src/agent_brain_client/application/memory/onboarding.py": "2164b6da37e2de3a53556c6af976c0e523df05a96e72e57af98ff2e33d768990",
     "src/agent_brain_client/application/memory/prompt_recall.py": "f7d59f69e3fa082633ebca00910cd2ce8d6cf0fe4b20f92f4e9cd9340293bc8a",
-    "src/agent_brain_client/application/memory/recall.py": "d23d8c981dddbee58a11f51cc13029c3cecd0270437d33c749cf4023c0454d6a",
+    "src/agent_brain_client/application/memory/recall.py": "d2087b78b089f3f52bdabe264030c9a644a831a3ca0ed8c37989a1b7422eb9a3",
     "src/agent_brain_client/application/memory/rule_fallback.py": "85519897bbc2287c3d7cac1b94bbfcc32c67a5dc3fe7c966fd25678aea5b7f15",
     "src/agent_brain_client/application/queue/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/application/queue/delivery.py": "20e4071b4ee10d92e1d7a63bf207e3b100225fac46d7e0c1fa8bae5307e993fd",
@@ -148,7 +149,7 @@
     "src/agent_brain_client/domain/enrollment.py": "0aa2258b6c218f65068e01020f62c027de0e9a06c544c27a03935f2b56de6210",
     "src/agent_brain_client/domain/errors.py": "02ed6f368f8e0998c968dcc4a47b5ce1cbfcdc1369f88cebc9f52c29b0ed9794",
     "src/agent_brain_client/domain/events.py": "10328d8ba69d94d070a9f419112c313d322c9cc871d0ee813eaa4e18862b8a9f",
-    "src/agent_brain_client/domain/final_context.py": "70180596f62e84cd66d1235779c9f5cf28501fd3b208931572c5d88017fff5cf",
+    "src/agent_brain_client/domain/final_context.py": "3610642c001e6f21ee7044d841b9685db7f2bd74394e1e24fc8ca5d75ba010a7",
     "src/agent_brain_client/domain/hook_coverage.py": "76230cf21d4e6cd9f6621e12066f8a3757a627aa939c1570a213926bc7aef7d5",
     "src/agent_brain_client/domain/operations.py": "7ed5b3823dae6f802a6e29bab5814e6e2cc640204f3d3ccd6d55ed1c6f443a69",
     "src/agent_brain_client/domain/privacy.py": "3be32c7f730d607cd7907b0b0f58af9cd864194f03bfcd9b52c6796fd033c9a1",
@@ -205,5 +206,5 @@
   "python_min": "3.11",
   "schema": 1,
   "state_schema": 1,
-  "version": "0.8.46"
+  "version": "0.8.47"
 }
