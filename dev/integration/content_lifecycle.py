@@ -2,6 +2,7 @@
 
 import argparse
 from contextlib import contextmanager
+import copy
 import hashlib
 import json
 import os
@@ -51,7 +52,7 @@ try:
         )))
         assert status == 200, saved
     restart()
-    drop = False
+    drop = None
     writes = []
     class Quiet(WSGIRequestHandler):
         def log_message(self, *_args):
@@ -62,12 +63,12 @@ try:
         raw = environ["wsgi.input"].read(int(environ["CONTENT_LENGTH"]))
         environ["wsgi.input"] = io.BytesIO(raw)
         request = json.loads(raw)
-        if request["method"] in ("content_archive", "content_restore"):
+        if request["method"] in ("content_archive", "content_restore", "content_set_enabled"):
             writes.append([request, environ.get("HTTP_X_AGENT_BRAIN_WRITE_RECEIPT")])
         headers = []
         body = b"".join(f.case.http(environ, lambda *args: headers.extend(args)))
-        if drop and request["method"] == "content_archive" and headers[0].startswith("200"):
-            drop = False
+        if drop == request["method"] and headers[0].startswith("200"):
+            drop = None
             body = b"synthetic missing receipt"
             headers = ["200 OK", [("Content-Length", str(len(body)))]]
         start(*headers)
@@ -82,8 +83,8 @@ try:
                           "device_id": f.authority.authenticate(f.token)["device_id"]}), flush=True)
         for line in sys.stdin:
             action = json.loads(line)
-            if action == "drop":
-                drop = True
+            if isinstance(action, dict) and "drop" in action:
+                drop = action["drop"]
             if action == "restart":
                 restart()
             print(json.dumps({"head": f.case.head(), "writes": writes}), flush=True)
@@ -202,7 +203,7 @@ def private_json(path, value):
 
 
 @contextmanager
-def worker(package, home, cert, hello, policy):
+def worker(package, home, cert, hello, policy, harness):
     env = environment(home, cert)
     grant = hello["grant"]
     windows = grant["platform"].startswith("win32-")
@@ -221,7 +222,7 @@ def worker(package, home, cert, hello, policy):
     policy_digest = private_json(policy_path, policy)
     with child(
         WORKER_ENTRY, package, "--managed-stdio", "initial", "--client-version", VERSION,
-        "--harness", "codex", "--device-home", home, "--codex-home", home / ".codex",
+        "--harness", harness, "--device-home", home, "--codex-home", home / ".codex",
         "--cache", home / "synthetic-cache", "--content-policy", policy_path,
         "--content-policy-sha256", policy_digest, "--https-profile", profile_path,
         "--https-profile-sha256", digest, "--credential-source-sha256", source, env=env,
@@ -246,7 +247,7 @@ def describe(packages, grant, policy):
         result = json.loads(raw)
         assert result["version"] == 4, result
         tools.append(set(result["tools"]))
-    assert tools[0] == tools[1] and TOOLS <= tools[0] and "content_remove" not in tools[0], tools
+    assert tools[0] == tools[1] and TOOLS <= tools[0] and not {"content_remove", "content_set_enabled"} & tools[0], tools
     return tools[0]
 
 
@@ -260,7 +261,7 @@ def request_id():
     return "synthetic_" + uuid.uuid4().hex
 
 
-def exercise(server, root, cert, key, packages, target, *, legacy):
+def exercise(server, root, cert, key, packages, target, harness, *, legacy):
     env = environment(root / "server-home", cert)
     with child(SERVER, server, cert, key, env=env) as process:
         hello = receive(process)
@@ -277,11 +278,18 @@ def exercise(server, root, cert, key, packages, target, *, legacy):
             send(process, action)
             return receive(process)
 
-        def mapped(kind):
+        def mapped_text(kind):
             if kind == "skill":
-                return (home / ".agents/skills/synthetic-skill/SKILL.md").is_file()
-            agents = home / ".codex/AGENTS.md"
-            return agents.is_file() and "Synthetic test guidance." in agents.read_text(encoding="utf-8")
+                native = ".agents" if harness == "codex" else ".codebuddy"
+                path = home / native / "skills/synthetic-skill/SKILL.md"
+            else:
+                path = home / (".codex/AGENTS.md" if harness == "codex" else
+                               ".codebuddy/rules/agent-brain-synthetic-rule.md")
+            return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+        def mapped(kind):
+            result = mapped_text(kind)
+            return bool(result) if kind == "skill" else "Synthetic test guidance." in result
 
         def catalog(wire):
             reply = wire.content("content_catalog", kinds=["rule", "skill"])
@@ -289,7 +297,7 @@ def exercise(server, root, cert, key, packages, target, *, legacy):
 
         for kind in ("rule", "skill"):
             item = {"kind": kind, "id": "synthetic-" + kind}
-            with worker(package, home, cert, hello, policy) as wire:
+            with worker(package, home, cert, hello, policy, harness) as wire:
                 tools = wire.tools()
                 assert set(tools) == names, tools
                 assert tools["content_read"]["inputSchema"]["properties"]["include_archived"]["enum"] == [True]
@@ -299,11 +307,52 @@ def exercise(server, root, cert, key, packages, target, *, legacy):
                 assert wire.call("content_read", **dict(item, kind="memory"), include_archived=True)["error"]
                 ordinary = wire.content("content_read", **item)["result"]
                 assert "archived" not in ordinary, ordinary
-                original = queue_saved(wire.content(
-                    "content_set_enabled", **item, enabled=True,
-                    expected_revision=ordinary["revision"], request_id=request_id(),
-                ))["record"]
-                assert mapped(kind)
+                activation = dict(item, enabled=True, expected_revision=ordinary["revision"],
+                                  request_id=request_id())
+                activation_args = dict(activation, operation="set_enabled")
+                for invalid in (
+                    dict(activation_args, kind="memory"),
+                    dict(activation_args, record=ordinary["record"]),
+                    dict(activation_args, expected_revision="missing"),
+                ):
+                    assert wire.call("content_put", **invalid)["error"]["code"] == -32602
+                assert wire.call("content_set_enabled", **activation)["error"]["code"] == -32602
+                state({"drop": "content_set_enabled"})
+                pending = wire.content("content_put", **activation_args)
+                assert pending["local_queue"]["state"] == "pending" and not mapped(kind), pending
+                assert pending["local_queue"]["server_saved"] is False, pending
+                committed = state()["head"]
+                saved = queue_saved(wire.content("content_put", **activation_args))
+                assert saved["record"] == dict(ordinary["record"], enabled=True), saved
+                assert mapped(kind) and state()["head"] == committed
+                assert [req for req, _ in state()["writes"] if req["request_id"] == activation["request_id"]] == [
+                    {"method": "content_set_enabled",
+                     "params": {key: value for key, value in activation.items() if key != "request_id"},
+                     "request_id": activation["request_id"]},
+                ] * 2
+
+                edit = copy.deepcopy(saved["record"])
+                if kind == "rule":
+                    edit["body"] += "\nSynthetic edit."
+                else:
+                    edit["files"]["SKILL.md"] += "\nSynthetic edit."
+                edited = queue_saved(wire.content(
+                    "content_put", **item, record=edit, expected_revision=saved["revision"],
+                    request_id=request_id(),
+                ))
+                original = edited["record"]
+                assert original == edit and original["enabled"] is True
+                assert "Synthetic edit." in mapped_text(kind)
+                disabled = queue_saved(wire.content(
+                    "content_put", **item, operation="set_enabled", enabled=False,
+                    expected_revision=edited["revision"], request_id=request_id(),
+                ))
+                assert disabled["record"] == dict(original, enabled=False) and not mapped(kind)
+                enabled = queue_saved(wire.content(
+                    "content_put", **item, operation="set_enabled", enabled=True,
+                    expected_revision=disabled["revision"], request_id=request_id(),
+                ))
+                assert enabled["record"] == original and mapped(kind)
                 lifecycle = wire.content("content_read", **item, include_archived=True)
                 archive = dict(item, expected_revision=ordinary["revision"], request_id=request_id())
                 if legacy:
@@ -317,7 +366,7 @@ def exercise(server, root, cert, key, packages, target, *, legacy):
                     assert wire.content("content_read", **item)["result"]["record"] == original
                     live = wire.content("content_read", **item)["result"]
                     queue_saved(wire.content(
-                        "content_set_enabled", **item, enabled=False,
+                        "content_put", **item, operation="set_enabled", enabled=False,
                         expected_revision=live["revision"], request_id=request_id(),
                     ))
                     assert not mapped(kind)
@@ -325,7 +374,7 @@ def exercise(server, root, cert, key, packages, target, *, legacy):
                 assert lifecycle["result"]["record"] == original and lifecycle["result"]["archived"] is False
                 archive["expected_revision"] = lifecycle["result"]["revision"]
                 if kind == "rule":
-                    state("drop")
+                    state({"drop": "content_archive"})
                     pending = wire.content("content_archive", **archive)
                     assert pending["local_queue"]["state"] == "pending" and mapped(kind), pending
                     committed = state("restart")["head"]
@@ -334,7 +383,7 @@ def exercise(server, root, cert, key, packages, target, *, legacy):
                     assert not mapped(kind)
                     committed = state()["head"]
 
-            with worker(package, home, cert, hello, policy) as wire:
+            with worker(package, home, cert, hello, policy, harness) as wire:
                 saved = queue_saved(wire.content("content_archive", **archive))
                 assert saved["archived"] is True and saved["record"] is None and not mapped(kind)
                 assert state()["head"] == committed and item["id"] not in catalog(wire)
@@ -365,12 +414,24 @@ def exercise(server, root, cert, key, packages, target, *, legacy):
         if not legacy:
             assert {header for _, header in state()["writes"]} == {"local-durable-v1"}
         before = state()["head"]
+        target_args = {"kind": "rule", "id": "synthetic-rule"}
+        with worker(package, root / "denied-edit-home", cert, hello, policy, harness) as wire:
+            current = wire.content("content_read", **target_args)["result"]
+            refused = wire.content(
+                "content_put", **target_args, record=dict(current["record"], enabled=True),
+                expected_revision=current["revision"], request_id=request_id(),
+            )
+            assert refused["error"]["code"] == "content_activation_denied", refused
+            assert refused["local_queue"]["server_saved"] is False and state()["head"] == before
         invalid = dict(hello, credential="synthetic_invalid_credential_" + uuid.uuid4().hex)
-        with worker(package, root / "denied-home", cert, invalid, policy) as wire:
-            target_args = {"kind": "rule", "id": "synthetic-rule"}
+        with worker(package, root / "denied-home", cert, invalid, policy, harness) as wire:
             read = wire.content("content_read", **target_args, include_archived=True)
             write = wire.content("content_archive", **target_args, expected_revision="b" * 64, request_id=request_id())
-            for reply in (read, write):
+            activation = wire.content(
+                "content_put", **target_args, operation="set_enabled", enabled=True,
+                expected_revision="b" * 64, request_id=request_id(),
+            )
+            for reply in (read, write, activation):
                 assert reply["error"]["code"] == "device_authentication_failed", reply
             assert state()["head"] == before
 
@@ -379,7 +440,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server-root", required=True, type=Path)
     parser.add_argument("--legacy-server-root", required=True, type=Path)
+    parser.add_argument("--harness", choices=("codex", "codebuddy"), action="append")
     args = parser.parse_args()
+    harnesses = args.harness or ["codex", "codebuddy"]
     source_pin(args.server_root, CURRENT_SERVER)
     source_pin(args.legacy_server_root, LEGACY_SERVER)
     commit = subprocess.check_output(["git", "-C", str(CLIENT), "rev-parse", "HEAD"], text=True).strip()
@@ -400,12 +463,13 @@ def main():
             manifest = release(CLIENT, package, VERSION, "personal-content-https", platform)
             private_json(package / "verified.json", {"commit": commit, "manifest": manifest})
         for checkout, legacy in ((args.server_root, False), (args.legacy_server_root, True)):
-            run = root / ("legacy" if legacy else "current")
-            run.mkdir(mode=0o700)
-            exercise(checkout.resolve(), run, cert, key, packages, target, legacy=legacy)
+            for harness in harnesses:
+                run = root / (("legacy-" if legacy else "current-") + harness)
+                run.mkdir(mode=0o700)
+                exercise(checkout.resolve(), run, cert, key, packages, target, harness, legacy=legacy)
     print(json.dumps({
         "status": "content-lifecycle-interop-passed", "version": VERSION, "client_head": commit,
-        "worker_platform": target, "package_tool_manifests": [mac, win],
+        "worker_platform": target, "harnesses": harnesses, "package_tool_manifests": [mac, win],
         "server_head": CURRENT_SERVER, "legacy_server_head": LEGACY_SERVER,
         "real_loopback_https": True, "synthetic_enrollment_only": True,
     }))
