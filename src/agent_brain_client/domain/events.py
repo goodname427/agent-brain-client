@@ -10,6 +10,28 @@ NATIVE_MEMORY_CONTRACT = "agentbrain.native-memory.v1"
 MAX_NATIVE_MEMORY_BYTES = 131072
 
 PROJECT_ORIGIN_CAPABILITY = "project-origin-v1"
+WORKSPACE_ORIGIN_CAPABILITY = "workspace-origin-v1"
+
+
+def validate_workspace(workspace):
+    """A host label and device-local ID, with an independently verified portable ID."""
+    if not isinstance(workspace, dict) or set(workspace) not in (
+        {"id", "display_name"}, {"id", "display_name", "portable_id"},
+    ):
+        raise ValueError("Exact workspace metadata required")
+    local, name = workspace["id"], workspace["display_name"]
+    if (
+        not isinstance(local, str)
+        or not re.fullmatch(r"workspace-local-sha256:[a-f0-9]{64}", local)
+        or not isinstance(name, str) or not 1 <= len(name) <= 128
+        or name != name.strip() or name in (".", "..")
+        or any(char in "/\\" or not char.isprintable() for char in name)
+    ):
+        raise ValueError("Path-free workspace label and local identity required")
+    if "portable_id" in workspace:
+        portable = workspace["portable_id"]
+        if not isinstance(portable, str) or not re.fullmatch(r"(git|svn|p4)-sha256:[a-f0-9]{64}", portable):
+            raise ValueError("Verified portable workspace identity required")
 
 
 def validate_workspace_project(project):

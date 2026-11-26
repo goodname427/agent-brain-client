@@ -80,7 +80,7 @@ def marker(home, payload):
     return Path(home) / ".config/agent-brain-client/codebuddy/turns" / (key + ".json")
 
 
-def observe(home, payload, core):
+def observe(home, payload, core, *, workspace=None):
     from agent_brain_client.adapters.platforms.filesystem import (
         cache_directory,
         cache_locked as locked,
@@ -129,6 +129,8 @@ def observe(home, payload, core):
         row = {
             "schema": 1,
             "binding": binding,
+            # Optional provenance stays outside the existing turn binding.
+            "workspace_root": str(workspace.root) if workspace is not None else None,
             "identity": identity,
             "offset": offset,
             "excluded": bool(

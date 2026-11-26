@@ -7,15 +7,30 @@ relabelled, credential copied, history read or second memory engine created.
 from agent_brain_client.adapters.storage.bounded_json import digest, unique
 import agent_brain_client.adapters.harnesses.hook_output as hook_output
 import agent_brain_client.adapters.storage.metadata as metadata_io
+from agent_brain_client.adapters.storage.workspace_identity import host_workspace
 from agent_brain_client.domain.scopes import select
 import json
+import os
 from pathlib import Path
+import re
 
 
 def session_id(value):
     if not isinstance(value, str) or not value or len(value) > 1024:
         raise ValueError("CodeBuddy session identity required")
     return "codebuddy-" + digest(value.encode())[:48]
+
+
+def selected_workspace(payload):
+    root = os.environ.get("CODEBUDDY_PROJECT_DIR")
+    if root is None:
+        return payload["cwd"]
+    # The Windows host converts the environment value to Git Bash spelling.
+    if os.name == "nt":
+        drive = re.fullmatch(r"/([a-zA-Z])(/.*)", root)
+        if drive is not None:
+            return drive[1] + ":" + drive[2]
+    return root
 
 
 def admission(core, value, local, client, session):
@@ -34,7 +49,7 @@ def open_queue(core, value, local):
     return core.build_delivery_queue(value, local, "codebuddy")
 
 
-def capture_messages(core, value, local, payload, messages, phase):
+def capture_messages(core, value, local, payload, messages, phase, *, workspace=None):
     from agent_brain_client.application.memory.observations import stage_messages
     from agent_brain_client.domain.scopes import source_id, namespace
     import uuid
@@ -46,7 +61,8 @@ def capture_messages(core, value, local, payload, messages, phase):
     if not isinstance(generation, str) or not generation or len(generation) > 1024:
         raise ValueError("CodeBuddy generation identity invalid")
     result = stage_messages(queue, project_id=project, session_id=session_id(payload["session_id"]),
-                            operation_id="native_" + digest(generation.encode()), phase=phase, messages=messages)
+                            operation_id="native_" + digest(generation.encode()), phase=phase,
+                            messages=messages, workspace=workspace)
     # Deferred final readers also enter here outside the foreground lifecycle.
     if result.get("local_queue", {}).get("saved") and phase == "assistant":
         try:
@@ -101,6 +117,9 @@ def hook(home, stream, *, core=None, defer=None, observe=None, verified_release=
     scope = value["scope"]
     capture = select(scope, local) is not None
     recall = kind == "UserPromptSubmit" and select(scope, local, recall=True) is not None
+    # The host exports the selected project root to the Hook. Earlier hosts
+    # expose the selected directory through their native event's cwd.
+    workspace = host_workspace(selected_workspace(payload), local["cwd"])
     import agent_brain_client.adapters.harnesses.codebuddy.transcript as transcript
     from agent_brain_client.application.memory.lifecycle import handle
     import uuid
@@ -130,13 +149,14 @@ def hook(home, stream, *, core=None, defer=None, observe=None, verified_release=
                 return {"status": "assistant-capture-deferred", "data_transferred": False}
         native_status = "unavailable"
         try:
-            native_status = transcript.observe(home, payload, core)
+            native_status = transcript.observe(home, payload, core, workspace=workspace)
         except Exception:
             pass
         if native_status == "excluded-turn":
             return {"status": native_status, "data_transferred": False}
         result = capture_messages(core, value, local, payload,
-                                  [{"role": "user", "content": payload["prompt"]}], "prompt")
+                                  [{"role": "user", "content": payload["prompt"]}], "prompt",
+                                  workspace=workspace)
         return dict(result, assistant_capture=native_status)
 
     prompt = payload.get("prompt", "")
@@ -190,7 +210,8 @@ def _finish_assistant(home, core, value, local, payload):
         generation_id=payload.get("generation_id")
         or digest(json.dumps(row, sort_keys=True).encode()),
     )
-    result = capture_messages(core, value, local, native, messages, "assistant")
+    workspace = host_workspace(row.get("workspace_root", row["binding"]["cwd"]), local["cwd"])
+    result = capture_messages(core, value, local, native, messages, "assistant", workspace=workspace)
     if result.get("local_queue", {}).get("saved"):
         # All batches were already saved before transfer. "complete" marks
         # native collection only; the outbox/Server receipt owns save status.
