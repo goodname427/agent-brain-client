@@ -213,8 +213,8 @@ class ContentInstall(unittest.TestCase):
 
     def test_declared_local_tool_flows_to_plan_running_service_and_protocol_check(self):
         original = interfaces_mcp_tools_catalog.local_tools
-        def declared(kinds, memory_sources, layered_recall=False, lifecycle_writes=()):
-            tools = original(kinds, memory_sources, layered_recall, lifecycle_writes)
+        def declared(memory_sources, layered_recall):
+            tools = original(memory_sources, layered_recall)
             if memory_sources:
                 tools.append({'name': 'content_sources_synthetic_review',
                     'description': 'Synthetic contract evolution; never invoked.',
