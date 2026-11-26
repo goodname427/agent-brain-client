@@ -8,7 +8,7 @@ Codex and CodeBuddy register the local stdio service `agent_brain_server`. The v
 
 The installed Client sends `POST /v1/requests` to the configured HTTPS origin. The Server's device ingress routes that public path to `/v1/device/requests` and authenticates an enrolled device Bearer. The JSON envelope contains `request_id`, `method` and `params`. A request ID is 16–128 characters. Write retries reuse the exact original ID and parameters. The adapter header remains `codex` for both hosts with protocol and state schema at 1. These headers describe compatibility. Server authorization independently checks the device identity, allowed method and target scope.
 
-`memory_query` is the Agent's query tool. The Content calls below use the Server's typed API. Local request ID generation and queue inspection run in the Client. Event capture, source controls and release discovery use their device methods without adding them to the Agent's MCP list. The local stdio interface and the HTTPS request API use separate transports.
+`memory_query` is the Agent's query tool. The Content calls below use the Server's typed API. Local request ID generation and queue inspection run in the Client. Event capture, source controls and release discovery use their device methods without adding them to the Agent's MCP list. The local stdio interface and the HTTPS request API use separate transports. The public MCP tool `content_lifecycle` maps its permitted `archive`, `restore` and `remove` actions to the existing typed methods. It forwards the original `expected_revision` and explicit `request_id`. Existing outbox entries retain their typed method names and can be retried through the corresponding action.
 
 ## Typed Content methods
 

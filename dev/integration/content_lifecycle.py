@@ -17,12 +17,15 @@ sys.path.insert(0, str(CLIENT / "src"))
 from agent_brain_client.adapters.packages.build import release
 from agent_brain_client.adapters.platforms.filesystem import native_platform
 from agent_brain_client.adapters.server.https import profile_metadata
+from agent_brain_client.domain.tool_contract import TOOL_CONTRACT_VERSION
 from agent_brain_client.domain.validation import encode
 
 CURRENT_SERVER = "e1ec48f4eb2a3ccfa53f8ecdfaf9baba4f7c3e24"
 LEGACY_SERVER = "e3639ccd0a9e30a1920cc3d975083e74bd591e8e"
 WORKER = Path("src/agent_brain_client/interfaces/mcp/content.py")
-TOOLS = {"content_archive", "content_restore"}
+RETIRED_TOOLS = {"content_archive", "content_restore", "content_remove"}
+ACTIONS = ("archive", "restore")
+HARNESSES = ("codex", "codebuddy")
 VERSION = "0.8.31"
 
 # Only the subprocess imports Server code. It uses the Server's disposable
@@ -158,15 +161,15 @@ def environment(home, cert):
 
 
 class Wire:
-    def __init__(self, process, commit):
+    def __init__(self, process, commit, harness):
         self.process = process
         self.commit = commit
         self.sequence = 0
         self.ready = receive(process)
-        assert self.ready["toolContract"] == 4, self.ready
+        assert self.ready["toolContract"] == TOOL_CONTRACT_VERSION, self.ready
         hello = self.rpc("initialize", {
             "protocolVersion": "2025-11-25", "capabilities": {},
-            "clientInfo": {"name": "synthetic-content-lifecycle", "version": "1"},
+            "clientInfo": {"name": f"synthetic-{harness}-lifecycle", "version": "1"},
         })
         assert hello["result"]["serverInfo"]["version"] == VERSION, hello
         send(process, {"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -189,6 +192,9 @@ class Wire:
         assert result["client_runtime"]["running_worker_commit"] == self.commit, result
         return result
 
+    def lifecycle(self, action, **arguments):
+        return self.content("content_lifecycle", action=action, **arguments)
+
     def tools(self):
         return {tool["name"]: tool for tool in self.rpc("tools/list")["result"]["tools"]}
 
@@ -202,7 +208,7 @@ def private_json(path, value):
 
 
 @contextmanager
-def worker(package, home, cert, hello, policy):
+def worker(package, home, cert, hello, policy, harness):
     env = environment(home, cert)
     grant = hello["grant"]
     windows = grant["platform"].startswith("win32-")
@@ -221,7 +227,7 @@ def worker(package, home, cert, hello, policy):
     policy_digest = private_json(policy_path, policy)
     with child(
         WORKER_ENTRY, package, "--managed-stdio", "initial", "--client-version", VERSION,
-        "--harness", "codex", "--device-home", home, "--codex-home", home / ".codex",
+        "--harness", harness, "--device-home", home, "--codex-home", home / ".codex",
         "--cache", home / "synthetic-cache", "--content-policy", policy_path,
         "--content-policy-sha256", policy_digest, "--https-profile", profile_path,
         "--https-profile-sha256", digest, "--credential-source-sha256", source, env=env,
@@ -232,7 +238,7 @@ def worker(package, home, cert, hello, policy):
             "device_id": hello["device_id"], "grant": grant,
         })
         commit = json.loads((package / "verified.json").read_bytes())["commit"]
-        yield Wire(process, commit)
+        yield Wire(process, commit, harness)
 
 
 def describe(packages, grant, policy):
@@ -244,9 +250,9 @@ def describe(packages, grant, policy):
             text=True,
         )
         result = json.loads(raw)
-        assert result["version"] == 4, result
+        assert result["version"] == TOOL_CONTRACT_VERSION, result
         tools.append(set(result["tools"]))
-    assert tools[0] == tools[1] and TOOLS <= tools[0] and "content_remove" not in tools[0], tools
+    assert tools[0] == tools[1] and "content_lifecycle" in tools[0] and not RETIRED_TOOLS & tools[0], tools
     return tools[0]
 
 
@@ -260,7 +266,7 @@ def request_id():
     return "synthetic_" + uuid.uuid4().hex
 
 
-def exercise(server, root, cert, key, packages, target, *, legacy):
+def exercise(server, root, cert, key, packages, target, harness, *, legacy):
     env = environment(root / "server-home", cert)
     with child(SERVER, server, cert, key, env=env) as process:
         hello = receive(process)
@@ -278,6 +284,9 @@ def exercise(server, root, cert, key, packages, target, *, legacy):
             return receive(process)
 
         def mapped(kind):
+            if harness == "codebuddy":
+                name = "skills/synthetic-skill/SKILL.md" if kind == "skill" else "rules/agent-brain-synthetic-rule.md"
+                return (home / ".codebuddy" / name).is_file()
             if kind == "skill":
                 return (home / ".agents/skills/synthetic-skill/SKILL.md").is_file()
             agents = home / ".codex/AGENTS.md"
@@ -289,13 +298,19 @@ def exercise(server, root, cert, key, packages, target, *, legacy):
 
         for kind in ("rule", "skill"):
             item = {"kind": kind, "id": "synthetic-" + kind}
-            with worker(package, home, cert, hello, policy) as wire:
+            with worker(package, home, cert, hello, policy, harness) as wire:
                 tools = wire.tools()
                 assert set(tools) == names, tools
                 assert tools["content_read"]["inputSchema"]["properties"]["include_archived"]["enum"] == [True]
-                assert set(tools["content_archive"]["inputSchema"]["required"]) == {
-                    "kind", "id", "expected_revision", "request_id",
-                }
+                schema = tools["content_lifecycle"]["inputSchema"]
+                assert set(schema["required"]) == {"action", "kind", "id", "expected_revision", "request_id"}
+                assert schema["properties"]["action"]["enum"] == list(ACTIONS)
+                unavailable = dict(item, expected_revision="a" * 64, request_id=request_id())
+                before = state()
+                for name in RETIRED_TOOLS:
+                    assert wire.call(name, **unavailable)["error"]
+                assert wire.call("content_lifecycle", action="remove", **unavailable)["error"]
+                assert state() == before
                 assert wire.call("content_read", **dict(item, kind="memory"), include_archived=True)["error"]
                 ordinary = wire.content("content_read", **item)["result"]
                 assert "archived" not in ordinary, ordinary
@@ -309,8 +324,8 @@ def exercise(server, root, cert, key, packages, target, *, legacy):
                 if legacy:
                     before = state()["head"]
                     assert lifecycle["error"]["retryable"] is False, lifecycle
-                    for method in TOOLS:
-                        refusal = wire.content(method, **dict(archive, request_id=request_id()))
+                    for action in ACTIONS:
+                        refusal = wire.lifecycle(action, **dict(archive, request_id=request_id()))
                         assert refusal["error"]["code"] == "device_method_denied", refusal
                         assert refusal["local_queue"]["state"] == "blocked", refusal
                     assert state()["head"] == before and mapped(kind) and item["id"] in catalog(wire)
@@ -326,16 +341,23 @@ def exercise(server, root, cert, key, packages, target, *, legacy):
                 archive["expected_revision"] = lifecycle["result"]["revision"]
                 if kind == "rule":
                     state("drop")
-                    pending = wire.content("content_archive", **archive)
+                    pending = wire.lifecycle("archive", **archive)
                     assert pending["local_queue"]["state"] == "pending" and mapped(kind), pending
                     committed = state("restart")["head"]
+                    sent = state()
+                    for retry in (
+                        wire.lifecycle("restore", **archive),
+                        wire.lifecycle("archive", **dict(archive, expected_revision="c" * 64)),
+                    ):
+                        assert retry["error"]["code"] == "content_adapter_blocked", retry
+                    assert state() == sent
                 else:
-                    queue_saved(wire.content("content_archive", **archive))
+                    queue_saved(wire.lifecycle("archive", **archive))
                     assert not mapped(kind)
                     committed = state()["head"]
 
-            with worker(package, home, cert, hello, policy) as wire:
-                saved = queue_saved(wire.content("content_archive", **archive))
+            with worker(package, home, cert, hello, policy, harness) as wire:
+                saved = queue_saved(wire.lifecycle("archive", **archive))
                 assert saved["archived"] is True and saved["record"] is None and not mapped(kind)
                 assert state()["head"] == committed and item["id"] not in catalog(wire)
                 if kind == "rule":
@@ -347,16 +369,16 @@ def exercise(server, root, cert, key, packages, target, *, legacy):
                 archived = wire.content("content_read", **item, include_archived=True)["result"]
                 assert archived == saved, archived
                 stale = dict(archive, request_id=request_id())
-                conflict = wire.content("content_restore", **stale)
+                conflict = wire.lifecycle("restore", **stale)
                 assert conflict["error"]["code"] == "revision_conflict" and state()["head"] == committed
                 inspected = wire.call("content_queue_inspect", request_id=stale["request_id"])
                 assert inspected["result"]["structuredContent"]["remote_snapshot"] == archived, inspected
                 restore = dict(item, expected_revision=archived["revision"], request_id=request_id())
-                restored = queue_saved(wire.content("content_restore", **restore))
+                restored = queue_saved(wire.lifecycle("restore", **restore))
                 assert restored["record"] == dict(original, enabled=False) and restored["archived"] is False
                 assert restored["id"] == item["id"] and restored["revision"] != archived["revision"]
                 restored_head = state()["head"]
-                assert queue_saved(wire.content("content_restore", **restore)) == restored
+                assert queue_saved(wire.lifecycle("restore", **restore)) == restored
                 assert state()["head"] == restored_head and not mapped(kind) and item["id"] in catalog(wire)
                 assert wire.content("content_read", **item, include_archived=True)["result"] == restored
                 ordinary = wire.content("content_read", **item)["result"]
@@ -366,10 +388,10 @@ def exercise(server, root, cert, key, packages, target, *, legacy):
             assert {header for _, header in state()["writes"]} == {"local-durable-v1"}
         before = state()["head"]
         invalid = dict(hello, credential="synthetic_invalid_credential_" + uuid.uuid4().hex)
-        with worker(package, root / "denied-home", cert, invalid, policy) as wire:
+        with worker(package, root / "denied-home", cert, invalid, policy, harness) as wire:
             target_args = {"kind": "rule", "id": "synthetic-rule"}
             read = wire.content("content_read", **target_args, include_archived=True)
-            write = wire.content("content_archive", **target_args, expected_revision="b" * 64, request_id=request_id())
+            write = wire.lifecycle("archive", **target_args, expected_revision="b" * 64, request_id=request_id())
             for reply in (read, write):
                 assert reply["error"]["code"] == "device_authentication_failed", reply
             assert state()["head"] == before
@@ -400,12 +422,13 @@ def main():
             manifest = release(CLIENT, package, VERSION, "personal-content-https", platform)
             private_json(package / "verified.json", {"commit": commit, "manifest": manifest})
         for checkout, legacy in ((args.server_root, False), (args.legacy_server_root, True)):
-            run = root / ("legacy" if legacy else "current")
-            run.mkdir(mode=0o700)
-            exercise(checkout.resolve(), run, cert, key, packages, target, legacy=legacy)
+            for harness in HARNESSES:
+                run = root / f"{'legacy' if legacy else 'current'}-{harness}"
+                run.mkdir(mode=0o700)
+                exercise(checkout.resolve(), run, cert, key, packages, target, harness, legacy=legacy)
     print(json.dumps({
         "status": "content-lifecycle-interop-passed", "version": VERSION, "client_head": commit,
-        "worker_platform": target, "package_tool_manifests": [mac, win],
+        "worker_platform": target, "harnesses": HARNESSES, "package_tool_manifests": [mac, win],
         "server_head": CURRENT_SERVER, "legacy_server_head": LEGACY_SERVER,
         "real_loopback_https": True, "synthetic_enrollment_only": True,
     }))
