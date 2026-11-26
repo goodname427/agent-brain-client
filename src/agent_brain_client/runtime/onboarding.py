@@ -11,9 +11,9 @@ from agent_brain_client.adapters.platforms.filesystem import cache_locked
 from agent_brain_client.adapters.storage import metadata
 from agent_brain_client.adapters.storage.native_sources import source_inventory_status
 from agent_brain_client.adapters.storage.project_settings import source_active
-from agent_brain_client.adapters.storage.workspace_identity import onboarding_workspace_project
+from agent_brain_client.adapters.storage.workspace_identity import onboarding_workspace
 from agent_brain_client.application.control import check_request, request_timeout
-from agent_brain_client.application.memory.l0 import stage_source_project
+from agent_brain_client.application.memory.l0 import stage_workspace_source
 from agent_brain_client.application.memory.onboarding import SOURCE_SCOPE, Summary, authorization
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.errors import CacheBlocked, CollectionCapacityExceeded, GlobalRequestTooLarge
@@ -422,10 +422,11 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
                 summary.add("pending", "onboarding-origin-changed")
                 continue
             if retained is None:
-                native_workspace = sources.onboarding_workspace(source_id, item.get("locator"), body)
-                source_project = onboarding_workspace_project(native_workspace, client.local)
-                if source_project is not None:
-                    stage_source_project(queue, request, source_project)
+                try:
+                    root = sources.onboarding_workspace(source_id, item.get("locator"), body)
+                    stage_workspace_source(queue, request, onboarding_workspace(root, client.local))
+                except (OSError, ValueError, CacheBlocked):
+                    pass  # A native original remains deliverable without workspace provenance.
             # Attribute a later confirmation across worker passes, even when
             # the immutable pending outbox row predates this approval.
             if queue._load(attempt_file) != approval_id:

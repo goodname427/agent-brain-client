@@ -9,10 +9,11 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request
 from agent_brain_client.adapters.storage import metadata as metadata
 from agent_brain_client.adapters.storage import registration as registration_store
-from agent_brain_client.domain.errors import GlobalRequestTooLarge
+from agent_brain_client.domain.errors import CacheBlocked, GlobalRequestTooLarge
 from agent_brain_client.domain.final_context import CAPABILITY as FINAL_CONTEXT_CAPABILITY
 from agent_brain_client.domain.events import (
     MAX_NATIVE_MEMORY_BYTES, NATIVE_MEMORY_CONTRACT, PROJECT_ORIGIN_CAPABILITY,
+    WORKSPACE_ORIGIN_CAPABILITY,
 )
 from agent_brain_client.adapters.storage.workspace_identity import workspace_project
 from agent_brain_client.domain.scopes import (
@@ -154,7 +155,9 @@ class CollectionClient:
         if "error" in result or not isinstance(names, list):
             return frozenset()
         return frozenset(
-            name for name in names if name in (PROJECT_ORIGIN_CAPABILITY, FINAL_CONTEXT_CAPABILITY)
+            name for name in names if name in (
+                PROJECT_ORIGIN_CAPABILITY, FINAL_CONTEXT_CAPABILITY, WORKSPACE_ORIGIN_CAPABILITY,
+            )
         )
 
     def recall_workspace_project(self):
@@ -259,12 +262,28 @@ class CollectionClient:
         from agent_brain_client.domain.contract import core_receipt
 
         params = self._event_params(request)
-        if params["origin"]["kind"] == "project":
-            source = getattr(self, "event_source_project", None)
-            project = None if source is None else source(request)
-            # Server keeps project metadata outside existing L0 idempotency.
-            if project is not None and PROJECT_ORIGIN_CAPABILITY in self.capabilities:
-                params["origin"] = dict(params["origin"], project=project)
+        origin = {}
+        readers = (
+            ("project", PROJECT_ORIGIN_CAPABILITY, getattr(self, "event_source_project", None)),
+            ("workspace", WORKSPACE_ORIGIN_CAPABILITY, getattr(self, "event_workspace_source", None)),
+        )
+        for field, capability, read in readers:
+            if field == "project" and params["origin"]["kind"] != "project":
+                continue
+            try:
+                source = read(request) if read is not None else None
+            except (CacheBlocked, OSError, ValueError):
+                continue  # Optional provenance does not prevent the original delivery.
+            if source is not None and capability in self.capabilities:
+                origin[field] = source
+        if origin:
+            annotated = dict(params, origin=dict(params["origin"], **origin))
+            try:
+                self._wire_body("memory_global_event_submit", annotated, request["request_id"])
+            except GlobalRequestTooLarge:
+                pass  # Keep the original event deliverable at the existing bound.
+            else:
+                params = annotated
         result = self.wire("memory_global_event_submit", params, request["request_id"])
         if "error" not in result and not core_receipt(result, request):
             raise ValueError("Unconfirmed global Core receipt")
