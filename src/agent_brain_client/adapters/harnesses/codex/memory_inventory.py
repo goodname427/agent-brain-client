@@ -50,7 +50,7 @@ class CodexMemorySources:
         lines = head.split("\n")
         if (
             len(lines) not in (4, 5)
-            or not re.fullmatch(r"thread_id: [a-f0-9-]{36}", lines[0])
+            or not re.fullmatch(r"thread_id: [a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", lines[0])
             or not re.fullmatch(r"updated_at: \d{4}-\d{2}-\d{2}T[^\s]+", lines[1])
             or not lines[2].startswith("rollout_path: ")
             or not lines[3].startswith("cwd: ")

@@ -35,7 +35,6 @@ def check_result(result, budget, verify_source):
         or final["format"] != FORMAT
         or not isinstance(final["body"], str)
         or not isinstance(final["sources"], list)
-        or len(final["sources"]) > 128
         or bool(final["body"]) != bool(final["sources"])
     ):
         raise ValueError("Exact final recall body and sources required")
