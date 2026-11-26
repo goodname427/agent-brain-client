@@ -68,7 +68,7 @@ class WorkspaceIdentity(unittest.TestCase):
     def git(cwd, *args):
         subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, timeout=10)
 
-    def test_l0_origin_keeps_the_first_negotiated_wire_shape(self):
+    def test_l0_retry_retains_original_and_negotiates_optional_origin(self):
         local = {"kind": "project", "cwd": "/synthetic/one", "project_root": "/synthetic/one",
                  "repository_root": "/synthetic/one"}
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -81,7 +81,7 @@ class WorkspaceIdentity(unittest.TestCase):
         for first_supported in (True, False):
             files = {}
             queue = SimpleNamespace(_load=files.get, _save=files.__setitem__)
-            self.assertIsNone(event_source_project(queue, request, Mock(side_effect=AssertionError)))
+            self.assertIsNone(event_source_project(queue, request))
             stage_source_project(queue, request, PROJECT)
             client = object.__new__(CollectionClient)
             client.value = {"scope": {"schema": 1, "profile_id": "a" * 32, "all_projects": True,
@@ -90,13 +90,17 @@ class WorkspaceIdentity(unittest.TestCase):
             client.local, client.actor = local, "synthetic"
             client.params = lambda session: {"origin": local, "session_id": session}
             client.capabilities = {"project-origin-v1"} if first_supported else set()
-            client.event_source_project = lambda req, supported: event_source_project(queue, req, supported)
+            client.event_source_project = lambda req: event_source_project(queue, req)
             client.wire = Mock(return_value={"error": {"code": "transport_unconfirmed"}})
             client.request(request)
             first = client.wire.call_args.args[1]
             client.capabilities = set() if first_supported else {"project-origin-v1"}
             client.request(request)
-            self.assertEqual(client.wire.call_args.args[1], first)
+            retry = client.wire.call_args.args[1]
+            self.assertEqual(client.wire.call_args.args[2], request["request_id"])
             self.assertEqual(first["origin"], dict(local, project=PROJECT) if first_supported else local)
+            self.assertEqual(retry["origin"], local if first_supported else dict(local, project=PROJECT))
             self.assertEqual(first["event"], event)
+            self.assertEqual(retry["event"], event)
+            self.assertEqual(event_source_project(queue, request), PROJECT)
             self.assertEqual(request["params"], {"kind": "memory", "id": event["event_id"], "event": event})

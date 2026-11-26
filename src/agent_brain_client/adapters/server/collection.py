@@ -261,10 +261,9 @@ class CollectionClient:
         params = self._event_params(request)
         if params["origin"]["kind"] == "project":
             source = getattr(self, "event_source_project", None)
-            project = None if source is None else source(
-                request, lambda: PROJECT_ORIGIN_CAPABILITY in self.capabilities,
-            )
-            if project is not None:
+            project = None if source is None else source(request)
+            # Server keeps project metadata outside existing L0 idempotency.
+            if project is not None and PROJECT_ORIGIN_CAPABILITY in self.capabilities:
                 params["origin"] = dict(params["origin"], project=project)
         result = self.wire("memory_global_event_submit", params, request["request_id"])
         if "error" not in result and not core_receipt(result, request):

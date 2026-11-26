@@ -503,14 +503,40 @@ class LayeredRecall(unittest.TestCase):
         self.assertEqual(recall_receipts.recall_observation(self.value)["status"], "failed")
 
     def test_replays_server_final_context_contract_fixture(self):
+        from agent_brain_client.adapters.server.collection import CollectionClient
+
         result = json.loads((ROOT / "tests/fixtures/server_final_context.json").read_text(encoding="utf-8"))
-        self.response.update(result=result, persistence={"state": "read-only", "durable": False})
         self.local = self.origin("/synthetic/wt-b")
         self.value["scope"].update(all_projects=True, profile_id="a" * 32)
-        client = gm.CollectionClient.return_value
+        pin = digest(self.value["scope"])
+        self.value.update(approved_scope_sha256=pin, server_scope_sha256=pin)
+        client = object.__new__(CollectionClient)
+        client.value, client.local = self.value, self.local
         client.actor, client.device = "owner", "a" * 32
-        client.capabilities = {"final-context-v1"}
-        output = self.run_hook(question="Project B release gate")
+        seen = []
+
+        def reply(request, **_):
+            self.assertEqual(request.get_header("Authorization"), "Bearer synthetic-fixture")
+            envelope = json.loads(request.data)
+            seen.append(envelope)
+            response = {"request_id": envelope["request_id"], "persistence": {
+                "state": "read-only", "durable": False,
+            }}
+            if envelope["method"] == "memory_global_status":
+                response.update(result={}, capabilities=["final-context-v1"])
+            else:
+                response["result"] = result
+            return io.BytesIO(json.dumps(response).encode())
+
+        client.base = SimpleNamespace(
+            profile={"endpoint": "https://synthetic.invalid"}, _credential=lambda: "synthetic-fixture",
+            transport=SimpleNamespace(opener=SimpleNamespace(open=reply)),
+        )
+        with patch.object(gm, "CollectionClient", return_value=client):
+            output = self.run_hook(question="Project B release gate")
+        self.assertEqual([(r["method"], r["params"].get("origin")) for r in seen],
+                         [("memory_global_status", None), ("memory_query", self.local)])
+        self.assertEqual(seen[1]["params"]["final_context"]["format"], "agentbrain.final-context.v1")
         final = result["final_context"]
         body = output["hookSpecificOutput"]["additionalContext"]
         self.assertEqual(hashlib.sha256(body.encode()).hexdigest(), final["body_sha256"])

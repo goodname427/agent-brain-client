@@ -32,7 +32,7 @@ def open_queue(value, local, harness, *, services):
         queue = FileEventQueue(home, cache, policy, client, binding=binding,
             protected=[home / name for name in (".codex", ".agents", ".codebuddy", ".config/agent-brain-client/content")])
         queue.capture_workspace_project = lambda: workspace_project(local)
-        client.event_source_project = lambda request, supported: event_source_project(queue, request, supported)
+        client.event_source_project = lambda request: event_source_project(queue, request)
         origin_file = metadata.canonical(queue.cache / "origin.json")
         if not origin_file.exists():
             # Queue discovery relies on this record even if Onboarding was the
