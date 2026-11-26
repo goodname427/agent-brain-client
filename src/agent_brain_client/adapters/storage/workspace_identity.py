@@ -7,7 +7,8 @@ import re
 import subprocess
 from urllib.parse import urlsplit
 
-from agent_brain_client.adapters.storage.origins import resolve_cwd
+from agent_brain_client.adapters.storage.origins import discover, resolve_cwd
+from agent_brain_client.domain.scopes import within
 
 
 def remote_identity(remote):
@@ -56,6 +57,22 @@ def _git_executable(root):
             if not candidate.is_relative_to(root) and candidate.is_file() and os.access(candidate, os.X_OK):
                 return candidate
     return None
+
+
+def onboarding_workspace_project(cwd, route):
+    """Read the known workspace only when it belongs to the approved route."""
+    if cwd is None or route["kind"] != "project" or not Path(cwd).is_absolute():
+        return None
+    try:
+        root = route["project_root"]
+        if not within(cwd, root) or not within(os.fspath(resolve_cwd(cwd, strict=True)), root):
+            return None
+        local = discover(cwd)
+        if local["project_root"] != root or local["repository_root"] != route["repository_root"]:
+            return None
+        return workspace_project(local)
+    except (OSError, ValueError):
+        return None
 
 
 def workspace_project(local):

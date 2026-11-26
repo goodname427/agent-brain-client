@@ -6,6 +6,7 @@ from hashlib import sha256
 import io
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -49,6 +50,7 @@ class SyntheticCaptureServer:
         self.fail_before_commit = None
         self.admitted = True
         self.extraction = "staged"
+        self.capabilities = []
 
     def open(self, request, **_):
         body = json.loads(request.data)
@@ -58,6 +60,10 @@ class SyntheticCaptureServer:
             key.casefold(): value for key, value in request.header_items()
         }.get("x-agent-brain-native-memory")
         params = body["params"]
+        if body["method"] == "memory_global_status" and not params:
+            return io.BytesIO(json.dumps({
+                "request_id": body["request_id"], "result": {}, "capabilities": self.capabilities,
+            }).encode())
         key = (digest(params["origin"]), params["session_id"])
         if body["method"] == "memory_global_status":
             if params.get("event_only"):
@@ -106,7 +112,8 @@ class SyntheticCaptureServer:
 
 
 class NativeMemoryCapture(unittest.TestCase):
-    def exercise(self, home, harness, windows_layout, *, terminal_rerun=False, large_batch=False):
+    def exercise(self, home, harness, windows_layout, *, terminal_rerun=False,
+                 large_batch=False, workspace_provenance=False):
         home.mkdir()
         workspace = home / "synthetic-workspace"
         workspace.mkdir()
@@ -126,6 +133,12 @@ class NativeMemoryCapture(unittest.TestCase):
                 "recall_personal": True, "all_non_projects": True,
             },
         }
+        if workspace_provenance:
+            value["scope"]["all_projects"] = True
+            for argv in (["init"], ["remote", "add", "origin", "git@github.com:synthetic/project-a.git"]):
+                subprocess.run(["git", "-C", str(workspace), *argv], check=True, capture_output=True)
+            peer.capabilities = ["project-origin-v1"]
+            peer.lose_ack = False
         peer.scope_sha = digest(value["scope"])
         policy = home / "fixture-policy.json"
         metadata.write(policy, POLICY)
@@ -227,6 +240,9 @@ class NativeMemoryCapture(unittest.TestCase):
                 "approved": True,
                 "source_scope": SOURCE_SCOPE,
             }
+            if workspace_provenance:
+                self.exercise_workspace_provenance(value, workspace, native, peer, worker, tool, args)
+                return
             if terminal_rerun:
                 self.exercise_terminal_rerun(source_file, peer, worker, worker_pass, server, tool, args, value)
                 return
@@ -566,6 +582,46 @@ class NativeMemoryCapture(unittest.TestCase):
                 with self.assertRaises(GlobalRequestTooLarge):
                     CollectionClient._wire_body("memory_global_status", {"event": by_body[raw_max]["params"]["event"]},
                                                 "synthetic-rid")
+
+    @unittest.skipUnless(shutil.which("git"), "Git required for workspace fixture")
+    def test_onboarding_and_automatic_capture_share_l0_project_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.exercise(Path(tmp).resolve() / "home", "codex", False, workspace_provenance=True)
+
+    def exercise_workspace_provenance(self, value, workspace, native, peer, worker, tool, args):
+        summaries = native / "memories/rollout_summaries"
+        summaries.mkdir(parents=True)
+        preamble = (
+            "thread_id: 12345678-abcd-1234-abcd-000000000001\n"
+            "updated_at: 2026-01-01T00:00:00+00:00\n"
+            "rollout_path: /synthetic/unused.jsonl\n"
+        )
+        known = preamble + f"cwd: {workspace}\n\nSynthetic original from the approved workspace."
+        other = preamble + f"cwd: {workspace.with_name('somewhere-else')}\n\nSynthetic unmapped original."
+        (summaries / "matching.md").write_bytes(known.encode())
+        (summaries / "unmapped.md").write_bytes(other.encode())
+
+        result = tool(worker, "memory_onboard", args)
+        self.assertEqual(result["counts"]["received"], 2)
+        events = [row for row in peer.requests if row["method"] == "memory_global_event_submit"]
+        captured = {row["params"]["event"]["content"]: row["params"]["origin"] for row in events}
+        self.assertEqual(set(captured), {known, other})
+        self.assertNotIn("project", captured[other])
+        self.assertEqual(captured[known]["project"]["repository"], "github.com/synthetic/project-a")
+
+        local = collection.eligible(value, workspace)
+        client, queue = collection.build_delivery_queue(value, local, "codex")
+        project = namespace(client.actor, value["scope"]["profile_id"])
+        staged = stage_messages(
+            queue, project_id=project, session_id="synthetic-hook", operation_id="synthetic-turn",
+            phase="prompt", messages=[{"role": "user", "content": "Synthetic automatic capture"}],
+        )
+        remaining = deliver_pending(queue, allowed=lambda _: True)
+        self.assertFalse(remaining)
+        self.assertEqual(peer.requests[-1]["params"]["origin"], captured[known])
+        row = queue._load("outbox/" + staged["request_ids"][0] + ".json")
+        self.assertEqual(row["state"], "confirmed")
+        self.assertTrue(contract.core_receipt(row["response"], row["request"]))
 
     def exercise_terminal_rerun(self, source_file, peer, worker, worker_pass, server, tool, args, value):
         source_file.parent.mkdir(parents=True)

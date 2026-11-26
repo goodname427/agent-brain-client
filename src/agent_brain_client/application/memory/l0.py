@@ -10,6 +10,11 @@ def _source_name(request):
     return "event-sources/" + key + ".json"
 
 
+def _source_fingerprint(request):
+    event = request["params"]["event"]
+    return digest({key: value for key, value in event.items() if key != "occurred_at"})
+
+
 def _source(queue, request):
     name = _source_name(request)
     saved = queue._load(name)
@@ -17,7 +22,7 @@ def _source(queue, request):
         if (
             not isinstance(saved, dict)
             or set(saved) != {"event_sha256", "project", "send_project"}
-            or saved["event_sha256"] != digest(request["params"]["event"]["messages"])
+            or saved["event_sha256"] != _source_fingerprint(request)
             or saved["send_project"] is not None and type(saved["send_project"]) is not bool
         ):
             raise ValueError("L0 event source changed")
@@ -30,7 +35,7 @@ def stage_source_project(queue, request, project):
     if saved is None:
         validate_workspace_project(project)
         queue._save(name, {
-            "event_sha256": digest(request["params"]["event"]["messages"]),
+            "event_sha256": _source_fingerprint(request),
             "project": project, "send_project": None,
         })
 

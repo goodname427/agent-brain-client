@@ -77,11 +77,13 @@ described below. Manual MCP queries continue to use the candidate contract.
 Automatic capture records a normalized Git remote identity at observation
 time when one is available. The location and scope in the existing outbox
 still determine authorization and the request ID. Onboarding uses the same L0
-request, queue, admission and receipt path. The current Codex persistent
-memory tree is shared, and the CodeBuddy project cache key loses directory
-separators. Those originals keep their native-source fingerprint and approved
-delivery origin without a guessed workspace ID. Missing project identity
-does not stop upload. The Client never assigns semantic project objects.
+request, queue, admission and receipt path. A Codex rollout summary can
+carry a host-written working directory header. The Client adds a project ID
+when that directory resolves inside the approved destination's workspace.
+Aggregate Codex memory, other-workspace summaries and CodeBuddy project
+cache paths that lose directory separators keep their native-source
+fingerprints and approved delivery origin. Missing project identity does
+not stop upload. The Client never assigns semantic project objects.
 
 To reproduce model-request measurements for #292, use the public CLI of each
 host and the isolated loopback fixture. The fixture runs the Client's shared

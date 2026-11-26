@@ -213,6 +213,10 @@ class SourceImports:
         raw, mtime_ns = self.provider.read(source_id, with_mtime=True, **options)
         return self._checked_body(raw, fingerprint), mtime_ns
 
+    def onboarding_workspace(self, source_id, locator, body):
+        identify = getattr(self.provider, "onboarding_workspace", None)
+        return None if identify is None else identify(source_id, locator, body)
+
     @staticmethod
     def _checked_body(raw, fingerprint):
         if len(raw) > 131072 or sha(raw) != fingerprint:
