@@ -114,7 +114,7 @@ def worker_main(root, label, protocol):
     server = FixtureServer(root, label, protocol)
     write_response(sys.stdout, {
         "abWorkerReady": HANDOFF_VERSION,
-        "versions": [PROTOCOL],
+        "versions": ["2025-06-18"] if label == "protocol-mismatch" else [PROTOCOL],
         "capabilities": {"tools": {}},
         "toolContract": "fixture-v1",
         "cacheIdentity": "fixture-cache",
@@ -302,6 +302,12 @@ class HandoffTests(BrokerTestCase):
         self.await_diagnostic("candidate-exited")
         self.activate("timeout")
         self.await_diagnostic("worker-readiness-timeout")
+        self.call(3)
+        self.assertEqual(self.receive(3)["result"]["worker"], "old")
+
+    def test_incompatible_protocol_cannot_take_over_the_connection(self):
+        self.activate("protocol-mismatch")
+        self.await_diagnostic("worker-readiness-rejected")
         self.call(3)
         self.assertEqual(self.receive(3)["result"]["worker"], "old")
 

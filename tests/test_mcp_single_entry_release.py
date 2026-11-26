@@ -58,7 +58,8 @@ def worker_main(root, directory, label, protocol):
     marker(root, "spawn-" + label)
     if label == "B" and (root / "change-registration-on-B-ready").exists():
         marker(root, "changed-registration")
-    if (root / "dynamic-catalog").exists():
+    dynamic_catalog = (root / "dynamic-catalog").exists()
+    if dynamic_catalog:
         args = {"type": "object", "properties": {"action": {"type": "string"}}}
         worker_tool = dict(server.catalog[0], inputSchema=args)
         server.catalog = [worker_tool, {"name": "disabled_by_binding", "inputSchema": args}]
@@ -74,7 +75,7 @@ def worker_main(root, directory, label, protocol):
         "abWorkerReady": HANDOFF_VERSION,
         "versions": [PROTOCOL],
         "capabilities": {"tools": {}},
-        "toolContract": "fixture-v1",
+        "toolContract": 5 if label == "B" and dynamic_catalog else 4,
         "cacheIdentity": "fixture-cache",
         "cacheAbi": CONTENT_CACHE_ABI,
         "tools": server.catalog,
@@ -302,11 +303,14 @@ class SingleEntryPair(SingleEntryFixture):
 class DynamicSingleEntryPair(SingleEntryFixture):
     dynamic_catalog = True
 
-    def test_new_catalog_preserves_cached_calls_and_drains_in_flight_work(self):
+    def test_cross_contract_catalog_preserves_cached_calls_and_drains_in_flight_work(self):
         self.call(3, "write")
         self.await_marker("writing-A")
         self.activate("B")
         self.await_marker("barrier-A")
+        # The new allowlist can immediately withdraw old tools. Consume that
+        # notice here so the assertion after cutover tests the new catalog.
+        self.assertEqual(self.notifications.get(timeout=8)["method"], "notifications/tools/list_changed")
         self.call(4, "read")  # The host still has the earlier tool list.
         marker(self.root, "release")
         self.assertEqual(self.receive(3)["result"]["worker"], "A")
@@ -325,9 +329,12 @@ class DynamicSingleEntryPair(SingleEntryFixture):
         self.assertEqual(self.receive(8)["result"]["worker"], "B")
         self.send("tools/call", 9, {"name": "disabled_by_binding"})
         self.assertEqual(self.receive(9)["error"]["code"], -32602)
+        self.send("tools/call", 10, {"name": "added", "arguments": {"action": "read"}})
+        self.assertEqual(self.receive(10)["result"]["worker"], "B")
+        self.assertFalse((self.root / "initialized-B").exists())
         self.assertIsNone(self.broker.poll())
 
-    def test_parked_connection_wakes_with_the_new_catalog(self):
+    def test_parked_connection_wakes_with_the_cross_contract_catalog(self):
         self.await_marker("retired-A")
         self.assertIsNone(self.broker.poll())
         self.activate("B")
