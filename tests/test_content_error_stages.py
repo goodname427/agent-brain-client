@@ -114,7 +114,8 @@ class ContentErrors(unittest.TestCase):
         self.assertEqual(self.adapter.calls, [])
         with self.assertRaises(ContentParameterError) as failure:
             self.server.invoke("content_put", {})
-        self.assertIn("stable request_id", failure.exception.message)
+        self.assertIn("expected_revision", failure.exception.message)
+        self.assertNotIn("request_id", failure.exception.message)
 
     def test_public_tool_guidance_distinguishes_update_worker_and_complete_catalog(
         self,

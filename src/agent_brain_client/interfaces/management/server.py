@@ -28,12 +28,13 @@ import webbrowser
 
 ROOT = Path(__file__).resolve().parents[4]
 import agent_brain_client.domain.contract as contract
+from agent_brain_client.domain.operations import CONTENT_WRITES
 from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.adapters.storage.registration import registration
 from agent_brain_client.adapters.storage.metadata import private_json, canonical
 
 
-def installed_adapter(home, *, harness=None):
+def installed_adapter(home, *, harness=None, existing_cache=False):
     if harness is None:
         from agent_brain_client.runtime.client_lifecycle import registered_host
         port = registered_host(home)
@@ -63,7 +64,7 @@ def installed_adapter(home, *, harness=None):
         cache,
         content,
         client,
-        host=port, native_home=native,
+        host=port, native_home=native, existing_cache=existing_cache,
     )
 
 
@@ -107,7 +108,7 @@ async function load(silent=false){let s;try{s=await api('/state',{})}catch(e){el
  const status={current:'与本次 Server 版本一致','pull-required':'待拉取','review-required':'文件或所有权检查未通过'};c.append(node('div','本机映射：'+status[r.mapping.status]+' · 模型加载：未知','meta'));
  const pending=s.operations.some(o=>o.kind===r.kind&&o.id===r.id&&o.state==='pending');const conflicts=s.operations.filter(o=>o.kind===r.kind&&o.id===r.id&&o.state==='conflict');let review;
  if(conflicts.length){review=node('input');review.type='checkbox';const l=node('label');l.append(review,document.createTextNode(' 依据当前版本重新应用，并将 '+conflicts.length+' 个启停冲突关联为已处理'));c.append(l)}
- const a=node('div',undefined,'actions');const b=node('button',r.enabled?'停用':'启用',r.enabled?'':'primary');if(!s.can_change||pending){b.dataset.denied='true';b.disabled=true}b.onclick=()=>run(async()=>{if(review&&!review.checked){tell('请先检查当前版本，并勾选冲突处理选项。',true);return}const request={request_id:crypto.randomUUID().replaceAll('-',''),kind:r.kind,id:r.id,enabled:!r.enabled,expected_revision:r.revision,reconcile_request_ids:conflicts.map(o=>o.request_id)};const v=await api('/change',request);report(v);await load(true)});a.append(b);c.append(a);if(pending)c.append(node('small','此项目有结果未确认的启停请求，请在下方使用原请求重试。','warning'));el('records').append(c)}
+ const a=node('div',undefined,'actions');const b=node('button',r.enabled?'停用':'启用',r.enabled?'':'primary');if(!s.can_change||pending){b.dataset.denied='true';b.disabled=true}b.onclick=()=>run(async()=>{if(review&&!review.checked){tell('请先检查当前版本，并勾选冲突处理选项。',true);return}const request={kind:r.kind,id:r.id,enabled:!r.enabled,expected_revision:r.revision,reconcile_request_ids:conflicts.map(o=>o.request_id)};const v=await api('/change',request);report(v);await load(true)});a.append(b);c.append(a);if(pending)c.append(node('small','此项目有结果未确认的启停请求。Client 将自动补发已保存的原请求。','warning'));el('records').append(c)}
  if(s.operations.length){el('operations').append(node('h2','保留的启停请求'));for(const o of s.operations){const c=node('div',undefined,'card');c.append(node('div',o.kind+' / '+o.id+' → '+(o.enabled?'启用':'停用')+' · '+o.state),node('small',o.request_id));if(o.error)c.append(node('small',o.error.code));if(o.state!=='conflict'){const b=node('button','使用原请求重试');b.onclick=()=>run(async()=>{const v=await api('/retry',{request_id:o.request_id});report(v);await load(true)});c.append(b)}else c.append(node('small','刷新列表后检查当前状态，再明确选择需要的状态；原请求将保留。'));el('operations').append(c)}}
  if(!silent)tell('已读取 Server 当前状态。刷新列表不改本机文件。队列：待确认 '+s.queue.pending+'，冲突 '+s.queue.conflict+'，阻断 '+s.queue.blocked+'。')}
 el('list').onclick=()=>run(()=>load());el('pull').onclick=()=>run(async()=>{report(await api('/pull',{}));await load(true)});run(()=>load());
@@ -234,9 +235,28 @@ def main(argv=None):
     parser.add_argument("--device-home", default=str(Path.home()))
     parser.add_argument("--harness", choices=("codex", "codebuddy"))
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--inspect-queue", action="store_true",
+                        help="Print retained local writes as JSON without connecting to the Server.")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--request-id", help="Inspect one exact retained request with its original content.")
+    selection.add_argument("--cursor", help="Continue with the preceding queue snapshot's next_cursor.")
     args = parser.parse_args(argv)
+    if not args.inspect_queue and (args.request_id is not None or args.cursor is not None):
+        parser.error("--request-id and --cursor require --inspect-queue")
     try:
-        management = Management(installed_adapter(args.device_home, harness=args.harness))
+        adapter = installed_adapter(
+            args.device_home, harness=args.harness, existing_cache=args.inspect_queue
+        )
+        if args.inspect_queue:
+            if not CONTENT_WRITES.intersection(adapter.methods()):
+                print(json.dumps({"status": "content-queue-inspection-not-authorized"}))
+                return 2
+            result = adapter.inspect_queue(
+                request_id=args.request_id, cursor=args.cursor, unresolved_only=True
+            )
+            print(json.dumps(result))
+            return 0
+        management = Management(adapter)
         with ManagementHTTP(management) as server:
             url = server.origin + "/#" + server.token
             print("Rule / Skill 本机管理：" + url, flush=True)
@@ -251,8 +271,12 @@ def main(argv=None):
         print(
             json.dumps(
                 {
-                    "status": "content-management-unavailable",
-                    "next_action": "Use the existing verified HTTPS Client registration; preserve identity, policy and queues.",
+                    "status": "content-queue-inspection-unavailable" if args.inspect_queue else "content-management-unavailable",
+                    "next_action": (
+                        "Use the original verified Client and host. For a cursor error, restart inspection without a cursor."
+                        if args.inspect_queue
+                        else "Use the existing verified HTTPS Client registration; preserve identity, policy and queues."
+                    ),
                 }
             )
         )

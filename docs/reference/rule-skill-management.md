@@ -30,21 +30,21 @@ Windows 使用同一个管理页和业务实现：
 在 Codex 和 CodeBuddy 中，用户明确要求启用或停用某个现有 Rule／Skill 时，用 `content_read` 读取其活动版本，再调用 `content_put`。以下是合成参数：
 
 ```json
-{"operation":"set_enabled","kind":"rule","id":"synthetic-rule","enabled":true,"expected_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","request_id":"synthetic_activation_12345"}
+{"operation":"set_enabled","kind":"rule","id":"synthetic-rule","enabled":true,"expected_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 ```
 
 Worker 将启停分流到 Server 的 `content_set_enabled`。它使用设备原有 `put` 权限、kind／ID 和 owner 范围，在 CAS 锁内只改 `enabled`。启停参数只接受已有 Rule／Skill、布尔 `enabled` 和当前修订号。普通正文编辑省略 `operation`、提交 `record`，新建 Rule／Skill 时用 `enabled:false`，编辑时保留当前值。先核对 Server 保存回执，再检查本机映射。
 
-结果未知时，用同一请求 ID 和原参数重试。旧队列中的 `content_set_enabled` 同样通过 `content_put(operation=set_enabled)` 重试，保留全部原始参数和本地冲突关联。使用 `content_request_id` 时，`method=content_set_enabled` 仍生成启停专用的原有请求 ID。CAS 冲突需重读当前版本，再显式决定是否用新的请求 ID 提交。重复同一已确认请求复用保存回执，已处于目标状态的操作不产生新内容提交。
+结果未知时，Client 自动使用原请求 ID 和参数补发。旧队列中的 `content_set_enabled` 保留原 ID、参数和本机冲突关联。CAS 冲突时读取当前版本，再明确决定是否发起新操作。已处于目标状态的操作不产生新内容提交。
 
 正常安装 / 更新通过原有受信事务登记工具，已登记包的只读检查使用该包的工具契约。既有安装事务继续使用原恢复材料。
 
 ## 正式 MCP 的可恢复归档
 
-Client 0.8.31 候选的工具契约 4 适用于 Mac 和 Windows 的共用 HTTPS Worker。需要配套 Server API。设备仍使用原 read/put 授权、种类和 ID 范围。只为用户明确指定的 Rule 或 Skill 发起操作。
+归档和恢复适用于 Mac 和 Windows 的共用 HTTPS Worker。需要配套 Server API。设备仍使用原 read/put 授权、种类和 ID 范围。只为用户明确指定的 Rule 或 Skill 发起操作。
 
 1. 用 `content_read` 传入确切的 `kind`、`id` 和 `include_archived: true`。活动条目返回 `archived: false` 和完整记录。已归档条目返回 `archived: true`、`record: null` 和可用于恢复的修订号。未创建的 ID 返回 `missing`。显式读回要求 Server 实时响应。
-2. 用 `content_lifecycle`，将 `action` 设为 `archive` 或 `restore`，并提交同一目标、读回的 `expected_revision` 和稳定的 `request_id`。结果未知时用原 ID 和参数重试。遇到冲突则重新显式读回，按用户明确选择发起新的 CAS 请求。原冲突在队列中可查，后续已确认的写入可以正常刷新映射。普通编辑和启停使用省略 `include_archived` 时的修订号。
+2. 用 `content_lifecycle`，将 `action` 设为 `archive` 或 `restore`，并提交同一目标和读回的 `expected_revision`。结果未知时由 Client 自动补发原请求。遇到冲突则重新显式读回，按用户明确选择发起新的 CAS 请求。原冲突在队列中可查，后续已确认的写入可以正常刷新映射。普通编辑和启停使用省略 `include_archived` 时的修订号。
 3. 核对 Server 回执及本机映射状态。归档后条目退出活动目录和受管映射。恢复保留原 ID、正文和资源，并保持停用。需要启用时，另用 `content_put(operation=set_enabled)`。
 
 旧 Server 拒绝生命周期操作，普通读取、目录、编辑和启停仍可使用。MCP 根据已登记的权限列出可用动作。单独获准的 `remove` 使用普通读取的修订号，默认 HTTPS 设备没有此权限。宿主若仍显示旧工具表，重新连接 MCP 后核对工具列表。临时本机管理页继续提供启停和拉取。

@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 from agent_brain_client.application.queue.ports import SourceReconciliation
@@ -19,6 +20,20 @@ import agent_brain_client.domain.contract as contract
 from agent_brain_client.application.control import check_request
 from agent_brain_client.domain.content import validate_lifecycle_target
 from agent_brain_client.domain.operations import LIFECYCLE_WRITES
+
+
+QUEUE_DIAGNOSTIC = (
+    "the local content-manage --inspect-queue command with --harness and --request-id"
+)
+
+
+def content_write_request(method, params, *, request_id=None):
+    """Allocate a fresh ID for each new intent. Replays use the saved envelope."""
+    return {
+        "request_id": uuid.uuid4().hex if request_id is None else request_id,
+        "method": method,
+        "params": params,
+    }
 
 
 def sha(raw):
@@ -108,7 +123,10 @@ class DurableOutbox:
                     pass
             self._save("outbox/" + request["request_id"] + ".json", row)
 
-    def invoke_write(self, request, reconciles=None, *, event_gate=None, exact_event=False):
+    def invoke_write(
+        self, request, reconciles=None, *, event_gate=None, exact_event=False,
+        memory_context=None,
+    ):
         """One write/replay implementation for native mapping and event hosts."""
         check_request()
         self._require_storage()
@@ -119,9 +137,9 @@ class DurableOutbox:
             self._outbox_stage("content-write"),
             self._outbox_lock(self.cache / "content.lock", "content-lock"),
         ):
-            row = self._enqueue(
-                request, reconciles
-            )  # Precedes every transport/mapping operation.
+            # Freeze the envelope and CAS base before any transport or mapping.
+            row = self._enqueue(request, reconciles, memory_context=memory_context)
+            request = row["request"]
             if not self._event_allowed(request, event_gate):
                 return dict(
                     self._queue_result(row),
@@ -186,7 +204,7 @@ class DurableOutbox:
         ):
             raise CacheBlocked()
 
-    def _enqueue(self, request, reconciles=None):
+    def _enqueue(self, request, reconciles=None, *, memory_context=None):
         # Serialize atomic appends separately from the content transaction,
         # which may wait on remote I/O. Native events can become durable pending
         # rows before that wait; existing rows are only checked, never rewritten.
@@ -194,22 +212,19 @@ class DurableOutbox:
         self._safe(path, self.cache)
         with self._outbox_lock(path, "outbox-lock"):
             with self._outbox_stage("outbox-enqueue"):
-                return self._enqueue_locked(request, reconciles)
+                return self._enqueue_locked(request, reconciles, memory_context=memory_context)
 
-    def prepare_memory_write(self, request, context):
-        """Freeze provenance once, including retries made after a host restart."""
-        if "source_context" in request["params"]:
-            return request
-        with self._outbox_lock(self.cache / "content.lock", "content-lock"):
-            old = self._load("outbox/" + request["request_id"] + ".json")
-        if old is not None:
-            context = old["request"]["params"].get("source_context")
-            if context is None:
-                return request  # Exact legacy replay stays exact.
-        return dict(request, params=dict(request["params"], source_context=context))
-
-    def _enqueue_locked(self, request, reconciles=None):
+    def _enqueue_locked(self, request, reconciles=None, *, memory_context=None):
         self._check_write(request)
+        name = "outbox/" + request["request_id"] + ".json"
+        old = self._load(name)
+        if memory_context is not None and "source_context" not in request["params"]:
+            # Explicit legacy IDs keep the stored provenance, including rows
+            # created before provenance was recorded at all.
+            context = old["request"]["params"].get("source_context") if old is not None else memory_context
+            if context is not None:
+                request = dict(request, params=dict(request["params"], source_context=context))
+                self._check_write(request)
         if reconciles is None:
             reconciles = {"request_ids": [], "source_keys": []}
         if not isinstance(reconciles, dict) or set(reconciles) != {
@@ -241,8 +256,6 @@ class DurableOutbox:
         self.sources.assert_shareable(reconciles["source_keys"])
         request = json.loads(contract.encode(request))
         digest = sha(contract.encode(request))
-        name = "outbox/" + request["request_id"] + ".json"
-        old = self._load(name)
         if old is not None:
             if (
                 old["request_sha"] != digest
@@ -460,14 +473,23 @@ class DurableOutbox:
             for state in ("pending", "confirmed", "conflict", "blocked", "reconciled")
         }
 
-    def inspect_queue(self, *, request_id=None, cursor=None):
+    def inspect_queue(self, *, request_id=None, cursor=None, unresolved_only=False):
         """Read one locked snapshot; never fetch, drain, repair or map content."""
+        if request_id is not None and (
+            cursor is not None or not isinstance(request_id, str)
+            or re.fullmatch(r"[A-Za-z0-9_-]{16,128}", request_id) is None
+        ):
+            raise ValueError("Use one exact request ID or a queue cursor.")
         check_request()
+        content_lock = self.cache / "content.lock"
+        enqueue_lock = self.cache / "outbox-enqueue.lock"
+        for path in (content_lock, enqueue_lock):
+            self._safe(path, self.cache)
+        options = {"cancel_check": check_request, "existing_only": True, "shared": True}
         with (
             self._outbox_stage("queue-inspection"),
-            self._outbox_locked(
-                self.cache / "content.lock", cancel_check=check_request
-            ),
+            self._outbox_locked(content_lock, **options),
+            self._outbox_locked(enqueue_lock, **options),
         ):
             try:
                 rows = self._queued()
@@ -507,6 +529,8 @@ class DurableOutbox:
                     remote_snapshot=row["remote"],
                     local_queue=self._queue_result(row, rows)["local_queue"],
                 )
+            if unresolved_only:
+                rows = [row for row in rows if row["state"] in ("pending", "conflict", "blocked")]
             snapshot = sha(contract.encode(rows))
             offset = 0
             if cursor is not None:
@@ -621,24 +645,21 @@ class DurableOutbox:
         # Derived diagnostics only: never edit a retained request, its CAS base,
         # reconciliation references or ID to make a queued write go through.
         blockers: list[dict[str, str]] = []
-        if row["state"] == "conflict" and row["request"]["method"] in LIFECYCLE_WRITES:
+        if row["state"] == "conflict":
+            read = "content_read"
+            if row["request"]["method"] in LIFECYCLE_WRITES:
+                read += " with include_archived:true"
             next_action = (
-                "Inspect the retained request with content_queue_inspect and read this exact target with content_read and include_archived:true. "
-                "A fresh archive or restore requires an explicit user request, the current lifecycle revision and a new stable request_id. "
-                "Keep the original conflict and arguments for review."
-            )
-        elif blockers or row["state"] == "conflict":
-            next_action = (
-                "Inspect blockers and retained local proposals with content_queue_inspect, then read the current target with content_read. "
-                "Resolve conflicts with an explicitly reviewed content_put using a new stable request_id, the current expected_revision and reconciles.request_ids selecting the exact conflicts. "
-                "A blocked request requires review of its original error and an explicit identical retry after its cause is fixed. "
-                "Fresh CAS writes can proceed independently; reconciliation is optional evidence tracking for reviewed merges. "
-                "Do not delete queue entries, change their CAS bases or use a new ID merely to retry an existing write."
+                f"Review the retained write using {QUEUE_DIAGNOSTIC}. "
+                f"Use {read} for the current revision before deciding on a new write."
             )
         elif row["state"] == "blocked":
-            next_action = "Inspect the original request and error with content_queue_inspect, fix its cause, then explicitly retry the exact saved request and request_id. Refresh does not retry blocked writes."
+            next_action = f"Review the retained refusal using {QUEUE_DIAGNOSTIC}."
         elif row["state"] == "pending":
-            next_action = "Server persistence is unconfirmed. Retry the exact saved request and request_id after restoring connectivity; do not create a replacement write or change its CAS base."
+            next_action = (
+                "Server persistence is unconfirmed. The Client retries the saved write automatically. "
+                f"Check its status using {QUEUE_DIAGNOSTIC}."
+            )
         elif row["state"] == "reconciled":
             next_action = "This proposal was resolved by a confirmed reconciliation. Keep the original evidence; do not resubmit it."
         else:

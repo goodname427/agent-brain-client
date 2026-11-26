@@ -84,7 +84,7 @@ class LifecycleContract(unittest.TestCase):
                 self.assertFalse({"content_archive", "content_restore", "content_remove"} & set(tools))
                 target = {"kind": "memory", "id": "synthetic-topic"}
                 revision = call("content_read", **target)["result"]["revision"]
-                remove = dict(target, action="remove", expected_revision=revision, request_id="synthetic_remove_id")
+                remove = dict(target, action="remove", expected_revision=revision)
                 cloud.calls.clear()
                 with self.assertRaises(ContentToolUnavailable):
                     call("content_lifecycle", **dict(remove, action="archive"))
@@ -105,11 +105,12 @@ class LifecycleContract(unittest.TestCase):
                 self.assertTrue(saved["persistence"]["durable"])
                 self.assertTrue(saved["local_queue"]["server_saved"])
                 self.assertIsNone(saved["result"]["record"])
-                self.assertEqual(call("content_lifecycle", **remove)["result"], saved["result"])
+                rid = saved["request_id"]
+                self.assertEqual(call("content_lifecycle", **remove, request_id=rid)["result"], saved["result"])
                 self.assertEqual(cloud.puts, 1)
-                self.assertEqual([request for request in cloud.calls if request["request_id"] == remove["request_id"]], [{
+                self.assertEqual([request for request in cloud.calls if request["request_id"] == rid], [{
                     "method": "content_remove",
-                    "request_id": remove["request_id"],
+                    "request_id": rid,
                     "params": dict(target, expected_revision=revision),
                 }])
                 self.assertEqual(call("content_catalog", kinds=["memory"])["result"]["artifacts"], [])
