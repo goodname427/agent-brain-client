@@ -41,7 +41,7 @@ Onboarding 的目标是一个已接入并获授权的个人路由。启动前确
 
 ## 内容及映射边界
 
-新增短记或纠正复用 `content_put`。如用户明确要求遗忘，仅在已授权并且宿主公开相应移除工具时按该工具处理，避免自动恢复已移除的条目。Rule／Skill 的明确用户启停使用 `content_put` 的 `operation=set_enabled`，普通正文编辑保留 `enabled`。参见[启停与同步](rule-skill-management.md)。
+新增短记或纠正复用 `content_put`。如用户明确要求遗忘，仅在宿主公开已授权的 `content_lifecycle(action=remove)` 时执行移除，避免自动恢复已移除的条目。Rule／Skill 的明确用户启停使用 `content_put` 的 `operation=set_enabled`，普通正文编辑保留 `enabled`。参见[启停与同步](rule-skill-management.md)。
 
 安装交接随安装入口源码交付。运行期 MCP 指引随受信活动包及实际 worker 生效。源码、映射文件或 `model_loaded:"unknown"` 均不能证明当前模型加载了内容。设备维护见[日常维护](../installation/maintenance.md)。
 

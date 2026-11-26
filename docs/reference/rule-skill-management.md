@@ -44,10 +44,10 @@ Worker 将启停分流到 Server 的 `content_set_enabled`。它使用设备原�
 Client 0.8.31 候选的工具契约 4 适用于 Mac 和 Windows 的共用 HTTPS Worker。需要配套 Server API。设备仍使用原 read/put 授权、种类和 ID 范围。只为用户明确指定的 Rule 或 Skill 发起操作。
 
 1. 用 `content_read` 传入确切的 `kind`、`id` 和 `include_archived: true`。活动条目返回 `archived: false` 和完整记录。已归档条目返回 `archived: true`、`record: null` 和可用于恢复的修订号。未创建的 ID 返回 `missing`。显式读回要求 Server 实时响应。
-2. 用 `content_archive` 或 `content_restore` 提交同一目标、读回的 `expected_revision` 和稳定的 `request_id`。结果未知时用原 ID 和参数重试。遇到冲突则重新显式读回，按用户明确选择发起新的 CAS 请求。原冲突在队列中可查，后续已确认的写入可以正常刷新映射。普通编辑和启停使用省略 `include_archived` 时的修订号。
+2. 用 `content_lifecycle`，将 `action` 设为 `archive` 或 `restore`，并提交同一目标、读回的 `expected_revision` 和稳定的 `request_id`。结果未知时用原 ID 和参数重试。遇到冲突则重新显式读回，按用户明确选择发起新的 CAS 请求。原冲突在队列中可查，后续已确认的写入可以正常刷新映射。普通编辑和启停使用省略 `include_archived` 时的修订号。
 3. 核对 Server 回执及本机映射状态。归档后条目退出活动目录和受管映射。恢复保留原 ID、正文和资源，并保持停用。需要启用时，另用 `content_put(operation=set_enabled)`。
 
-旧 Server 拒绝生命周期操作，普通读取、目录、编辑和启停仍可使用。归档和恢复是 MCP 工具，临时本机管理页继续提供启停和拉取。
+旧 Server 拒绝生命周期操作，普通读取、目录、编辑和启停仍可使用。MCP 根据已登记的权限列出可用动作。单独获准的 `remove` 使用普通读取的修订号，默认 HTTPS 设备没有此权限。宿主若仍显示旧工具表，重新连接 MCP 后核对工具列表。临时本机管理页继续提供启停和拉取。
 
 开发复验使用 [隔离跨仓检查](../../dev/integration/content_lifecycle.py)，传入对应 Server PR 候选及 0.3.8 的独立干净 checkout。它构建两平台的未发布候选清单，在执行机器上通过 stdio 和本机 HTTPS 检查 Worker，使用合成设备与内容。
 
