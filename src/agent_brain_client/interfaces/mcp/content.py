@@ -406,20 +406,29 @@ class ContentServer(Server):
             if name == LIFECYCLE_TOOL:
                 if not LIFECYCLE_METHODS.intersection(methods):
                     raise ContentToolUnavailable("Content lifecycle is outside the installed tool grant.")
-            elif name in contract.HOOK_METHODS or name in LIFECYCLE_METHODS or name not in methods:
+            elif (
+                name == "content_set_enabled" or name in contract.HOOK_METHODS
+                or name in LIFECYCLE_METHODS or name not in methods
+            ):
                 raise ContentToolUnavailable(
                     "Tool is not exposed by this worker. Inspect tools/list and the installed tool grant; retry the normal MCP connection if it failed to initialize. Tool absence alone does not prove a remote outage."
                 )
             if not isinstance(arguments, dict):
                 raise ContentParameterError("Content tool arguments must be an object.")
+            params = dict(arguments)
             if name == LIFECYCLE_TOOL:
-                arguments = dict(arguments)
-                action = arguments.pop("action", None)
+                action = params.pop("action", None)
                 if not isinstance(action, str) or action not in LIFECYCLE_ACTION_METHODS:
                     raise ContentParameterError("Use an action listed in the content_lifecycle input schema.")
                 method = LIFECYCLE_ACTION_METHODS[action]
                 if method not in methods:
                     raise ContentToolUnavailable("This lifecycle action is outside the installed tool grant.")
+            elif name == "content_put" and "operation" in params:
+                if params.pop("operation") != "set_enabled":
+                    raise ValueError()
+                method = "content_set_enabled"
+                if method not in methods:
+                    raise ContentToolUnavailable("Rule/Skill activation is outside the installed tool grant.")
             required = contract.FIELDS[method] | (
                 {"request_id"} if method in contract.WRITES else set()
             )
@@ -430,15 +439,14 @@ class ContentServer(Server):
                 | {"request_id"}
                 | (
                     {"reconciles", "source_context"}
-                    if name == "content_put"
+                    if method == "content_put"
                     else {"reconciles"}
-                    if name == "content_set_enabled"
+                    if method == "content_set_enabled"
                     else set()
                 )
             )
-            if set(arguments) - allowed or required - set(arguments):
+            if set(params) - allowed or required - set(params):
                 raise ValueError()
-            params = dict(arguments)
             reconciles = params.pop("reconciles", None)
             rid = params.pop("request_id", uuid.uuid4().hex)
             contract.validate(method, params)
@@ -483,7 +491,7 @@ class ContentServer(Server):
             try:
                 request = {"request_id": rid, "method": method, "params": params}
                 if (
-                    name == "content_put"
+                    method == "content_put"
                     and params["kind"] == "memory"
                     and hasattr(self.adapter, "prepare_memory_write")
                 ):
@@ -603,7 +611,7 @@ class ContentServer(Server):
                 + "content_catalog lists authorized AgentBrain destination records only; it does not discover Harness-native sources. "
                 + "Ordinary CAS writes require the current expected_revision and stable request_id; retain exact request arguments on retries. "
                 + "Pending/local-confirmed/remote-confirmed and durable fields distinguish client, Server and backup status. "
-                + "Ordinary edits retain Rule/Skill enabled state; content_set_enabled requires an explicit user activation request. Refreshing mappings does not reload an already running model. "
+                + "Ordinary edits retain Rule/Skill enabled state. Use content_put with operation=set_enabled only for an explicit user request to enable or disable a Rule/Skill. Refreshing mappings does not reload an already running model. "
                 + "Only granted methods and IDs are exposed; pairing and publication remain separate. "
                 + "Native mapping result: "
                 + json.dumps(mapping, sort_keys=True)

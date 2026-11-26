@@ -34,7 +34,7 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
     tools.append(
         {
             "name": "content_queue_inspect",
-            "description": "Inspect this Client's retained write queue without sending, retrying or changing requests. With no arguments, list a page of path-free metadata and exact blocking request IDs; use next_cursor for more. With request_id, read the exact original proposal, CAS base, reconciliation references, saved response and cached remote conflict snapshot. The snapshot may be stale: call content_read before an explicit reviewed merge through content_put with a new stable request_id and reconciles.request_ids. Unknown pending outcomes require the identical original request and ID; never replace, rebase or delete them. Terminal conflicts remain reviewable and do not block fresh CAS writes. Uncertain pending outcomes still require exact replay. No device or source discovery.",
+            "description": "Inspect this Client's retained write queue without sending, retrying or changing requests. With no arguments, list a page of path-free metadata and exact blocking request IDs; use next_cursor for more. With request_id, read the exact original proposal, CAS base, reconciliation references, saved response and cached remote conflict snapshot. The snapshot may be stale: call content_read before an explicit reviewed merge through content_put with a new stable request_id and reconciles.request_ids. Unknown pending outcomes require the identical original request and ID; never replace, rebase or delete them. Terminal conflicts remain reviewable and do not block fresh CAS writes. To retry a retained content_set_enabled request, call content_put with operation=set_enabled and the original request_id, parameters and any reconciliation references. No device or source discovery.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -117,7 +117,11 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
     tools.append(
         {
             "name": "content_request_id",
-            "description": "Generate a deterministic idempotent write request_id from the completed Harness turn digest, operation and AgentBrain target identity. Different targets/operations in one turn receive different IDs; retries of the same operation get the same ID. Local-only; no transfer.",
+            "description": (
+                "Generate a deterministic idempotent write request_id from the completed Harness turn digest, operation and AgentBrain target identity. "
+                "Different targets/operations in one turn receive different IDs; retries of the same operation get the same ID. Local-only; no transfer. "
+                "For content_put with operation=set_enabled, select method=content_set_enabled to retain its original request ID namespace."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -168,7 +172,7 @@ def memory_sources_authorized(policy, grant):
 
 
 def tool_names(methods, memory_sources):
-    names = set(methods) - contract.HOOK_METHODS - LIFECYCLE_METHODS
+    names = set(methods) - contract.HOOK_METHODS - LIFECYCLE_METHODS - {"content_set_enabled"}
     if LIFECYCLE_METHODS.intersection(methods):
         names.add(LIFECYCLE_TOOL)
     names |= {
@@ -264,6 +268,8 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
     """Build every content MCP declaration from the same authorized catalog."""
     tools = []
     declared = tool_names(methods, memory_sources)
+    activation_kinds = [kind for kind in kinds if kind in RULE_SKILL]
+    activation = "content_set_enabled" in methods and bool(activation_kinds)
     for name, fields in contract.FIELDS.items():
         if name not in declared or name == "memory_query":
             continue
@@ -290,10 +296,6 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
                 "enum": [True],
                 "description": "For one exact Rule or Skill, set true to read lifecycle state and the CAS revision for archive or restore. Omit for the ordinary active view and edit/enable CAS revision.",
             }
-        if name in RULE_SKILL_WRITES:
-            properties["kind"]["enum"] = [kind for kind in kinds if kind in RULE_SKILL]
-        if name == "content_set_enabled":
-            properties["enabled"] = {"type": "boolean"}
         if "record" in fields:
             properties["record"] = {
                 "oneOf": [
@@ -423,7 +425,7 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
                 "pattern": "^[A-Za-z0-9_-]{16,128}$",
             }
             required.append("request_id")
-        if name in ("content_put", "content_set_enabled"):
+        if name == "content_put":
             properties["reconciles"] = {
                 "type": "object",
                 "description": "Local-only references for recovering retained writes; never sent to Server. Inspect retained proposals with content_queue_inspect and read the current target before merging. Use request_ids for retained conflicts and recover pending outcomes by identical retry first. Native source_keys are only for recovering retained requests that already reference them. Server persistence confirmation resolves selected conflicts.",
@@ -444,12 +446,6 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
                 "required": ["request_ids", "source_keys"],
                 "additionalProperties": False,
             }
-        if name == "content_set_enabled":
-            properties["reconciles"]["properties"]["source_keys"]["maxItems"] = 0
-            properties["reconciles"]["description"] = (
-                "Optional explicit reconciliation of retained activation conflicts on this same target. Read the current target first; use a new request_id and current CAS revision. Source imports and ordinary edit conflicts cannot be resolved by activation."
-            )
-        if name == "content_put":
             properties["source_context"] = {
                 "type": "object",
                 "description": "Optional current Memory writing origin and actual host session_id. Directory metadata defaults locally; unavailable session is null, never guessed from the Server. Preserved unchanged on retries.",
@@ -461,12 +457,12 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
                 "additionalProperties": False,
             }
         description = "Approved cloud content only. Server is the sole write boundary; retain CAS revision and request_id on write retries. Transport failures may return a verified stale snapshot with local_cache.stale=true; cache misses never prove remote absence. Local cache refresh does not reload existing model context. "
-        if name == "content_set_enabled":
-            description += "Only on an explicit user enable/disable request for this exact Rule/Skill. Changes enabled alone on an existing record; ordinary content_put edits must preserve enabled. Check local_refresh separately from persistence; a saved change may still require a local mapping retry. "
         if archive_read:
             description += "With include_archived:true the Server must be live and support lifecycle reads. An archived target returns archived:true, record:null and a restore revision. Default reads and catalog remain active-only. "
         if name == "content_put":
-            description += "Preserve existing Rule/Skill enabled state; create disabled. Use content_set_enabled only for explicit user activation requests. "
+            description += "For ordinary edits, omit operation and include record. Preserve existing Rule/Skill enabled state and create disabled. "
+            if activation:
+                description += "On explicit user request to enable or disable this exact existing Rule/Skill, use operation=set_enabled and a boolean enabled with its current revision. Omit record and source_context. Only retained activation conflicts on the same target may be reconciled by set_enabled. Check local_refresh separately from persistence. "
         if name == "content_catalog":
             description += "AgentBrain destination records only; this does not discover Harness-native sources. Omit cursor for the first authorized inventory page, then follow next_cursor until absent. Use memory_query for retrieval. "
         if name in ("memory_query", "content_read", "content_catalog"):
@@ -474,16 +470,37 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
         description += (
             "Running worker version: " + client_version + ". " + update_guidance
         )
+        schema = {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": False,
+        }
+        if name == "content_put" and activation:
+            required.remove("record")
+            properties["operation"] = {"type": "string", "enum": ["set_enabled"]}
+            properties["enabled"] = {"type": "boolean"}
+            schema.update({
+                "if": {"required": ["operation"]},
+                "then": {
+                    "required": ["enabled"],
+                    "not": {"anyOf": [{"required": ["record"]}, {"required": ["source_context"]}]},
+                    "properties": {
+                        "kind": {"enum": activation_kinds},
+                        "expected_revision": {"pattern": "^[a-f0-9]{64}$"},
+                        "reconciles": {
+                            "description": "Select only retained activation conflicts for this target after reading the current revision. Source imports require an ordinary edit.",
+                            "properties": {"source_keys": {"maxItems": 0}},
+                        },
+                    },
+                },
+                "else": {"required": ["record"], "not": {"required": ["enabled"]}},
+            })
         tools.append(
             {
                 "name": name,
                 "description": description,
-                "inputSchema": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                    "additionalProperties": False,
-                },
+                "inputSchema": schema,
                 "annotations": {
                     "readOnlyHint": name not in contract.WRITES,
                     "destructiveHint": False,

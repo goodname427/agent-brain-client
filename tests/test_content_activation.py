@@ -15,6 +15,7 @@ from agent_brain_client.adapters.harnesses.codex.content_ports import CodexConte
 from agent_brain_client.adapters.storage.content_session import ContentSession
 from agent_brain_client.domain.errors import CacheBlocked
 from agent_brain_client.interfaces.mcp.content import ContentServer
+from agent_brain_client.interfaces.mcp.framing import ContentToolUnavailable
 from agent_brain_client.application.tools.catalog import enabled_tools
 from agent_brain_client.interfaces.management.server import ManagementHTTP, PAGE
 from agent_brain_client.application.content.management import Management, LiveReadRequired
@@ -319,13 +320,37 @@ class Activation(unittest.TestCase):
         server = ContentServer(self.adapter)
         server.state = 'ready'
         schemas = server.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})['tools']
-        activation = next(t for t in schemas if t['name'] == 'content_set_enabled')
-        self.assertEqual(activation['inputSchema']['properties']['enabled'], {'type':'boolean'})
-        self.assertEqual(activation['inputSchema']['properties']['kind']['enum'], ['rule', 'skill'])
-        self.assertFalse(activation['annotations']['readOnlyHint'])
+        self.assertNotIn('content_set_enabled', {tool['name'] for tool in schemas})
+        put = next(tool for tool in schemas if tool['name'] == 'content_put')
+        schema = put['inputSchema']
+        self.assertEqual(schema['properties']['operation']['enum'], ['set_enabled'])
+        self.assertEqual(schema['properties']['enabled'], {'type': 'boolean'})
+        self.assertEqual(schema['then']['properties']['kind']['enum'], ['rule', 'skill'])
+        self.assertFalse(put['annotations']['readOnlyHint'])
         read_grant = dict(self.cloud.grant, scopes=['read'])
-        self.assertNotIn('content_set_enabled', enabled_tools(fixture.POLICY, read_grant))
+        self.assertNotIn('content_put', enabled_tools(fixture.POLICY, read_grant))
+        arguments = {key: value for key, value in request.items() if key != 'reconcile_request_ids'}
+        arguments['operation'] = 'set_enabled'
+        before = len(self.cloud.calls)
+        with patch.object(self.cloud, 'grant', read_grant):
+            with self.assertRaises(ContentToolUnavailable):
+                server.invoke('content_put', arguments)
+        self.assertEqual(len(self.cloud.calls), before)
+        outside = server.invoke('content_put', dict(arguments, id='outside-grant'))
+        self.assertTrue(outside['isError'])
+        self.assertFalse(outside['structuredContent']['persistence']['durable'])
+        self.assertEqual(len(self.cloud.calls), before)
+        with self.assertRaises(ContentToolUnavailable):
+            server.invoke('content_set_enabled', request)
         wire = {'request_id':request['request_id'],'method':'content_set_enabled','params':{k:request[k] for k in ('kind','id','enabled','expected_revision')}}
+        self.cloud.lose_ack = True
+        old = self.adapter.invoke(wire)
+        self.assertEqual(old['local_queue']['state'], 'pending')
+        count = self.cloud.puts
+        reply = ContentServer(self.restart()).invoke('content_put', arguments)['structuredContent']
+        self.assertTrue(reply['local_queue']['server_saved'])
+        self.assertEqual(self.cloud.puts, count)
+        self.assertEqual([call for call in self.cloud.calls if call['request_id'] == request['request_id']], [wire, wire])
         response = self.cloud.request(wire)
         response['result'] = contract.envelope('rule', 'synthetic-rule', dict(fixture.RULE, enabled=False))
         self.assertFalse(self.adapter._server_saved(response, wire))

@@ -6,7 +6,7 @@
 
 1. **检查安装或更新。** 在独立的官方源码 checkout 运行本平台安装入口的 `status`。需要更新时先运行 `check-update`，核对实际渠道检查和候选，再运行 `update`。macOS 用 `sh bootstrap/macos/install.sh --action <操作>`，Windows 用 `& ./bootstrap/windows/install.ps1 -Action <操作>`；CodeBuddy 传对应宿主选项并沿用已登记界面。保留原策略、信任锚、凭据、来源范围、暂停及队列。参见 [Mac](mac.md)、[Windows](windows.md)和 [CodeBuddy](codebuddy.md)。
 2. **核对在用版本。** 分别报告安装入口看到的活动包、成功检查的渠道候选和新鲜 MCP 响应中的 `client_runtime`。如需重载，只走宿主对 `agent_brain_server` 的正常流程，先让在途请求完成；模型加载、Hook trust 与实际 Hook 投递分别核对。
-3. **恢复同步或修订内容。** 用 `content_queue_inspect` 核对待处理项，未知结果按原请求 ID 和参数恢复，CAS 冲突先读当前版本再审阅合并。获准编辑的 Memory／Rule／Skill 用 `content_read` 和 `content_put`，保留已有启停设置。明确要求启停时，用 `content_set_enabled` 或现有本机管理页；只需同步本机映射时使用管理页的“拉取到本机”。分别核对 Server 保存、GitHub 备份、本机同步及模型加载。参见[队列与冲突恢复](../reference/memory-behavior.md#保存队列与冲突恢复)和 [Rule／Skill 管理](../reference/rule-skill-management.md)。
+3. **恢复同步或修订内容。** 用 `content_queue_inspect` 核对待处理项，未知结果按原请求 ID 和参数恢复，CAS 冲突先读当前版本再审阅合并。获准编辑的 Memory／Rule／Skill 用 `content_read` 和 `content_put`，保留已有启停设置。明确要求启停时，用 `content_put` 的 `operation=set_enabled` 或现有本机管理页；只需同步本机映射时使用管理页的“拉取到本机”。分别核对 Server 保存、GitHub 备份、本机同步及模型加载。参见[队列与冲突恢复](../reference/memory-behavior.md#保存队列与冲突恢复)和 [Rule／Skill 管理](../reference/rule-skill-management.md)。
 4. **检查自动采集与召回。** 使用已登记环境的[项目记忆](../reference/automatic-memory.md)或[全局记忆](../reference/global-memory.md)状态入口，分别核对本地启停、实际事件接收、待传队列、提取和召回。保留现有排除目录与项目隔离；用户明确要求时才执行相应的暂停或恢复。项目 `flush` 重放本机项目队列，项目 `sync` 请求 Server 同步，全局 `global-sync` 恢复获准的全局投递。保留原请求参数，并读回远端确认。
 
 收到 `review-required`、所有权冲突或中断状态时，保留原文件、回执和队列，按平台说明使用原命令续接或执行适用的 `repair`。仅在已知布局不兼容或发布说明明确要求时按[重装流程](reinstall.md)处理。交接记录实际观察到的状态和未完成项，正文、凭据和私密路径留在设备内。
