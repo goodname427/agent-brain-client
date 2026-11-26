@@ -566,7 +566,8 @@ class Hooks(unittest.TestCase):
         self.assertEqual([path.read_bytes() for path in (self.queue.cache / 'outbox').glob('*.json')], queued)
 
     def test_prompt_does_not_enter_upload_transport_before_recall(self):
-        def recall(value, local, payload, query):
+        def recall(value, local, payload, query, *, harness):
+            self.assertEqual(harness, "codebuddy")
             self.assertEqual(len(self.staged), 1)
             self.assertEqual(self.sent, [])
             self.assertEqual(query, self.payload['prompt'])

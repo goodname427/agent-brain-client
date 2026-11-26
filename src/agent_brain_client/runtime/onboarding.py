@@ -15,7 +15,7 @@ from agent_brain_client.application.control import check_request, request_timeou
 from agent_brain_client.application.memory.onboarding import SOURCE_SCOPE, Summary, authorization
 from agent_brain_client.domain import contract
 from agent_brain_client.domain.errors import CacheBlocked, CollectionCapacityExceeded, GlobalRequestTooLarge
-from agent_brain_client.domain.events import NATIVE_MEMORY_CONTRACT, native_memory_content, native_memory_event
+from agent_brain_client.domain.events import NATIVE_MEMORY_CONTRACT, l0_request, native_memory_content, native_memory_event
 from agent_brain_client.domain.receipts import core_receipt
 from agent_brain_client.domain.scopes import digest, namespace, ordinary_drive_path, origin, select
 from agent_brain_client.runtime import collection
@@ -397,10 +397,9 @@ def process_batch(sources, harness, client, queue, project, group, inventory, al
                     "occurred_at": original_time.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
                     "content": body,
                 }
-                request = {
-                    "request_id": request_id, "method": "memory_event_submit",
-                    "params": {"kind": "memory", "id": event_id, "event": event},
-                }
+                # Persistent host memory can be in a shared or lossy-keyed
+                # store. The approved destination is only a delivery route.
+                request = l0_request(event, request_id)
             try:
                 native_memory_content(body)
             except ValueError:

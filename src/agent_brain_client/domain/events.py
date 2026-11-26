@@ -9,6 +9,30 @@ from agent_brain_client.domain.validation import text
 NATIVE_MEMORY_CONTRACT = "agentbrain.native-memory.v1"
 MAX_NATIVE_MEMORY_BYTES = 131072
 
+PROJECT_ORIGIN_CAPABILITY = "project-origin-v1"
+
+
+def validate_workspace_project(project):
+    if not isinstance(project, dict) or set(project) != {"id", "repository"}:
+        raise ValueError("Exact workspace project identity required")
+    repository = project["repository"]
+    if (
+        not isinstance(repository, str)
+        or len(repository) > 512
+        or not re.fullmatch(r"[a-z0-9]+(?:[.-][a-z0-9]+)*(?:/[A-Za-z0-9_.-]+){2,}", repository)
+        or any(part in (".", "..") for part in repository.split("/"))
+        or repository.startswith("github.com/") and repository != repository.lower()
+        or project["id"] != "git-sha256:" + hashlib.sha256(repository.encode()).hexdigest()
+    ):
+        raise ValueError("Normalized Git repository and matching digest required")
+
+
+def l0_request(event, request_id):
+    return {
+        "request_id": request_id, "method": "memory_event_submit",
+        "params": {"kind": "memory", "id": event["event_id"], "event": event},
+    }
+
 
 def event_identifier(value):
     if not isinstance(value, str) or not re.fullmatch(

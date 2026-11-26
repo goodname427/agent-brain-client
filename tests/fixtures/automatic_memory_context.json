@@ -1,0 +1,20 @@
+{
+  "projects": {
+    "a": "github.com/synthetic/project-a",
+    "b": "github.com/synthetic/project-b"
+  },
+  "questions": [
+    {"workspace": "a", "question": "What is this repository’s release gate?", "answer": "AMBER-64", "previous_candidate_rank": 12},
+    {"workspace": "b", "question": "What is this repository’s release gate?", "answer": "COBALT-28", "previous_candidate_rank": 14},
+    {"workspace": "b", "question": "Which test device was bought for Project A?", "answer": "Synthetic Pixel 14", "previous_candidate_rank": 11},
+    {"workspace": "b", "question": "How long should replies be?", "answer": "Brief"},
+    {"workspace": "b", "question": "Which contracts did Project A sign in Iceland?", "answer": null}
+  ],
+  "evidence": [
+    {"source": "a", "project": "a", "text": "This repository’s release gate is AMBER-64."},
+    {"source": "a", "project": "b", "text": "Project B’s release gate is COBALT-28."},
+    {"source": "a", "project": "a", "text": "I bought a Synthetic Pixel 14 as a test device for Project A."},
+    {"source": "a", "project": null, "text": "I bought a Synthetic Pixel 17 for myself."},
+    {"source": "a", "project": null, "text": "I prefer brief replies."}
+  ]
+}

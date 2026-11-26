@@ -1,5 +1,6 @@
 """Authenticated collection protocol over the enrolled HTTPS transport."""
 
+from functools import cached_property
 import json
 import math
 import os
@@ -9,7 +10,10 @@ from urllib.request import Request
 from agent_brain_client.adapters.storage import metadata as metadata
 from agent_brain_client.adapters.storage import registration as registration_store
 from agent_brain_client.domain.errors import GlobalRequestTooLarge
-from agent_brain_client.domain.events import MAX_NATIVE_MEMORY_BYTES, NATIVE_MEMORY_CONTRACT
+from agent_brain_client.domain.events import (
+    MAX_NATIVE_MEMORY_BYTES, NATIVE_MEMORY_CONTRACT, PROJECT_ORIGIN_CAPABILITY,
+)
+from agent_brain_client.adapters.storage.workspace_identity import workspace_project
 from agent_brain_client.domain.scopes import (
     digest,
     select,
@@ -142,6 +146,19 @@ class CollectionClient:
             raise ValueError("Global response identity changed")
         return result
 
+    @cached_property
+    def capabilities(self):
+        result = self.wire("memory_global_status", {})
+        names = result.get("capabilities")
+        if "error" in result or not isinstance(names, list):
+            return frozenset()
+        return frozenset(
+            name for name in names if name in (PROJECT_ORIGIN_CAPABILITY, "final-context-v1")
+        )
+
+    def recall_workspace_project(self):
+        return workspace_project(self.local)
+
     def params(self, session, *, recall=False):
         if (
             self.local is None
@@ -210,7 +227,7 @@ class CollectionClient:
             "memory_global_event_submit", self._event_params(request), request["request_id"],
         )
 
-    def _event_params(self, request):
+    def _event_params(self, request, *, project=None):
         from agent_brain_client.domain.contract import validate as contract_validate
 
         params = request["params"]
@@ -229,7 +246,12 @@ class CollectionClient:
             }
         else:
             wire_event = event
-        return dict(self.params(event["session_id"]), event=wire_event)
+        bound = self.params(event["session_id"])
+        if project is not None:
+            if self.local["kind"] != "project":
+                raise ValueError("Non-project event cannot claim a workspace project")
+            bound["origin"] = dict(self.local, project=project)
+        return dict(bound, event=wire_event)
 
     def request(self, request):
         if request.get("method") != "memory_event_submit":
@@ -240,8 +262,14 @@ class CollectionClient:
             }
         from agent_brain_client.domain.contract import core_receipt
 
+        source = getattr(self, "event_source_project", None)
+        project = None if source is None else source(
+            request, lambda: PROJECT_ORIGIN_CAPABILITY in self.capabilities,
+        )
         result = self.wire(
-            "memory_global_event_submit", self._event_params(request), request["request_id"],
+            "memory_global_event_submit",
+            self._event_params(request, project=project),
+            request["request_id"],
         )
         if "error" not in result and not core_receipt(result, request):
             raise ValueError("Unconfirmed global Core receipt")

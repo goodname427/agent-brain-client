@@ -2,6 +2,7 @@ import agent_brain_client.interfaces.cli.collection as collection_cli
 import agent_brain_client.adapters.storage.recall_receipts as recall_receipts
 """Synthetic shared Mac/Windows recall, with no credentials or native sessions."""
 import copy
+import hashlib
 import io
 import json
 import os
@@ -423,6 +424,79 @@ class LayeredRecall(unittest.TestCase):
         with patch.object(gm, 'eligible', return_value=self.local), patch.object(gm, 'submit_hook', return_value={'status': 'staged'}), patch.object(sys, 'stdin', prompt):
             return gm.hook(self.value, **kwargs)
 
+    def final_result(self, body):
+        row = self.row("L1")
+        sources = [{
+            "layer": "L1", "project_id": self.project, "sharing": "personal",
+            "source_device_id": self.peer, "source_context": row["source_context"],
+            "provenance": row["provenance"], "record_sha256": digest(row["id"]),
+            "content_sha256": digest(row["content"]),
+        }] if body else []
+        return {"schema": 2, "final_context": {
+            "format": "agentbrain.final-context.v1", "body": body,
+            "body_sha256": hashlib.sha256(body.encode()).hexdigest(), "sources": sources,
+        }}
+
+    def test_both_hooks_inject_negotiated_body_and_preserve_receipts(self):
+        from agent_brain_client.adapters.harnesses.codebuddy import events, transcript
+        from agent_brain_client.domain.final_context import HOST_BYTES
+
+        workspace = self.root / "synthetic-workspace"
+        workspace.mkdir()
+        self.local = self.origin(str(workspace))
+        self.value["scope"]["include_roots"] = [{"root": str(workspace), "sharing": "personal"}]
+        pin = digest(self.value["scope"])
+        self.value.update(approved_scope_sha256=pin, server_scope_sha256=pin)
+        body = "  [B] synthetic cobalt-28  \n[A] synthetic amber-64\n  项目 B 的证据\n"
+        self.response["result"] = self.final_result(body)
+        client = gm.CollectionClient.return_value
+        client.capabilities = {"final-context-v1", "project-origin-v1"}
+        client.recall_workspace_project = lambda: {
+            "repository": "github.com/synthetic/project-a",
+            "id": "git-sha256:5dab25d7ae2666ed57940bd42bcfb28737306db37df66f98b5ccd4d204f537ec",
+        }
+        for harness in ("codex", "codebuddy"):
+            with (
+                self.subTest(harness=harness),
+                patch.object(gm, "load", return_value=self.value),
+                patch.object(os, "getcwd", return_value=self.local["cwd"]),
+                patch.object(events, "capture_messages", return_value={"status": "staged"}),
+                patch.object(transcript, "observe", return_value="synthetic"),
+                patch("agent_brain_client.application.memory.recall._fit_context",
+                      side_effect=AssertionError("Finished body must bypass legacy fitting")),
+            ):
+                output = self.run_hook(harness=harness)
+                self.assertEqual(output["hookSpecificOutput"]["additionalContext"].encode(), body.encode())
+                method, params = self.sent[-1]
+                self.assertEqual(method, "memory_query")
+                self.assertEqual(params["final_context"], {
+                    "format": "agentbrain.final-context.v1", "host": harness,
+                    "max_utf8_bytes": HOST_BYTES[harness],
+                })
+                self.assertEqual(params["origin"]["project"], client.recall_workspace_project())
+                receipt = recall_receipts.recall_observation(self.value)
+                self.assertEqual(receipt["context_sha256"], digest(body))
+                self.assertEqual(receipt["context_bytes"], len(body.encode()))
+                self.assertEqual(receipt["layer_counts"], {"L1": 1, "L2": 0, "L3": 0})
+
+    def test_negotiated_recall_rejects_incompatible_or_unverified_body(self):
+        client = gm.CollectionClient.return_value
+        client.capabilities = {"final-context-v1"}
+        legacy = self.response["result"]
+        bad_format = self.final_result("Synthetic recognized evidence")
+        bad_format["final_context"]["format"] = "agentbrain.final-context.v9"
+        bad_proof = self.final_result("Synthetic recognized evidence")
+        bad_proof["final_context"]["sources"][0]["provenance"]["sources"][0]["state"] = "pending"
+        bad_hash = self.final_result("Synthetic recognized evidence")
+        bad_hash["final_context"]["body"] += " changed"
+        for result in (legacy, bad_format, bad_proof, bad_hash, self.final_result("证" * 4000)):
+            self.response["result"] = result
+            self.assertEqual(self.run_hook(), {})
+            self.assertEqual(recall_receipts.recall_observation(self.value)["status"], "failed")
+        self.response["result"] = self.final_result("")
+        self.assertEqual(self.run_hook(), {})
+        self.assertEqual(recall_receipts.recall_observation(self.value)["status"], "empty")
+
     def test_both_native_hooks_route_projects_and_ordinary_directories(self):
         from agent_brain_client.adapters.harnesses.codebuddy import events, transcript
         from agent_brain_client.adapters.server.collection import CollectionClient
@@ -480,9 +554,11 @@ class LayeredRecall(unittest.TestCase):
                     self.assertEqual(codex.call_count, int(capture and harness == "codex"))
                     self.assertEqual(buddy.call_count, int(capture and harness == "codebuddy"))
                     self.assertEqual(schedule.call_count, int(capture))
-                    self.assertEqual(len(self.sent), int(recall))
+                    self.assertEqual(len(self.sent), 2 * int(recall))
                     if recall:
-                        method, params = self.sent[0]
+                        self.assertEqual(self.sent[0], ("memory_global_status", {}))
+                        method, params = self.sent[1]
+                        self.assertNotIn("final_context", params)
                         self.assertEqual(method, "memory_query")
                         self.assertEqual(params["origin"], self.local)
                         self.assertEqual(params["query"], question)
