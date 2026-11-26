@@ -62,9 +62,54 @@ the snapshot unread.
 legacy compatibility, negative scope/provenance cases and bounded empty groups.
 It runs in the full Mac suite and Windows contract jobs. The subprocess fixture
 `tests/layered_recall_bridge.py` supports an explicit Server integration runner;
-it is never part of a release and never activates host credentials.
+it is never part of a release and never activates host credentials. Enable
+`final_context` in its test configuration to exchange the status and query
+frames with a separately running Server fixture. Its `hook_output` is suitable
+for replay with the native model-request probe's `--client-output` option.
 
-## Question context selection
+## Server final context for automatic recall
+
+The automatic Hook first reads capabilities from authenticated
+`memory_global_status`. With `final-context-v1`, it requests a host-specific
+UTF-8 budget and emits only the versioned final body, after checking its
+digest, length, source namespaces, devices, origins and committed proof. A
+malformed or unsupported final response yields no Hook context. Servers that
+lack the capability still return candidates through the compatibility path
+described below. Manual MCP queries continue to use the candidate contract.
+The existing separately pinned project recall route has its own request contract.
+
+Automatic capture records a normalized Git remote identity at observation
+time when one is available. The location and scope in the existing outbox
+still determine authorization and the request ID. Onboarding uses the same L0
+request, queue, admission and receipt path. A Codex rollout summary can
+carry a host-written working directory header. The Client adds a project ID
+when that directory resolves inside the approved destination's workspace.
+Aggregate Codex memory, other-workspace summaries and CodeBuddy project
+cache paths that lose directory separators keep their native-source
+fingerprints and approved delivery origin. Missing project identity does
+not stop upload. The Client never assigns semantic project objects.
+
+To reproduce model-request measurements for #292, use the public CLI of each
+host and the isolated loopback fixture. The fixture runs the Client's shared
+Hook output function and checks the decoded request that would reach the
+model. The loopback endpoint supplies the synthetic response.
+
+```sh
+python3 dev/integration/hook_context.py --host codex --executable /path/to/codex --bytes 10000 10001 --cjk
+python3 dev/integration/hook_context.py --host codebuddy --executable /path/to/codebuddy --bytes 24576 125000 --cjk
+```
+
+On Mac, Codex CLI 0.171.0-alpha.13.2 preserved 10,000 bytes and dropped the
+middle evidence at 10,001. CodeBuddy Code CLI 2.187.0 preserved 125,000 bytes
+inside its reminder wrapper. The request budgets are 10,000 and 24,576 bytes
+respectively because the wire protocol caps the latter. Use
+`--server-example` in place of `--bytes … --cjk` to replay the 465-byte Server
+contract fixture. Both Mac CLIs preserved its body digest and Project B
+evidence in their model requests. Windows, CodeBuddy IDE, real model
+answers and the joint Server/Client quality and token comparison require
+separate verification. [Server #188](https://github.com/goodname427/agent-brain-server/pull/188)
+
+## Compatibility context selection
 
 The Hook selects and presents evidence from its existing authorized
 `memory_query` result on every turn, regardless of the candidates' total size.

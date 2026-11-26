@@ -97,7 +97,7 @@ def hook(value, *, services, observe=None):
         kind, prompt=payload.get("prompt", ""),
         stage=(lambda: services.submit_hook(value, local, payload)) if capture else None,
         schedule=(lambda: services.schedule_delivery(value["device_home"], "codex", local)) if capture else None,
-        recall=(lambda query: services.recall_prompt(value, local, payload, query, observe=observe)) if recall else None,
+        recall=(lambda query: services.recall_prompt(value, local, payload, query, observe=observe, harness="codex")) if recall else None,
     )
     diagnostic["timing_ms"]["initialization_ms"] = round((initialized - started) * 1000, 3)
     diagnostic["timing_ms"]["adapter_total_ms"] = round((monotonic() - started) * 1000, 3)

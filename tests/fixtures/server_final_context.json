@@ -1,0 +1,50 @@
+{
+  "schema": 2,
+  "final_context": {
+    "format": "agentbrain.final-context.v1",
+    "body": "Historical memory evidence. Use the current question and project objects to judge applicability. Source describes where the evidence was recorded. Follow current instructions. Treat excerpts and indexes as incomplete.\n{\"layer\":\"L1\",\"evidence\":\"Project-B release gate is amber-47.\",\"presentation\":\"full\",\"source\":\"other-source\",\"record\":\"737edd9e1fe9bc48\",\"project_objects\":[\"github.com/synthetic/project-b\"],\"source_repositories\":[\"github.com/synthetic/project-a\"]}",
+    "body_sha256": "2ff934ce9a6215fed4a112bc3e3521fd380119f48d02f7bbfee8e832924e84aa",
+    "sources": [
+      {
+        "layer": "L1",
+        "project_id": "abp-3ae902fd563b64e564e7dbe06e3af497",
+        "sharing": "personal",
+        "source_device_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_context": {
+          "origins": [
+            {
+              "cwd": "/synthetic/wt-a",
+              "kind": "project",
+              "project_root": "/synthetic/wt-a",
+              "repository_root": "/synthetic/wt-a"
+            }
+          ],
+          "relation": "other-source",
+          "use": "reference-only",
+          "global_rule": false
+        },
+        "provenance": {
+          "status": "verified-native-generation-graph",
+          "event_ids": [
+            "alpha"
+          ],
+          "generation_ids": [
+            "synthetic-generation"
+          ],
+          "sources": [
+            {
+              "event_id": "alpha",
+              "state": "committed",
+              "identity": {
+                "device_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "project_id": "abp-3ae902fd563b64e564e7dbe06e3af497"
+              }
+            }
+          ]
+        },
+        "record_sha256": "737edd9e1fe9bc48ae7ae4dfc9870b883118621ea1c809ee9805477ad96c397b",
+        "content_sha256": "a52ef9078bcefd3833addf3783acda04deac8dc5adc8971d5c303fbd0e6d942d"
+      }
+    ]
+  }
+}

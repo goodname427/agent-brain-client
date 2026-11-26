@@ -7,9 +7,12 @@ and temporary state are used. The HTTP opener dispatches in process.
 
 import argparse
 from contextlib import contextmanager
+from dataclasses import replace
 import io
+import hashlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 from threading import RLock
 from types import SimpleNamespace
@@ -32,6 +35,8 @@ def verify(server_root, harness="codex"):
     from agent_brain_client.adapters.server.collection import CollectionClient
     from agent_brain_client.adapters.platforms.filesystem import native_platform
     from agent_brain_client.application.memory.onboarding import SOURCE_SCOPE
+    from agent_brain_client.application.memory.observations import stage_messages
+    from agent_brain_client.application.queue.delivery import deliver_pending
     from agent_brain_client.adapters.storage import metadata, registration
     from agent_brain_client.adapters.storage.content_session import ContentSession
     from agent_brain_client.domain.scopes import digest, namespace
@@ -51,10 +56,21 @@ def verify(server_root, harness="codex"):
             yield server.db
 
         server.service.source_records = SourceRegistry(journal)
+        server.service.source_records.initialize_origins()
         home = server.root / "client"
         home.mkdir()
         work = home / "fictional-work"
-        (work / ".git").mkdir(parents=True)
+        work.mkdir()
+        repository = "github.com/synthetic/project-a"
+        project = {
+            "id": "git-sha256:" + hashlib.sha256(repository.encode()).hexdigest(),
+            "repository": repository,
+        }
+        subprocess.run(["git", "-C", str(work), "init"], check=True, capture_output=True, timeout=10)
+        subprocess.run(
+            ["git", "-C", str(work), "remote", "add", "origin", "git@github.com:synthetic/project-a.git"],
+            check=True, capture_output=True, timeout=10,
+        )
         project_work = home / "fictional-project-route"
         (project_work / ".git").mkdir(parents=True)
         excluded_work = home / "fictional-excluded-origin"
@@ -63,7 +79,14 @@ def verify(server_root, harness="codex"):
         original = "Fictional preference for native SQLite boundary verification."
         uncertain = "Fictional offline native memory approved in the second batch."
         denied = "Fictional oversized original. " * 5000
-        memory = native / ("projects/unknown/memory" if harness == "codebuddy" else "memories")
+        if harness == "codex":
+            original = (
+                "thread_id: 12345678-abcd-1234-abcd-000000000001\n"
+                "updated_at: 2026-01-01T00:00:00+00:00\n"
+                "rollout_path: /synthetic/unused.jsonl\n"
+                f"cwd: {work}\n\n{original}"
+            )
+        memory = native / ("projects/unknown/memory" if harness == "codebuddy" else "memories/rollout_summaries")
         memory.mkdir(parents=True)
         (memory / "approved.md").write_text(original)
         (memory / "local.md").write_text(denied)
@@ -87,8 +110,9 @@ def verify(server_root, harness="codex"):
             hub.owner["team_id"], hub.owner["user_id"], hub.owner["device_id"],
             namespace(hub.owner["actor"], sid), _native_session(approved_origin, group),
         )
+        automatic_identity = replace(approved_identity, session_id="synthetic-auto")
         core.core.close()
-        core.identities = [approved_identity]
+        core.identities = [approved_identity, automatic_identity]
         core.start()
         receipt_dir = hub.directory / "namespaces" / sid / "receipts"
         receipt_dir.mkdir(parents=True, mode=0o700)
@@ -99,12 +123,11 @@ def verify(server_root, harness="codex"):
         events, identities, errors = [], [], []
         lose_next = False
 
-        def native_submit(request, _principal, _client, _write_receipt, *, native_source):
-            assert native_source
+        def native_submit(request, _principal, _client, _write_receipt, *, native_source=False):
             event = request["params"]["event"]
             identity = Identity(hub.owner["team_id"], hub.owner["user_id"], hub.owner["device_id"],
                                 event["project_id"], event["session_id"])
-            assert identity == approved_identity
+            assert identity == (approved_identity if native_source else automatic_identity)
             core.core.ensure_identity(identity)
             result = adapter.submit(identity, event)
             identities.append(identity)
@@ -212,8 +235,9 @@ def verify(server_root, harness="codex"):
         assert repeat["counts"]["already_exists"] == 2, repeat
         assert all(result["counts"]["excluded"] == 1 for result in (first, interrupted, resumed, repeat))
         assert len(events) == 3 and events[1] == events[2]
-        for wire in events:
-            assert wire["params"]["origin"] == approved_origin
+        first_origin = dict(approved_origin, project=project) if harness == "codex" else approved_origin
+        for wire, expected_origin in zip(events, (first_origin, approved_origin, approved_origin)):
+            assert wire["params"]["origin"] == expected_origin
             assert set(wire["params"]["event"]) == {"contract", "event_id", "occurred_at", "content"}
         wire = events[0]
         for params, status_code, code in (
@@ -236,13 +260,42 @@ def verify(server_root, harness="codex"):
             ("native-memory", text) for text in (original, uncertain)
         )
         event_id = events[0]["params"]["event"]["event_id"]
-        params = {"origin": events[0]["params"]["origin"], "session_id": events[0]["params"]["session_id"],
+        params = {"origin": approved_origin, "session_id": events[0]["params"]["session_id"],
                   "event_id": event_id, "event_only": True}
         status = hub.handle({"request_id": "fictional_l0_readback", "method": "memory_global_status",
                              "params": params}, principal)
         assert status["result"]["capture_extraction"].get("l0_accepted") is True, status
         assert status["result"]["capture_extraction"]["state"] == "unknown", status
+        source_records = server.service.source_records
+        assert source_records.origin_project(approved_identity.project_id, event_id, approved_identity.device_id) == (
+            project if harness == "codex" else None
+        )
+
+        with (
+            patch.object(collection, "load", return_value=settings),
+            patch.object(collection, "approved", return_value=True),
+            patch("agent_brain_client.adapters.server.collection.approved", return_value=True),
+            patch.object(collection, "CollectionClient", side_effect=transport),
+            patch.object(registration, "registration", return_value=({}, enrolled)),
+        ):
+            client, queue = collection.build_delivery_queue(settings, approved_origin, harness)
+            staged = stage_messages(
+                queue, project_id=automatic_identity.project_id, session_id=automatic_identity.session_id,
+                operation_id="synthetic-observation", phase="prompt",
+                messages=[{"role": "user", "content": "Fictional automatic capture from Project A."}],
+            )
+            pending = deliver_pending(queue, allowed=lambda session: client.status(session)["source_admitted"])
+            assert not pending, errors
+        saved = queue._load("outbox/" + staged["request_ids"][0] + ".json")
+        assert saved["state"] == "confirmed"
+        auto = events[-1]["params"]
+        assert auto["origin"] == dict(approved_origin, project=project)
+        assert source_records.origin_project(approved_identity.project_id, auto["event"]["event_id"],
+                                             approved_identity.device_id) == project
+        assert adapter.session_rows(identities[-1])[0]["content"] == "Fictional automatic capture from Project A."
         return {"harness": harness, "l0_rows": len(rows), "same_id_replayed": True, "excluded_submissions": 0,
+                "automatic_workspace_project_confirmed": True,
+                "onboarding_workspace_project": "verified" if harness == "codex" else "unknown",
                 "approved_personal_namespace": True, "client_rejected_project_route": True,
                 "server_rejected_unapproved_origin": True, "server_rejected_per_event_project": True,
                 "l0_accepted": True, "initial_call_received": 1,

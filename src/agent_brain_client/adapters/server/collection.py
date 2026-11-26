@@ -1,5 +1,6 @@
 """Authenticated collection protocol over the enrolled HTTPS transport."""
 
+from functools import cached_property
 import json
 import math
 import os
@@ -9,7 +10,11 @@ from urllib.request import Request
 from agent_brain_client.adapters.storage import metadata as metadata
 from agent_brain_client.adapters.storage import registration as registration_store
 from agent_brain_client.domain.errors import GlobalRequestTooLarge
-from agent_brain_client.domain.events import MAX_NATIVE_MEMORY_BYTES, NATIVE_MEMORY_CONTRACT
+from agent_brain_client.domain.final_context import CAPABILITY as FINAL_CONTEXT_CAPABILITY
+from agent_brain_client.domain.events import (
+    MAX_NATIVE_MEMORY_BYTES, NATIVE_MEMORY_CONTRACT, PROJECT_ORIGIN_CAPABILITY,
+)
+from agent_brain_client.adapters.storage.workspace_identity import workspace_project
 from agent_brain_client.domain.scopes import (
     digest,
     select,
@@ -51,7 +56,7 @@ class CollectionClient:
             origin_sha=digest(local),
         )
 
-    def wire(self, method, params, rid=None):
+    def wire(self, method, params, rid=None, *, timeout=90):
         allowed = {
             "memory_global_status",
             "memory_query",
@@ -108,7 +113,7 @@ class CollectionClient:
             )
 
         try:
-            with self.base.transport.opener.open(req, timeout=request_timeout(90)) as response:
+            with self.base.transport.opener.open(req, timeout=request_timeout(timeout)) as response:
                 with recall_timing_stage("response_body"):
                     body = response.read(262145)
                 result = decode(body)
@@ -141,6 +146,19 @@ class CollectionClient:
         ):
             raise ValueError("Global response identity changed")
         return result
+
+    @cached_property
+    def capabilities(self):
+        result = self.wire("memory_global_status", {}, timeout=3)
+        names = result.get("capabilities")
+        if "error" in result or not isinstance(names, list):
+            return frozenset()
+        return frozenset(
+            name for name in names if name in (PROJECT_ORIGIN_CAPABILITY, FINAL_CONTEXT_CAPABILITY)
+        )
+
+    def recall_workspace_project(self):
+        return workspace_project(self.local)
 
     def params(self, session, *, recall=False):
         if (
@@ -240,9 +258,14 @@ class CollectionClient:
             }
         from agent_brain_client.domain.contract import core_receipt
 
-        result = self.wire(
-            "memory_global_event_submit", self._event_params(request), request["request_id"],
-        )
+        params = self._event_params(request)
+        if params["origin"]["kind"] == "project":
+            source = getattr(self, "event_source_project", None)
+            project = None if source is None else source(request)
+            # Server keeps project metadata outside existing L0 idempotency.
+            if project is not None and PROJECT_ORIGIN_CAPABILITY in self.capabilities:
+                params["origin"] = dict(params["origin"], project=project)
+        result = self.wire("memory_global_event_submit", params, request["request_id"])
         if "error" not in result and not core_receipt(result, request):
             raise ValueError("Unconfirmed global Core receipt")
         return result
