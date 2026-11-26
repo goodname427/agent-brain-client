@@ -449,6 +449,7 @@ class LayeredRecall(unittest.TestCase):
         self.value.update(approved_scope_sha256=pin, server_scope_sha256=pin)
         body = "  [B] synthetic cobalt-28  \n[A] synthetic amber-64\n  项目 B 的证据\n"
         self.response["result"] = self.final_result(body)
+        self.response["persistence"] = {"state": "read-only", "durable": False}
         client = gm.CollectionClient.return_value
         client.capabilities = {"final-context-v1", "project-origin-v1"}
         client.recall_workspace_project = lambda: {
@@ -482,6 +483,7 @@ class LayeredRecall(unittest.TestCase):
     def test_negotiated_recall_rejects_incompatible_or_unverified_body(self):
         client = gm.CollectionClient.return_value
         client.capabilities = {"final-context-v1"}
+        self.response["persistence"] = {"state": "read-only", "durable": False}
         legacy = self.response["result"]
         bad_format = self.final_result("Synthetic recognized evidence")
         bad_format["final_context"]["format"] = "agentbrain.final-context.v9"
@@ -496,6 +498,27 @@ class LayeredRecall(unittest.TestCase):
         self.response["result"] = self.final_result("")
         self.assertEqual(self.run_hook(), {})
         self.assertEqual(recall_receipts.recall_observation(self.value)["status"], "empty")
+        self.response["persistence"]["durable"] = True
+        self.assertEqual(self.run_hook(), {})
+        self.assertEqual(recall_receipts.recall_observation(self.value)["status"], "failed")
+
+    def test_replays_server_final_context_contract_fixture(self):
+        result = json.loads((ROOT / "tests/fixtures/server_final_context.json").read_text(encoding="utf-8"))
+        self.response.update(result=result, persistence={"state": "read-only", "durable": False})
+        self.local = self.origin("/synthetic/wt-b")
+        self.value["scope"].update(all_projects=True, profile_id="a" * 32)
+        client = gm.CollectionClient.return_value
+        client.actor, client.device = "owner", "a" * 32
+        client.capabilities = {"final-context-v1"}
+        output = self.run_hook(question="Project B release gate")
+        final = result["final_context"]
+        body = output["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual(hashlib.sha256(body.encode()).hexdigest(), final["body_sha256"])
+        self.assertEqual(body, final["body"])
+        receipt = recall_receipts.recall_observation(self.value)
+        self.assertEqual(receipt["retrieval"]["selected"][0]["record_sha256"],
+                         final["sources"][0]["record_sha256"])
+        self.assertEqual(receipt["retrieval"]["final_context_format"], final["format"])
 
     def test_both_native_hooks_route_projects_and_ordinary_directories(self):
         from agent_brain_client.adapters.harnesses.codebuddy import events, transcript

@@ -7,6 +7,7 @@ from agent_brain_client.adapters.storage import metadata as metadata
 from agent_brain_client.adapters.platforms.filesystem import private_directory
 from agent_brain_client.application.control import saved_recall_timing
 from agent_brain_client.application.memory.context import CONTEXT_BYTES
+from agent_brain_client.domain.final_context import FORMAT
 
 
 def _valid_reference(ref, counts, *, emitted=False):
@@ -31,10 +32,11 @@ def _valid_reference(ref, counts, *, emitted=False):
 def _valid_retrieval(retrieval, counts, item_count):
     required = {"candidate_count", "returned", "selected", "omitted_for_budget"}
     partial_reasons = {"server_budget_trimmed", "source_verification_failed"}
-    optional = {"unselected_without_evidence", "partial"} | partial_reasons
+    optional = {"unselected_without_evidence", "partial", "final_context_format"} | partial_reasons
     if (
         not isinstance(retrieval, dict)
         or set(retrieval) - optional != required
+        or retrieval.get("final_context_format", FORMAT) != FORMAT
         or type(retrieval.get("partial", False)) is not bool
         or any(
             retrieval.get("partial") is not True or retrieval[key] is not True

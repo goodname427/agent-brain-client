@@ -112,16 +112,17 @@ def recall(
             "memory_query", params, **({"rid": request_id} if request_id else {})
         )
     if budget is not None:
-        if "error" in response:
-            raise ValueError("Global final recall unavailable")
         ids = _approved_namespaces(scope, local, selected, client)
-        finished = final_context.check_result(
-            response["result"], budget,
+        finished = final_context.check_response(
+            response, budget,
             lambda source: _verify_final_source(source, value, local, client, ids),
         )
         if observe is not None:
             refs = list(finished.references)
-            observe.update(candidate_count=len(refs), returned=refs, selected=refs)
+            observe.update(
+                final_context_format=final_context.FORMAT,
+                candidate_count=len(refs), returned=refs, selected=refs,
+            )
         return finished
     if "error" in response:
         error = response["error"]

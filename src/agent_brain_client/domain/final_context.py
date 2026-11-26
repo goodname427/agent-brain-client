@@ -12,15 +12,26 @@ CAPABILITY = "final-context-v1"
 # the same probes have run on Windows and in the IDE.
 HOST_BYTES = {"codex": 10000, "codebuddy": 24576}
 LAYERS = ("L1", "L2", "L3")
+MAX_SOURCES = 128
 
 
 @dataclass(frozen=True)
 class FinalContext:
     body: str
-    references: tuple
+    references: tuple[dict[str, str], ...]
 
 
-def check_result(result, budget, verify_source):
+def check_response(response, budget, verify_source):
+    persistence = response.get("persistence")
+    if (
+        "error" in response
+        or not isinstance(persistence, dict)
+        or set(persistence) != {"state", "durable"}
+        or persistence["state"] != "read-only"
+        or persistence["durable"] is not False
+    ):
+        raise ValueError("Authenticated read-only final recall required")
+    result = response.get("result")
     if (
         not isinstance(result, dict)
         or set(result) != {"schema", "final_context"}
@@ -35,6 +46,7 @@ def check_result(result, budget, verify_source):
         or final["format"] != FORMAT
         or not isinstance(final["body"], str)
         or not isinstance(final["sources"], list)
+        or len(final["sources"]) > MAX_SOURCES
         or bool(final["body"]) != bool(final["sources"])
     ):
         raise ValueError("Exact final recall body and sources required")

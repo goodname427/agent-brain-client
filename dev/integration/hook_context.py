@@ -160,8 +160,16 @@ def measure(args):
         worker = Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:
-            for size in args.bytes:
-                body = fixture_body(size, args.cjk)
+            if args.server_example:
+                result = json.loads((ROOT / "tests/fixtures/server_final_context.json").read_text(encoding="utf-8"))
+                bodies = [result["final_context"]["body"]]
+                markers = ("amber-47", "github.com/synthetic/project-b")
+                evidence = "amber-47"
+            else:
+                bodies = [fixture_body(size, args.cjk) for size in args.bytes]
+                markers, evidence = MARKERS, "COBALT-28"
+            for body in bodies:
+                size = len(body.encode())
                 body_file.write_bytes(body.encode())
                 server.requests = []
                 start = monotonic()
@@ -172,12 +180,12 @@ def measure(args):
                 duration = round(1000 * (monotonic() - start))
                 spans = [span for data in server.requests for span in model_text(
                     data.get("input") if args.host == "codex" else data.get("messages"),
-                ) if any(marker in span for marker in MARKERS)]
+                ) if any(marker in span for marker in markers)]
                 exact = any(body in span for span in spans)
                 print(json.dumps({
                     "host": args.host, "utf8_bytes": size, "exact_body": exact,
                     "body_sha256": hashlib.sha256(body.encode()).hexdigest(),
-                    "middle_evidence": any("COBALT-28" in span for span in spans),
+                    "middle_evidence": any(evidence in span for span in spans),
                     "model_requests": len(server.requests), "wall_ms": duration,
                     "exit_code": result.returncode,
                 }), flush=True)
@@ -192,15 +200,17 @@ def main():
     parser.add_argument("--emit-hook", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--host", choices=("codex", "codebuddy"))
     parser.add_argument("--executable")
-    parser.add_argument("--bytes", type=int, nargs="+")
+    fixture = parser.add_mutually_exclusive_group()
+    fixture.add_argument("--bytes", type=int, nargs="+")
+    fixture.add_argument("--server-example", action="store_true")
     parser.add_argument("--cjk", action="store_true")
     args = parser.parse_args()
     if args.emit_hook is not None:
         hook_main(args.emit_hook)
-    elif args.host and args.executable and args.bytes:
+    elif args.host and args.executable and (args.bytes or args.server_example):
         measure(args)
     else:
-        parser.error("--host, --executable, and --bytes are required")
+        parser.error("--host, --executable, and a fixture selector are required")
 
 
 if __name__ == "__main__":

@@ -73,6 +73,7 @@ digest, length, source namespaces, devices, origins and committed proof. A
 malformed or unsupported final response yields no Hook context. Servers that
 lack the capability still return candidates through the compatibility path
 described below. Manual MCP queries continue to use the candidate contract.
+The existing separately pinned project recall route has its own request contract.
 
 Automatic capture records a normalized Git remote identity at observation
 time when one is available. The location and scope in the existing outbox
@@ -98,9 +99,12 @@ python3 dev/integration/hook_context.py --host codebuddy --executable /path/to/c
 On Mac, Codex CLI 0.171.0-alpha.13.2 preserved 10,000 bytes and dropped the
 middle evidence at 10,001. CodeBuddy Code CLI 2.187.0 preserved 125,000 bytes
 inside its reminder wrapper. The request budgets are 10,000 and 24,576 bytes
-respectively because the wire protocol caps the latter. These are capacity
-measurements. Windows, CodeBuddy IDE, real model answers and the joint
-Server/Client quality and token comparison require separate verification.
+respectively because the wire protocol caps the latter. Use
+`--server-example` in place of `--bytes … --cjk` to replay the 465-byte Server
+contract fixture. Both Mac CLIs preserved its body digest and Project B
+evidence in their model requests. Windows, CodeBuddy IDE, real model
+answers and the joint Server/Client quality and token comparison require
+separate verification. [Server #188](https://github.com/goodname427/agent-brain-server/pull/188)
 
 ## Compatibility context selection
 

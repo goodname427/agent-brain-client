@@ -71,7 +71,7 @@ def onboarding_workspace_project(cwd, route):
         if local["project_root"] != root or local["repository_root"] != route["repository_root"]:
             return None
         return workspace_project(local)
-    except (OSError, ValueError):
+    except (OSError, RuntimeError, ValueError):
         return None
 
 
@@ -110,5 +110,5 @@ def workspace_project(local):
             return None
         return {"id": "git-sha256:" + hashlib.sha256(repository.encode()).hexdigest(),
                 "repository": repository}
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
         return None
