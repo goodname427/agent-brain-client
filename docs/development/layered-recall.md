@@ -254,3 +254,80 @@ Content inventory uses optional opaque cursor pagination, without adding another
 daily memory-query tool. Client refresh follows every page and verifies the
 complete snapshot before native mapping. Page size and snapshot byte budgets do
 not limit the total number of saved native memory topics.
+
+## Raw L0 workspace provenance (Client #302)
+
+The host adapter supplies the selected workspace to L0 capture. Codex uses the
+native event cwd, verified against the command's admitted directory. CodeBuddy
+uses its Hook's `CODEBUDDY_PROJECT_DIR`, including the Windows Git Bash spelling,
+or the native event cwd on hosts without that variable. If the supplied root
+cannot be verified to contain the event directory, workspace provenance is
+absent. The existing route still governs authorization. The project discovered
+by walking upwards continues to serve the existing route and does not replace
+the host selection. For native-memory Onboarding, use a workspace recorded in
+the native source metadata within the approved route. A Codex rollout-summary
+header can provide this root. A CodeBuddy memory without trustworthy per-file
+workspace metadata is imported with the existing unknown source.
+
+A plain folder supplies a display name and device-local ID. The display name is
+a path component and the ID hashes the enrolled device and canonical local
+directory. Path aliases use the canonical directory. Same-name folders on
+different roots and local identities on different devices remain distinct.
+Portable identity is supplemental:
+
+- Git uses an exact workspace-root checkout or linked worktree with a single
+  verifiable normalized remote. The existing `git-sha256:` ID is retained.
+- SVN uses offline working copy metadata and hashes its repository
+  UUID with the selected root's repository-relative path.
+- P4 uses an already configured `P4PORT` and `P4CLIENT` from the launch
+  environment. Bounded read-only `p4 client -o` and `p4 info` verify a single
+  exact mapping, the advertised server address and server ID, the stream (when
+  present), and the selected root's relative mapping. No login is initiated. Missing tools,
+  unavailable authorization, composite views and ambiguous mappings leave the
+  portable identity absent. Do not substitute the P4 client name.
+
+### Proposed Server opt-in for L0 (Server #192)
+
+The authenticated, empty-params `memory_global_status` response advertises
+`workspace-origin-v1` alongside existing capabilities only once the Server
+accepts the following optional member on `memory_global_event_submit`, for
+both `project` and `non-project` origins and both existing L0 event contracts.
+
+```json
+{
+  "workspace": {
+    "id": "workspace-local-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "display_name": "Workspace A",
+    "portable_id": "svn-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}
+```
+
+The member is `params.origin.workspace`. Its required fields are `id` (the
+literal prefix and 64 lowercase hex digits) and `display_name` (a trimmed
+printable path component of 1–128 Unicode code points). Optional
+`portable_id` is a `git-sha256:`, `svn-sha256:` or `p4-sha256:`
+identifier with 64 lowercase hex digits. A payload may omit the entire member
+or just the portable ID. The existing `params.origin.project` Git object is
+unchanged and may coexist when the Server advertises `project-origin-v1`.
+Without the new capability the Client omits `workspace`, including on retry.
+The original outbox request, wire event, namespace, session and receipt remain
+unchanged. The Client journals provenance separately before enqueue so existing
+workers can still read the older sidecar.
+
+Server validation should keep workspace metadata outside the existing route
+exact-shape check and request/event fingerprint. It can retain first observed
+provenance with the authenticated device and L0 event when accepted, without
+changing receipt shape, filters, authorization, or eligibility. The original
+event under the same ID remains idempotent if a retry omits or includes the
+optional metadata. The acceptance fixture uses A-origin conversations about
+A, B and a personal preference and expects A in each transmitted source.
+This contract adds no recall-query fields or content-project labels.
+
+The isolated Onboarding integration also accepts `--native-executable` to
+capture a fictional prompt through the real CLI before exercising Client
+capture and delivery. Add `--ordinary-workspace` to select a standalone folder
+instead of an explicitly opened child of a Git checkout. `--workspace-wire`
+enables a fixture-only capability and records the transmitted origin before
+forwarding the unchanged L0 event to the existing Server and SQLite Core.
+Run without that flag to exercise the current Server and Git compatibility.
