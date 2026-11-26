@@ -8,10 +8,11 @@ from agent_brain_client.application.control import (
     recall_timing_stage,
     start_recall_timing,
 )
-from agent_brain_client.application.memory.context import render_context
+from agent_brain_client.application.memory.context import injectable_context
+from agent_brain_client.domain.final_context import FinalContext
 
 
-def recall_prompt(value, local, payload, query, *, services, observe=None):
+def recall_prompt(value, local, payload, query, *, services, observe=None, harness=None):
     question = query
     if (
         not isinstance(question, str)
@@ -72,6 +73,7 @@ def recall_prompt(value, local, payload, query, *, services, observe=None):
                     query,
                     request_id=receipt["request_id"],
                     observe=receipt["retrieval"],
+                    **({"harness": harness} if harness is not None else {}),
                 )
         except Exception as error:
             recall_timing_failed()
@@ -83,19 +85,21 @@ def recall_prompt(value, local, payload, query, *, services, observe=None):
             if observe is not None:
                 observe(receipt)
             raise
-        context = render_context(items) if items else ""
+        context = injectable_context(items)
+        finished = isinstance(items, FinalContext)
+        refs = items.references if finished else items
         receipt.update(
             {
-                "status": "context-prepared" if items else "empty",
+                "status": "context-prepared" if context else "empty",
                 "layer_counts": {
-                    layer: sum(item.get("layer") == layer for item in items)
+                    layer: sum(item.get("layer") == layer for item in refs)
                     for layer in ("L1", "L2", "L3")
                 },
-                "item_count": len(items),
+                "item_count": len(refs),
                 "context_bytes": len(context.encode()),
                 "context_sha256": digest(context),
-                "offline_cache": any(
-                    item.get("offline_cache") is True for item in items
+                "offline_cache": not finished and any(
+                    item.get("offline_cache") is True for item in refs
                 ),
             }
         )

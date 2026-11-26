@@ -149,7 +149,7 @@ def hook(home, stream, *, core=None, defer=None, observe=None, verified_release=
         kind, prompt=prompt, stage=stage if capture else None,
         schedule=(lambda: core.schedule_delivery(home, "codebuddy", local)) if capture else None,
         recall=(lambda query: core.recall_prompt(value, local, normalized, query,
-            **({"observe": observe} if observe is not None else {}))) if recall else None,
+            **({"observe": observe} if observe is not None else {}), harness="codebuddy")) if recall else None,
     )
     diagnostic["timing_ms"]["initialization_ms"] = round((initialized - started) * 1000, 3)
     diagnostic["timing_ms"]["adapter_total_ms"] = round((monotonic() - started) * 1000, 3)
