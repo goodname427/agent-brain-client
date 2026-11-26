@@ -78,6 +78,13 @@ lack the capability still return candidates through the compatibility path
 described below. Manual MCP queries continue to use the candidate contract.
 The existing separately pinned project recall route has its own request contract.
 
+When the same status response advertises `recall-time-zone-v1`, Codex and
+CodeBuddy include the detected system IANA ID as `final_context.time_zone`.
+macOS reads the system zoneinfo link. Windows uses the active system key and
+the Windows ICU mapping. An unknown zone or a Windows daylight override leaves
+the field absent. The Client reads the OS setting for each automatic request
+and injects the returned body unchanged.
+
 Automatic capture records a normalized Git remote identity at observation
 time when one is available. The location and scope in the existing outbox
 still determine authorization and the request ID. Onboarding uses the same L0

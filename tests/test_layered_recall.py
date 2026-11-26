@@ -480,6 +480,44 @@ class LayeredRecall(unittest.TestCase):
                 self.assertEqual(receipt["context_bytes"], len(body.encode()))
                 self.assertEqual(receipt["layer_counts"], {"L1": 1, "L2": 0, "L3": 0})
 
+    def test_automatic_hooks_send_system_time_zone_only_after_negotiation(self):
+        from agent_brain_client.adapters.harnesses.codebuddy import events, transcript
+
+        workspace = self.root / "synthetic-time-zone-workspace"
+        workspace.mkdir()
+        self.local = self.origin(str(workspace))
+        self.value["scope"]["include_roots"] = [{"root": str(workspace), "sharing": "personal"}]
+        pin = digest(self.value["scope"])
+        self.value.update(approved_scope_sha256=pin, server_scope_sha256=pin)
+        client = gm.CollectionClient.return_value
+        body = 'Synthetic answer (活动时间: 2024-03-10T09:30:00+08:00)'
+        self.response.update(result=self.final_result(body),
+                             persistence={"state": "read-only", "durable": False})
+        for harness in ("codex", "codebuddy"):
+            for capable, zone in ((True, "Asia/Shanghai"), (True, "UTC"),
+                                  (True, None), (False, "Asia/Shanghai")):
+                with (
+                    self.subTest(harness=harness, capable=capable, zone=zone),
+                    patch.object(gm, "load", return_value=self.value),
+                    patch.object(os, "getcwd", return_value=self.local["cwd"]),
+                    patch.object(events, "capture_messages", return_value={"status": "staged"}),
+                    patch.object(transcript, "observe", return_value="synthetic"),
+                    patch.object(client, "recall_time_zone", create=True, return_value=zone) as current_zone,
+                ):
+                    client.capabilities = {"final-context-v1"}
+                    if capable:
+                        client.capabilities.add("recall-time-zone-v1")
+                    before = len(self.sent)
+                    output = self.run_hook(harness=harness)
+                    self.assertEqual(len(self.sent), before + 1)
+                    method, params = self.sent[-1]
+                    self.assertEqual(method, "memory_query")
+                    self.assertEqual(params["final_context"].get("time_zone"), zone if capable else None)
+                    self.assertEqual("time_zone" in params["final_context"], capable and zone is not None)
+                    self.assertEqual(current_zone.call_count, int(capable))
+                    self.assertEqual(output["hookSpecificOutput"]["additionalContext"], body)
+                    self.assertEqual(recall_receipts.recall_observation(self.value)["context_sha256"], digest(body))
+
     def test_negotiated_recall_rejects_incompatible_or_unverified_body(self):
         client = gm.CollectionClient.return_value
         client.capabilities = {"final-context-v1"}
