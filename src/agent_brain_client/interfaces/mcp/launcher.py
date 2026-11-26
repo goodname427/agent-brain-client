@@ -462,10 +462,10 @@ def _read_contract(record):
 
 
 def _compatible_session(first, second, protocol):
+    # The tool contract version describes the catalog. Actual tools are checked and published separately.
     return (
         protocol in second["versions"]
         and first["capabilities"] == second["capabilities"]
-        and first["toolContract"] == second["toolContract"]
         and first["cacheIdentity"] == second["cacheIdentity"]
         and first["cacheAbi"] == second["cacheAbi"]
     )
