@@ -23,7 +23,7 @@
     "src/agent_brain_client/interfaces/cli/project.py": "03264894a7f0b69fe428da54b73a0fc30bd5d022ffc57d8eb2768d2638e6e079",
     "src/agent_brain_client/interfaces/mcp/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/interfaces/mcp/content.py": "e60bc95d49a6bbe0d3c3681bbc0d8cc526be8c0f7a54a78c82ca597ccbd075ba",
-    "src/agent_brain_client/interfaces/mcp/launcher.py": "d8bc12062d5c905e884d26f86508ea67a86f1a4fcdcc357cd12a31c514488b2c",
+    "src/agent_brain_client/interfaces/mcp/launcher.py": "418f3f94d952db8d1926f70d49f5fed36c68d659b0eb33afb88da92f5d5a1c31",
     "src/agent_brain_client/interfaces/mcp/topics.py": "31bf9a673cba4aed7e74c0a31e3c8774dbc9b5c540ede025d558e0af7afbae7a",
     "src/agent_brain_client/runtime/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "src/agent_brain_client/runtime/launcher.py": "43a2550a3e39afb41ceca4c5b2de69e773b064ff3a9c4cb1921e86ec18cd3259",
