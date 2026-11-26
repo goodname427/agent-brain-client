@@ -170,11 +170,11 @@ def schedule_delivery(home, harness, local):
     return schedule(home, harness, local)
 
 
-def recall_prompt(value, local, payload, query, *, observe=None):
+def recall_prompt(value, local, payload, query, *, observe=None, harness=None):
     from agent_brain_client.application.memory.prompt_recall import recall_prompt as invoke
     from agent_brain_client.adapters.platforms.filesystem import locked
     from agent_brain_client.adapters.storage.content import operation_stage
-    return invoke(value, local, payload, query, observe=observe, services=SimpleNamespace(
+    return invoke(value, local, payload, query, observe=observe, harness=harness, services=SimpleNamespace(
         settings_path=lambda home: settings_path(home),
         recall=lambda *args, **kwargs: recall(*args, **kwargs),
         locked=locked, operation_stage=operation_stage, cache_exists=lambda path: path.exists(),

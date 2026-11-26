@@ -263,6 +263,14 @@ def _render_item(item):
     return json.dumps(item, ensure_ascii=False)
 
 
+def injectable_context(recall):
+    from agent_brain_client.domain.final_context import FinalContext
+
+    if isinstance(recall, FinalContext):
+        return recall.body
+    return render_context(recall) if recall else ""
+
+
 def render_context(items):
     return (
         CONTEXT_POLICY
