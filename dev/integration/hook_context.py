@@ -6,6 +6,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+from queue import Queue
+import re
 import shlex
 import subprocess
 import sys
@@ -104,7 +106,57 @@ def hook_main(body_file):
     print(json.dumps(hook_context("UserPromptSubmit", FinalContext(body, ())), ensure_ascii=False))
 
 
-def configure(host, port, home, workspace, hook_command):
+def approve_fixture_hook(executable, env, workspace, config_file, hook_command):
+    # Use the host-reported identity for the single command this fixture
+    # created. Only the temporary profile receives the trust entry.
+    messages = [
+        {"id": 1, "method": "initialize", "params": {
+            "clientInfo": {"name": "synthetic-fixture", "version": "0.0.0"},
+            "capabilities": {"experimentalApi": True},
+        }},
+        {"method": "initialized"},
+        {"id": 2, "method": "hooks/list", "params": {"cwds": [str(workspace)]}},
+    ]
+    with subprocess.Popen(
+        [executable, "app-server", "--listen", "stdio://"], cwd=workspace, env=env,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        text=True, encoding="utf-8",
+    ) as process:
+        result = Queue()
+
+        def read():
+            for line in process.stdout:
+                row = json.loads(line)
+                if row.get("id") == 2:
+                    result.put(row)
+                    return
+
+        Thread(target=read, daemon=True).start()
+        try:
+            process.stdin.write("".join(json.dumps(msg) + "\n" for msg in messages))
+            process.stdin.flush()
+            response = result.get(timeout=10)
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+    entries = response["result"]["data"]
+    hooks = entries[0]["hooks"] if len(entries) == 1 else []
+    if len(hooks) != 1:
+        raise ValueError("Expected one generated Codex fixture Hook")
+    hook = hooks[0]
+    if (
+        hook["command"] != hook_command
+        or Path(hook["sourcePath"]).resolve() != config_file
+        or hook["eventName"] != "userPromptSubmit"
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", hook["currentHash"])
+    ):
+        raise ValueError("Unexpected Codex fixture Hook identity")
+    with config_file.open("a", encoding="utf-8") as target:
+        target.write(f'\n[hooks.state.{json.dumps(hook["key"])}]\n')
+        target.write(f'trusted_hash = {json.dumps(hook["currentHash"])}\n')
+
+
+def configure(host, executable, port, home, workspace, hook_command):
     codex = home / ".codex"
     codex.mkdir()
     env_keys = ("PATH", "LANG", "TMP", "TEMP", "TMPDIR", "SYSTEMROOT", "COMSPEC", "PATHEXT", "WINDIR")
@@ -128,11 +180,10 @@ trust_level = "trusted"
 type = "command"
 command = {json.dumps(hook_command)}
 """
-        (codex / "config.toml").write_text(config, encoding="utf-8")
-        # This invocation allows only the test-generated hook in an empty,
-        # disposable profile pointed at a local stub. It changes no real trust.
-        args = ["exec", "--ephemeral", "--json", "--skip-git-repo-check",
-                "--dangerously-bypass-hook-trust", "-C", str(workspace)]
+        config_file = codex / "config.toml"
+        config_file.write_text(config, encoding="utf-8")
+        approve_fixture_hook(executable, env, workspace, config_file, hook_command)
+        args = ["exec", "--ephemeral", "--json", "--skip-git-repo-check", "-C", str(workspace)]
     else:
         home_dir = home / ".codebuddy"
         home_dir.mkdir()
@@ -155,7 +206,7 @@ def measure(args):
         body_file = root / "context.txt"
         command = [sys.executable, "-B", str(Path(__file__).resolve()), "--emit-hook", str(body_file)]
         shell_command = subprocess.list2cmdline(command) if os.name == "nt" else shlex.join(command)
-        env, invocation = configure(args.host, server.server_port, home, workspace, shell_command)
+        env, invocation = configure(args.host, args.executable, server.server_port, home, workspace, shell_command)
         server.host = args.host
         worker = Thread(target=server.serve_forever, daemon=True)
         worker.start()
