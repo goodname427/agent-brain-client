@@ -166,12 +166,41 @@ import time
 sys.path.insert(0, sys.argv[1])
 from agent_brain_client.adapters.harnesses.hook_output import emit, native_output_deadline
 
-if sys.argv[2] == "stderr":
-    feeder = threading.Thread(target=os.write, args=(2, b"x" * 8388608), daemon=True)
-    feeder.start()
+pipe = sys.argv[2]
+descriptor = sys.stdout.fileno() if pipe == "stdout" else sys.stderr.fileno()
+chunk = b"x" * 512
+progress = threading.Condition()
+completed_writes = 0
+fill_limit = 16384
+
+def fill():
+    global completed_writes
+    for _ in range(fill_limit):
+        assert os.write(descriptor, chunk) == len(chunk)
+        with progress:
+            completed_writes += 1
+            progress.notify()
+
+# The parent leaves both streams undrained. Observe completed small writes
+# followed by a blocked write before arming the watchdog. Bytes from an
+# incomplete large write can disappear when Windows terminates the process.
+feeder = threading.Thread(target=fill, daemon=True)
+feeder.start()
+with progress:
+    assert progress.wait_for(lambda: completed_writes > 0, timeout=3)
+    stop = time.monotonic() + 2
+    while completed_writes < fill_limit and time.monotonic() < stop:
+        previous = completed_writes
+        if not progress.wait_for(lambda: completed_writes != previous, timeout=.15):
+            break
+    else:
+        raise AssertionError("unread pipe did not fill")
+    assert feeder.is_alive(), "pipe filler returned instead of blocking"
+
 with native_output_deadline(.25):
-    if sys.argv[2] == "stdout":
-        emit({"text": "x" * 8388608})
+    if pipe == "stdout":
+        emit({"text": "x" * 16384})
+        raise AssertionError("write returned while stdout was undrained")
     time.sleep(15)
 """
         for pipe in ("stdout", "stderr"):
@@ -180,17 +209,16 @@ with native_output_deadline(.25):
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             ) as process:
                 try:
-                    self.assertEqual(process.wait(timeout=4), 0)
+                    status = process.wait(timeout=8)
                 finally:
                     if process.poll() is None:
                         process.kill()
                     stdout, stderr = process.communicate()
-                if pipe == "stdout":
-                    self.assertTrue(stdout.startswith(b'{"text":'))
-                    self.assertFalse(stdout.endswith(b"\n"))
-                else:
+                self.assertEqual(status, 0, stderr[-2048:])
+                saturated_stream = stdout if pipe == "stdout" else stderr
+                self.assertEqual(saturated_stream[:512], b"x" * 512)
+                if pipe == "stderr":
                     self.assertEqual(stdout.strip(), b"{}")
-                    self.assertTrue(stderr.startswith(b"x"))
 
     def test_flush_after_deadline_never_acknowledges_recall(self):
         clock = SimpleNamespace(monotonic=Mock(side_effect=[0, 0.01, 1.01]))
