@@ -220,9 +220,12 @@ recall and its HTTP request, credential reads, DNS, TCP, TLS, headers and body
 reads, and preparing and flushing Hook output. These offsets measure work within
 the Client CLI. Failure timing retains the interval
 from failure to saving the normal receipts. Response header timing
-keeps the read count, the first eight spans and the final span. CodeBuddy's
-normal Hook has no Client request deadline, so its request budget is null. The
-sample contains no response bytes, prompt text, credentials or addresses. The
+keeps the read count, the first eight spans and the final span. The CodeBuddy
+global Hook spends one 29.4-second Client request budget on initialization,
+local staging, delivery preparation and recall. The transport uses the
+remaining budget for its read. A deadline during recall leaves a failed
+receipt without an output acknowledgment or deduplication stamp. The sample
+contains no response bytes, prompt text, credentials or addresses. The
 timing sample is separate from the normal receipt and Hook output, and failure
 to save a sample leaves the original recall outcome intact.
 

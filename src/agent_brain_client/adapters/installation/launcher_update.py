@@ -484,11 +484,44 @@ sys.exit(status)
 '''
 
 
+def _native_hook_timing(stages):
+    """Write an optional timing record without waiting on the host's pipe."""
+    import sys
+    import threading
+
+    def write():
+        try:
+            descriptor = os.dup(sys.stderr.fileno())
+            try:
+                os.set_inheritable(descriptor, False)
+                records = "".join(json.dumps({
+                    "operation": "native-hook-startup",
+                    "stage": stage,
+                    "elapsed_ms": round(seconds * 1000, 3),
+                }) + "\n" for stage, seconds in stages)
+                os.write(descriptor, records.encode("ascii"))
+            finally:
+                os.close(descriptor)
+        except (AttributeError, OSError, ValueError):
+            pass
+
+    reporter = threading.Thread(target=write, daemon=True)
+    try:
+        reporter.start()
+    except RuntimeError:
+        return
+    reporter.join(timeout=0.01)
+
+
 def native_hook_startup(home, cwd, harness, project, saved):
     """Select the serving snapshot after the approved MCP verifier is loaded."""
     import sys
+    from time import monotonic
     from agent_brain_client.adapters.storage.registration import registration
+    from agent_brain_client.application.control import CODEBUDDY_HOOK_START_ENV, RECALL_TIMING_ENV
 
+    started = monotonic()
+    timing = os.environ.get(RECALL_TIMING_ENV) == "1"
     current, _ = registration(home)
     if current != saved or harness not in ("codex", "codebuddy") or len(project) > 1:
         raise ValueError("Hook enrollment or route changed")
@@ -516,10 +549,23 @@ def native_hook_startup(home, cwd, harness, project, saved):
         code = _LEGACY_HOOK
     else:
         raise ValueError("Verified Hook entry required")
-    return subprocess.run(
-        [sys.executable, "-X", "utf8", "-I", "-S", "-B", "-c", code,
-         str(package / "src"), cwd, home, harness, *project], check=False,
-    ).returncode
+    verified = monotonic()
+    environment = None
+    if harness == "codebuddy":
+        environment = dict(os.environ, **{CODEBUDDY_HOOK_START_ENV: str(started)})
+    try:
+        return subprocess.run(
+            [sys.executable, "-X", "utf8", "-I", "-S", "-B", "-c", code,
+             str(package / "src"), cwd, home, harness, *project], env=environment, check=False,
+        ).returncode
+    finally:
+        if timing:
+            # A diagnostic writer must never run while the verifier starts
+            # the serving child and Windows prepares its inherited handles.
+            _native_hook_timing((
+                ("serving-package-ready", verified - started),
+                ("child-wait-ended", monotonic() - verified),
+            ))
 
 
 def native_hook_command(home, harness, settings=None):

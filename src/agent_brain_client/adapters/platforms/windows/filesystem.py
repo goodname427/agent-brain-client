@@ -343,6 +343,61 @@ def powershell_quote(value):
     return "'" + value.replace("'", "''") + "'"
 
 
+def native_hook_shell_elapsed(verifier_pid):
+    """Read the fixed PowerShell launcher's age, including inherited registrations."""
+    class ProcessEntry(C.Structure):
+        _fields_ = [
+            ("dwSize", W.DWORD), ("cntUsage", W.DWORD), ("th32ProcessID", W.DWORD),
+            ("th32DefaultHeapID", C.c_size_t), ("th32ModuleID", W.DWORD),
+            ("cntThreads", W.DWORD), ("th32ParentProcessID", W.DWORD),
+            ("pcPriClassBase", W.LONG), ("dwFlags", W.DWORD), ("szExeFile", W.WCHAR * 260),
+        ]
+
+    kernel = C.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateToolhelp32Snapshot.argtypes = [W.DWORD, W.DWORD]
+    kernel.CreateToolhelp32Snapshot.restype = W.HANDLE
+    kernel.CloseHandle.argtypes = [W.HANDLE]
+    for read in (kernel.Process32FirstW, kernel.Process32NextW):
+        read.argtypes = [W.HANDLE, C.POINTER(ProcessEntry)]
+        read.restype = W.BOOL
+    snapshot = kernel.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+    if snapshot in (None, C.c_void_p(-1).value):
+        return None
+    processes = {}
+    try:
+        entry = ProcessEntry(dwSize=C.sizeof(ProcessEntry))
+        has_entry = kernel.Process32FirstW(snapshot, C.byref(entry))
+        while has_entry:
+            processes[entry.th32ProcessID] = (entry.th32ParentProcessID, entry.szExeFile)
+            has_entry = kernel.Process32NextW(snapshot, C.byref(entry))
+    finally:
+        kernel.CloseHandle(snapshot)
+    shell_pid, _ = processes.get(verifier_pid, (0, ""))
+    _, command = processes.get(shell_pid, (0, ""))
+    if command.casefold() != "powershell.exe":
+        return None
+
+    kernel.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
+    kernel.OpenProcess.restype = W.HANDLE
+    kernel.GetProcessTimes.argtypes = [W.HANDLE] + [C.POINTER(W.FILETIME)] * 4
+    kernel.GetProcessTimes.restype = W.BOOL
+    kernel.GetSystemTimeAsFileTime.argtypes = [C.POINTER(W.FILETIME)]
+    kernel.GetSystemTimeAsFileTime.restype = None
+    process = kernel.OpenProcess(0x1000, False, shell_pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not process:
+        return None
+    created, exited, kernel_time, user_time, now = (W.FILETIME() for _ in range(5))
+    try:
+        if not kernel.GetProcessTimes(process, C.byref(created), C.byref(exited),
+                                      C.byref(kernel_time), C.byref(user_time)):
+            return None
+        kernel.GetSystemTimeAsFileTime(C.byref(now))
+    finally:
+        kernel.CloseHandle(process)
+    ticks = ((now.dwHighDateTime - created.dwHighDateTime) << 32) + now.dwLowDateTime - created.dwLowDateTime
+    return ticks / 10_000_000 if ticks >= 0 else None
+
+
 def powershell_command(invocation, *, executable="powershell.exe", compact=False):
     import base64
     import subprocess

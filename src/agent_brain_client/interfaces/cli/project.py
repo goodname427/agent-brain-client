@@ -198,7 +198,11 @@ def main(argv=None, *, verified_release=False):
                     "additionalContext": context(p, recalled(p, args.session_id)),
                     "model_calls_sent": 0,
                 }
-        print(json.dumps(result, ensure_ascii=False))
+        if args.action == "hook":
+            from agent_brain_client.adapters.harnesses.hook_output import emit
+            emit(result)
+        else:
+            print(json.dumps(result, ensure_ascii=False))
         return 0
     except Exception as error:
         if args.event_id is not None:
@@ -218,7 +222,8 @@ def main(argv=None, *, verified_release=False):
             )
             return 2
         if args.action == "hook":
-            print("{}")
+            from agent_brain_client.adapters.harnesses.hook_output import emit
+            emit({})
             print(
                 '{"stage":"agentbrain-memory","status":"review-required"}',
                 file=sys.stderr,

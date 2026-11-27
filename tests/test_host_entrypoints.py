@@ -398,7 +398,7 @@ def probe(mode, harness):
                 stack.enter_context(patch.object(core, "submit_hook", side_effect=lambda *a: staged.append(a) or {"status": "staged"}))
             else:
                 from agent_brain_client.adapters.harnesses.codebuddy import events, transcript
-                stack.enter_context(patch.object(events, "capture_messages", side_effect=lambda *a: staged.append(a) or {"status": "staged"}))
+                stack.enter_context(patch.object(events, "capture_messages", side_effect=lambda *a, **kw: staged.append(a) or {"status": "staged"}))
                 stack.enter_context(patch.object(transcript, "observe", return_value="unavailable"))
                 stack.enter_context(patch.object(events, "finish_assistant", side_effect=lambda *a: staged.append(a) or {"status": "staged"}))
             for kind in ("SessionStart", "UserPromptSubmit", "Stop"):
