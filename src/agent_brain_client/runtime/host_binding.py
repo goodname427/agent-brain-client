@@ -157,6 +157,14 @@ def run_native_hook(home, harness, settings=None):
             elapsed = -1
         if elapsed >= 0:
             seconds = max(0, 29.70 - elapsed)
+        if os.name == "nt":
+            from agent_brain_client.adapters.platforms.windows.filesystem import native_hook_shell_elapsed
+
+            shell_elapsed = native_hook_shell_elapsed(os.getppid())
+            if shell_elapsed is None:
+                # Keep a conservative reserve if the native shell cannot be queried.
+                shell_elapsed = max(0, elapsed) + 0.85
+            seconds = min(seconds, max(0, 29.65 - shell_elapsed))
     with native_output_deadline(seconds):
         return _dispatch_native_hook(home, harness, settings)
 

@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from time import monotonic
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -156,6 +157,8 @@ class CodeBuddyOutputAck(unittest.TestCase):
 
 _PIPE_FILL = """
 def fill_unread_pipe(descriptor):
+    writer = os.dup(descriptor)
+    os.set_inheritable(writer, False)
     chunk = b"x"
     progress = threading.Condition()
     completed_writes = 0
@@ -163,11 +166,14 @@ def fill_unread_pipe(descriptor):
 
     def fill():
         nonlocal completed_writes
-        for _ in range(fill_limit):
-            assert os.write(descriptor, chunk) == len(chunk)
-            with progress:
-                completed_writes += 1
-                progress.notify()
+        try:
+            for _ in range(fill_limit):
+                assert os.write(writer, chunk) == len(chunk)
+                with progress:
+                    completed_writes += 1
+                    progress.notify()
+        finally:
+            os.close(writer)
 
     # Fill to the last byte before arming the watchdog. A blocked large
     # write can still leave room for a short timing record.
@@ -189,16 +195,19 @@ def fill_unread_pipe(descriptor):
 class NativeDeadline(unittest.TestCase):
     def run_undrained(self, program, *args, env=None):
         src = Path(__file__).resolve().parents[1] / "src"
+        return self.wait_for_undrained([sys.executable, "-I", "-B", "-c", program, str(src), *args], env=env)
+
+    def wait_for_undrained(self, argv, *, env=None, cwd=None, timeout=8):
+        deadline = monotonic() + timeout
         with subprocess.Popen(
-            [sys.executable, "-I", "-B", "-c", program, str(src), *args],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd,
         ) as process:
             try:
-                status = process.wait(timeout=8)
+                status = process.wait(timeout=max(0, deadline - monotonic()))
             finally:
                 if process.poll() is None:
                     process.kill()
-                stdout, stderr = process.communicate()
+                stdout, stderr = process.communicate(timeout=40)
         self.assertEqual(status, 0, stderr[-2048:])
         return stdout, stderr
 
@@ -278,6 +287,39 @@ def run_native_hook(home, harness):
                     stdout, stderr = self.run_undrained(launcher, str(home), saturation, env=environment)
                     self.assertEqual(stdout.strip(), b"{}")
                     self.assertIn(b"x" * 512, stderr)
+
+    @unittest.skipUnless(os.name == "nt", "Windows native shell deadline")
+    def test_registered_codebuddy_deadline_includes_powershell_startup(self):
+        from test_stable_native_hooks import StableHooks, hook_launcher
+
+        source = """
+import threading
+import time
+""" + _PIPE_FILL + """
+_real_run_native_hook = run_native_hook
+def run_native_hook(home, harness, settings=None):
+    from agent_brain_client.adapters.platforms.windows.filesystem import native_hook_shell_elapsed
+    from agent_brain_client.application.control import CODEBUDDY_HOOK_START_ENV
+    if os.environ.get("SYNTHETIC_RETAINED_LAUNCHER") == "1":
+        os.environ.pop(CODEBUDDY_HOOK_START_ENV, None)
+    if native_hook_shell_elapsed(os.getppid()) is None:
+        raise AssertionError("Windows Shell start not available")
+    return _real_run_native_hook(home, harness, settings)
+
+def _dispatch_native_hook(home, harness, settings):
+    fill_unread_pipe(sys.stderr.fileno())
+    time.sleep(42)
+    raise AssertionError("Native deadline did not exit")
+"""
+        fixture = StableHooks()
+        self.addCleanup(fixture.doCleanups)
+        fixture.setUp()
+        fixture.release("0.8.50", "2" * 40, instrument=False, extra=source.encode())
+        command = hook_launcher.native_hook_command(fixture.home, "codebuddy")
+        env = dict(os.environ, AGENT_BRAIN_RECALL_TIMING="1", SYNTHETIC_RETAINED_LAUNCHER="1")
+        stdout, stderr = self.wait_for_undrained(command, env=env, cwd=fixture.home, timeout=30)
+        self.assertEqual(stdout.strip(), b"{}")
+        self.assertIn(b"x" * 512, stderr)
 
     def test_flush_after_deadline_never_acknowledges_recall(self):
         clock = SimpleNamespace(monotonic=Mock(side_effect=[0, 0.01, 1.01]))

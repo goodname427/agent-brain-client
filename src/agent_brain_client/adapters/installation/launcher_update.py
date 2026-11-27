@@ -495,21 +495,30 @@ def _native_hook_timing(stage, seconds):
         "elapsed_ms": round(seconds * 1000, 3),
     }).encode("ascii") + b"\n"
     try:
-        descriptor = sys.stderr.fileno()
+        descriptor = os.dup(sys.stderr.fileno())
     except (AttributeError, OSError, ValueError):
+        return
+    try:
+        os.set_inheritable(descriptor, False)
+    except OSError:
+        os.close(descriptor)
         return
 
     def write():
         try:
-            # The raw descriptor cannot hold a Python stdio lock at shutdown.
+            # The duplicate also keeps Windows CRT locks off the inherited
+            # stderr descriptor used to start the serving child.
             os.write(descriptor, record)
         except OSError:
             pass
+        finally:
+            os.close(descriptor)
 
     reporter = threading.Thread(target=write, daemon=True)
     try:
         reporter.start()
     except RuntimeError:
+        os.close(descriptor)
         return
     reporter.join(timeout=0.01)
 
