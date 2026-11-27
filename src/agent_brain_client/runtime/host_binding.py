@@ -142,14 +142,24 @@ def run_native_hook(home, harness, settings=None):
     """Dispatch in the verified child without importing the verifier's code."""
     if harness not in ("codex", "codebuddy"):
         raise ValueError("Explicit native Hook Harness required")
+    from agent_brain_client.adapters.harnesses.hook_output import native_output_deadline
+
+    # Leave margin for the independently verified launcher and host framing.
+    seconds = 82 if harness == "codebuddy" else (28 if settings is not None else 115)
+    with native_output_deadline(seconds):
+        return _dispatch_native_hook(home, harness, settings)
+
+
+def _dispatch_native_hook(home, harness, settings):
     if settings is not None:
+        from agent_brain_client.adapters.harnesses.hook_output import emit
         from agent_brain_client.adapters.storage.project_settings import installed_hook_pin
         from agent_brain_client.interfaces.cli.project import main
 
         try:
             pin = installed_hook_pin(home, harness, settings)
         except (OSError, ValueError, TypeError, KeyError):
-            print("{}", flush=True)
+            emit({})
             print("agent-brain Hook project registration unavailable", file=sys.stderr)
             return 0
         return main(["hook", "--harness", harness, "--settings", settings,

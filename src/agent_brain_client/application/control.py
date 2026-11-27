@@ -81,13 +81,14 @@ class RequestControl:
             self.aborters.clear()
 
     @contextmanager
-    def activate(self):
+    def activate(self, *, check_on_exit=True):
         previous = getattr(_request_scope, "control", None)
         _request_scope.control = self
         try:
             self.check()
             yield
-            self.check()
+            if check_on_exit:
+                self.check()
         finally:
             _request_scope.control = previous
 

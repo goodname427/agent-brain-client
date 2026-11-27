@@ -18,6 +18,9 @@ def _global_hook(args, started, diagnostic, *, verified_release=False):
     from agent_brain_client.application.control import (
         RECALL_TIMING_ENV, RequestControl, mark_recall_timing, recall_timing_scope,
     )
+    from agent_brain_client.adapters.harnesses.hook_output import (
+        CODEBUDDY_HOOK_REQUEST_SECONDS, emit,
+    )
     from agent_brain_client.adapters.storage.content import operation_diagnostics
 
     observation = {}
@@ -25,11 +28,13 @@ def _global_hook(args, started, diagnostic, *, verified_release=False):
         value = core.load(args.device_home, verify_code=not verified_release)
         initialized = time.monotonic()
         mark_recall_timing("hook_initialized")
-        control = RequestControl(110)
+        codebuddy = args.harness == "codebuddy"
+        seconds = max(0, CODEBUDDY_HOOK_REQUEST_SECONDS - (initialized - started)) if codebuddy else 110
+        control = RequestControl(seconds)
         try:
             with operation_diagnostics() as progress:
                 try:
-                    with control.activate():
+                    with control.activate(check_on_exit=not codebuddy):
                         result = core.hook(value, harness=args.harness or "codex",
                                            observe=observation.update)
                 finally:
@@ -37,7 +42,7 @@ def _global_hook(args, started, diagnostic, *, verified_release=False):
         finally:
             control.close()
         mark_recall_timing("output_prepared")
-        print(json.dumps(result, ensure_ascii=False), flush=True)
+        emit(result)
         mark_recall_timing("output_flushed")
         print(json.dumps({"operation": "global-hook-timing", "timing_ms": {
             "initialization_ms": round((initialized - started) * 1000, 3),
@@ -208,7 +213,8 @@ def main(argv=None, *, verified_release=False):
             )
             return 2
         if a.action == "global-hook":
-            print("{}")
+            from agent_brain_client.adapters.harnesses.hook_output import emit
+            emit({})
             print(
                 json.dumps(
                     {

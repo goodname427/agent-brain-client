@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import tomllib
 import unittest
 
@@ -30,6 +33,62 @@ from agent_brain_client.adapters.storage import metadata
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = "src/agent_brain_client/runtime/host_binding.py"
 EVENTS = {"SessionStart": "session_start", "UserPromptSubmit": "user_prompt_submit", "Stop": "stop"}
+
+TIMED_HOOK = '''
+_real_run_native_hook = run_native_hook
+def run_native_hook(home, harness, settings=None):
+    import time
+    from urllib.request import build_opener, ProxyHandler
+    from agent_brain_client.adapters.harnesses import hook_output
+    from agent_brain_client.adapters.harnesses.codebuddy import events, transcript
+    from agent_brain_client.adapters.server.http import ReadHTTPHandler
+    from agent_brain_client.application import control
+    from agent_brain_client.runtime import collection as core
+
+    mode, endpoint = json.loads((Path(home) / "synthetic-hook-mode.json").read_text())
+    real_control = control.RequestControl
+    control.RequestControl = lambda seconds: real_control(min(seconds, 0.30))
+    if hasattr(hook_output, "native_output_deadline"):
+        real_watchdog = hook_output.native_output_deadline
+        hook_output.native_output_deadline = lambda seconds: real_watchdog(min(seconds, 1.20))
+
+    def capture(*args, **kwargs):
+        time.sleep(0.02)
+        (Path(home) / "synthetic-staged").touch()
+        return {"status": "staged"}
+
+    def schedule(*args):
+        time.sleep(0.04)
+        (Path(home) / "synthetic-scheduled").touch()
+        if mode == "stalled-schedule":
+            time.sleep(15)
+
+    def recall(*args, **kwargs):
+        opener = build_opener(ProxyHandler({}), ReadHTTPHandler())
+        with opener.open(endpoint + "/" + mode, timeout=control.request_timeout(90)) as reply:
+            return json.load(reply)
+
+    origin = {"kind": "non-project", "cwd": home, "project_root": None, "repository_root": None}
+    scope = {"schema": 1, "profile_id": "a" * 32, "include_roots": [],
+             "exclude_roots": [], "non_project_roots": [home], "recall_personal": True}
+    core.load = lambda *args, **kwargs: {"device_home": home, "scope": scope}
+    core.approved = lambda value: True
+    core.eligible = lambda *args, **kwargs: origin
+    core.legacy = lambda *args: None
+    core.submit_hook = capture
+    events.capture_messages = capture
+    transcript.observe = lambda *args, **kwargs: "unavailable"
+    core.schedule_delivery = schedule
+    core.recall = recall
+    if mode == "stalled-after-output":
+        def stall_on_ack(value, receipt):
+            if receipt["output_written"]:
+                time.sleep(15)
+            real_save(value, receipt)
+        real_save = core.save_recall_observation
+        core.save_recall_observation = stall_on_ack
+    return _real_run_native_hook(home, harness, settings)
+'''
 
 
 def host_fingerprints(config, file):
@@ -113,7 +172,7 @@ class StableHooks(unittest.TestCase):
         self.config = self.native / "config.toml"
         self.hook_dir = private_directory(self.state / "global-memory")
 
-    def release(self, version, commit, *, instrument=True):
+    def release(self, version, commit, *, instrument=True, extra=b""):
         # Only dispatch is instrumented. The real release engine, manifest,
         # bootstrap, quoting and subprocess all execute in the synthetic home.
         source = (self.bundle / ENTRY).read_bytes()
@@ -121,7 +180,7 @@ class StableHooks(unittest.TestCase):
                  '    import json, sys\n'
                  f'    print(json.dumps(dict(version={version!r}, harness=harness, input=sys.stdin.read())))\n'
                  '    return 0\n').encode()
-        edit = source + probe if instrument else source
+        edit = source + (probe if instrument else b"") + extra
         files = dict(self.files, **{ENTRY: digest(edit)})
         manifest = dict(schema=1, version=version, channel="stable", core_api=1, state_schema=1,
                         python_min="3.11", capabilities=HTTPS_CONTENT_CAPABILITIES, files=files, migrations=[])
@@ -143,7 +202,7 @@ class StableHooks(unittest.TestCase):
         metadata.write(self.registration, dict(metadata.private_json(self.registration),
                                               package=str(package), package_sha256=digest(encode(files))))
 
-    def run_hook(self, command, *, harness="codex", payload="合成"):
+    def run_hook(self, command, *, harness="codex", payload="合成", timing=False, timeout=45):
         if os.name == "nt" and harness == "codex":
             # Codex 0.167.0-alpha.3.2 passes an outer-quoted raw argument to cmd.exe /C.
             shell = subprocess.list2cmdline([os.environ["COMSPEC"]])
@@ -151,9 +210,93 @@ class StableHooks(unittest.TestCase):
             self.assertLessEqual(len(argv.encode("utf-16le")) // 2, 8191)
         else:
             argv = command if os.name == "nt" else shlex.split(command)
-        result = subprocess.run(argv, input=payload, encoding="utf-8", cwd=self.home,
-                                capture_output=True, check=True, timeout=45)
+        environment = dict(os.environ)
+        if timing:
+            environment.update(HOME=str(self.home), USERPROFILE=str(self.home), CODEX_HOME=str(self.native),
+                               CODEBUDDY_PROJECT_DIR=str(self.home), AGENT_BRAIN_RECALL_TIMING="1")
+        result = subprocess.run(argv, input=payload, encoding="utf-8", cwd=self.home, env=environment,
+                                capture_output=True, check=True, timeout=timeout)
         return json.loads(result.stdout), result.stderr
+
+    def test_registered_submit_preserves_capture_and_bounds_slow_recall_and_child_wait(self):
+        saw_stalled_read = threading.Event()
+        unblock = threading.Event()
+
+        class RecallHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/stalled-recall":
+                    saw_stalled_read.set()
+                    unblock.wait(15)
+                    return
+                body = json.dumps([{"content": "Synthetic recalled memory", "layer": "L1"}]).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), RecallHandler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                self._exercise_timed_submit(server.server_port, saw_stalled_read)
+            finally:
+                unblock.set()
+                server.shutdown()
+                thread.join()
+
+    def _exercise_timed_submit(self, port, saw_stalled_read):
+        self.release("0.8.50", "2" * 40, instrument=False, extra=TIMED_HOOK.encode())
+        for harness in ("codebuddy", "codex"):
+            command = hook_launcher.native_hook_command(self.home, harness)
+            for mode in ("normal", "stalled-recall", "stalled-schedule", "stalled-after-output"):
+                if mode == "stalled-after-output" and harness != "codex":
+                    continue
+                with self.subTest(harness=harness, mode=mode):
+                    (self.home / "synthetic-hook-mode.json").write_text(
+                        json.dumps([mode, f"http://127.0.0.1:{port}"]))
+                    payload = json.dumps({"hook_event_name": "UserPromptSubmit", "cwd": str(self.home),
+                                          "session_id": "synthetic-session", "turn_id": mode, "generation_id": mode,
+                                          "prompt": "Synthetic current question"})
+                    staged = self.home / "synthetic-staged"
+                    scheduled = self.home / "synthetic-scheduled"
+                    staged.unlink(missing_ok=True)
+                    scheduled.unlink(missing_ok=True)
+                    saw_stalled_read.clear()
+                    started = time.monotonic()
+                    output, stderr = self.run_hook(command, harness=harness, payload=payload, timing=True, timeout=10)
+                    self.assertTrue(staged.exists() and scheduled.exists(), stderr)
+                    rows = [json.loads(line) for line in stderr.splitlines()]
+                    timings = {row["stage"]: row["elapsed_ms"] for row in rows if row.get("operation") == "native-hook-startup"}
+                    self.assertGreater(timings["serving-package-ready"], 0)
+                    self.assertGreater(timings["child-wait-ended"], 0)
+                    self.assertGreaterEqual(time.monotonic() - started, sum(timings.values()) / 1000)
+                    if mode in ("stalled-schedule", "stalled-after-output"):
+                        deadline, = [row for row in rows if row.get("operation") == "native-hook-deadline"]
+                        self.assertEqual(deadline["output_unconfirmed"], mode == "stalled-schedule")
+                    else:
+                        lifecycle, = [row for row in rows if row.get("operation") in ("codebuddy-hook", "native-lifecycle")]
+                        self.assertEqual(lifecycle["status"], "staged")
+                        self.assertGreaterEqual(lifecycle["timing_ms"]["stage_ms"], 10)
+                        self.assertGreaterEqual(lifecycle["timing_ms"]["schedule_ms"], 20)
+                    if mode == "stalled-recall":
+                        self.assertTrue(saw_stalled_read.is_set())
+                        self.assertEqual(lifecycle["recall_status"], "unavailable")
+                        sample = json.loads((self.hook_dir / "last-recall-timing.json").read_text())
+                        self.assertLess(sample["first_read_budget_ms"]["socket_ms"], 300)
+                        receipt = json.loads((self.hook_dir / "last-recall.json").read_text())
+                        self.assertEqual(receipt["status"], "failed")
+                        self.assertFalse(receipt["output_written"])
+                        self.assertFalse((self.hook_dir / ("prompt-" + receipt["request_key"] + ".json")).exists())
+                    if mode in ("normal", "stalled-after-output"):
+                        self.assertEqual(output["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
+                        self.assertIn("Synthetic recalled memory", output["hookSpecificOutput"]["additionalContext"])
+                    else:
+                        self.assertEqual(output, {})
+                    self.assertNotIn(str(self.home), stderr)
+                    self.assertNotIn("Synthetic current question", stderr)
 
     def test_post_migration_update_keeps_real_trust_keys_and_executes_active_release(self):
         from types import SimpleNamespace

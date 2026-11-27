@@ -12,6 +12,7 @@ from agent_brain_client.adapters.platforms.filesystem import (
     LockTimeout, atomic_replace, cache_directory, cache_locked, cache_mode, sync_directory,
 )
 from agent_brain_client.adapters.storage import metadata
+from agent_brain_client.application.control import check_request
 from agent_brain_client.domain.scopes import digest
 
 
@@ -142,7 +143,7 @@ def register_task(home, key, task, *, wake_worker=True):
     cache_directory(root)
     # The worker holds this same short lock through its idle decision and lease
     # release. A new durable task can therefore never disappear into that gap.
-    with cache_locked(root / 'spawn.lock', timeout=20):
+    with cache_locked(root / 'spawn.lock', timeout=20, cancel_check=check_request):
         target = root
         if task['harness'] == 'onboarding':
             # Pre-handoff workers scan the root and cannot read paged approvals.

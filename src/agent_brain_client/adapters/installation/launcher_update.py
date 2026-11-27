@@ -487,8 +487,12 @@ sys.exit(status)
 def native_hook_startup(home, cwd, harness, project, saved):
     """Select the serving snapshot after the approved MCP verifier is loaded."""
     import sys
+    from time import monotonic
     from agent_brain_client.adapters.storage.registration import registration
+    from agent_brain_client.application.control import RECALL_TIMING_ENV
 
+    started = monotonic()
+    timing = os.environ.get(RECALL_TIMING_ENV) == "1"
     current, _ = registration(home)
     if current != saved or harness not in ("codex", "codebuddy") or len(project) > 1:
         raise ValueError("Hook enrollment or route changed")
@@ -516,10 +520,21 @@ def native_hook_startup(home, cwd, harness, project, saved):
         code = _LEGACY_HOOK
     else:
         raise ValueError("Verified Hook entry required")
-    return subprocess.run(
-        [sys.executable, "-X", "utf8", "-I", "-S", "-B", "-c", code,
-         str(package / "src"), cwd, home, harness, *project], check=False,
-    ).returncode
+    verified = monotonic()
+    if timing:
+        print(json.dumps({"operation": "native-hook-startup", "stage": "serving-package-ready",
+                          "elapsed_ms": round((verified - started) * 1000, 3)}),
+              file=sys.stderr, flush=True)
+    try:
+        return subprocess.run(
+            [sys.executable, "-X", "utf8", "-I", "-S", "-B", "-c", code,
+             str(package / "src"), cwd, home, harness, *project], check=False,
+        ).returncode
+    finally:
+        if timing:
+            print(json.dumps({"operation": "native-hook-startup", "stage": "child-wait-ended",
+                              "elapsed_ms": round((monotonic() - verified) * 1000, 3)}),
+                  file=sys.stderr, flush=True)
 
 
 def native_hook_command(home, harness, settings=None):

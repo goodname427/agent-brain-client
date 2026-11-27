@@ -107,11 +107,11 @@ class CodeBuddyOutputAck(unittest.TestCase):
         self.assertTrue(recall_receipts.recall_observation(self.value)["output_written"])
         self.assertEqual(self.retrieval.call_count, 2)
 
-    def test_failed_timing_is_opt_in_and_has_no_codebuddy_request_deadline(self):
+    def test_failed_timing_is_opt_in_and_uses_remaining_codebuddy_request_budget(self):
         from agent_brain_client.application import control
 
         def recall(*args, **kwargs):
-            with control.recall_response_headers(), control.recall_header_read(90):
+            with control.recall_response_headers(), control.recall_header_read(control.request_timeout(90)):
                 raise ValueError('Synthetic private failure detail')
 
         self.retrieval.side_effect = recall
@@ -127,8 +127,11 @@ class CodeBuddyOutputAck(unittest.TestCase):
                 self.assertEqual(sample_file.exists(), enabled == '1')
         sample_text = sample_file.read_text()
         sample = json.loads(sample_text)
-        self.assertEqual(sample['first_read_budget_ms'], {'request_ms': None, 'socket_ms': 90000})
-        self.assertNotIn('control_started', sample['phase_offsets_ms'])
+        budget = sample['first_read_budget_ms']
+        self.assertGreater(budget['request_ms'], 0)
+        self.assertLessEqual(budget['request_ms'], 75000)
+        self.assertAlmostEqual(budget['request_ms'], budget['socket_ms'], delta=100)
+        self.assertIn('control_started', sample['phase_offsets_ms'])
         self.assertNotIn('Synthetic private failure detail', sample_text)
 
     def test_opt_in_success_timing_requires_flushed_stdout(self):
