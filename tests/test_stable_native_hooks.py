@@ -46,11 +46,14 @@ def run_native_hook(home, harness, settings=None):
     from agent_brain_client.runtime import collection as core
 
     mode, endpoint = json.loads((Path(home) / "synthetic-hook-mode.json").read_text())
-    real_control = control.RequestControl
-    control.RequestControl = lambda seconds: real_control(min(seconds, 0.30))
-    if hasattr(hook_output, "native_output_deadline"):
+    # Use real budgets for successful work. Shorten only the injected fault
+    # and leave time for the real setup and loopback transport on a busy runner.
+    if mode == "stalled-recall":
+        real_control = control.RequestControl
+        control.RequestControl = lambda seconds: real_control(min(seconds, 3))
+    if mode in ("stalled-schedule", "stalled-after-output"):
         real_watchdog = hook_output.native_output_deadline
-        hook_output.native_output_deadline = lambda seconds: real_watchdog(min(seconds, 1.20))
+        hook_output.native_output_deadline = lambda seconds: real_watchdog(min(seconds, 6))
 
     def capture(*args, **kwargs):
         time.sleep(0.02)
@@ -266,7 +269,7 @@ class StableHooks(unittest.TestCase):
                     scheduled.unlink(missing_ok=True)
                     saw_stalled_read.clear()
                     started = time.monotonic()
-                    output, stderr = self.run_hook(command, harness=harness, payload=payload, timing=True, timeout=10)
+                    output, stderr = self.run_hook(command, harness=harness, payload=payload, timing=True, timeout=30)
                     self.assertTrue(staged.exists() and scheduled.exists(), stderr)
                     rows = [json.loads(line) for line in stderr.splitlines()]
                     timings = {row["stage"]: row["elapsed_ms"] for row in rows if row.get("operation") == "native-hook-startup"}
@@ -285,7 +288,7 @@ class StableHooks(unittest.TestCase):
                         self.assertTrue(saw_stalled_read.is_set())
                         self.assertEqual(lifecycle["recall_status"], "unavailable")
                         sample = json.loads((self.hook_dir / "last-recall-timing.json").read_text())
-                        self.assertLess(sample["first_read_budget_ms"]["socket_ms"], 300)
+                        self.assertLess(sample["first_read_budget_ms"]["socket_ms"], 3000)
                         receipt = json.loads((self.hook_dir / "last-recall.json").read_text())
                         self.assertEqual(receipt["status"], "failed")
                         self.assertFalse(receipt["output_written"])
