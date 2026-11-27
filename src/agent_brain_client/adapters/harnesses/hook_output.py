@@ -11,55 +11,77 @@ import time
 from agent_brain_client.application.memory.context import injectable_context
 
 
-CODEBUDDY_HOOK_REQUEST_SECONDS = 75
-_native_emit = ContextVar("native_hook_emit", default=None)
+CODEBUDDY_HOOK_REQUEST_SECONDS = 29.4
+_native_output = ContextVar("native_hook_output", default=None)
 
 
 def emit(output):
-    write = _native_emit.get()
-    if write is None:
+    binding = _native_output.get()
+    if binding is None:
         print(json.dumps(output, ensure_ascii=False), flush=True)
-    else:
-        write(output)
+        return True
+    return binding[0](output)
+
+
+def remaining_request_seconds(seconds):
+    binding = _native_output.get()
+    if binding is not None:
+        # Give the timed request a chance to finalize before the hard exit.
+        seconds = min(seconds, binding[1] - time.monotonic() - 0.10)
+    return max(0, seconds)
 
 
 @contextmanager
 def native_output_deadline(seconds):
     """In the dedicated Hook child, bound non-cooperative I/O and exit once."""
     started = time.monotonic()
+    deadline = started + seconds
     lock = threading.Lock()
     written = False
 
     def write(output):
         nonlocal written
         with lock:
-            if not written:
-                print(json.dumps(output, ensure_ascii=False), flush=True)
-                written = True
+            if written or time.monotonic() >= deadline:
+                return False
+            print(json.dumps(output, ensure_ascii=False), flush=True)
+            written = True
+            return time.monotonic() < deadline
+
+    def report_timeout(elapsed_ms):
+        output_unconfirmed = True
+        if lock.acquire(blocking=False):
+            try:
+                output_unconfirmed = not written
+                if output_unconfirmed:
+                    print("{}", flush=True)
+            finally:
+                lock.release()
+        print(json.dumps({"operation": "native-hook-deadline",
+                          "elapsed_ms": elapsed_ms, "output_unconfirmed": output_unconfirmed}),
+              file=sys.stderr, flush=True)
 
     def expire():
         elapsed_ms = round((time.monotonic() - started) * 1000, 3)
-        with lock:
-            try:
-                if not written:
-                    print("{}", flush=True)
-                print(json.dumps({"operation": "native-hook-deadline",
-                                  "elapsed_ms": elapsed_ms, "output_unconfirmed": not written}),
-                      file=sys.stderr, flush=True)
-            finally:
-                # The dedicated child can exit even if native I/O never returns.
-                # Durable writes already use the Client's ordinary crash recovery.
-                os._exit(0)
+        try:
+            # A host can stop reading either pipe. Reporting gets a fixed
+            # opportunity to finish, independently of the hard process exit.
+            reporter = threading.Thread(target=report_timeout, args=(elapsed_ms,), daemon=True)
+            reporter.start()
+            reporter.join(timeout=0.05)
+        finally:
+            # Durable writes already use the Client's ordinary crash recovery.
+            os._exit(0)
 
     timer = threading.Timer(seconds, expire)
     timer.daemon = True
-    token = _native_emit.set(write)
+    token = _native_output.set((write, deadline))
     timer.start()
     try:
         yield
     finally:
         timer.cancel()
-        _native_emit.reset(token)
+        _native_output.reset(token)
 
 
 def hook_context(kind, items):

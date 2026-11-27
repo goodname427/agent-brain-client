@@ -489,7 +489,7 @@ def native_hook_startup(home, cwd, harness, project, saved):
     import sys
     from time import monotonic
     from agent_brain_client.adapters.storage.registration import registration
-    from agent_brain_client.application.control import RECALL_TIMING_ENV
+    from agent_brain_client.application.control import CODEBUDDY_HOOK_START_ENV, RECALL_TIMING_ENV
 
     started = monotonic()
     timing = os.environ.get(RECALL_TIMING_ENV) == "1"
@@ -525,10 +525,13 @@ def native_hook_startup(home, cwd, harness, project, saved):
         print(json.dumps({"operation": "native-hook-startup", "stage": "serving-package-ready",
                           "elapsed_ms": round((verified - started) * 1000, 3)}),
               file=sys.stderr, flush=True)
+    environment = None
+    if harness == "codebuddy":
+        environment = dict(os.environ, **{CODEBUDDY_HOOK_START_ENV: str(started)})
     try:
         return subprocess.run(
             [sys.executable, "-X", "utf8", "-I", "-S", "-B", "-c", code,
-             str(package / "src"), cwd, home, harness, *project], check=False,
+             str(package / "src"), cwd, home, harness, *project], env=environment, check=False,
         ).returncode
     finally:
         if timing:

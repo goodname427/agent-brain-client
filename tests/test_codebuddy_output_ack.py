@@ -4,6 +4,7 @@ from contextlib import nullcontext
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -12,6 +13,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from agent_brain_client.adapters.harnesses.codebuddy import events
+from agent_brain_client.adapters.harnesses import hook_output
 from agent_brain_client.adapters.harnesses.hook_output import hook_context
 from agent_brain_client.adapters.platforms.filesystem import locked, private_directory
 from agent_brain_client.adapters.storage import recall_receipts
@@ -129,7 +131,7 @@ class CodeBuddyOutputAck(unittest.TestCase):
         sample = json.loads(sample_text)
         budget = sample['first_read_budget_ms']
         self.assertGreater(budget['request_ms'], 0)
-        self.assertLessEqual(budget['request_ms'], 75000)
+        self.assertLessEqual(budget['request_ms'], 29400)
         self.assertAlmostEqual(budget['request_ms'], budget['socket_ms'], delta=100)
         self.assertIn('control_started', sample['phase_offsets_ms'])
         self.assertNotIn('Synthetic private failure detail', sample_text)
@@ -149,6 +151,54 @@ class CodeBuddyOutputAck(unittest.TestCase):
         self.assertNotIn('failed', offsets)
         receipt = recall_receipts.recall_observation(self.value, sample['request_key'])
         self.assertTrue(receipt['output_written'])
+
+
+
+class NativeDeadline(unittest.TestCase):
+    def test_unread_stdout_or_stderr_cannot_block_exit(self):
+        src = Path(__file__).resolve().parents[1] / "src"
+        child = """
+import os
+import sys
+import threading
+import time
+
+sys.path.insert(0, sys.argv[1])
+from agent_brain_client.adapters.harnesses.hook_output import emit, native_output_deadline
+
+if sys.argv[2] == "stderr":
+    feeder = threading.Thread(target=os.write, args=(2, b"x" * 8388608), daemon=True)
+    feeder.start()
+with native_output_deadline(.25):
+    if sys.argv[2] == "stdout":
+        emit({"text": "x" * 8388608})
+    time.sleep(15)
+"""
+        for pipe in ("stdout", "stderr"):
+            with self.subTest(pipe=pipe), subprocess.Popen(
+                [sys.executable, "-I", "-B", "-c", child, str(src), pipe],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            ) as process:
+                try:
+                    self.assertEqual(process.wait(timeout=4), 0)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                    stdout, stderr = process.communicate()
+                if pipe == "stdout":
+                    self.assertTrue(stdout.startswith(b'{"text":'))
+                    self.assertFalse(stdout.endswith(b"\n"))
+                else:
+                    self.assertEqual(stdout.strip(), b"{}")
+                    self.assertTrue(stderr.startswith(b"x"))
+
+    def test_flush_after_deadline_never_acknowledges_recall(self):
+        clock = SimpleNamespace(monotonic=Mock(side_effect=[0, 0.01, 1.01]))
+        output = io.StringIO()
+        with (patch.object(hook_output, "time", clock), patch.object(sys, "stdout", output),
+              hook_output.native_output_deadline(1)):
+            self.assertFalse(hook_output.emit({"synthetic": True}))
+        self.assertEqual(json.loads(output.getvalue()), {"synthetic": True})
 
 
 if __name__ == "__main__":

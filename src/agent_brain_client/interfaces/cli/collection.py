@@ -19,7 +19,7 @@ def _global_hook(args, started, diagnostic, *, verified_release=False):
         RECALL_TIMING_ENV, RequestControl, mark_recall_timing, recall_timing_scope,
     )
     from agent_brain_client.adapters.harnesses.hook_output import (
-        CODEBUDDY_HOOK_REQUEST_SECONDS, emit,
+        CODEBUDDY_HOOK_REQUEST_SECONDS, emit, remaining_request_seconds,
     )
     from agent_brain_client.adapters.storage.content import operation_diagnostics
 
@@ -29,7 +29,9 @@ def _global_hook(args, started, diagnostic, *, verified_release=False):
         initialized = time.monotonic()
         mark_recall_timing("hook_initialized")
         codebuddy = args.harness == "codebuddy"
-        seconds = max(0, CODEBUDDY_HOOK_REQUEST_SECONDS - (initialized - started)) if codebuddy else 110
+        seconds = (remaining_request_seconds(
+            CODEBUDDY_HOOK_REQUEST_SECONDS - (time.monotonic() - started)
+        ) if codebuddy else 110)
         control = RequestControl(seconds)
         try:
             with operation_diagnostics() as progress:
@@ -42,7 +44,8 @@ def _global_hook(args, started, diagnostic, *, verified_release=False):
         finally:
             control.close()
         mark_recall_timing("output_prepared")
-        emit(result)
+        if not emit(result):
+            return 0
         mark_recall_timing("output_flushed")
         print(json.dumps({"operation": "global-hook-timing", "timing_ms": {
             "initialization_ms": round((initialized - started) * 1000, 3),

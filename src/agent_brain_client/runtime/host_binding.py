@@ -144,8 +144,19 @@ def run_native_hook(home, harness, settings=None):
         raise ValueError("Explicit native Hook Harness required")
     from agent_brain_client.adapters.harnesses.hook_output import native_output_deadline
 
-    # Leave margin for the independently verified launcher and host framing.
-    seconds = 82 if harness == "codebuddy" else (28 if settings is not None else 115)
+    seconds = 28 if settings is not None else 115
+    if harness == "codebuddy":
+        from time import monotonic
+        from agent_brain_client.application.control import CODEBUDDY_HOOK_START_ENV
+
+        seconds = 29.45  # An older retained launcher does not send its clock.
+        raw = os.environ.pop(CODEBUDDY_HOOK_START_ENV, "")
+        try:
+            elapsed = monotonic() - float(raw)
+        except ValueError:
+            elapsed = -1
+        if elapsed >= 0:
+            seconds = max(0, 29.65 - elapsed)
     with native_output_deadline(seconds):
         return _dispatch_native_hook(home, harness, settings)
 
