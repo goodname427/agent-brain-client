@@ -332,3 +332,25 @@ def _dispatch_native_hook(home, harness, settings):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows registered command coverage")
+class WindowsRegisteredHookCommands(unittest.TestCase):
+    def checked_commands(self, mode, *, release_deadline=False):
+        from native_entry_matrix import fixture
+
+        environment = {
+            "AB_MATRIX_FILTER": mode,
+            "AB_MATRIX_REAL_DEADLINE": "1" if release_deadline else "",
+        }
+        with patch.dict(os.environ, environment):
+            fixture(mode.split(",")[0])
+
+    def test_existing_and_candidate_registered_commands(self):
+        for version in ("0.8.50", "0.8.49"):
+            for harness in ("codebuddy", "codex"):
+                with self.subTest(version=version, harness=harness):
+                    self.checked_commands(f"{version},{harness}")
+
+    def test_candidate_concludes_late_recall_under_30_seconds(self):
+        self.checked_commands("0.8.50,codebuddy,global,near", release_deadline=True)
