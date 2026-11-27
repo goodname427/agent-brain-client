@@ -27,7 +27,7 @@ def remaining_request_seconds(seconds):
     binding = _native_output.get()
     if binding is not None:
         # Give the timed request a chance to finalize before the hard exit.
-        seconds = min(seconds, binding[1] - time.monotonic() - 0.10)
+        seconds = min(seconds, binding[1] - time.monotonic() - 0.04)
     return max(0, seconds)
 
 
@@ -68,7 +68,7 @@ def native_output_deadline(seconds):
             # opportunity to finish, independently of the hard process exit.
             reporter = threading.Thread(target=report_timeout, args=(elapsed_ms,), daemon=True)
             reporter.start()
-            reporter.join(timeout=0.05)
+            reporter.join(timeout=0.03)
         finally:
             # Durable writes already use the Client's ordinary crash recovery.
             os._exit(0)
