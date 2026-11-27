@@ -21,6 +21,9 @@ from dev.checks.timing import summaries
 
 
 def run_group(modules):
+    diagnose = os.environ.get("AB_WINDOWS_311_DIAGNOSTIC") == "1"
+    if diagnose:
+        print("NATIVE_TEST_STARTED " + modules[0], flush=True)
     # Each process gets its own homes, just as separate CI jobs would.
     with tempfile.TemporaryDirectory(prefix="client-test-worker-") as temp:
         home, codex = Path(temp) / "home", Path(temp) / "codex"
@@ -37,6 +40,8 @@ def run_group(modules):
             stderr=subprocess.STDOUT,
             text=True,
         )
+        if diagnose:
+            print(f"NATIVE_TEST_FINISHED {modules[0]} exit {result.returncode}", flush=True)
         return result.returncode, result.stdout, round(time.monotonic() - start, 3)
 
 

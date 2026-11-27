@@ -297,6 +297,9 @@ def run_checks(scope, output, record=False, *, ci=False, root=ROOT):
         # No check subprocess receives a publication credential or user config.
         for name in ("GH_TOKEN", "GITHUB_TOKEN", "PYTHONHOME", "PYTHONSTARTUP"):
             env.pop(name, None)
+        diagnose = ci and scope == "windows" and sys.version_info[:2] == (3, 11)
+        if diagnose:
+            env["AB_WINDOWS_311_DIAGNOSTIC"] = "1"
         commands = COMMANDS[scope]
         if ci and scope == "windows":
             # Same selectors on both Python versions; independent process homes
@@ -336,6 +339,11 @@ def run_checks(scope, output, record=False, *, ci=False, root=ROOT):
                     for command in commands
                     if "dev/build/credentials.py" not in command
                 ]
+        if diagnose:
+            commands = [
+                ["python", "-B", "-m", "unittest", "-v", "test_codebuddy_output_ack"],
+                *commands,
+            ]
         for index, command in enumerate(commands):
             actual = [
                 sys.executable
@@ -350,18 +358,33 @@ def run_checks(scope, output, record=False, *, ci=False, root=ROOT):
             )
             with log_path.open("xb") as log:
                 started = time.monotonic()
-                result = subprocess.run(
-                    actual,
-                    cwd=root,
-                    env=env,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    timeout=(
-                        None
-                        if scope == "release"
-                        else 3600 if scope == "macos" and record and index == 0 else 1800
-                    ),
-                )
+                if diagnose and "dev/checks/tests.py" in command:
+                    with subprocess.Popen(actual, cwd=root, env=env, stdout=log,
+                                          stderr=subprocess.STDOUT) as process:
+                        displayed = set()
+                        deadline = time.monotonic() + 1800
+                        while process.poll() is None:
+                            for line in log_path.read_text(errors="replace").splitlines():
+                                if line.startswith("NATIVE_TEST_") and line not in displayed:
+                                    displayed.add(line)
+                                    print("::notice title=Windows Python 3.11 module::" + line, flush=True)
+                            if time.monotonic() >= deadline:
+                                process.kill()
+                                raise TimeoutError("Windows Python 3.11 full check exceeded 1800 seconds")
+                            try:
+                                process.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                pass
+                        result = subprocess.CompletedProcess(actual, process.returncode)
+                else:
+                    result = subprocess.run(
+                        actual, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT,
+                        timeout=None if scope == "release" else
+                        3600 if scope == "macos" and record and index == 0 else 1800,
+                    )
+                if diagnose and index == 0:
+                    print(f"::notice title=Windows Python 3.11 Hook regressions::exit {result.returncode}",
+                          flush=True)
             seconds = round(time.monotonic() - started, 3)
             print(
                 f"{scope}: command {index + 1} took {seconds}s, exit {result.returncode}",
