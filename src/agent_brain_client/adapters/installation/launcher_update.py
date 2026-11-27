@@ -484,6 +484,36 @@ sys.exit(status)
 '''
 
 
+def _native_hook_timing(stage, seconds):
+    """Write an optional timing record without waiting on the host's pipe."""
+    import sys
+    import threading
+
+    record = json.dumps({
+        "operation": "native-hook-startup",
+        "stage": stage,
+        "elapsed_ms": round(seconds * 1000, 3),
+    }).encode("ascii") + b"\n"
+    try:
+        descriptor = sys.stderr.fileno()
+    except (AttributeError, OSError, ValueError):
+        return
+
+    def write():
+        try:
+            # The raw descriptor cannot hold a Python stdio lock at shutdown.
+            os.write(descriptor, record)
+        except OSError:
+            pass
+
+    reporter = threading.Thread(target=write, daemon=True)
+    try:
+        reporter.start()
+    except RuntimeError:
+        return
+    reporter.join(timeout=0.01)
+
+
 def native_hook_startup(home, cwd, harness, project, saved):
     """Select the serving snapshot after the approved MCP verifier is loaded."""
     import sys
@@ -522,9 +552,7 @@ def native_hook_startup(home, cwd, harness, project, saved):
         raise ValueError("Verified Hook entry required")
     verified = monotonic()
     if timing:
-        print(json.dumps({"operation": "native-hook-startup", "stage": "serving-package-ready",
-                          "elapsed_ms": round((verified - started) * 1000, 3)}),
-              file=sys.stderr, flush=True)
+        _native_hook_timing("serving-package-ready", verified - started)
     environment = None
     if harness == "codebuddy":
         environment = dict(os.environ, **{CODEBUDDY_HOOK_START_ENV: str(started)})
@@ -535,9 +563,7 @@ def native_hook_startup(home, cwd, harness, project, saved):
         ).returncode
     finally:
         if timing:
-            print(json.dumps({"operation": "native-hook-startup", "stage": "child-wait-ended",
-                              "elapsed_ms": round((monotonic() - verified) * 1000, 3)}),
-                  file=sys.stderr, flush=True)
+            _native_hook_timing("child-wait-ended", monotonic() - verified)
 
 
 def native_hook_command(home, harness, settings=None):

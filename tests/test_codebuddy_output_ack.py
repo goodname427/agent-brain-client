@@ -154,9 +154,55 @@ class CodeBuddyOutputAck(unittest.TestCase):
 
 
 
+_PIPE_FILL = """
+def fill_unread_pipe(descriptor):
+    chunk = b"x"
+    progress = threading.Condition()
+    completed_writes = 0
+    fill_limit = 1048576
+
+    def fill():
+        nonlocal completed_writes
+        for _ in range(fill_limit):
+            assert os.write(descriptor, chunk) == len(chunk)
+            with progress:
+                completed_writes += 1
+                progress.notify()
+
+    # Fill to the last byte before arming the watchdog. A blocked large
+    # write can still leave room for a short timing record.
+    feeder = threading.Thread(target=fill, daemon=True)
+    feeder.start()
+    with progress:
+        assert progress.wait_for(lambda: completed_writes > 0, timeout=3)
+        stop = time.monotonic() + 2
+        while completed_writes < fill_limit and time.monotonic() < stop:
+            previous = completed_writes
+            if not progress.wait_for(lambda: completed_writes != previous, timeout=.15):
+                break
+        else:
+            raise AssertionError("unread pipe did not fill")
+        assert feeder.is_alive(), "pipe filler returned instead of blocking"
+"""
+
+
 class NativeDeadline(unittest.TestCase):
-    def test_unread_stdout_or_stderr_cannot_block_exit(self):
+    def run_undrained(self, program, *args, env=None):
         src = Path(__file__).resolve().parents[1] / "src"
+        with subprocess.Popen(
+            [sys.executable, "-I", "-B", "-c", program, str(src), *args],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+        ) as process:
+            try:
+                status = process.wait(timeout=8)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                stdout, stderr = process.communicate()
+        self.assertEqual(status, 0, stderr[-2048:])
+        return stdout, stderr
+
+    def test_unread_stdout_or_stderr_cannot_block_exit(self):
         child = """
 import os
 import sys
@@ -165,38 +211,9 @@ import time
 
 sys.path.insert(0, sys.argv[1])
 from agent_brain_client.adapters.harnesses.hook_output import emit, native_output_deadline
-
+""" + _PIPE_FILL + """
 pipe = sys.argv[2]
-descriptor = sys.stdout.fileno() if pipe == "stdout" else sys.stderr.fileno()
-chunk = b"x" * 512
-progress = threading.Condition()
-completed_writes = 0
-fill_limit = 16384
-
-def fill():
-    global completed_writes
-    for _ in range(fill_limit):
-        assert os.write(descriptor, chunk) == len(chunk)
-        with progress:
-            completed_writes += 1
-            progress.notify()
-
-# The parent leaves both streams undrained. Observe completed small writes
-# followed by a blocked write before arming the watchdog. Bytes from an
-# incomplete large write can disappear when Windows terminates the process.
-feeder = threading.Thread(target=fill, daemon=True)
-feeder.start()
-with progress:
-    assert progress.wait_for(lambda: completed_writes > 0, timeout=3)
-    stop = time.monotonic() + 2
-    while completed_writes < fill_limit and time.monotonic() < stop:
-        previous = completed_writes
-        if not progress.wait_for(lambda: completed_writes != previous, timeout=.15):
-            break
-    else:
-        raise AssertionError("unread pipe did not fill")
-    assert feeder.is_alive(), "pipe filler returned instead of blocking"
-
+fill_unread_pipe(sys.stdout.fileno() if pipe == "stdout" else sys.stderr.fileno())
 with native_output_deadline(.25):
     if pipe == "stdout":
         emit({"text": "x" * 16384})
@@ -204,21 +221,63 @@ with native_output_deadline(.25):
     time.sleep(15)
 """
         for pipe in ("stdout", "stderr"):
-            with self.subTest(pipe=pipe), subprocess.Popen(
-                [sys.executable, "-I", "-B", "-c", child, str(src), pipe],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            ) as process:
-                try:
-                    status = process.wait(timeout=8)
-                finally:
-                    if process.poll() is None:
-                        process.kill()
-                    stdout, stderr = process.communicate()
-                self.assertEqual(status, 0, stderr[-2048:])
+            with self.subTest(pipe=pipe):
+                stdout, stderr = self.run_undrained(child, pipe)
                 saturated_stream = stdout if pipe == "stdout" else stderr
                 self.assertEqual(saturated_stream[:512], b"x" * 512)
                 if pipe == "stderr":
                     self.assertEqual(stdout.strip(), b"{}")
+
+    def test_launcher_timing_exits_with_unread_stderr(self):
+        launcher = """
+import os
+import sys
+import threading
+import time
+from types import SimpleNamespace
+from unittest.mock import patch
+
+sys.path.insert(0, sys.argv[1])
+from agent_brain_client.adapters.installation import launcher_update
+from agent_brain_client.adapters.storage import registration
+""" + _PIPE_FILL + """
+home, saturation = sys.argv[2:]
+active = {"package": home}
+saved = {"release_policy": "synthetic", "release_policy_sha256": "b" * 64}
+channel = SimpleNamespace(
+    policy={"runtime": {"device_home": home}},
+    verified_active=lambda *, serving: active,
+)
+if saturation == "before-child":
+    fill_unread_pipe(sys.stderr.fileno())
+with (patch.object(registration, "registration", return_value=(saved, {})),
+      patch.object(launcher_update, "ClientReleases", return_value=channel)):
+    sys.exit(launcher_update.native_hook_startup(home, home, "codebuddy", [], saved))
+"""
+        child = """
+import os
+import sys
+import threading
+import time
+""" + _PIPE_FILL + """
+def run_native_hook(home, harness):
+    if os.environ["SYNTHETIC_PIPE_SATURATION"] == "after-child":
+        fill_unread_pipe(sys.stderr.fileno())
+    print("{}", flush=True)
+    os._exit(0)
+"""
+        with tempfile.TemporaryDirectory(prefix="synthetic-hook-timing-") as tmp:
+            home = Path(tmp).resolve()
+            entry = home / "src/agent_brain_client/runtime/host_binding.py"
+            entry.parent.mkdir(parents=True)
+            entry.write_text(child, encoding="utf-8")
+            for saturation in ("before-child", "after-child"):
+                with self.subTest(saturation=saturation):
+                    environment = dict(os.environ, AGENT_BRAIN_RECALL_TIMING="1",
+                                       SYNTHETIC_PIPE_SATURATION=saturation)
+                    stdout, stderr = self.run_undrained(launcher, str(home), saturation, env=environment)
+                    self.assertEqual(stdout.strip(), b"{}")
+                    self.assertIn(b"x" * 512, stderr)
 
     def test_flush_after_deadline_never_acknowledges_recall(self):
         clock = SimpleNamespace(monotonic=Mock(side_effect=[0, 0.01, 1.01]))
