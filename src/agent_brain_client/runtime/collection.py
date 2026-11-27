@@ -174,10 +174,12 @@ def recall_prompt(value, local, payload, query, *, observe=None, harness=None):
     from agent_brain_client.application.memory.prompt_recall import recall_prompt as invoke
     from agent_brain_client.adapters.platforms.filesystem import locked
     from agent_brain_client.adapters.storage.content import operation_stage
+    from agent_brain_client.application.control import check_request
     return invoke(value, local, payload, query, observe=observe, harness=harness, services=SimpleNamespace(
         settings_path=lambda home: settings_path(home),
         recall=lambda *args, **kwargs: recall(*args, **kwargs),
-        locked=locked, operation_stage=operation_stage, cache_exists=lambda path: path.exists(),
+        locked=partial(locked, cancel_check=check_request), operation_stage=operation_stage,
+        cache_exists=lambda path: path.exists(),
         write=metadata_io.write, save_observation=save_recall_observation,
     ))
 

@@ -50,6 +50,54 @@ def native_platform():
     return sys.platform + "-" + machine
 
 
+def native_hook_launcher_elapsed():
+    """Read the verified Hook launcher process age without asking the host."""
+    parent = os.getppid()
+    if os.name == "nt":
+        from agent_brain_client.adapters.platforms.windows.filesystem import native_hook_shell_elapsed
+
+        return native_hook_shell_elapsed(parent)
+    if sys.platform != "darwin":
+        return None
+
+    import ctypes
+
+    class ProcessDetails(ctypes.Structure):
+        # Darwin PROC_PIDTBSDINFO on both supported 64-bit architectures.
+        _fields_ = [
+            ("prefix", ctypes.c_uint32 * 4), ("parent", ctypes.c_uint32),
+            ("ids", ctypes.c_uint32 * 7), ("names", ctypes.c_char * 48),
+            ("stats", ctypes.c_uint32 * 6), ("start_seconds", ctypes.c_uint64),
+            ("start_micros", ctypes.c_uint64),
+        ]
+
+    try:
+        libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+    except OSError:
+        return None
+    libproc.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                   ctypes.c_void_p, ctypes.c_int]
+    libproc.proc_pidinfo.restype = ctypes.c_int
+    libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    libproc.proc_pidpath.restype = ctypes.c_int
+    details = ProcessDetails()
+    size = ctypes.sizeof(details)
+    if libproc.proc_pidinfo(parent, 3, 0, ctypes.byref(details), size) != size or details.parent <= 1:
+        return None
+    launcher = details.parent
+    path = ctypes.create_string_buffer(4096)
+    if libproc.proc_pidpath(launcher, path, len(path)) <= 0:
+        return None
+    executable = path.value
+    if executable != b"/usr/bin/python3" and b"/Python3.framework/" not in executable:
+        return None
+    if libproc.proc_pidinfo(launcher, 3, 0, ctypes.byref(details), size) != size:
+        return None
+    started = details.start_seconds + details.start_micros / 1_000_000
+    elapsed = time.time() - started
+    return elapsed if elapsed >= 0 else None
+
+
 def platform_paths(target):
     """Syntax only: accepting metadata never authorizes platform operations."""
     if target in MAC_PLATFORMS:

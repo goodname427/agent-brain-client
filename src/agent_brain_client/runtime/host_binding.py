@@ -142,14 +142,41 @@ def run_native_hook(home, harness, settings=None):
     """Dispatch in the verified child without importing the verifier's code."""
     if harness not in ("codex", "codebuddy"):
         raise ValueError("Explicit native Hook Harness required")
+    from agent_brain_client.adapters.harnesses.hook_output import native_output_deadline
+
+    seconds = 28 if settings is not None else 115
+    if harness == "codebuddy":
+        from time import monotonic
+        from agent_brain_client.application.control import CODEBUDDY_HOOK_START_ENV
+
+        seconds = 29.43  # An older retained launcher does not send its clock.
+        raw = os.environ.pop(CODEBUDDY_HOOK_START_ENV, "")
+        try:
+            elapsed = monotonic() - float(raw)
+        except ValueError:
+            elapsed = -1
+        if elapsed >= 0:
+            seconds = max(0, 29.70 - elapsed)
+        launcher_elapsed = platform_files.native_hook_launcher_elapsed()
+        windows = os.name == "nt"
+        if launcher_elapsed is None:
+            # Keep time for the outer registration command if its age is unavailable.
+            launcher_elapsed = max(0, elapsed) + (0.85 if windows else 0.35)
+        seconds = min(seconds, max(0, (29.65 if windows else 29.75) - launcher_elapsed))
+    with native_output_deadline(seconds):
+        return _dispatch_native_hook(home, harness, settings)
+
+
+def _dispatch_native_hook(home, harness, settings):
     if settings is not None:
+        from agent_brain_client.adapters.harnesses.hook_output import emit
         from agent_brain_client.adapters.storage.project_settings import installed_hook_pin
         from agent_brain_client.interfaces.cli.project import main
 
         try:
             pin = installed_hook_pin(home, harness, settings)
         except (OSError, ValueError, TypeError, KeyError):
-            print("{}", flush=True)
+            emit({})
             print("agent-brain Hook project registration unavailable", file=sys.stderr)
             return 0
         return main(["hook", "--harness", harness, "--settings", settings,
