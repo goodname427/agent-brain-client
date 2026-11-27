@@ -41,10 +41,13 @@ def run_native_hook(home, harness, settings=None):
     from urllib.request import build_opener, ProxyHandler
     from agent_brain_client.adapters.harnesses import hook_output
     from agent_brain_client.adapters.harnesses.codebuddy import events, transcript
+    from agent_brain_client.adapters.platforms.filesystem import native_hook_launcher_elapsed
     from agent_brain_client.adapters.server.http import ReadHTTPHandler
     from agent_brain_client.application import control
     from agent_brain_client.runtime import collection as core
 
+    if harness == "codebuddy" and native_hook_launcher_elapsed() is None:
+        raise AssertionError("Native Hook launcher start time unavailable")
     mode, endpoint = json.loads((Path(home) / "synthetic-hook-mode.json").read_text())
     # Use real budgets for successful work. Shorten only the injected fault
     # and leave time for the real setup and loopback transport on a busy runner.
