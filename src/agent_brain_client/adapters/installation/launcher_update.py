@@ -484,41 +484,31 @@ sys.exit(status)
 '''
 
 
-def _native_hook_timing(stage, seconds):
+def _native_hook_timing(stages):
     """Write an optional timing record without waiting on the host's pipe."""
     import sys
     import threading
 
-    record = json.dumps({
-        "operation": "native-hook-startup",
-        "stage": stage,
-        "elapsed_ms": round(seconds * 1000, 3),
-    }).encode("ascii") + b"\n"
-    try:
-        descriptor = os.dup(sys.stderr.fileno())
-    except (AttributeError, OSError, ValueError):
-        return
-    try:
-        os.set_inheritable(descriptor, False)
-    except OSError:
-        os.close(descriptor)
-        return
-
     def write():
         try:
-            # The duplicate also keeps Windows CRT locks off the inherited
-            # stderr descriptor used to start the serving child.
-            os.write(descriptor, record)
-        except OSError:
+            descriptor = os.dup(sys.stderr.fileno())
+            try:
+                os.set_inheritable(descriptor, False)
+                records = "".join(json.dumps({
+                    "operation": "native-hook-startup",
+                    "stage": stage,
+                    "elapsed_ms": round(seconds * 1000, 3),
+                }) + "\n" for stage, seconds in stages)
+                os.write(descriptor, records.encode("ascii"))
+            finally:
+                os.close(descriptor)
+        except (AttributeError, OSError, ValueError):
             pass
-        finally:
-            os.close(descriptor)
 
     reporter = threading.Thread(target=write, daemon=True)
     try:
         reporter.start()
     except RuntimeError:
-        os.close(descriptor)
         return
     reporter.join(timeout=0.01)
 
@@ -560,8 +550,6 @@ def native_hook_startup(home, cwd, harness, project, saved):
     else:
         raise ValueError("Verified Hook entry required")
     verified = monotonic()
-    if timing:
-        _native_hook_timing("serving-package-ready", verified - started)
     environment = None
     if harness == "codebuddy":
         environment = dict(os.environ, **{CODEBUDDY_HOOK_START_ENV: str(started)})
@@ -572,7 +560,12 @@ def native_hook_startup(home, cwd, harness, project, saved):
         ).returncode
     finally:
         if timing:
-            _native_hook_timing("child-wait-ended", monotonic() - verified)
+            # A diagnostic writer must never run while the verifier starts
+            # the serving child and Windows prepares its inherited handles.
+            _native_hook_timing((
+                ("serving-package-ready", verified - started),
+                ("child-wait-ended", monotonic() - verified),
+            ))
 
 
 def native_hook_command(home, harness, settings=None):

@@ -193,14 +193,15 @@ def fill_unread_pipe(descriptor):
 
 
 class NativeDeadline(unittest.TestCase):
-    def run_undrained(self, program, *args, env=None):
+    def run_undrained(self, program, *args, env=None, stderr=subprocess.PIPE):
         src = Path(__file__).resolve().parents[1] / "src"
-        return self.wait_for_undrained([sys.executable, "-I", "-B", "-c", program, str(src), *args], env=env)
+        return self.wait_for_undrained([sys.executable, "-I", "-B", "-c", program, str(src), *args],
+                                      env=env, stderr=stderr)
 
-    def wait_for_undrained(self, argv, *, env=None, cwd=None, timeout=8):
+    def wait_for_undrained(self, argv, *, env=None, cwd=None, timeout=8, stderr=subprocess.PIPE):
         deadline = monotonic() + timeout
         with subprocess.Popen(
-            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd,
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=stderr, env=env, cwd=cwd,
         ) as process:
             try:
                 status = process.wait(timeout=max(0, deadline - monotonic()))
@@ -208,8 +209,32 @@ class NativeDeadline(unittest.TestCase):
                 if process.poll() is None:
                     process.kill()
                 stdout, stderr = process.communicate(timeout=40)
-        self.assertEqual(status, 0, stderr[-2048:])
+        self.assertEqual(status, 0, (stderr or b"")[-2048:])
         return stdout, stderr
+
+    def run_with_prefilled_windows_stderr(self, program, *args, env):
+        import ctypes
+        from ctypes import wintypes
+        import msvcrt
+
+        read_fd, write_fd = os.pipe()
+        with os.fdopen(read_fd, "rb") as reader, os.fdopen(write_fd, "wb", buffering=0) as writer:
+            pipe_info = ctypes.WinDLL("kernel32", use_last_error=True).GetNamedPipeInfo
+            pipe_info.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.DWORD)] * 4
+            pipe_info.restype = wintypes.BOOL
+            outgoing, incoming = wintypes.DWORD(), wintypes.DWORD()
+            self.assertTrue(pipe_info(msvcrt.get_osfhandle(reader.fileno()), None,
+                                      ctypes.byref(outgoing), ctypes.byref(incoming), None),
+                            ctypes.get_last_error())
+            capacity = max(outgoing.value, incoming.value)
+            self.assertGreaterEqual(capacity, 512)
+            # Prefill the pipe before starting the verifier so a fixture
+            # writer cannot itself block Windows from inheriting the handle.
+            self.assertEqual(writer.write(b"x" * capacity), capacity)
+            environment = dict(env, SYNTHETIC_EXTERNAL_PREFILL="1")
+            stdout, _ = self.run_undrained(program, *args, env=environment, stderr=writer)
+            writer.close()
+            return stdout, reader.read()
 
     def test_unread_stdout_or_stderr_cannot_block_exit(self):
         child = """
@@ -257,7 +282,7 @@ channel = SimpleNamespace(
     policy={"runtime": {"device_home": home}},
     verified_active=lambda *, serving: active,
 )
-if saturation == "before-child":
+if saturation == "before-child" and os.environ.get("SYNTHETIC_EXTERNAL_PREFILL") != "1":
     fill_unread_pipe(sys.stderr.fileno())
 with (patch.object(registration, "registration", return_value=(saved, {})),
       patch.object(launcher_update, "ClientReleases", return_value=channel)):
@@ -284,7 +309,11 @@ def run_native_hook(home, harness):
                 with self.subTest(saturation=saturation):
                     environment = dict(os.environ, AGENT_BRAIN_RECALL_TIMING="1",
                                        SYNTHETIC_PIPE_SATURATION=saturation)
-                    stdout, stderr = self.run_undrained(launcher, str(home), saturation, env=environment)
+                    if os.name == "nt" and saturation == "before-child":
+                        stdout, stderr = self.run_with_prefilled_windows_stderr(launcher, str(home), saturation,
+                                                                             env=environment)
+                    else:
+                        stdout, stderr = self.run_undrained(launcher, str(home), saturation, env=environment)
                     self.assertEqual(stdout.strip(), b"{}")
                     self.assertIn(b"x" * 512, stderr)
 
