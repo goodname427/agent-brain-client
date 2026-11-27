@@ -139,21 +139,33 @@ def main(argv=None, *, verified_release=False):
             core = host_binding.load_core(home)
         initialized = time.monotonic()
         from agent_brain_client.application.control import (
-            RECALL_TIMING_ENV, mark_recall_timing, recall_timing_scope,
+            RECALL_TIMING_ENV, RequestControl, mark_recall_timing, recall_timing_scope,
+        )
+        from agent_brain_client.adapters.harnesses.hook_output import (
+            CODEBUDDY_HOOK_REQUEST_SECONDS, emit, remaining_request_seconds,
         )
         from agent_brain_client.runtime.delivery import schedule_assistant_completion
         observation = {}
         with recall_timing_scope(os.environ.get(RECALL_TIMING_ENV) == "1", started=started):
             mark_recall_timing("hook_initialized")
-            output, state = runtime.hook(home, sys.stdin.buffer, core=core,
-                defer=lambda turn: schedule_assistant_completion(home, turn),
-                observe=observation.update, verified_release=verified_release)
+            # Spend the remaining budget after setup on local work and recall.
+            control = RequestControl(remaining_request_seconds(
+                CODEBUDDY_HOOK_REQUEST_SECONDS - (time.monotonic() - started)
+            ))
+            try:
+                with control.activate(check_on_exit=False):
+                    output, state = runtime.hook(home, sys.stdin.buffer, core=core,
+                        defer=lambda turn: schedule_assistant_completion(home, turn),
+                        observe=observation.update, verified_release=verified_release)
+            finally:
+                control.close()
             state["cli_timing_ms"] = {
                 "initialization_ms": round((initialized - started) * 1000, 3),
                 "total_ms": round((time.monotonic() - started) * 1000, 3),
             }
             mark_recall_timing("output_prepared")
-            print(json.dumps(output, ensure_ascii=False), flush=True)
+            if not emit(output):
+                return 0
             mark_recall_timing("output_flushed")
             if observation and observation["status"] != "failed":
                 from agent_brain_client.adapters.storage.recall_receipts import save_recall_observation
@@ -188,7 +200,8 @@ def main(argv=None, *, verified_release=False):
         return 0
     except Exception as error:
         if args.action == "hook":
-            print("{}")
+            from agent_brain_client.adapters.harnesses.hook_output import emit
+            emit({})
         print(
             json.dumps(binding_review(args.action, error)),
             file=sys.stderr,
