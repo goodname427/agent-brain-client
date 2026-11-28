@@ -104,7 +104,7 @@ check-update 成功返回 client-update-available/current 与 channel_checked:tr
 三个版本分别核查：active_package_version 是本地活动包，latest_channel_version 是本次成功渠道检查的候选，client_runtime.running_worker_version 是 MCP 调用所用 worker。CLI 无法观测 worker，其字段及 reload_required 为 null；reload_check 分别报告活动包、MCP 登记和 Hook 配置的变更。新鲜 MCP 结果中的 `reload_required:false` 表示当前运行内容无需重载。兼容 worker 可在原连接等待在途工作完成后切换。复查后仍返回 true 或所需工具对宿主不可见时，正常重载 Agent Brain MCP。null 表示当前证据不足。offered_tools 是 worker 提供的清单，需与 Agent 实际可调用工具对照；宿主过滤或缓存工具清单、Hook trust、模型上下文加载不能靠 worker 版本判断。即使更新回报 current，也不能据此断言旧 worker 已重载。main、tags、旧回执和映射数量都不能替代此核验。
 
 
-安全错误字段只给阶段和类别：parameters、transport、http、response-parse、response-validation、content-validation 或 client-policy-or-credential。HTTP 状态来自实际响应；transport 没有 HTTP 状态，不能单凭它认定偶发网络。解析/回执失败不归类为网络。读取参数错误不给 stable request_id/expected_revision 的写入提示；写入未知结果仍沿用原 ID 和 CAS 参数，不生成新 ID。报告不包含凭据、响应正文或记忆正文。
+安全错误字段只给阶段和类别：parameters、transport、http、response-parse、response-validation、content-validation 或 client-policy-or-credential。HTTP 状态来自实际响应；transport 没有 HTTP 状态，不能单凭它认定偶发网络。解析/回执失败不归类为网络。读取与写入按各自参数检查。写入失败返回请求 ID、状态和本机诊断指引；已保留且回执未确认的请求由 Client 原样补发。
 
 已确认 outbox 也占累计 1024 条上限，目前没有自动归档；达到上限会拒绝新请求，保留旧数据。Server 本地提交后 GitHub 推送未确认，会阻塞后续新写；当前 `storage_unowned` 也可能阻断缓存读取，须恢复原请求。目标目录每页最多 256 条，本机快照另受[容量边界](../development/content-cache-capacity.md)约束。此版本不承诺无限写或弱网下始终可读。
 

@@ -16,6 +16,7 @@ import uuid
 CLIENT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(CLIENT / "src"))
 from agent_brain_client.adapters.packages.build import release
+from agent_brain_client.adapters.packages.client import HTTPS_CONTENT_CAPABILITIES, https_files
 from agent_brain_client.adapters.platforms.filesystem import native_platform
 from agent_brain_client.adapters.server.https import profile_metadata
 from agent_brain_client.domain.tool_contract import TOOL_CONTRACT_VERSION
@@ -24,7 +25,10 @@ from agent_brain_client.domain.validation import encode
 CURRENT_SERVER = "e1ec48f4eb2a3ccfa53f8ecdfaf9baba4f7c3e24"
 LEGACY_SERVER = "e3639ccd0a9e30a1920cc3d975083e74bd591e8e"
 WORKER = Path("src/agent_brain_client/interfaces/mcp/content.py")
-RETIRED_TOOLS = {"content_archive", "content_restore", "content_remove", "content_set_enabled"}
+RETIRED_TOOLS = {
+    "content_archive", "content_restore", "content_remove", "content_set_enabled",
+    "content_request_id", "content_queue_inspect",
+}
 ACTIONS = ("archive", "restore")
 HARNESSES = ("codex", "codebuddy")
 VERSION = "0.8.31"
@@ -57,11 +61,13 @@ try:
     restart()
     drop = None
     writes = []
+    requests = 0
     class Quiet(WSGIRequestHandler):
         def log_message(self, *_args):
             pass
     def handle(environ, start):
-        global drop
+        global drop, requests
+        requests += 1
         environ["PATH_INFO"] = "/v1/device/requests"
         raw = environ["wsgi.input"].read(int(environ["CONTENT_LENGTH"]))
         environ["wsgi.input"] = io.BytesIO(raw)
@@ -90,7 +96,7 @@ try:
                 drop = action["drop"]
             if action == "restart":
                 restart()
-            print(json.dumps({"head": f.case.head(), "writes": writes}), flush=True)
+            print(json.dumps({"head": f.case.head(), "writes": writes, "requests": requests}), flush=True)
         http.shutdown()
 finally:
     test.doCleanups()
@@ -106,11 +112,15 @@ from unittest.mock import patch
 package = Path(sys.argv[1])
 sys.path.insert(0, str(package / "src"))
 from agent_brain_client.adapters.server import https
-from agent_brain_client.interfaces.mcp import content
 saved = json.loads(sys.stdin.buffer.readline())
-sys.argv = [content.__file__, *sys.argv[2:]]
 with patch.object(https, "native_store", return_value=SimpleNamespace(load=lambda: saved)):
-    content.main()
+    if sys.argv[2] == "content-manage":
+        from agent_brain_client.interfaces.management import server
+        raise SystemExit(server.main(sys.argv[2:]))
+    else:
+        from agent_brain_client.interfaces.mcp import content
+        sys.argv = [content.__file__, *sys.argv[2:]]
+        content.main()
 '''
 
 
@@ -162,12 +172,13 @@ def environment(home, cert):
 
 
 class Wire:
-    def __init__(self, process, commit, harness):
+    def __init__(self, process, commit, harness, *, managed):
         self.process = process
         self.commit = commit
         self.sequence = 0
-        self.ready = receive(process)
-        assert self.ready["toolContract"] == TOOL_CONTRACT_VERSION, self.ready
+        if managed:
+            ready = receive(process)
+            assert ready["toolContract"] == TOOL_CONTRACT_VERSION, ready
         hello = self.rpc("initialize", {
             "protocolVersion": "2025-11-25", "capabilities": {},
             "clientInfo": {"name": f"synthetic-{harness}-lifecycle", "version": "1"},
@@ -190,7 +201,10 @@ class Wire:
 
     def content(self, name, **arguments):
         result = self.call(name, **arguments)["result"]["structuredContent"]
-        assert result["client_runtime"]["running_worker_commit"] == self.commit, result
+        if "client_runtime" in result:
+            assert result["client_runtime"]["running_worker_commit"] == self.commit, result
+        else:
+            assert result["error"] and result["request_id"], result
         return result
 
     def lifecycle(self, action, **arguments):
@@ -208,8 +222,9 @@ def private_json(path, value):
     return hashlib.sha256(raw).hexdigest()
 
 
-@contextmanager
-def worker(package, home, cert, hello, policy, harness):
+def worker_config(package, home, cert, hello, policy, *, prepare=True):
+    """Give the MCP and local diagnostic the same pinned synthetic registration."""
+
     env = environment(home, cert)
     grant = hello["grant"]
     windows = grant["platform"].startswith("win32-")
@@ -224,22 +239,60 @@ def worker(package, home, cert, hello, policy, harness):
         hello["endpoint"], grant, backend, str(home / ".config/agent-brain-client/https"),
     )
     profile_path, policy_path = home / "synthetic-profile.json", home / "synthetic-policy.json"
-    digest = private_json(profile_path, profile)
-    policy_digest = private_json(policy_path, policy)
-    with child(
-        WORKER_ENTRY, package, "--managed-stdio", "initial", "--client-version", VERSION,
-        "--harness", harness, "--device-home", home, "--codex-home", home / ".codex",
-        "--cache", home / "synthetic-cache", "--content-policy", policy_path,
-        "--content-policy-sha256", policy_digest, "--https-profile", profile_path,
-        "--https-profile-sha256", digest, "--credential-source-sha256", source, env=env,
-    ) as process:
-        send(process, {
-            "schema": 1, "profile_sha256": digest, "phase": "active",
-            "nonce": uuid.uuid4().hex, "credential": hello["credential"],
-            "device_id": hello["device_id"], "grant": grant,
+    if prepare:
+        private_json(profile_path, profile)
+        private_json(policy_path, policy)
+    digest = hashlib.sha256(profile_path.read_bytes()).hexdigest()
+    policy_digest = hashlib.sha256(policy_path.read_bytes()).hexdigest()
+    runtime = {
+        "device_home": str(home), "codex_home": str(home / ".codex"),
+        "content_cache": str(home / "synthetic-cache"), "content_policy": str(policy_path),
+        "content_policy_sha256": policy_digest, "https_profile": str(profile_path),
+        "https_profile_sha256": digest, "credential_source_sha256": source,
+    }
+    commit = json.loads((package / "verified.json").read_bytes())["commit"]
+    release_policy = {
+        "schema": 1, "adapter": "codex", "platform": grant["platform"],
+        "origin": str(home / "synthetic-origin"), "ref": "refs/heads/releases/stable",
+        "anchor_commit": commit, "channel": "stable", "core_api": 1, "state_schema": 1,
+        "capabilities": HTTPS_CONTENT_CAPABILITIES, "file_prefixes": list(https_files(grant["platform"])),
+        "repository": str(home / "synthetic-release-repo"), "cache": str(home / "synthetic-release-cache"),
+        "runtime": runtime,
+    }
+    release_path = home / "synthetic-release-policy.json"
+    if prepare:
+        release_digest = private_json(release_path, release_policy)
+        private_json(home / ".config/agent-brain-client/codex-mcp.json", {
+            "release_policy": str(release_path), "release_policy_sha256": release_digest,
         })
-        commit = json.loads((package / "verified.json").read_bytes())["commit"]
-        yield Wire(process, commit, harness)
+    identity = {
+        "schema": 1, "profile_sha256": digest, "phase": "active",
+        "nonce": uuid.uuid4().hex, "credential": hello["credential"],
+        "device_id": hello["device_id"], "grant": grant,
+    }
+    return env, runtime, identity, commit
+
+
+@contextmanager
+def worker(package, home, cert, hello, policy, harness, *, managed=True):
+    env, runtime, identity, commit = worker_config(package, home, cert, hello, policy)
+    options = {**runtime, "cache": runtime["content_cache"], "harness": harness, "client_version": VERSION}
+    del options["content_cache"]
+    arguments = [part for key, value in options.items() for part in ("--" + key.replace("_", "-"), value)]
+    if managed:
+        arguments += ["--managed-stdio", "initial"]
+    with child(WORKER_ENTRY, package, *arguments, env=env) as process:
+        send(process, identity)
+        yield Wire(process, commit, harness, managed=managed)
+
+
+def inspect(package, home, cert, hello, policy, harness, request_id):
+    env, _, identity, _ = worker_config(package, home, cert, hello, policy, prepare=False)
+    result = subprocess.check_output([
+        sys.executable, "-I", "-B", "-c", WORKER_ENTRY, str(package),
+        "content-manage", "--harness", harness, "--inspect-queue", "--request-id", request_id,
+    ], input=json.dumps(identity) + "\n", text=True, env=env)
+    return json.loads(result)
 
 
 def describe(packages, grant, policy):
@@ -308,7 +361,7 @@ def exercise(server, root, cert, key, packages, target, harness, *, legacy):
                 assert set(tools) == names, tools
                 assert tools["content_read"]["inputSchema"]["properties"]["include_archived"]["enum"] == [True]
                 schema = tools["content_lifecycle"]["inputSchema"]
-                assert set(schema["required"]) == {"action", "kind", "id", "expected_revision", "request_id"}
+                assert set(schema["required"]) == {"action", "kind", "id", "expected_revision"}
                 assert schema["properties"]["action"]["enum"] == list(ACTIONS)
                 unavailable = dict(item, expected_revision="a" * 64, request_id=request_id())
                 before = state()
@@ -319,8 +372,7 @@ def exercise(server, root, cert, key, packages, target, harness, *, legacy):
                 assert wire.call("content_read", **dict(item, kind="memory"), include_archived=True)["error"]
                 ordinary = wire.content("content_read", **item)["result"]
                 assert "archived" not in ordinary, ordinary
-                activation = dict(item, enabled=True, expected_revision=ordinary["revision"],
-                                  request_id=request_id())
+                activation = dict(item, enabled=True, expected_revision=ordinary["revision"])
                 activation_args = dict(activation, operation="set_enabled")
                 for invalid in (
                     dict(activation_args, kind="memory"),
@@ -334,13 +386,12 @@ def exercise(server, root, cert, key, packages, target, harness, *, legacy):
                 assert pending["local_queue"]["state"] == "pending" and not mapped(kind), pending
                 assert pending["local_queue"]["server_saved"] is False, pending
                 committed = state()["head"]
-                saved = queue_saved(wire.content("content_put", **activation_args))
+                activation_id = pending["request_id"]
+                saved = queue_saved(wire.content("content_put", **activation_args, request_id=activation_id))
                 assert saved["record"] == dict(ordinary["record"], enabled=True), saved
                 assert mapped(kind) and state()["head"] == committed
-                assert [req for req, _ in state()["writes"] if req["request_id"] == activation["request_id"]] == [
-                    {"method": "content_set_enabled",
-                     "params": {key: value for key, value in activation.items() if key != "request_id"},
-                     "request_id": activation["request_id"]},
+                assert [req for req, _ in state()["writes"] if req["request_id"] == activation_id] == [
+                    {"method": "content_set_enabled", "params": activation, "request_id": activation_id},
                 ] * 2
 
                 edit = copy.deepcopy(saved["record"])
@@ -350,7 +401,6 @@ def exercise(server, root, cert, key, packages, target, harness, *, legacy):
                     edit["files"]["SKILL.md"] += "\nSynthetic edit."
                 edited = queue_saved(wire.content(
                     "content_put", **item, record=edit, expected_revision=saved["revision"],
-                    request_id=request_id(),
                 ))
                 original = edited["record"]
                 assert original == edit and original["enabled"] is True
@@ -366,7 +416,7 @@ def exercise(server, root, cert, key, packages, target, harness, *, legacy):
                 ))
                 assert enabled["record"] == original and mapped(kind)
                 lifecycle = wire.content("content_read", **item, include_archived=True)
-                archive = dict(item, expected_revision=ordinary["revision"], request_id=request_id())
+                archive = dict(item, expected_revision=ordinary["revision"])
                 if legacy:
                     before = state()["head"]
                     assert lifecycle["error"]["retryable"] is False, lifecycle
@@ -389,6 +439,7 @@ def exercise(server, root, cert, key, packages, target, harness, *, legacy):
                     state({"drop": "content_archive"})
                     pending = wire.lifecycle("archive", **archive)
                     assert pending["local_queue"]["state"] == "pending" and mapped(kind), pending
+                    archive["request_id"] = pending["request_id"]
                     committed = state("restart")["head"]
                     sent = state()
                     for retry in (
@@ -396,14 +447,19 @@ def exercise(server, root, cert, key, packages, target, harness, *, legacy):
                         wire.lifecycle("archive", **dict(archive, expected_revision="c" * 64)),
                     ):
                         assert retry["error"]["code"] == "content_adapter_blocked", retry
-                    assert state() == sent
+                    assert state()["writes"] == sent["writes"] and state()["head"] == sent["head"]
                 else:
-                    queue_saved(wire.lifecycle("archive", **archive))
+                    archive_reply = wire.lifecycle("archive", **archive)
+                    queue_saved(archive_reply)
+                    archive["request_id"] = archive_reply["request_id"]
                     assert not mapped(kind)
                     committed = state()["head"]
 
-            with worker(package, home, cert, hello, policy, harness) as wire:
-                saved = queue_saved(wire.lifecycle("archive", **archive))
+            with worker(package, home, cert, hello, policy, harness, managed=False) as wire:
+                # Normal initialize drains the saved request before any new write.
+                restored_archive = inspect(package, home, cert, hello, policy, harness, archive["request_id"])
+                assert restored_archive["local_queue"]["state"] == "confirmed", restored_archive
+                saved = restored_archive["response"]["result"]
                 assert saved["archived"] is True and saved["record"] is None and not mapped(kind)
                 assert state()["head"] == committed and item["id"] not in catalog(wire)
                 if kind == "rule":
@@ -414,17 +470,24 @@ def exercise(server, root, cert, key, packages, target, harness, *, legacy):
                 assert wire.content("content_read", **item)["result"]["revision"] == "missing"
                 archived = wire.content("content_read", **item, include_archived=True)["result"]
                 assert archived == saved, archived
-                stale = dict(archive, request_id=request_id())
+                stale = {key: value for key, value in archive.items() if key != "request_id"}
                 conflict = wire.lifecycle("restore", **stale)
                 assert conflict["error"]["code"] == "revision_conflict" and state()["head"] == committed
-                inspected = wire.call("content_queue_inspect", request_id=stale["request_id"])
-                assert inspected["result"]["structuredContent"]["remote_snapshot"] == archived, inspected
-                restore = dict(item, expected_revision=archived["revision"], request_id=request_id())
-                restored = queue_saved(wire.lifecycle("restore", **restore))
+                before = state()
+                cache = home / ("synthetic-cache" if harness == "codex" else ".config/agent-brain-client/codebuddy/content-cache")
+                queue_before = {path.name: path.read_bytes() for path in (cache / "outbox").iterdir()}
+                inspected = inspect(package, home, cert, hello, policy, harness, conflict["request_id"])
+                assert inspected["remote_snapshot"] == archived, inspected
+                assert inspected["request"]["params"] == stale, inspected
+                assert state() == before
+                assert {path.name: path.read_bytes() for path in (cache / "outbox").iterdir()} == queue_before
+                restore = dict(item, expected_revision=archived["revision"])
+                restored_reply = wire.lifecycle("restore", **restore)
+                restored = queue_saved(restored_reply)
                 assert restored["record"] == dict(original, enabled=False) and restored["archived"] is False
                 assert restored["id"] == item["id"] and restored["revision"] != archived["revision"]
                 restored_head = state()["head"]
-                assert queue_saved(wire.lifecycle("restore", **restore)) == restored
+                assert queue_saved(wire.lifecycle("restore", **restore, request_id=restored_reply["request_id"])) == restored
                 assert state()["head"] == restored_head and not mapped(kind) and item["id"] in catalog(wire)
                 assert wire.content("content_read", **item, include_archived=True)["result"] == restored
                 ordinary = wire.content("content_read", **item)["result"]

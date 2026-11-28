@@ -360,8 +360,8 @@ _NOTIFY_CAPTURE_INSTRUCTIONS = (
     "scope relevant to this completed turn. Generalize "
     "ordinary user project experience safely for the shared personal Memory scope; "
     "exclude secrets, LocalOnly, confidential or customer-identifying content, and "
-    "report unsafe scope as deferred. For memory writes use content_read/CAS and "
-    "content_request_id with the supplied turn digest. Honor explicit forgetting "
+    "report unsafe scope as deferred. For memory writes use the current revision from "
+    "content_read; the Client automatically retries saved writes with unconfirmed delivery. Honor explicit forgetting "
     "through content_lifecycle(action=remove) when that action is authorized. Do not read transcripts or "
     "store raw conversation text. Never claim durable save without the Server receipt."
 )
@@ -397,8 +397,6 @@ def codex_notify_capture(event):
     message = (
         _NOTIFY_CAPTURE_MARKER
         + turn_id
-        + "\nTurn digest: "
-        + turn_digest
         + "\n"
         + _NOTIFY_CAPTURE_INSTRUCTIONS
     )

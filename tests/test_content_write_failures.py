@@ -1,7 +1,8 @@
 """Synthetic content write failures; no device credentials, real memories or network."""
 
 
-from contextlib import contextmanager, redirect_stderr
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import copy
 import io
 import json
@@ -12,6 +13,7 @@ from unittest.mock import patch
 from agent_brain_client.adapters.harnesses.codex.content_ports import CodexContentPorts
 from agent_brain_client.adapters.platforms.filesystem import cache_locked as locked
 from agent_brain_client.interfaces.mcp.content import ContentServer
+from agent_brain_client.interfaces.management import server as management
 from agent_brain_client.interfaces.mcp.framing import ContentParameterError, ContentToolUnavailable
 from agent_brain_client.application.tools.catalog import enabled_tools
 from agent_brain_client.domain.errors import CacheBlocked
@@ -44,10 +46,7 @@ class WriteFailures(unittest.TestCase):
         )["structuredContent"]
 
     def test_real_content_and_enqueue_lock_contention_is_retryable_and_saves_once(self):
-        for filename, stage in [
-            ("content.lock", "content-lock"),
-            ("outbox-enqueue.lock", "outbox-lock"),
-        ]:
+        for filename in ("content.lock", "outbox-enqueue.lock"):
             with self.subTest(lock=filename):
                 with (
                     locked(self.f.cache / filename),
@@ -57,15 +56,8 @@ class WriteFailures(unittest.TestCase):
                     patch("agent_brain_client.adapters.storage.content.locked", short_lock),
                 ):
                     result = self.invoke()
-                self.assertEqual(
-                    result["error"],
-                    {
-                        "code": "content_busy",
-                        "retryable": True,
-                        "stage": stage,
-                        "exception_type": "LockTimeout",
-                    },
-                )
+                self.assertEqual(result["error"], {"code": "content_busy", "retryable": True})
+                self.assertEqual(result["local_queue"]["state"], "unconfirmed")
                 self.assertEqual(result["request_id"], self.request["request_id"])
                 self.assertFalse(result["persistence"]["durable"])
                 self.assertEqual(self.f.cloud.calls, [])
@@ -86,21 +78,14 @@ class WriteFailures(unittest.TestCase):
             redirect_stderr(stderr),
         ):
             result = self.invoke()
-        self.assertEqual(
-            result["error"],
-            {
-                "code": "content_adapter_blocked",
-                "retryable": False,
-                "stage": "outbox-enqueue",
-                "exception_type": "OSError",
-            },
-        )
+        self.assertEqual(result["error"], {"code": "content_adapter_blocked", "retryable": False})
+        self.assertIn("--request-id", result["local_queue"]["next_action"])
         self.assertEqual(self.f.cloud.calls, [])
         self.assertNotIn("SYNTHETIC_PRIVATE", json.dumps(result) + stderr.getvalue())
         with patch.object(
             self.f.adapter, "invoke", side_effect=ValueError("SYNTHETIC_PRIVATE")
         ):
-            self.assertEqual(self.invoke()["error"]["stage"], "adapter-invoke")
+            self.assertEqual(self.invoke()["local_queue"]["state"], "unconfirmed")
 
     def test_lost_local_confirmation_reports_its_stage_and_exact_retry_is_idempotent(
         self,
@@ -114,13 +99,44 @@ class WriteFailures(unittest.TestCase):
 
         with patch.object(self.f.adapter, "_save", side_effect=fail_confirmation):
             result = self.invoke()
-        self.assertEqual(result["error"]["stage"], "outbox-confirmation")
-        self.assertEqual(result["error"]["exception_type"], "OSError")
+        self.assertEqual(result["local_queue"]["state"], "unconfirmed")
         self.assertNotIn("SYNTHETIC_PRIVATE", json.dumps(result))
         self.assertEqual(self.f.cloud.puts, 1)
         self.assertEqual(self.f.adapter.queue_status()["pending"], 1)
         self.assertEqual(self.invoke()["local_queue"]["state"], "confirmed")
         self.assertEqual(self.f.cloud.puts, 1)
+
+    def test_concurrent_new_calls_get_independent_ids_even_with_identical_arguments(self):
+        def submit(params):
+            return self.server.invoke("content_put", params)["structuredContent"]
+
+        first = self.request["params"]
+        second = dict(first, record=dict(first["record"], body="Another intent"))
+        with patch.dict("os.environ", {"CODEX_THREAD_ID": "synthetic-same-session"}):
+            with ThreadPoolExecutor(3) as work:
+                results = list(work.map(submit, (first, second, first)))
+        ids = [result["request_id"] for result in results]
+        self.assertEqual(len(set(ids)), 3)
+        self.assertEqual(sorted(result["local_queue"]["state"] for result in results),
+                         ["confirmed", "conflict", "conflict"])
+        requests = [self.f.adapter.inspect_queue(request_id=rid)["request"] for rid in ids]
+        for request, params in zip(requests, (first, second, first)):
+            self.assertEqual(request["params"]["record"], params["record"])
+            self.assertEqual(request["params"]["expected_revision"], "missing")
+            self.assertEqual(request["params"]["source_context"]["session_id"], "synthetic-same-session")
+        self.assertEqual(self.f.cloud.puts, 1)
+
+    def test_public_conflict_failure_only_exposes_state_and_diagnostic(self):
+        self.f.adapter.invoke(self.request)
+        args = dict(self.request["params"], record=dict(self.request["params"]["record"], body="Private fictional conflict"))
+        response = self.server.invoke("content_put", args)
+        result = response["structuredContent"]
+        self.assertEqual(result["error"]["code"], "revision_conflict")
+        self.assertEqual(result["local_queue"]["state"], "conflict")
+        self.assertIn("--request-id", result["local_queue"]["next_action"])
+        self.assertNotIn("Private fictional conflict", json.dumps(response))
+        exact = self.f.adapter.inspect_queue(request_id=result["request_id"])
+        self.assertEqual(exact["request"]["params"]["record"]["body"], "Private fictional conflict")
 
     def test_healthy_32_entry_queue_does_not_block_new_write(self):
         for index in range(32):
@@ -191,12 +207,34 @@ class WriteFailures(unittest.TestCase):
             self.assertEqual(row["request"], request)
         self.assertEqual(self.f.cloud.records[("memory", "synthetic-topic")], followup["params"]["record"])
 
-    def test_offline_pending_does_not_claim_a_conflict(self):
+    def test_offline_new_write_is_saved_before_send_and_replays_on_background_refresh(self):
         self.f.cloud.offline = True
-        result = self.invoke()
-        self.assertEqual(result["error"], {"code": "content_upload_queued", "retryable": True})
-        self.assertEqual(result["local_queue"]["blocked_by"], [])
+        request = self.f.cloud.request
+
+        at_send = []
+
+        def check_outbox(envelope):
+            row = json.loads((self.f.cache / "outbox" / (envelope["request_id"] + ".json")).read_bytes())
+            at_send.append(row["request"])
+            return request(envelope)
+
+        with patch.object(self.f.cloud, "request", side_effect=check_outbox):
+            result = self.server.invoke("content_put", self.request["params"])["structuredContent"]
+        self.assertEqual(result["error"], {"code": "content_upload_queued", "retryable": False})
+        self.assertEqual(result["local_queue"]["state"], "pending")
         self.assertIn("unconfirmed", result["local_queue"]["next_action"])
+        rid = result["request_id"]
+        saved = self.f.adapter.inspect_queue(request_id=rid)["request"]
+        self.assertEqual(at_send, [saved])
+        self.assertEqual(saved["params"]["expected_revision"], "missing")
+        self.assertEqual(saved["params"]["record"], self.request["params"]["record"])
+        self.f.cloud.offline = False
+        restarted = self.f.restart()
+        refreshed = restarted.synchronization.background_pull(still_current=lambda: True, replay=True)
+        self.assertEqual(refreshed["status"], "content-refreshed")
+        self.assertEqual(restarted.inspect_queue(request_id=rid)["local_queue"]["state"], "confirmed")
+        self.assertEqual([r for r in self.f.cloud.calls if r["method"] == "content_put"], [saved, saved])
+        self.assertEqual(self.f.cloud.puts, 1)
 
     def test_merge_does_not_release_unselected_conflict(self):
         self.f.adapter.invoke(self.request)
@@ -284,8 +322,7 @@ class WriteFailures(unittest.TestCase):
                     patch.object(self.f.adapter, "_save", side_effect=fail_response),
                 ):
                     result = self.invoke()
-                self.assertEqual(result["error"]["stage"], "outbox-response")
-                self.assertEqual(result["error"]["exception_type"], "OSError")
+                self.assertEqual(result["local_queue"]["state"], "unconfirmed")
                 self.assertFalse(result["persistence"]["durable"])
                 self.assertNotIn("SYNTHETIC_PRIVATE", json.dumps(result))
                 self.assertEqual(self.f.cloud.puts, 0)
@@ -301,8 +338,8 @@ class WriteFailures(unittest.TestCase):
             side_effect=private_error("SYNTHETIC_PRIVATE_BODY"),
         ):
             result = self.invoke()
-        self.assertEqual(result["error"]["stage"], "adapter-invoke")
-        self.assertEqual(result["error"]["exception_type"], "Exception")
+        self.assertEqual(result["local_queue"]["state"], "unconfirmed")
+        self.assertEqual(set(result), {"request_id", "error", "persistence", "local_queue"})
         self.assertNotIn("SYNTHETIC_PRIVATE", json.dumps(result))
         with self.assertRaises(ContentParameterError):
             self.server.invoke("content_put", {})
@@ -315,7 +352,7 @@ class WriteFailures(unittest.TestCase):
         with patch.object(
             self.f.adapter, "invoke", side_effect=ValueError("SYNTHETIC_PRIVATE")
         ):
-            self.assertEqual(self.invoke()["error"]["stage"], "adapter-invoke")
+            self.assertEqual(self.invoke()["local_queue"]["state"], "unconfirmed")
 
 
 class CollectionCapacity(unittest.TestCase):
@@ -438,7 +475,23 @@ class QueueRecovery(unittest.TestCase):
         self.server = ContentServer(self.f.adapter)
 
     def inspect(self, **arguments):
-        return self.server.invoke('content_queue_inspect', arguments)['structuredContent']
+        output = io.StringIO()
+        argv = ["content-manage", "--inspect-queue", "--harness", "codex"]
+        for key, value in arguments.items():
+            argv += ["--" + key.replace("_", "-"), value]
+        with (
+            patch.object(management, "installed_adapter", return_value=self.f.adapter) as adapter,
+            patch.object(management, "ManagementHTTP", side_effect=AssertionError("started HTTP")),
+            redirect_stdout(output),
+        ):
+            status = management.main(argv)
+        adapter.assert_called_once_with(str(management.Path.home()), harness="codex", existing_cache=True)
+        return status, json.loads(output.getvalue())
+
+    def snapshot(self, **arguments):
+        status, result = self.inspect(**arguments)
+        self.assertEqual(status, 0, result)
+        return result
 
     def conflict(self):
         self.f.adapter.invoke(self.f.request())
@@ -456,15 +509,15 @@ class QueueRecovery(unittest.TestCase):
         before = self.files()
         self.f.cloud.calls.clear()
         self.f.cloud.offline = True
-        self.server = ContentServer(self.f.restart())
-        listing = self.inspect()
+        self.f.adapter = self.f.restart()
+        listing = self.snapshot()
         self.assertEqual(listing['counts']['conflict'], 2)
         entry = next(e for e in listing['entries'] if e['request_id'] == waiting['request_id'])
         self.assertEqual(entry['local_queue']['blocked_by'], [])
         self.assertEqual(entry['local_queue']['state'],'conflict')
         self.assertNotIn('unique local proposal', json.dumps(listing))
         self.assertNotIn(str(self.f.cache), json.dumps(listing))
-        exact = self.inspect(request_id=conflict['request_id'])
+        exact = self.snapshot(request_id=conflict['request_id'])
         self.assertEqual(exact['request'], conflict)
         self.assertEqual(exact['remote_snapshot']['record'], fixture.MEMORY)
         self.assertEqual(exact['response']['error']['code'], 'revision_conflict')
@@ -473,25 +526,29 @@ class QueueRecovery(unittest.TestCase):
         self.assertEqual(self.f.cloud.calls, [])
         self.assertEqual(self.files(), before)
 
+    def test_empty_inspection_creates_no_cache_files_or_locks(self):
+        before = {p.relative_to(self.f.cache) for p in self.f.cache.rglob("*")}
+        self.assertEqual(self.snapshot()["entries"], [])
+        self.assertEqual({p.relative_to(self.f.cache) for p in self.f.cache.rglob("*")}, before)
+        self.assertEqual(self.f.cloud.calls, [])
+
     def test_pages_bind_to_snapshot_and_reject_invalid_or_stale_cursors(self):
         for index in range(65):
             request = self.f.request(f'synthetic_inspection_{index:04d}')
             request['params']['id'] = f'synthetic-topic-{index}'
             self.f.adapter._enqueue(request)
-        first = self.inspect()
-        second = self.inspect(cursor=first['next_cursor'])
+        first = self.snapshot()
+        second = self.snapshot(cursor=first['next_cursor'])
         self.assertEqual(len(first['entries']), 64)
         self.assertEqual(len(second['entries']), 1)
         self.assertIsNone(second['next_cursor'])
         self.assertEqual(len({e['request_id'] for e in first['entries'] + second['entries']}), 65)
         self.f.adapter._enqueue(self.f.request('synthetic_cursor_changed'))
-        with self.assertRaises(ContentParameterError):
-            self.inspect(cursor=first['next_cursor'])
-        for arguments in ({'request_id': '../private'}, {'cursor': None}, {'request_id': None},
-                          {'cursor': 'bad'}, {'request_id': 'synthetic_inspection_0000', 'cursor': first['next_cursor']}):
-            with self.subTest(arguments=arguments), self.assertRaises(ContentParameterError):
-                self.server.invoke('content_queue_inspect', arguments)
-        self.assertEqual(self.inspect(request_id='synthetic_not_retained')['status'], 'not-found')
+        self.assertEqual(self.inspect(cursor=first['next_cursor'])[0], 2)
+        for arguments in ({"request_id": "../private"}, {"cursor": "bad"}):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(self.inspect(**arguments)[0], 2)
+        self.assertEqual(self.snapshot(request_id='synthetic_not_retained')['status'], 'not-found')
         self.assertEqual(self.f.cloud.calls, [])
 
     def test_no_write_grant_cannot_offer_or_invoke_inspection(self):
@@ -502,8 +559,10 @@ class QueueRecovery(unittest.TestCase):
         self.server.state = 'ready'
         listing = self.server.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})
         self.assertNotIn('content_queue_inspect', {t['name'] for t in listing['tools']})
-        with self.assertRaises(ContentToolUnavailable):
-            self.inspect()
+        for name in ("content_queue_inspect", "content_request_id", "content_put"):
+            with self.assertRaises(ContentToolUnavailable):
+                self.server.invoke(name, {})
+        self.assertEqual(self.inspect(), (2, {"status": "content-queue-inspection-not-authorized"}))
         self.assertEqual(self.f.cloud.calls, [])
 
     def test_identity_drift_preserves_queue_and_exposes_no_body(self):
@@ -529,8 +588,8 @@ class QueueRecovery(unittest.TestCase):
         self.assertEqual(self.f.adapter.queue_status()['pending'], 0)
         self.assertEqual(self.f.adapter.queue_status()['reconciled'], 1)
         self.assertEqual(self.f.cloud.records['memory', 'synthetic-topic'], merged['params']['record'])
-        self.assertEqual(self.inspect(request_id=waiter['request_id'])['local_queue']['state'],'conflict')
-        original = self.inspect(request_id=conflict['request_id'])
+        self.assertEqual(self.snapshot(request_id=waiter['request_id'])['local_queue']['state'],'conflict')
+        original = self.snapshot(request_id=conflict['request_id'])
         self.assertEqual(original['request'], conflict)
         self.assertEqual(original['local_queue']['resolution_request_id'], merged['request_id'])
 
@@ -557,7 +616,7 @@ class QueueRecovery(unittest.TestCase):
         self.assertEqual(result['local_refresh']['queue']['pending'], 1)
         self.assertEqual([r for r in self.f.cloud.calls if r['method'] == 'content_put'], [merged, waiter])
         self.assertEqual(self.f.cloud.puts, 3)
-        exact = self.inspect(request_id=waiter['request_id'])
+        exact = self.snapshot(request_id=waiter['request_id'])
         self.assertEqual(exact['local_queue']['state'], 'pending')
         self.assertFalse(exact['local_queue']['server_saved'])
         # A pending outcome cannot be declared resolved or silently replaced.

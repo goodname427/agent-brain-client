@@ -243,7 +243,7 @@ def command_line(argv):
 
 
 @contextmanager
-def locked(path, timeout=20, shared=False, cancel_check=None, *, cache=False):
+def locked(path, timeout=20, shared=False, cancel_check=None, *, cache=False, existing_only=False):
     """Yield the owned handle; POSIX shared leases may be inherited deliberately.
 
     Existing callers retain exclusive locking by default. Windows workers take
@@ -251,7 +251,13 @@ def locked(path, timeout=20, shared=False, cancel_check=None, *, cache=False):
     """
     path = Path(path)
     require_platform("private-lock")
-    if os.name == "nt":
+    if existing_only:
+        try:
+            handle = path.open("r+b")
+        except FileNotFoundError:
+            yield None
+            return
+    elif os.name == "nt":
         from agent_brain_client.adapters.platforms.windows.native import canonical
 
         canonical(path)
@@ -274,6 +280,8 @@ def locked(path, timeout=20, shared=False, cancel_check=None, *, cache=False):
             handle = os.fdopen(fd, "r+b")
     acquired = False
     try:
+        if existing_only:
+            cache_mode(path, owner=True)
         if os.name == "nt":
             import msvcrt
 
@@ -288,7 +296,7 @@ def locked(path, timeout=20, shared=False, cancel_check=None, *, cache=False):
             )
         # LockFileEx supports ranges beyond EOF. Writing an initialization byte
         # before locking races another caller that already owns that byte.
-        if os.name != "nt" and path.stat().st_size == 0:
+        if not existing_only and os.name != "nt" and path.stat().st_size == 0:
             handle.write(b"0")
             handle.flush()
         deadline = time.monotonic() + timeout
