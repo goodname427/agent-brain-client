@@ -577,7 +577,7 @@ class ContentSession(FileContentOutbox):
             },
         )
 
-    def invoke(self, request, reconciles=None, *, event_gate=None):
+    def invoke(self, request, reconciles=None, *, event_gate=None, memory_context=None):
         check_request()
         require_platform("cache-storage", self.platform)
         require_memory_verified(self.home, getattr(self.client, "profile_sha", None))
@@ -670,7 +670,9 @@ class ContentSession(FileContentOutbox):
         ):
             raise CacheBlocked()
         if method in contract.WRITES:
-            result = self.invoke_write(request, reconciles, event_gate=event_gate)
+            result = self.invoke_write(
+                request, reconciles, event_gate=event_gate, memory_context=memory_context
+            )
             if result.get("local_refresh", {}).get("status") == "event-disabled":
                 return result
         else:

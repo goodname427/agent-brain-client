@@ -5,8 +5,13 @@ A supplied content session owns remote I/O, durable writes and native mapping.
 
 import re
 from agent_brain_client.domain import contract
+from agent_brain_client.application.queue.outbox import content_write_request
 
 GOOD_REFRESH = {"content-current", "content-refreshed"}
+
+
+def valid_request_id(value):
+    return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{16,128}", value) is not None
 
 
 class LiveReadRequired(Exception):
@@ -105,25 +110,17 @@ class Management:
         }
 
     def change(self, value):
-        if not isinstance(value, dict) or set(value) != {
-            "request_id",
-            "kind",
-            "id",
-            "enabled",
-            "expected_revision",
-            "reconcile_request_ids",
-        }:
+        fields = {"kind", "id", "enabled", "expected_revision", "reconcile_request_ids"}
+        if not isinstance(value, dict) or set(value) - {"request_id"} != fields:
             raise ValueError("Exact activation action required")
+        if "request_id" in value and not valid_request_id(value["request_id"]):
+            raise ValueError("Exact retained request ID required")
         params = {
             key: value[key] for key in ("kind", "id", "enabled", "expected_revision")
         }
         contract.validate("content_set_enabled", params)
         return self.adapter.invoke(
-            {
-                "request_id": value["request_id"],
-                "method": "content_set_enabled",
-                "params": params,
-            },
+            content_write_request("content_set_enabled", params, request_id=value.get("request_id")),
             reconciles={
                 "request_ids": value["reconcile_request_ids"],
                 "source_keys": [],
@@ -134,7 +131,7 @@ class Management:
         if not isinstance(value, dict) or set(value) != {"request_id"}:
             raise ValueError("Exact retained request ID required")
         rid = value["request_id"]
-        if not isinstance(rid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", rid):
+        if not valid_request_id(rid):
             raise ValueError("Exact retained request ID required")
         retained = self.adapter.inspect_queue(request_id=rid)
         request = retained.get("request", {})
