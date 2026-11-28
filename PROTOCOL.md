@@ -8,7 +8,7 @@ Codex and CodeBuddy register the local stdio service `agent_brain_server`. The v
 
 The installed Client sends `POST /v1/requests` to the configured HTTPS origin. The Server's device ingress routes that public path to `/v1/device/requests` and authenticates an enrolled device Bearer. The JSON envelope contains `request_id`, `method` and `params`. A request ID is 16–128 characters. Write retries reuse the exact original ID and parameters. The adapter header remains `codex` for both hosts with protocol and state schema at 1. These headers describe compatibility. Server authorization independently checks the device identity, allowed method and target scope.
 
-`memory_query` is the Agent's query tool. The Content calls below use the Server's typed API. Local request ID generation and queue inspection run in the Client. Event capture, source controls and release discovery use their device methods without adding them to the Agent's MCP list. The local stdio interface and the HTTPS request API use separate transports. The public MCP tool `content_lifecycle` maps its permitted `archive`, `restore` and `remove` actions to the existing typed methods. It forwards the original `expected_revision` and explicit `request_id`. Existing outbox entries retain their typed method names and can be retried through the corresponding action.
+`memory_query` is the Agent's query tool. The Content calls below use the Server's typed API. Local request ID generation and queue inspection run in the Client. Event capture, source controls and release discovery use their device methods without adding them to the Agent's MCP list. The local stdio interface and the HTTPS request API use separate transports. The public MCP tool `content_lifecycle` maps its permitted `archive`, `restore` and `remove` actions to the existing typed methods. The Client saves each new write with a fresh ID, original arguments and `expected_revision` before sending. Older callers may supply an existing explicit ID. Outbox replay keeps the original typed method and complete request.
 
 ## Typed Content methods
 
@@ -162,21 +162,19 @@ permission and cannot alter the original CAS base. The merged request uses a new
 ID and the read revision. Evidence remains; only its durable confirmation resolves
 the selected conflicts. A disconnected conflict read is retried after reconnect.
 
-The local-only `content_queue_inspect` tool is offered within existing content
-write grants. Empty arguments list at most 64 path-free queue metadata entries;
-`cursor` continues the same snapshot and fails if it changes. An exact
-`request_id` returns the original request, reconciliation references, saved
-response and cached remote conflict snapshot. Inspection never drains, fetches,
-repairs or maps content. The cached conflict snapshot is not a current CAS base;
-read the current target before an explicit merge. No new Server method or queue
-schema is introduced.
+The existing local `content-manage --inspect-queue` command lists pending,
+blocked and conflicting writes within the enrolled content write grant.
+Each page contains at most 64 metadata rows. Pass `--cursor` to continue the
+snapshot and `--request-id` for an exact original request, CAS base, saved
+response and cached conflict snapshot. Inspection uses a read-only queue
+snapshot and makes no Server request. Read the current target before a merge.
 
 A confirmed reconciliation revisits earlier dependent requests in the same
 drain, retaining their original IDs and CAS bases. Unselected conflicts remain
 blocking. An unconfirmed send stops the drain; the same write call's subsequent
-mapping refresh does not resend it. Pending outcomes cannot be reconciled as
-conflicts: recover the exact original request and ID first. Restart/reconnect
-retains the existing exact-request recovery protocol.
+mapping refresh does not resend it. Pending outcomes recover through the existing background or startup drain.
+Every retry uses the saved envelope. An independent tools/call with no ID
+starts a new write, even if its target and parameters equal a previous call.
 
 MCP `memory_onboard` accepts the bound `harness`, an exact
 `destination` (enrolled HTTPS endpoint, actor, and canonical approved origin),

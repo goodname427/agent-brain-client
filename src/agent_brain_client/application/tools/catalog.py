@@ -5,7 +5,7 @@ from agent_brain_client.domain import contract
 from agent_brain_client.application.memory.onboarding import INPUT_SCHEMA, TOOL_NAME
 from agent_brain_client.domain.content import RULE_SKILL
 from agent_brain_client.domain.content_policy import validate_policy
-from agent_brain_client.domain.operations import CONTENT_WRITES, LIFECYCLE_WRITES, RULE_SKILL_WRITES
+from agent_brain_client.domain.operations import LIFECYCLE_WRITES, RULE_SKILL_WRITES
 
 
 LIFECYCLE_TOOL = "content_lifecycle"
@@ -29,30 +29,8 @@ RECALL_EVIDENCE_GUIDANCE = (
 )
 
 
-def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()):
+def local_tools(memory_sources, layered_recall):
     tools = []
-    tools.append(
-        {
-            "name": "content_queue_inspect",
-            "description": "Inspect this Client's retained write queue without sending, retrying or changing requests. With no arguments, list a page of path-free metadata and exact blocking request IDs; use next_cursor for more. With request_id, read the exact original proposal, CAS base, reconciliation references, saved response and cached remote conflict snapshot. The snapshot may be stale: call content_read before an explicit reviewed merge through content_put with a new stable request_id and reconciles.request_ids. Unknown pending outcomes require the identical original request and ID; never replace, rebase or delete them. Terminal conflicts remain reviewable and do not block fresh CAS writes. To retry a retained content_set_enabled request, call content_put with operation=set_enabled and the original request_id, parameters and any reconciliation references. No device or source discovery.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "request_id": {
-                        "type": "string",
-                        "pattern": "^[A-Za-z0-9_-]{16,128}$",
-                    },
-                    "cursor": {"type": "string", "maxLength": 96},
-                },
-                "additionalProperties": False,
-            },
-            "annotations": {
-                "readOnlyHint": True,
-                "destructiveHint": False,
-                "idempotentHint": True,
-            },
-        }
-    )
     if layered_recall:
         origin = {
             "type": "object",
@@ -114,41 +92,6 @@ def local_tools(kinds, memory_sources, layered_recall=False, lifecycle_writes=()
                 },
             }
         )
-    tools.append(
-        {
-            "name": "content_request_id",
-            "description": (
-                "Generate a deterministic idempotent write request_id from the completed Harness turn digest, operation and AgentBrain target identity. "
-                "Different targets/operations in one turn receive different IDs; retries of the same operation get the same ID. Local-only; no transfer. "
-                "For content_put with operation=set_enabled, select method=content_set_enabled to retain its original request ID namespace."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "turn_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-                    "method": {
-                        "type": "string",
-                        "description": "Use the underlying write method. For content_lifecycle, select the method corresponding to its action.",
-                        "enum": [
-                            "content_put",
-                            "content_remove",
-                            "content_set_enabled",
-                            *sorted(lifecycle_writes),
-                        ],
-                    },
-                    "kind": {"type": "string", "enum": kinds},
-                    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"},
-                },
-                "required": ["turn_sha256", "method", "kind", "id"],
-                "additionalProperties": False,
-            },
-            "annotations": {
-                "readOnlyHint": True,
-                "destructiveHint": False,
-                "idempotentHint": True,
-            },
-        }
-    )
     if memory_sources:
         tools.append({
             "name": TOOL_NAME,
@@ -178,11 +121,9 @@ def tool_names(methods, memory_sources):
     names |= {
         tool["name"]
         for tool in local_tools(
-            [], memory_sources, memory_sources and "memory_query" in methods
+            memory_sources, memory_sources and "memory_query" in methods
         )
     }
-    if not set(methods) & CONTENT_WRITES:
-        names.discard("content_queue_inspect")
     if "content_put" not in methods:
         names.discard(TOOL_NAME)
     return sorted(names)
@@ -218,7 +159,7 @@ def lifecycle_tool(methods, kinds, client_version, update_guidance):
     description = (
         "Only on the user's explicit request for this exact target. "
         + " ".join(action_guidance[action] for action in actions)
-        + " On exact retry, retain the same action, target, expected_revision and request_id. "
+        + " The Client saves the original action and CAS base before sending and retries unconfirmed delivery. "
         "Check Server persistence and local_refresh separately. "
         f"Running worker version: {client_version}. {update_guidance}"
     )
@@ -239,9 +180,13 @@ def lifecycle_tool(methods, kinds, client_version, update_guidance):
                 "pattern": "^(missing|[a-f0-9]{64})$" if "remove" in actions else existing_revision,
                 "description": " ".join(revision_sources),
             },
-            "request_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{16,128}$"},
+            "request_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{16,128}$",
+                "description": "Compatibility only. Omit for a new write.",
+            },
         },
-        "required": ["action", "kind", "id", "expected_revision", "request_id"],
+        "required": ["action", "kind", "id", "expected_revision"],
         "additionalProperties": False,
     }
     if archive_actions and "remove" in actions:
@@ -259,7 +204,7 @@ def lifecycle_tool(methods, kinds, client_version, update_guidance):
         "annotations": {
             "readOnlyHint": False,
             "destructiveHint": "archive" in actions or "remove" in actions,
-            "idempotentHint": True,
+            "idempotentHint": False,
         },
     }
 
@@ -423,12 +368,12 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
             properties["request_id"] = {
                 "type": "string",
                 "pattern": "^[A-Za-z0-9_-]{16,128}$",
+                "description": "Compatibility only. Omit for a new write.",
             }
-            required.append("request_id")
         if name == "content_put":
             properties["reconciles"] = {
                 "type": "object",
-                "description": "Local-only references for recovering retained writes; never sent to Server. Inspect retained proposals with content_queue_inspect and read the current target before merging. Use request_ids for retained conflicts and recover pending outcomes by identical retry first. Native source_keys are only for recovering retained requests that already reference them. Server persistence confirmation resolves selected conflicts.",
+                "description": "Local-only references for recovering retained writes; never sent to Server. Review retained conflicts through the local content-manage --inspect-queue command and read the current target before merging. Use request_ids for confirmed CAS conflicts. The Client automatically retries pending writes. Native source_keys are only for recovering retained requests that already reference them. Server persistence confirmation resolves selected conflicts.",
                 "properties": {
                     "request_ids": {
                         "type": "array",
@@ -456,7 +401,7 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
                 "required": ["origin", "session_id"],
                 "additionalProperties": False,
             }
-        description = "Approved cloud content only. Server is the sole write boundary; retain CAS revision and request_id on write retries. Transport failures may return a verified stale snapshot with local_cache.stale=true; cache misses never prove remote absence. Local cache refresh does not reload existing model context. "
+        description = "Approved cloud content only. The Client saves writes with their CAS revision before sending and retries unconfirmed delivery. Transport failures may return a verified stale snapshot with local_cache.stale=true; cache misses never prove remote absence. Local cache refresh does not reload existing model context. "
         if archive_read:
             description += "With include_archived:true the Server must be live and support lifecycle reads. An archived target returns archived:true, record:null and a restore revision. Default reads and catalog remain active-only. "
         if name == "content_put":
@@ -504,7 +449,7 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
                 "annotations": {
                     "readOnlyHint": name not in contract.WRITES,
                     "destructiveHint": False,
-                    "idempotentHint": True,
+                    "idempotentHint": name not in contract.WRITES,
                 },
             }
         )
@@ -512,12 +457,7 @@ def tool_definitions(methods, kinds, memory_sources, client_version, update_guid
         tools.append(lifecycle_tool(methods, kinds, client_version, update_guidance))
     tools.extend(
         tool
-        for tool in local_tools(
-            kinds,
-            memory_sources,
-            "memory_query" in declared,
-            LIFECYCLE_WRITES.intersection(methods),
-        )
+        for tool in local_tools(memory_sources, "memory_query" in declared)
         if tool["name"] in declared
     )
     return tools

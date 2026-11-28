@@ -21,6 +21,7 @@ from agent_brain_client.interfaces.mcp.framing import (
 
 from agent_brain_client.domain.tool_contract import TOOL_CONTRACT_VERSION
 from agent_brain_client.domain.operations import CONTENT_WRITES, LIFECYCLE_WRITES
+from agent_brain_client.application.queue.outbox import QUEUE_DIAGNOSTIC, content_write_request
 from agent_brain_client.application.tools.catalog import (
     RECALL_EVIDENCE_GUIDANCE,
     tool_definitions,
@@ -281,57 +282,6 @@ class ContentServer(Server):
         if name == "memory_query":
             return self.layered_recall(arguments)
         try:
-            if name == "content_queue_inspect":
-                if name not in tool_names(
-                    self.adapter.methods(), self._memory_source_tools_authorized()
-                ):
-                    raise ContentToolUnavailable(
-                        "Queue inspection requires an existing content write grant."
-                    )
-                if (
-                    not isinstance(arguments, dict)
-                    or set(arguments) - {"request_id", "cursor"}
-                    or len(arguments) > 1
-                ):
-                    raise ContentParameterError(
-                        "Inspect a queue page with optional cursor, or one exact request_id."
-                    )
-                rid = arguments.get("request_id")
-                cursor = arguments.get("cursor")
-                if (
-                    "request_id" in arguments
-                    and (
-                        not isinstance(rid, str)
-                        or re.fullmatch(r"[A-Za-z0-9_-]{16,128}", rid) is None
-                    )
-                    or "cursor" in arguments
-                    and (
-                        not isinstance(cursor, str)
-                        or re.fullmatch(r"[a-f0-9]{64}:[0-9]{1,6}", cursor) is None
-                    )
-                ):
-                    raise ContentParameterError(
-                        "Use an exact retained request_id or the returned next_cursor."
-                    )
-                try:
-                    result = self.adapter.inspect_queue(request_id=rid, cursor=cursor)
-                except LockTimeout:
-                    raise ProtocolError(
-                        -32000,
-                        "Local queue busy; retry inspection after the active operation finishes.",
-                    ) from None
-                except OSError:
-                    raise ProtocolError(
-                        -32010,
-                        "Queue inspection unavailable; preserve retained requests and restore private cache access.",
-                    ) from None
-                return {
-                    "isError": False,
-                    "structuredContent": result,
-                    "content": [
-                        {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
-                    ],
-                }
             if (
                 name.startswith("content_sources_")
                 and not self._memory_source_tools_authorized()
@@ -339,54 +289,6 @@ class ContentServer(Server):
                 raise ContentParameterError(
                     "Native Memory source tools are outside the granted Memory scope."
                 )
-            if name == "content_request_id":
-                required = {"turn_sha256", "method", "kind", "id"}
-                if not isinstance(arguments, dict) or set(arguments) != required:
-                    raise ContentParameterError(
-                        "Generate an idempotent request ID for one target and operation."
-                    )
-                if not isinstance(arguments["turn_sha256"], str) or not re.fullmatch(
-                    r"[a-f0-9]{64}", arguments["turn_sha256"]
-                ):
-                    raise ContentParameterError(
-                        "turn_sha256 must be the digest from the active native turn."
-                    )
-                method = arguments["method"]
-                if not isinstance(method, str) or method not in CONTENT_WRITES:
-                    raise ContentParameterError(
-                        "Only content write request IDs are supported."
-                    )
-                target = {"kind": arguments["kind"], "id": arguments["id"]}
-                if method in LIFECYCLE_WRITES:
-                    if method not in self.adapter.methods():
-                        raise ContentToolUnavailable("Lifecycle write is outside the installed tool grant.")
-                    target["include_archived"] = True
-                contract.validate("content_read", target)
-                rid = (
-                    "agentbrain_"
-                    + hashlib.sha256(
-                        contract.encode(
-                            [
-                                arguments["turn_sha256"],
-                                arguments["method"],
-                                arguments["kind"],
-                                arguments["id"],
-                            ]
-                        )
-                    ).hexdigest()
-                )
-                result = {
-                    "request_id": rid,
-                    "data_transferred": False,
-                    "native_changed": False,
-                }
-                return {
-                    "isError": False,
-                    "structuredContent": result,
-                    "content": [
-                        {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
-                    ],
-                }
             if name == TOOL_NAME:
                 if name not in tool_names(
                     self.adapter.methods(), self._memory_source_tools_authorized()
@@ -429,9 +331,7 @@ class ContentServer(Server):
                 method = "content_set_enabled"
                 if method not in methods:
                     raise ContentToolUnavailable("Rule/Skill activation is outside the installed tool grant.")
-            required = contract.FIELDS[method] | (
-                {"request_id"} if method in contract.WRITES else set()
-            )
+            required = contract.FIELDS[method]
             allowed = (
                 contract.FIELDS[method]
                 | ({"cursor"} if name == "content_catalog" else set())
@@ -448,53 +348,41 @@ class ContentServer(Server):
             if set(params) - allowed or required - set(params):
                 raise ValueError()
             reconciles = params.pop("reconciles", None)
-            rid = params.pop("request_id", uuid.uuid4().hex)
-            contract.validate(method, params)
-            if (
-                not isinstance(rid, str)
-                or not 16 <= len(rid) <= 128
-                or any(
-                    c
-                    not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
-                    for c in rid
-                )
+            if "request_id" in params and (
+                not isinstance(params["request_id"], str)
+                or re.fullmatch(r"[A-Za-z0-9_-]{16,128}", params["request_id"]) is None
             ):
                 raise ValueError()
+            rid = params.pop("request_id", None)
+            contract.validate(method, params)
         except ContentParameterError:
             raise
         except CacheBlocked:
-            if name == "content_queue_inspect":
-                raise ProtocolError(
-                    -32010,
-                    "Queue inspection unavailable; preserve retained requests and restore the original Client identity, policy and private cache access.",
-                ) from None
             raise ProtocolError(
                 -32010,
                 "Onboarding or local source state is unavailable. Restore the approved Client binding before retrying.",
             ) from None
         except (ValueError, TypeError):
-            if name == "content_queue_inspect":
-                raise ContentParameterError(
-                    "Invalid queue inspection arguments or queue changed; restart without cursor, then use the returned request_id or next_cursor."
-                ) from None
             message = (
                 "Invalid "
                 + name
                 + " arguments; use the exact fields and types in this tool input schema."
             )
             if method in LIFECYCLE_WRITES:
-                message += " Use a stable request_id and the revision from content_read with include_archived:true. Keep both unchanged on exact retry."
+                message += " Use the current revision from content_read with include_archived:true."
             elif method in contract.WRITES:
-                message += " Writes require a stable request_id and the expected_revision obtained from content_read."
+                message += " Writes require the expected_revision obtained from content_read."
             raise ContentParameterError(message) from None
+        write = method in CONTENT_WRITES
+        request = (
+            content_write_request(method, params, request_id=rid)
+            if write
+            else {"request_id": rid or uuid.uuid4().hex, "method": method, "params": params}
+        )
+        call_options = {"reconciles": reconciles} if reconciles is not None else {}
         with operation_diagnostics() as diagnostic:
             try:
-                request = {"request_id": rid, "method": method, "params": params}
-                if (
-                    method == "content_put"
-                    and params["kind"] == "memory"
-                    and hasattr(self.adapter, "prepare_memory_write")
-                ):
+                if method == "content_put" and params["kind"] == "memory" and "source_context" not in params:
                     session = os.environ.get("CODEX_THREAD_ID")
                     if not isinstance(session, str) or not re.fullmatch(
                         r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", session
@@ -504,19 +392,11 @@ class ContentServer(Server):
                         origin = discover_origin()
                     except OSError:
                         origin = None
-                    request = self.adapter.prepare_memory_write(
-                        request, {"origin": origin, "session_id": session}
-                    )
-                result = (
-                    self.adapter.invoke(request, reconciles=reconciles)
-                    if reconciles is not None
-                    else self.adapter.invoke(request)
-                )
+                    call_options["memory_context"] = {"origin": origin, "session_id": session}
+                result = self.adapter.invoke(request, **call_options)
             except RequestStopped:
                 raise
             except Exception as error:
-                # A busy local lock is transient. Keep the original CAS request
-                # and ID for an explicit retry; do not replay anything here.
                 busy = isinstance(error, LockTimeout)
                 known = (
                     CacheBlocked,
@@ -540,7 +420,7 @@ class ContentServer(Server):
                     type(error).__name__ if type(error) in known else "Exception"
                 )
                 result = {
-                    "request_id": rid,
+                    "request_id": request["request_id"],
                     "error": {
                         "code": "content_busy" if busy else "content_adapter_blocked",
                         "retryable": busy,
@@ -549,7 +429,36 @@ class ContentServer(Server):
                     },
                     "persistence": {"durable": False},
                 }
-        result = dict(result, client_runtime=self.client_runtime)
+        if write and "error" in result:
+            queue = result.get("local_queue", {})
+            error = result["error"]
+            state = queue.get("state", "unconfirmed")
+            code = error.get("code")
+            if code not in (
+                "content_upload_queued", "revision_conflict", "permission_denied",
+                "invalid_request", "content_busy", "content_adapter_blocked",
+                "device_method_denied", "device_authentication_failed", "content_activation_denied",
+            ):
+                code = "content_write_blocked"
+            result = {
+                "request_id": request["request_id"],
+                # A pending write is retried by the Client. A new tools/call
+                # without a legacy ID would create an independent write.
+                "error": {
+                    "code": code,
+                    "retryable": state != "pending" and error.get("retryable") is True,
+                },
+                "persistence": {"durable": False},
+                "local_queue": {
+                    "state": state,
+                    "server_saved": False,
+                    "next_action": queue.get("next_action") or (
+                        f"Check the write using {QUEUE_DIAGNOSTIC} before resubmitting."
+                    ),
+                },
+            }
+        else:
+            result = dict(result, client_runtime=self.client_runtime)
         return {
             "isError": "error" in result,
             "structuredContent": result,
@@ -609,7 +518,7 @@ class ContentServer(Server):
                 RECALL_EVIDENCE_GUIDANCE
                 + MEMORY_GUIDANCE
                 + "content_catalog lists authorized AgentBrain destination records only; it does not discover Harness-native sources. "
-                + "Ordinary CAS writes require the current expected_revision and stable request_id; retain exact request arguments on retries. "
+                + "Ordinary CAS writes require the current expected_revision. The Client retains and retries unconfirmed writes automatically. "
                 + "Pending/local-confirmed/remote-confirmed and durable fields distinguish client, Server and backup status. "
                 + "Ordinary edits retain Rule/Skill enabled state. Use content_put with operation=set_enabled only for an explicit user request to enable or disable a Rule/Skill. Refreshing mappings does not reload an already running model. "
                 + "Only granted methods and IDs are exposed; pairing and publication remain separate. "
